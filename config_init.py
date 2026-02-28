@@ -77,6 +77,9 @@ def merge_config(system_config:dict[str, Any], args:argparse.Namespace) -> dict[
         
     if args.host is not None:
         system_config['hostname'] = args.host
+
+    if args.mqtt_topic is not None:
+        system_config['mqtt_topic'] = args.mqtt_topic
     
     return system_config
 

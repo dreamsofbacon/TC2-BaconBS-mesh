@@ -68,8 +68,8 @@ def send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, 
         send_message(message, node_id, interface)
 
 
-def send_delete_bulletin_to_bbs_nodes(bulletin_id, bbs_nodes, interface):
-    message = f"DELETE_BULLETIN|{bulletin_id}"
+def send_delete_bulletin_to_bbs_nodes(unique_id, bbs_nodes, interface):
+    message = f"DELETE_BULLETIN|{unique_id}"
     for node_id in bbs_nodes:
         send_message(message, node_id, interface)
 

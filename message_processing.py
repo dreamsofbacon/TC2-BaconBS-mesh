@@ -66,7 +66,10 @@ def process_message(sender_id, message, interface, is_sync_message=False):
 
     if is_sync_message:
         if message.startswith("BULLETIN|"):
-            parts = message.split("|")
+            parts = message.split("|", 5)
+            if len(parts) != 6:
+                logging.warning(f"Malformed BULLETIN sync message ignored: {message}")
+                return
             board, sender_short_name, subject, content, unique_id = parts[1], parts[2], parts[3], parts[4], parts[5]
             add_bulletin(board, sender_short_name, subject, content, [], interface, unique_id=unique_id)
 
@@ -74,19 +77,33 @@ def process_message(sender_id, message, interface, is_sync_message=False):
                 notification_message = f"💥NEW URGENT BULLETIN💥\nFrom: {sender_short_name}\nTitle: {subject}\nDM 'CB,,Urgent' to view"
                 send_message(notification_message, BROADCAST_NUM, interface)
         elif message.startswith("MAIL|"):
-            parts = message.split("|")
-            sender_id, sender_short_name, recipient_id, subject, content, unique_id = parts[1], parts[2], parts[3], parts[4], parts[5], parts[6]
-            add_mail(sender_id, sender_short_name, recipient_id, subject, content, [], interface, unique_id=unique_id)
+            parts = message.split("|", 6)
+            if len(parts) != 7:
+                logging.warning(f"Malformed MAIL sync message ignored: {message}")
+                return
+            sync_sender_id, sender_short_name, recipient_id, subject, content, unique_id = parts[1], parts[2], parts[3], parts[4], parts[5], parts[6]
+            add_mail(sync_sender_id, sender_short_name, recipient_id, subject, content, [], interface, unique_id=unique_id)
         elif message.startswith("DELETE_BULLETIN|"):
-            unique_id = message.split("|")[1]
+            parts = message.split("|", 1)
+            if len(parts) != 2 or not parts[1]:
+                logging.warning(f"Malformed DELETE_BULLETIN sync message ignored: {message}")
+                return
+            unique_id = parts[1]
             delete_bulletin(unique_id, [], interface)
         elif message.startswith("DELETE_MAIL|"):
-            unique_id = message.split("|")[1]
+            parts = message.split("|", 1)
+            if len(parts) != 2 or not parts[1]:
+                logging.warning(f"Malformed DELETE_MAIL sync message ignored: {message}")
+                return
+            unique_id = parts[1]
             logging.info(f"Processing delete mail with unique_id: {unique_id}")
             recipient_id = get_recipient_id_by_mail(unique_id)
             delete_mail(unique_id, recipient_id, [], interface)
         elif message.startswith("CHANNEL|"):
-            parts = message.split("|")
+            parts = message.split("|", 2)
+            if len(parts) != 3:
+                logging.warning(f"Malformed CHANNEL sync message ignored: {message}")
+                return
             channel_name, channel_url = parts[1], parts[2]
             add_channel(channel_name, channel_url)
     else:
@@ -192,7 +209,7 @@ def on_receive(packet, interface):
 
             bbs_nodes = interface.bbs_nodes
             is_sync_message = any(message_string.startswith(prefix) for prefix in
-                                  ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|"])
+                                  ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|", "CHANNEL|"])
 
             if sender_node_id in bbs_nodes:
                 if is_sync_message:

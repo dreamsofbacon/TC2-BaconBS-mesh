@@ -126,7 +126,7 @@ class JS8CallClient:
                 self.db_conn.execute(f'''
                     INSERT INTO {table} (sender, { 'receiver' if table == 'messages' else 'groupname' }, message)
                     VALUES (?, ?, ?)
-                ''', (sender, receiver_or_group, message))
+                ''', (sender, recipient, message))
         except sqlite3.Error as e:
             self.logger.error(f"Failed to insert message into {table} table: {e}")
 
@@ -160,7 +160,7 @@ class JS8CallClient:
             self.logger.info(f"Received JS8Call message: {sender} to {receiver} - {msg}")
 
             if receiver in self.js8urgent:
-                self.insert_urgent('urgent', sender, receiver, msg)
+                self.insert_message('urgent', sender, receiver, msg)
                 notification_message = f"💥 URGENT JS8Call Message Received 💥\nFrom: {sender}\nCheck BBS for message"
                 send_message(notification_message, BROADCAST_NUM, self.interface)
             elif receiver in self.js8groups:
