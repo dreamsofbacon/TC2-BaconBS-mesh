@@ -103,12 +103,12 @@ def get_bulletin_content(bulletin_id):
     return c.fetchone()
 
 
-def delete_bulletin(bulletin_id, bbs_nodes, interface):
+def delete_bulletin(unique_id, bbs_nodes, interface):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("DELETE FROM bulletins WHERE id = ?", (bulletin_id,))
+    c.execute("DELETE FROM bulletins WHERE unique_id = ?", (unique_id,))
     conn.commit()
-    send_delete_bulletin_to_bbs_nodes(bulletin_id, bbs_nodes, interface)
+    send_delete_bulletin_to_bbs_nodes(unique_id, bbs_nodes, interface)
 
 def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_nodes, interface, unique_id=None):
     conn = get_db_connection()

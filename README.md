@@ -51,9 +51,6 @@ If you're a Docker user, TC²-BBS Meshtastic is available on Docker Hub!
    ```
    
    - On macOS and Linux:
-   
-   ```sh
-   source venv/bin/activate
    ```
 
 4. Install the required packages:  
@@ -110,6 +107,17 @@ python server.py
 ```
 
 Be sure you've followed the Python virtual environment steps above and activated it before running.
+
+## Smoke Test (No Radio Required)
+
+Run a basic mocked integration smoke test for sync parsing and menu input validation:
+
+```sh
+python tests/smoke_test.py
+```
+
+This test does not require a connected Meshtastic device and is safe to run before deploys.
+
 
 ## Command line arguments
 ```

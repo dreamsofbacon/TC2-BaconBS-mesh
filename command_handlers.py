@@ -167,7 +167,17 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
         if message.lower() == 'e':
             handle_help_command(sender_id, interface, 'bbs')
             return
-        board_name = boards[int(message)]
+        try:
+            board_index = int(message)
+        except ValueError:
+            send_message("Invalid board selection. Choose G, I, N, or U.", sender_id, interface)
+            handle_bulletin_command(sender_id, interface)
+            return
+        if board_index not in boards:
+            send_message("Invalid board selection. Choose G, I, N, or U.", sender_id, interface)
+            handle_bulletin_command(sender_id, interface)
+            return
+        board_name = boards[board_index]
         bulletins = get_bulletins(board_name)
         response = f"{board_name} has {len(bulletins)} messages.\n[R]ead  [P]ost"
         send_message(response, sender_id, interface)
@@ -198,8 +208,16 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
             update_user_state(sender_id, {'command': 'BULLETIN_POST', 'step': 4, 'board': board_name})
 
     elif step == 3:
-        bulletin_id = int(message)
-        sender_short_name, date, subject, content, unique_id = get_bulletin_content(bulletin_id)
+        try:
+            bulletin_id = int(message)
+        except ValueError:
+            send_message("Invalid bulletin number. Please try again.", sender_id, interface)
+            return
+        bulletin = get_bulletin_content(bulletin_id)
+        if bulletin is None:
+            send_message("Bulletin not found. Please try again.", sender_id, interface)
+            return
+        sender_short_name, date, subject, content, unique_id = bulletin
         send_message(f"From: {sender_short_name}\nDate: {date}\nSubject: {subject}\n- - - - - - -\n{content}", sender_id, interface)
         board_name = state['board']
         handle_bb_steps(sender_id, 'e', 1, state, interface, bbs_nodes)
@@ -255,7 +273,11 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             handle_help_command(sender_id, interface)
 
     elif step == 2:
-        mail_id = int(message)
+        try:
+            mail_id = int(message)
+        except ValueError:
+            send_message("Invalid message number. Please try again.", sender_id, interface)
+            return
         try:
             sender_node_id = get_node_id_from_num(sender_id, interface)
             sender, date, subject, content, unique_id = get_mail_content(mail_id, sender_node_id)
@@ -305,7 +327,14 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
         update_user_state(sender_id, {'command': 'MAIL', 'step': 7, 'recipient_id': state['recipient_id'], 'subject': subject, 'content': ''})
 
     elif step == 6:
-        selected_node_index = int(message)
+        try:
+            selected_node_index = int(message)
+        except ValueError:
+            send_message("Invalid selection. Please reply with a valid number.", sender_id, interface)
+            return
+        if selected_node_index < 0 or selected_node_index >= len(state['nodes']):
+            send_message("Invalid selection. Please reply with a valid number.", sender_id, interface)
+            return
         selected_node = state['nodes'][selected_node_index]
         recipient_id = selected_node['num']
         recipient_name = get_node_name(recipient_id, interface)
@@ -387,11 +416,17 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
             update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 3})
 
     elif step == 2:
-        channel_index = int(message)
+        try:
+            channel_index = int(message)
+        except ValueError:
+            send_message("Invalid channel number. Please try again.", sender_id, interface)
+            return
         channels = get_channels()
         if 0 <= channel_index < len(channels):
             channel_name, channel_url = channels[channel_index]
             send_message(f"Channel Name: {channel_name}\nChannel URL:\n{channel_url}", sender_id, interface)
+        else:
+            send_message("Invalid channel number. Please try again.", sender_id, interface)
         handle_channel_directory_command(sender_id, interface)
 
     elif step == 3:
@@ -584,7 +619,7 @@ def handle_read_bulletin_command(sender_id, message, state, interface):
 
 def handle_post_channel_command(sender_id, message, interface):
     try:
-        parts = message.split("|", 3)
+        parts = message.split(",,", 2)
         if len(parts) != 3:
             send_message("Post Channel Quick Command format:\nCHP,,{channel_name},,{channel_url}", sender_id, interface)
             return
