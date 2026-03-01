@@ -94,7 +94,10 @@ def handle_mail_command(sender_id, interface):
 def handle_bulletin_command(sender_id, interface):
     boards = get_bulletin_boards()
     board_options = "\n".join([f"[{index}] {board}" for index, board in enumerate(boards, start=1)])
-    response = f"📰Bulletin Menu📰\nWhich board would you like to enter?\n{board_options}\nE[X]IT"
+    response = (
+        f"📰Bulletin Menu📰\nWhich board would you like to enter?\n{board_options}"
+        "\nReply with board number, name, or first letter.\nE[X]IT"
+    )
     send_message(response, sender_id, interface)
     update_user_state(sender_id, {'command': 'BULLETIN_MENU', 'step': 1, 'boards': boards})
 
@@ -179,20 +182,31 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
         if message.lower() in ('e', 'x'):
             handle_help_command(sender_id, interface, 'bbs')
             return
-        try:
-            board_index = int(message)
-        except ValueError:
-            send_message("Invalid board selection. Choose a board number from the list.", sender_id, interface)
-            handle_bulletin_command(sender_id, interface)
-            return
-        if 1 <= board_index <= len(boards):
-            board_index = board_index - 1
-        elif 0 <= board_index < len(boards):
-            board_index = board_index
+
+        board_index = None
+        message_clean = message.strip()
+        message_lower = message_clean.lower()
+
+        if message_clean.isdigit():
+            parsed_index = int(message_clean)
+            if 1 <= parsed_index <= len(boards):
+                board_index = parsed_index - 1
+            elif 0 <= parsed_index < len(boards):
+                board_index = parsed_index
         else:
-            send_message("Invalid board selection. Choose a board number from the list.", sender_id, interface)
+            name_lookup = {board.lower(): index for index, board in enumerate(boards)}
+            if message_lower in name_lookup:
+                board_index = name_lookup[message_lower]
+            elif len(message_lower) == 1:
+                matching_indexes = [index for index, board in enumerate(boards) if board.lower().startswith(message_lower)]
+                if len(matching_indexes) == 1:
+                    board_index = matching_indexes[0]
+
+        if board_index is None:
+            send_message("Invalid board selection. Use number, board name, or first letter.", sender_id, interface)
             handle_bulletin_command(sender_id, interface)
             return
+
         board_name = boards[board_index]
         bulletins = get_bulletins(board_name)
         response = f"{board_name} has {len(bulletins)} messages.\n[R]ead  [P]ost"
