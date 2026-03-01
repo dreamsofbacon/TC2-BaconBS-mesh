@@ -26,6 +26,14 @@ bbs_menu_items = [item.strip() for item in config.get('menu', 'bbs_menu_items', 
 utilities_menu_items = [item.strip() for item in config.get('menu', 'utilities_menu_items', fallback='S,F,W,X').split(',') if item.strip()]
 
 
+def get_bulletin_boards() -> list[str]:
+    configured = config.get('boards', 'bulletin_boards', fallback='General,Info,News,Urgent')
+    boards = [item.strip() for item in configured.split(',') if item.strip()]
+    if boards:
+        return boards
+    return ['General', 'Info', 'News', 'Urgent']
+
+
 def build_menu(items, menu_name):
     menu_str = f"{menu_name}\n"
     for item in items:
@@ -61,6 +69,8 @@ def handle_help_command(sender_id, interface, menu_name=None):
             response = build_menu(bbs_menu_items, "📰BBS Menu📰")
         elif menu_name == 'utilities':
             response = build_menu(utilities_menu_items, "🛠️Utilities Menu🛠️")
+        else:
+            response = build_menu(main_menu_items, "💾TC² BBS💾")
     else:
         update_user_state(sender_id, {'command': 'MAIN_MENU', 'step': 1})  # Reset to main menu state
         mail = get_mail(get_node_id_from_num(sender_id, interface))
@@ -82,9 +92,11 @@ def handle_mail_command(sender_id, interface):
 
 
 def handle_bulletin_command(sender_id, interface):
-    response = f"📰Bulletin Menu📰\nWhich board would you like to enter?\n[G]eneral  [I]nfo  [N]ews  [U]rgent"
+    boards = get_bulletin_boards()
+    board_options = "\n".join([f"[{index}] {board}" for index, board in enumerate(boards, start=1)])
+    response = f"📰Bulletin Menu📰\nWhich board would you like to enter?\n{board_options}\nE[X]IT"
     send_message(response, sender_id, interface)
-    update_user_state(sender_id, {'command': 'BULLETIN_MENU', 'step': 1})
+    update_user_state(sender_id, {'command': 'BULLETIN_MENU', 'step': 1, 'boards': boards})
 
 
 def handle_exit_command(sender_id, interface):
@@ -162,26 +174,30 @@ def handle_stats_steps(sender_id, message, step, interface):
 
 
 def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
-    boards = {0: "General", 1: "Info", 2: "News", 3: "Urgent"}
+    boards = state.get('boards', get_bulletin_boards()) if state else get_bulletin_boards()
     if step == 1:
-        if message.lower() == 'e':
+        if message.lower() in ('e', 'x'):
             handle_help_command(sender_id, interface, 'bbs')
             return
         try:
             board_index = int(message)
         except ValueError:
-            send_message("Invalid board selection. Choose G, I, N, or U.", sender_id, interface)
+            send_message("Invalid board selection. Choose a board number from the list.", sender_id, interface)
             handle_bulletin_command(sender_id, interface)
             return
-        if board_index not in boards:
-            send_message("Invalid board selection. Choose G, I, N, or U.", sender_id, interface)
+        if 1 <= board_index <= len(boards):
+            board_index = board_index - 1
+        elif 0 <= board_index < len(boards):
+            board_index = board_index
+        else:
+            send_message("Invalid board selection. Choose a board number from the list.", sender_id, interface)
             handle_bulletin_command(sender_id, interface)
             return
         board_name = boards[board_index]
         bulletins = get_bulletins(board_name)
         response = f"{board_name} has {len(bulletins)} messages.\n[R]ead  [P]ost"
         send_message(response, sender_id, interface)
-        update_user_state(sender_id, {'command': 'BULLETIN_ACTION', 'step': 2, 'board': board_name})
+        update_user_state(sender_id, {'command': 'BULLETIN_ACTION', 'step': 2, 'board': board_name, 'boards': boards})
 
     elif step == 2:
         board_name = state['board']
@@ -573,9 +589,13 @@ def handle_check_bulletin_command(sender_id, message, interface):
             send_message("Check Bulletins Quick Command format:\nCB,,board_name", sender_id, interface)
             return
 
-        boards = {0: "General", 1: "Info", 2: "News", 3: "Urgent"} #list of boards
-        board_name = parts[1].strip().capitalize() #get board name from quick command and capitalize it
-        board_name = boards[next(key for key, value in boards.items() if value == board_name)] #search for board name in list
+        boards = get_bulletin_boards()
+        board_lookup = {board.lower(): board for board in boards}
+        board_name_key = parts[1].strip().lower()
+        if board_name_key not in board_lookup:
+            send_message(f"Invalid board name. Available boards: {', '.join(boards)}", sender_id, interface)
+            return
+        board_name = board_lookup[board_name_key]
 
         bulletins = get_bulletins(board_name)
         if not bulletins:
