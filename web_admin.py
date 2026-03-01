@@ -218,6 +218,37 @@ EDIT_CONTENT = """
 """
 
 
+EDIT_BULLETIN_CONTENT = """
+<div class=\"card\">
+  <h2>Edit {{ table_title }} #{{ row['id'] }}</h2>
+  <p class=\"muted\">Primary key and sync IDs are read-only for safety.</p>
+  <form method=\"post\">
+    <label>board</label><br>
+    <select name=\"board\" required>
+      {% for board in bulletin_boards %}
+      <option value=\"{{ board }}\" {% if row['board'] == board %}selected{% endif %}>{{ board }}</option>
+      {% endfor %}
+    </select><br><br>
+
+    <label>sender_short_name</label><br>
+    <input type=\"text\" name=\"sender_short_name\" value=\"{{ row['sender_short_name'] }}\" required><br><br>
+
+    <label>date</label><br>
+    <input type=\"text\" name=\"date\" value=\"{{ row['date'] }}\" required><br><br>
+
+    <label>subject</label><br>
+    <input type=\"text\" name=\"subject\" value=\"{{ row['subject'] }}\" required><br><br>
+
+    <label>content</label><br>
+    <textarea name=\"content\" required>{{ row['content'] }}</textarea><br><br>
+
+    <button class=\"btn btn-primary\" type=\"submit\">Save</button>
+    <a class=\"btn\" href=\"{{ url_for('table_list', table=table_name) }}\">Back</a>
+  </form>
+</div>
+"""
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     app.secret_key = os.getenv("BBS_WEBGUI_SECRET", "change-this-secret")
@@ -382,6 +413,8 @@ def create_app() -> Flask:
                 values = [request.form.get(field, "").strip() for field in cfg["editable"]]
                 if any(v == "" for v in values):
                     flash("All fields are required.", "error")
+                elif table == "bulletins" and values[0] not in app.config["BULLETIN_BOARDS"]:
+                  flash("Invalid board selected.", "error")
                 else:
                     set_clause = ", ".join([f"{field} = ?" for field in cfg["editable"]])
                     cursor.execute(
@@ -395,13 +428,22 @@ def create_app() -> Flask:
             cursor.execute(f"SELECT {', '.join(cfg['columns'])} FROM {table} WHERE id = ?", (row_id,))
             row = cursor.fetchone()
 
-        content = render_template_string(
+        if table == "bulletins":
+          content = render_template_string(
+            EDIT_BULLETIN_CONTENT,
+            table_title=cfg["title"],
+            table_name=table,
+            row=row,
+            bulletin_boards=app.config["BULLETIN_BOARDS"],
+          )
+        else:
+          content = render_template_string(
             EDIT_CONTENT,
             table_title=cfg["title"],
             table_name=table,
             editable_fields=cfg["editable"],
             row=row,
-        )
+          )
         return render_template_string(BASE_TEMPLATE, title=f"Edit {cfg['title']}", content=content, show_nav=True)
 
     @app.post("/<table>/<int:row_id>/delete")
