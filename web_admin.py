@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import uuid
+import configparser
 from datetime import datetime
 from functools import wraps
 
@@ -29,6 +30,24 @@ TABLE_CONFIG = {
 }
 
 
+def load_bulletin_boards() -> list[str]:
+  env_value = os.getenv("BBS_BULLETIN_BOARDS", "").strip()
+  if env_value:
+    boards = [item.strip() for item in env_value.split(",") if item.strip()]
+    if boards:
+      return boards
+
+  config = configparser.ConfigParser()
+  config.read("config.ini")
+  config_value = config.get("boards", "bulletin_boards", fallback="").strip()
+  if config_value:
+    boards = [item.strip() for item in config_value.split(",") if item.strip()]
+    if boards:
+      return boards
+
+  return ["General", "Info", "News", "Urgent"]
+
+
 BASE_TEMPLATE = """
 <!doctype html>
 <html lang=\"en\">
@@ -45,7 +64,7 @@ BASE_TEMPLATE = """
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td { border: 1px solid #ddd; padding: 8px; vertical-align: top; text-align: left; }
     th { background: #f0f3fa; }
-    input[type=text], input[type=password], textarea { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px; }
+    input[type=text], input[type=password], textarea, select { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px; }
     textarea { min-height: 180px; }
     .row-actions { display: flex; gap: 8px; }
     .btn { border: 1px solid #bbb; border-radius: 6px; padding: 6px 10px; background: #fff; cursor: pointer; }
@@ -157,7 +176,11 @@ NEW_BULLETIN_CONTENT = """
   <p class=\"muted\">Creates a new row in <code>bulletins</code> with generated date and unique_id.</p>
   <form method=\"post\">
     <label>Board</label><br>
-    <input type=\"text\" name=\"board\" placeholder=\"General\" required><br><br>
+    <select name="board" required>
+      {% for board in bulletin_boards %}
+      <option value="{{ board }}" {% if selected_board == board %}selected{% endif %}>{{ board }}</option>
+      {% endfor %}
+    </select><br><br>
 
     <label>Sender Short Name</label><br>
     <input type=\"text\" name=\"sender_short_name\" placeholder=\"BBS\" required><br><br>
@@ -201,6 +224,7 @@ def create_app() -> Flask:
     app.config["DB_PATH"] = os.getenv("BBS_DB_PATH", "bulletins.db")
     app.config["ADMIN_USER"] = os.getenv("BBS_WEBGUI_USER", "admin")
     app.config["ADMIN_PASSWORD"] = os.getenv("BBS_WEBGUI_PASSWORD", "change-me")
+    app.config["BULLETIN_BOARDS"] = load_bulletin_boards()
 
     def initialize_db_safety() -> None:
       with sqlite3.connect(app.config["DB_PATH"], timeout=30) as conn:
@@ -305,26 +329,36 @@ def create_app() -> Flask:
     @app.route("/bulletins/new", methods=["GET", "POST"])
     @login_required
     def bulletin_new():
-        if request.method == "POST":
-            board = request.form.get("board", "").strip()
-            sender_short_name = request.form.get("sender_short_name", "").strip()
-            subject = request.form.get("subject", "").strip()
-            content = request.form.get("content", "").strip()
+      bulletin_boards = app.config["BULLETIN_BOARDS"]
+      selected_board = bulletin_boards[0] if bulletin_boards else "General"
 
-            if not all([board, sender_short_name, subject, content]):
-                flash("All fields are required.", "error")
-            else:
-                post_date = datetime.now().strftime("%Y-%m-%d %H:%M")
-                unique_id = str(uuid.uuid4())
-                execute_write(
-                    "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id) VALUES (?, ?, ?, ?, ?, ?)",
-                    (board, sender_short_name, post_date, subject, content, unique_id),
-                )
-                flash("Bulletin post created.", "success")
-                return redirect(url_for("table_list", table="bulletins"))
+      if request.method == "POST":
+        board = request.form.get("board", "").strip()
+        selected_board = board or selected_board
+        sender_short_name = request.form.get("sender_short_name", "").strip()
+        subject = request.form.get("subject", "").strip()
+        content = request.form.get("content", "").strip()
 
-        content = render_template_string(NEW_BULLETIN_CONTENT)
-        return render_template_string(BASE_TEMPLATE, title="New Bulletin", content=content, show_nav=True)
+        if not all([board, sender_short_name, subject, content]):
+          flash("All fields are required.", "error")
+        elif board not in bulletin_boards:
+          flash("Invalid board selected.", "error")
+        else:
+          post_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+          unique_id = str(uuid.uuid4())
+          execute_write(
+            "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (board, sender_short_name, post_date, subject, content, unique_id),
+          )
+          flash("Bulletin post created.", "success")
+          return redirect(url_for("table_list", table="bulletins"))
+
+      content = render_template_string(
+        NEW_BULLETIN_CONTENT,
+        bulletin_boards=bulletin_boards,
+        selected_board=selected_board,
+      )
+      return render_template_string(BASE_TEMPLATE, title="New Bulletin", content=content, show_nav=True)
 
     @app.route("/<table>/<int:row_id>/edit", methods=["GET", "POST"])
     @login_required
