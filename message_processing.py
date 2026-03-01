@@ -38,15 +38,6 @@ utilities_menu_handlers = {
 }
 
 
-bulletin_menu_handlers = {
-    "g": lambda sender_id, interface: handle_bb_steps(sender_id, '0', 1, {'board': 'General'}, interface, None),
-    "i": lambda sender_id, interface: handle_bb_steps(sender_id, '1', 1, {'board': 'Info'}, interface, None),
-    "n": lambda sender_id, interface: handle_bb_steps(sender_id, '2', 1, {'board': 'News'}, interface, None),
-    "u": lambda sender_id, interface: handle_bb_steps(sender_id, '3', 1, {'board': 'Urgent'}, interface, None),
-    "x": handle_help_command
-}
-
-
 board_action_handlers = {
     "r": lambda sender_id, interface, state: handle_bb_steps(sender_id, 'r', 2, state, interface, None),
     "p": lambda sender_id, interface, state: handle_bb_steps(sender_id, 'p', 2, state, interface, None),
@@ -129,7 +120,11 @@ def process_message(sender_id, message, interface, is_sync_message=False):
                 else:
                     handlers = main_menu_handlers
             elif state and state['command'] == 'BULLETIN_MENU':
-                handlers = bulletin_menu_handlers
+                if message_lower == 'x':
+                    handle_help_command(sender_id, interface)
+                else:
+                    handle_bb_steps(sender_id, message_strip, 1, state, interface, bbs_nodes)
+                return
             elif state and state['command'] == 'BULLETIN_ACTION':
                 handlers = board_action_handlers
             elif state and state['command'] == 'JS8CALL_MENU':
