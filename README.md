@@ -138,6 +138,10 @@ python web_admin.py
 
 Security note: if you set `BBS_WEBGUI_HOST=0.0.0.0`, place it behind a trusted network/VPN/reverse proxy.
 
+Web moderation supports creating new bulletin posts via the **New Bulletin Post** button in the Bulletins view.
+
+To reduce lock/corruption risk while `server.py` and `web_admin.py` are both active, the web admin uses SQLite WAL mode, busy timeout, and atomic write transactions.
+
 ## Smoke Test (No Radio Required)
 
 Run a basic mocked integration smoke test for sync parsing and menu input validation:

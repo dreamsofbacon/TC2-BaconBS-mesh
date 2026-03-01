@@ -1,5 +1,7 @@
 import os
 import sqlite3
+import uuid
+from datetime import datetime
 from functools import wraps
 
 from flask import Flask, flash, redirect, render_template_string, request, session, url_for
@@ -102,6 +104,11 @@ LOGIN_CONTENT = """
 LIST_CONTENT = """
 <div class=\"card\">
   <h2>{{ table_title }}</h2>
+  {% if can_create %}
+  <div style=\"margin-bottom: 12px;\">
+    <a class=\"btn btn-primary\" href=\"{{ url_for('bulletin_new') }}\">New Bulletin Post</a>
+  </div>
+  {% endif %}
   <form method=\"get\" class=\"search-bar\">
     <input type=\"text\" name=\"q\" placeholder=\"Search {{ table_name }}\" value=\"{{ search_query }}\">
     <button class=\"btn\" type=\"submit\">Search</button>
@@ -144,6 +151,30 @@ LIST_CONTENT = """
 """
 
 
+NEW_BULLETIN_CONTENT = """
+<div class=\"card\">
+  <h2>New Bulletin Post</h2>
+  <p class=\"muted\">Creates a new row in <code>bulletins</code> with generated date and unique_id.</p>
+  <form method=\"post\">
+    <label>Board</label><br>
+    <input type=\"text\" name=\"board\" placeholder=\"General\" required><br><br>
+
+    <label>Sender Short Name</label><br>
+    <input type=\"text\" name=\"sender_short_name\" placeholder=\"BBS\" required><br><br>
+
+    <label>Subject</label><br>
+    <input type=\"text\" name=\"subject\" required><br><br>
+
+    <label>Content</label><br>
+    <textarea name=\"content\" required></textarea><br><br>
+
+    <button class=\"btn btn-primary\" type=\"submit\">Create Post</button>
+    <a class=\"btn\" href=\"{{ url_for('table_list', table='bulletins') }}\">Back</a>
+  </form>
+</div>
+"""
+
+
 EDIT_CONTENT = """
 <div class=\"card\">
   <h2>Edit {{ table_title }} #{{ row['id'] }}</h2>
@@ -171,10 +202,26 @@ def create_app() -> Flask:
     app.config["ADMIN_USER"] = os.getenv("BBS_WEBGUI_USER", "admin")
     app.config["ADMIN_PASSWORD"] = os.getenv("BBS_WEBGUI_PASSWORD", "change-me")
 
+    def initialize_db_safety() -> None:
+      with sqlite3.connect(app.config["DB_PATH"], timeout=30) as conn:
+          conn.execute("PRAGMA journal_mode=WAL;")
+          conn.execute("PRAGMA synchronous=FULL;")
+          conn.execute("PRAGMA busy_timeout=5000;")
+
     def get_db_connection() -> sqlite3.Connection:
-        conn = sqlite3.connect(app.config["DB_PATH"])
-        conn.row_factory = sqlite3.Row
-        return conn
+      conn = sqlite3.connect(app.config["DB_PATH"], timeout=30)
+      conn.row_factory = sqlite3.Row
+      conn.execute("PRAGMA busy_timeout=5000;")
+      return conn
+
+    def execute_write(query: str, params: tuple = ()) -> None:
+      with get_db_connection() as conn:
+          cursor = conn.cursor()
+          cursor.execute("BEGIN IMMEDIATE")
+          cursor.execute(query, params)
+          conn.commit()
+
+    initialize_db_safety()
 
     def login_required(view_func):
         @wraps(view_func)
@@ -251,8 +298,33 @@ def create_app() -> Flask:
             rows=rows,
             search_query=search_query,
             db_path=app.config["DB_PATH"],
+            can_create=(table == "bulletins"),
         )
         return render_template_string(BASE_TEMPLATE, title=cfg["title"], content=content, show_nav=True)
+
+    @app.route("/bulletins/new", methods=["GET", "POST"])
+    @login_required
+    def bulletin_new():
+        if request.method == "POST":
+            board = request.form.get("board", "").strip()
+            sender_short_name = request.form.get("sender_short_name", "").strip()
+            subject = request.form.get("subject", "").strip()
+            content = request.form.get("content", "").strip()
+
+            if not all([board, sender_short_name, subject, content]):
+                flash("All fields are required.", "error")
+            else:
+                post_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+                unique_id = str(uuid.uuid4())
+                execute_write(
+                    "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id) VALUES (?, ?, ?, ?, ?, ?)",
+                    (board, sender_short_name, post_date, subject, content, unique_id),
+                )
+                flash("Bulletin post created.", "success")
+                return redirect(url_for("table_list", table="bulletins"))
+
+        content = render_template_string(NEW_BULLETIN_CONTENT)
+        return render_template_string(BASE_TEMPLATE, title="New Bulletin", content=content, show_nav=True)
 
     @app.route("/<table>/<int:row_id>/edit", methods=["GET", "POST"])
     @login_required
@@ -307,10 +379,7 @@ def create_app() -> Flask:
             flash("Unknown table.", "error")
             return redirect(url_for("table_list", table="bulletins"))
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,))
-            conn.commit()
+        execute_write(f"DELETE FROM {table} WHERE id = ?", (row_id,))
 
         flash(f"{cfg['title']} row deleted.", "success")
         return redirect(url_for("table_list", table=table))
