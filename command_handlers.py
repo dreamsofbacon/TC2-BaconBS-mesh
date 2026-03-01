@@ -21,9 +21,9 @@ from utils import (
 config = configparser.ConfigParser()
 config.read('config.ini')
 
-main_menu_items = config['menu']['main_menu_items'].split(',')
-bbs_menu_items = config['menu']['bbs_menu_items'].split(',')
-utilities_menu_items = config['menu']['utilities_menu_items'].split(',')
+main_menu_items = [item.strip() for item in config.get('menu', 'main_menu_items', fallback='Q,B,U,X').split(',') if item.strip()]
+bbs_menu_items = [item.strip() for item in config.get('menu', 'bbs_menu_items', fallback='M,B,C,J,X').split(',') if item.strip()]
+utilities_menu_items = [item.strip() for item in config.get('menu', 'utilities_menu_items', fallback='S,F,W,X').split(',') if item.strip()]
 
 
 def build_menu(items, menu_name):
