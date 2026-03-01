@@ -1,5 +1,6 @@
 import configparser
 import logging
+import os
 import random
 import time
 
@@ -27,6 +28,13 @@ utilities_menu_items = [item.strip() for item in config.get('menu', 'utilities_m
 
 
 def get_bulletin_boards() -> list[str]:
+    env_value = os.getenv('BBS_BULLETIN_BOARDS', '').strip()
+    if env_value:
+        boards = [item.strip() for item in env_value.split(',') if item.strip()]
+        if boards:
+            return boards
+
+    config.read('config.ini')
     configured = config.get('boards', 'bulletin_boards', fallback='General,Info,News,Urgent')
     boards = [item.strip() for item in configured.split(',') if item.strip()]
     if boards:
