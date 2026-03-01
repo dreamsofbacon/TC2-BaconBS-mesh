@@ -140,6 +140,17 @@ Security note: if you set `BBS_WEBGUI_HOST=0.0.0.0`, place it behind a trusted n
 
 Web moderation supports creating new bulletin posts via the **New Bulletin Post** button in the Bulletins view.
 
+Bulletin board categories for the dropdown are configurable and loaded in this order:
+- `BBS_BULLETIN_BOARDS` environment variable (comma-separated)
+- `[boards]` section in `config.ini` with `bulletin_boards = General,Info,News,Urgent`
+- built-in defaults (`General, Info, News, Urgent`)
+
+Example:
+
+```sh
+export BBS_BULLETIN_BOARDS=General,Info,News,Urgent,Events
+```
+
 To reduce lock/corruption risk while `server.py` and `web_admin.py` are both active, the web admin uses SQLite WAL mode, busy timeout, and atomic write transactions.
 
 ## Smoke Test (No Radio Required)
