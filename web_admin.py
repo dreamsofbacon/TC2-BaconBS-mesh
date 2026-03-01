@@ -320,6 +320,6 @@ def create_app() -> Flask:
 
 if __name__ == "__main__":
     app = create_app()
-    port = int(os.getenv("BBS_WEBGUI_PORT", "8080"))
+  port = int(os.getenv("BBS_WEBGUI_PORT", "8081"))
     host = os.getenv("BBS_WEBGUI_HOST", "127.0.0.1")
     app.run(host=host, port=port)

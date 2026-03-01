@@ -116,7 +116,7 @@ You can run a standalone web interface to moderate the SQLite database (`bulleti
 python web_admin.py
 ```
 
-By default it starts on `127.0.0.1:8080`.
+By default it starts on `127.0.0.1:8081`.
 
 Set secure credentials and optional host/port before launching:
 
@@ -125,7 +125,7 @@ export BBS_WEBGUI_USER=admin
 export BBS_WEBGUI_PASSWORD=change-this
 export BBS_WEBGUI_SECRET=change-this-session-secret
 export BBS_WEBGUI_HOST=127.0.0.1
-export BBS_WEBGUI_PORT=8080
+export BBS_WEBGUI_PORT=8081
 python web_admin.py
 ```
 
