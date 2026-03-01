@@ -108,6 +108,36 @@ python server.py
 
 Be sure you've followed the Python virtual environment steps above and activated it before running.
 
+### Running the Web Admin GUI (Standalone Moderation)
+
+You can run a standalone web interface to moderate the SQLite database (`bulletins`, `mail`, and `channels`).
+
+```sh
+python web_admin.py
+```
+
+By default it starts on `127.0.0.1:8080`.
+
+Set secure credentials and optional host/port before launching:
+
+```sh
+export BBS_WEBGUI_USER=admin
+export BBS_WEBGUI_PASSWORD=change-this
+export BBS_WEBGUI_SECRET=change-this-session-secret
+export BBS_WEBGUI_HOST=127.0.0.1
+export BBS_WEBGUI_PORT=8080
+python web_admin.py
+```
+
+Optional: point to a different DB file.
+
+```sh
+export BBS_DB_PATH=/path/to/bulletins.db
+python web_admin.py
+```
+
+Security note: if you set `BBS_WEBGUI_HOST=0.0.0.0`, place it behind a trusted network/VPN/reverse proxy.
+
 ## Smoke Test (No Radio Required)
 
 Run a basic mocked integration smoke test for sync parsing and menu input validation:
