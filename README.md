@@ -145,6 +145,8 @@ Bulletin board categories for the dropdown are configurable and loaded in this o
 - `[boards]` section in `config.ini` with `bulletin_boards = General,Info,News,Urgent`
 - built-in defaults (`General, Info, News, Urgent`)
 
+You can also edit categories in the web UI under the **Boards** tab. Changes are written to `config.ini` and applied immediately in the running web admin process.
+
 Example:
 
 ```sh

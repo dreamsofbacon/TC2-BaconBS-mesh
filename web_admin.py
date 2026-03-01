@@ -86,6 +86,7 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('table_list', table='bulletins') }}\">Bulletins</a>
       <a href=\"{{ url_for('table_list', table='mail') }}\">Mail</a>
       <a href=\"{{ url_for('table_list', table='channels') }}\">Channels</a>
+      <a href=\"{{ url_for('board_settings') }}\">Boards</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
     </div>
     {% endif %}
@@ -249,10 +250,28 @@ EDIT_BULLETIN_CONTENT = """
 """
 
 
+BOARD_SETTINGS_CONTENT = """
+<div class=\"card\">
+  <h2>Board Settings</h2>
+  <p class=\"muted\">Manage bulletin board categories used by create/edit dropdowns.</p>
+  {% if env_override %}
+  <p class=\"muted\">`BBS_BULLETIN_BOARDS` is set in environment and overrides config file at startup.</p>
+  {% endif %}
+  <form method=\"post\">
+    <label>Boards (comma separated)</label><br>
+    <textarea name=\"bulletin_boards\" required>{{ boards_text }}</textarea><br><br>
+    <button class=\"btn btn-primary\" type=\"submit\">Save Boards</button>
+    <a class=\"btn\" href=\"{{ url_for('table_list', table='bulletins') }}\">Back</a>
+  </form>
+</div>
+"""
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     app.secret_key = os.getenv("BBS_WEBGUI_SECRET", "change-this-secret")
     app.config["DB_PATH"] = os.getenv("BBS_DB_PATH", "bulletins.db")
+    app.config["CONFIG_PATH"] = os.getenv("BBS_CONFIG_PATH", "config.ini")
     app.config["ADMIN_USER"] = os.getenv("BBS_WEBGUI_USER", "admin")
     app.config["ADMIN_PASSWORD"] = os.getenv("BBS_WEBGUI_PASSWORD", "change-me")
     app.config["BULLETIN_BOARDS"] = load_bulletin_boards()
@@ -275,6 +294,15 @@ def create_app() -> Flask:
           cursor.execute("BEGIN IMMEDIATE")
           cursor.execute(query, params)
           conn.commit()
+
+    def save_bulletin_boards(boards: list[str]) -> None:
+      config = configparser.ConfigParser()
+      config.read(app.config["CONFIG_PATH"])
+      if not config.has_section("boards"):
+        config.add_section("boards")
+      config.set("boards", "bulletin_boards", ",".join(boards))
+      with open(app.config["CONFIG_PATH"], "w", encoding="utf-8") as config_file:
+        config.write(config_file)
 
     initialize_db_safety()
 
@@ -321,6 +349,33 @@ def create_app() -> Flask:
     def logout():
         session.clear()
         return redirect(url_for("login"))
+
+    @app.route("/settings/boards", methods=["GET", "POST"])
+    @login_required
+    def board_settings():
+      boards = app.config["BULLETIN_BOARDS"]
+      boards_text = ",".join(boards)
+      env_override = bool(os.getenv("BBS_BULLETIN_BOARDS", "").strip())
+
+      if request.method == "POST":
+        raw_boards = request.form.get("bulletin_boards", "")
+        normalized = raw_boards.replace("\n", ",")
+        updated_boards = [item.strip() for item in normalized.split(",") if item.strip()]
+
+        if not updated_boards:
+          flash("At least one board is required.", "error")
+        else:
+          save_bulletin_boards(updated_boards)
+          app.config["BULLETIN_BOARDS"] = updated_boards
+          boards_text = ",".join(updated_boards)
+          flash("Board list saved.", "success")
+
+      content = render_template_string(
+        BOARD_SETTINGS_CONTENT,
+        boards_text=boards_text,
+        env_override=env_override,
+      )
+      return render_template_string(BASE_TEMPLATE, title="Board Settings", content=content, show_nav=True)
 
     @app.route("/<table>")
     @login_required
