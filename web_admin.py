@@ -145,6 +145,9 @@ LIST_CONTENT = """
       </tr>
     </thead>
     <tbody>
+              {% if comments_enabled %}
+              <a class="btn" href="{{ url_for('channel_comments', channel_id=row['id']) }}">Comments</a>
+              {% endif %}
       {% for row in rows %}
         <tr>
           {% for col in columns %}
@@ -285,6 +288,63 @@ BOARD_SETTINGS_CONTENT = """
 """
 
 
+CHANNEL_COMMENTS_CONTENT = """
+<div class=\"card\">
+  <h2>Comments for {{ channel_name }} (Post #{{ channel_id }})</h2>
+  <p class=\"muted\">URL/PSK: {{ channel_url }}</p>
+</div>
+
+<div class=\"card\">
+  <h3>Add Comment</h3>
+  <form method=\"post\">
+    <label>Sender Short Name</label><br>
+    <input type=\"text\" name=\"sender_short_name\" required><br><br>
+
+    <label>Comment</label><br>
+    <textarea name=\"content\" required></textarea><br><br>
+
+    <button class=\"btn btn-primary\" type=\"submit\">Add Comment</button>
+    <a class=\"btn\" href=\"{{ url_for('table_list', table='channels') }}\">Back to Channels</a>
+  </form>
+</div>
+
+<div class=\"card\">
+  <h3>Existing Comments</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>id</th>
+        <th>sender_short_name</th>
+        <th>date</th>
+        <th>content</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for comment in comments %}
+      <tr>
+        <td>{{ comment['id'] }}</td>
+        <td>{{ comment['sender_short_name'] }}</td>
+        <td>{{ comment['date'] }}</td>
+        <td>{{ comment['content'] }}</td>
+        <td>
+          <form method=\"post\" action=\"{{ url_for('channel_comment_delete', channel_id=channel_id, comment_id=comment['id']) }}\" class=\"inline\" onsubmit=\"return confirm('Delete this comment?');\">
+            <button type=\"submit\" class=\"btn btn-danger\">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not comments %}
+      <tr>
+        <td colspan=\"5\" class=\"muted\">No comments yet.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+"""
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     app.secret_key = os.getenv("BBS_WEBGUI_SECRET", "change-this-secret")
@@ -295,23 +355,31 @@ def create_app() -> Flask:
     app.config["BULLETIN_BOARDS"] = load_bulletin_boards()
 
     def initialize_db_safety() -> None:
-      with sqlite3.connect(app.config["DB_PATH"], timeout=30) as conn:
-          conn.execute("PRAGMA journal_mode=WAL;")
-          conn.execute("PRAGMA synchronous=FULL;")
-          conn.execute("PRAGMA busy_timeout=5000;")
+        with sqlite3.connect(app.config["DB_PATH"], timeout=30) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=FULL;")
+            conn.execute("PRAGMA busy_timeout=5000;")
+            conn.execute('''CREATE TABLE IF NOT EXISTS channel_comments (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              channel_id INTEGER NOT NULL,
+              sender_short_name TEXT NOT NULL,
+              date TEXT NOT NULL,
+              content TEXT NOT NULL,
+              FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+            )''')
 
     def get_db_connection() -> sqlite3.Connection:
-      conn = sqlite3.connect(app.config["DB_PATH"], timeout=30)
-      conn.row_factory = sqlite3.Row
-      conn.execute("PRAGMA busy_timeout=5000;")
-      return conn
+        conn = sqlite3.connect(app.config["DB_PATH"], timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=5000;")
+        return conn
 
     def execute_write(query: str, params: tuple = ()) -> None:
-      with get_db_connection() as conn:
-          cursor = conn.cursor()
-          cursor.execute("BEGIN IMMEDIATE")
-          cursor.execute(query, params)
-          conn.commit()
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(query, params)
+            conn.commit()
 
     def save_bulletin_boards(boards: list[str]) -> None:
       config = configparser.ConfigParser()
@@ -429,6 +497,7 @@ def create_app() -> Flask:
           create_url=(url_for("bulletin_new") if table == "bulletins" else url_for("channel_new") if table == "channels" else None),
           create_label=("New Bulletin Post" if table == "bulletins" else "New Channel Entry" if table == "channels" else ""),
           edit_label=("Post/Edit" if table == "channels" else "Edit"),
+          comments_enabled=(table == "channels"),
         )
         return render_template_string(BASE_TEMPLATE, title=cfg["title"], content=content, show_nav=True)
 
@@ -485,6 +554,59 @@ def create_app() -> Flask:
 
       content = render_template_string(NEW_CHANNEL_CONTENT)
       return render_template_string(BASE_TEMPLATE, title="New Channel", content=content, show_nav=True)
+
+    @app.route("/channels/<int:channel_id>/comments", methods=["GET", "POST"])
+    @login_required
+    def channel_comments(channel_id: int):
+      with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, url FROM channels WHERE id = ?", (channel_id,))
+        channel = cursor.fetchone()
+
+        if channel is None:
+          flash("Channel post not found.", "error")
+          return redirect(url_for("table_list", table="channels"))
+
+        if request.method == "POST":
+          sender_short_name = request.form.get("sender_short_name", "").strip()
+          content = request.form.get("content", "").strip()
+          if not sender_short_name or not content:
+            flash("Sender and comment are required.", "error")
+          else:
+            comment_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+              "INSERT INTO channel_comments (channel_id, sender_short_name, date, content) VALUES (?, ?, ?, ?)",
+              (channel_id, sender_short_name, comment_date, content)
+            )
+            conn.commit()
+            flash("Comment added.", "success")
+            return redirect(url_for("channel_comments", channel_id=channel_id))
+
+        cursor.execute(
+          "SELECT id, sender_short_name, date, content FROM channel_comments WHERE channel_id = ? ORDER BY id DESC",
+          (channel_id,)
+        )
+        comments = cursor.fetchall()
+
+      content = render_template_string(
+        CHANNEL_COMMENTS_CONTENT,
+        channel_id=channel["id"],
+        channel_name=channel["name"],
+        channel_url=channel["url"],
+        comments=comments,
+      )
+      return render_template_string(BASE_TEMPLATE, title="Channel Comments", content=content, show_nav=True)
+
+    @app.post("/channels/<int:channel_id>/comments/<int:comment_id>/delete")
+    @login_required
+    def channel_comment_delete(channel_id: int, comment_id: int):
+      execute_write(
+        "DELETE FROM channel_comments WHERE id = ? AND channel_id = ?",
+        (comment_id, channel_id)
+      )
+      flash("Comment deleted.", "success")
+      return redirect(url_for("channel_comments", channel_id=channel_id))
 
     @app.route("/<table>/<int:row_id>/edit", methods=["GET", "POST"])
     @login_required
