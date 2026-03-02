@@ -316,6 +316,7 @@ The following device roles have been working:
 - **Mail System**: Send and receive mail messages.
 - **Bulletin Boards**: Post and view bulletins on various boards.
 - **Channel Directory**: Add and view channels in the directory.
+- **Channel Threads + Comments**: Channels are grouped by name, posts within a channel can be viewed individually, and users can read/add comments on each post.
 - **Statistics**: View statistics about nodes, hardware, and roles.
 - **Wall of Shame**: View devices with low battery levels.
 - **Fortune Teller**: Get a random fortune. Pulls from the fortunes.txt file. Feel free to edit this file remove or add more if you like.

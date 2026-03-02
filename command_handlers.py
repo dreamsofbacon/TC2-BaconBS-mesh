@@ -10,7 +10,9 @@ from db_operations import (
     add_bulletin, add_mail, delete_mail,
     get_bulletin_content, get_bulletins,
     get_mail, get_mail_content,
-    add_channel, get_channels, get_sender_id_by_mail_id
+    add_channel, get_channels, get_sender_id_by_mail_id,
+    get_channel_categories, get_channels_by_name, get_channel_by_id,
+    add_channel_comment, get_channel_comments
 )
 from utils import (
     get_node_id_from_num, get_node_info,
@@ -440,12 +442,12 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
             handle_help_command(sender_id, interface)
             return
         elif choice.lower() == 'v':
-            channels = get_channels()
-            if channels:
-                response = "Select a channel number to view:\n" + "\n".join(
-                    [f"[{i}] {channel[0]}" for i, channel in enumerate(channels)])
+            categories = get_channel_categories()
+            if categories:
+                response = "Select a channel category to view:\n" + "\n".join(
+                    [f"[{i}] {category[0]} ({category[1]} post{'s' if category[1] != 1 else ''})" for i, category in enumerate(categories)])
                 send_message(response, sender_id, interface)
-                update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 2})
+                update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 2, 'categories': categories})
             else:
                 send_message("No channels available in the directory.", sender_id, interface)
                 handle_channel_directory_command(sender_id, interface)
@@ -455,17 +457,98 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
 
     elif step == 2:
         try:
-            channel_index = int(message)
+            category_index = int(message)
         except ValueError:
-            send_message("Invalid channel number. Please try again.", sender_id, interface)
+            send_message("Invalid selection. Please try again.", sender_id, interface)
             return
-        channels = get_channels()
-        if 0 <= channel_index < len(channels):
-            channel_name, channel_url = channels[channel_index]
-            send_message(f"Channel Name: {channel_name}\nChannel URL:\n{channel_url}", sender_id, interface)
+        categories = state.get('categories', [])
+        if 0 <= category_index < len(categories):
+            channel_name = categories[category_index][0]
+            posts = get_channels_by_name(channel_name)
+            if posts:
+                response = f"{channel_name} posts:\n" + "\n".join(
+                    [f"[{i}] Post #{post[0]}" for i, post in enumerate(posts)]
+                )
+                send_message(response, sender_id, interface)
+                update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 5, 'posts': posts, 'channel_name': channel_name})
+                return
+            send_message("No posts found in that category.", sender_id, interface)
         else:
-            send_message("Invalid channel number. Please try again.", sender_id, interface)
+            send_message("Invalid selection. Please try again.", sender_id, interface)
         handle_channel_directory_command(sender_id, interface)
+
+    elif step == 5:
+        try:
+            post_index = int(message)
+        except ValueError:
+            send_message("Invalid post number. Please try again.", sender_id, interface)
+            return
+        posts = state.get('posts', [])
+        if 0 <= post_index < len(posts):
+            channel_id = posts[post_index][0]
+            channel = get_channel_by_id(channel_id)
+            if channel is None:
+                send_message("Channel post not found.", sender_id, interface)
+                handle_channel_directory_command(sender_id, interface)
+                return
+            _, channel_name, channel_url = channel
+            send_message(
+                f"Channel Name: {channel_name}\nPost ID: {channel_id}\nChannel URL/PSK:\n{channel_url}",
+                sender_id,
+                interface
+            )
+            send_message("[V]iew comments  [C]omment  E[X]IT", sender_id, interface)
+            update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 6, 'channel_id': channel_id, 'channel_name': channel_name})
+        else:
+            send_message("Invalid post number. Please try again.", sender_id, interface)
+
+    elif step == 6:
+        choice = message.lower().strip()
+        if choice == 'x':
+            handle_channel_directory_command(sender_id, interface)
+            return
+        if choice == 'v':
+            channel_id = state.get('channel_id')
+            comments = get_channel_comments(channel_id)
+            if comments:
+                for i, comment in enumerate(comments, start=1):
+                    sender_short_name, date, content = comment
+                    send_message(f"[{i}] {sender_short_name} @ {date}\n{content}", sender_id, interface)
+            else:
+                send_message("No comments yet for this post.", sender_id, interface)
+            send_message("[V]iew comments  [C]omment  E[X]IT", sender_id, interface)
+            return
+        if choice == 'c':
+            send_message("Send your comment. Send END on a new message when finished.", sender_id, interface)
+            update_user_state(sender_id, {
+                'command': 'CHANNEL_DIRECTORY',
+                'step': 7,
+                'channel_id': state.get('channel_id'),
+                'channel_name': state.get('channel_name'),
+                'comment_content': ''
+            })
+            return
+        send_message("Invalid choice. Use V, C, or X.", sender_id, interface)
+
+    elif step == 7:
+        if message.strip().lower() == 'end':
+            content = state.get('comment_content', '').strip()
+            if not content:
+                send_message("Comment was empty. Nothing posted.", sender_id, interface)
+            else:
+                node_short_name = get_node_short_name(get_node_id_from_num(sender_id, interface), interface) or "Unknown"
+                add_channel_comment(state.get('channel_id'), node_short_name, content)
+                send_message("Comment posted.", sender_id, interface)
+            send_message("[V]iew comments  [C]omment  E[X]IT", sender_id, interface)
+            update_user_state(sender_id, {
+                'command': 'CHANNEL_DIRECTORY',
+                'step': 6,
+                'channel_id': state.get('channel_id'),
+                'channel_name': state.get('channel_name')
+            })
+        else:
+            state['comment_content'] = state.get('comment_content', '') + message + "\n"
+            update_user_state(sender_id, state)
 
     elif step == 3:
         channel_name = message

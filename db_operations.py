@@ -48,6 +48,14 @@ def initialize_database():
                     name TEXT NOT NULL,
                     url TEXT NOT NULL
                 );''')
+    c.execute('''CREATE TABLE IF NOT EXISTS channel_comments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel_id INTEGER NOT NULL,
+                    sender_short_name TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+                );''')
     conn.commit()
     print("Database schema initialized.")
 
@@ -65,6 +73,48 @@ def get_channels():
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT name, url FROM channels")
+    return c.fetchall()
+
+
+def get_channel_categories():
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT name, COUNT(*) FROM channels GROUP BY name ORDER BY name COLLATE NOCASE")
+    return c.fetchall()
+
+
+def get_channels_by_name(channel_name):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT id, name, url FROM channels WHERE name = ? ORDER BY id DESC", (channel_name,))
+    return c.fetchall()
+
+
+def get_channel_by_id(channel_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT id, name, url FROM channels WHERE id = ?", (channel_id,))
+    return c.fetchone()
+
+
+def add_channel_comment(channel_id, sender_short_name, content):
+    conn = get_db_connection()
+    c = conn.cursor()
+    date = datetime.now().strftime('%Y-%m-%d %H:%M')
+    c.execute(
+        "INSERT INTO channel_comments (channel_id, sender_short_name, date, content) VALUES (?, ?, ?, ?)",
+        (channel_id, sender_short_name, date, content)
+    )
+    conn.commit()
+
+
+def get_channel_comments(channel_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT sender_short_name, date, content FROM channel_comments WHERE channel_id = ? ORDER BY id ASC",
+        (channel_id,)
+    )
     return c.fetchall()
 
 
