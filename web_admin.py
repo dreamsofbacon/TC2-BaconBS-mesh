@@ -124,9 +124,9 @@ LOGIN_CONTENT = """
 LIST_CONTENT = """
 <div class=\"card\">
   <h2>{{ table_title }}</h2>
-  {% if can_create %}
+  {% if create_url %}
   <div style=\"margin-bottom: 12px;\">
-    <a class=\"btn btn-primary\" href=\"{{ url_for('bulletin_new') }}\">New Bulletin Post</a>
+    <a class=\"btn btn-primary\" href=\"{{ create_url }}\">{{ create_label }}</a>
   </div>
   {% endif %}
   <form method=\"get\" class=\"search-bar\">
@@ -152,7 +152,7 @@ LIST_CONTENT = """
           {% endfor %}
           <td>
             <div class=\"row-actions\">
-              <a class=\"btn\" href=\"{{ url_for('table_edit', table=table_name, row_id=row['id']) }}\">Edit</a>
+              <a class=\"btn\" href=\"{{ url_for('table_edit', table=table_name, row_id=row['id']) }}\">{{ edit_label }}</a>
               <form method=\"post\" action=\"{{ url_for('table_delete', table=table_name, row_id=row['id']) }}\" class=\"inline\" onsubmit=\"return confirm('Delete this row?');\">
                 <button type=\"submit\" class=\"btn btn-danger\">Delete</button>
               </form>
@@ -194,6 +194,24 @@ NEW_BULLETIN_CONTENT = """
 
     <button class=\"btn btn-primary\" type=\"submit\">Create Post</button>
     <a class=\"btn\" href=\"{{ url_for('table_list', table='bulletins') }}\">Back</a>
+  </form>
+</div>
+"""
+
+
+NEW_CHANNEL_CONTENT = """
+<div class=\"card\">
+  <h2>New Channel Entry</h2>
+  <p class=\"muted\">Creates a new row in <code>channels</code>.</p>
+  <form method=\"post\">
+    <label>Channel Name</label><br>
+    <input type=\"text\" name=\"name\" required><br><br>
+
+    <label>Channel URL / PSK</label><br>
+    <textarea name=\"url\" required></textarea><br><br>
+
+    <button class=\"btn btn-primary\" type=\"submit\">Create Channel</button>
+    <a class=\"btn\" href=\"{{ url_for('table_list', table='channels') }}\">Back</a>
   </form>
 </div>
 """
@@ -408,7 +426,9 @@ def create_app() -> Flask:
             rows=rows,
             search_query=search_query,
             db_path=app.config["DB_PATH"],
-            can_create=(table == "bulletins"),
+          create_url=(url_for("bulletin_new") if table == "bulletins" else url_for("channel_new") if table == "channels" else None),
+          create_label=("New Bulletin Post" if table == "bulletins" else "New Channel Entry" if table == "channels" else ""),
+          edit_label=("Post/Edit" if table == "channels" else "Edit"),
         )
         return render_template_string(BASE_TEMPLATE, title=cfg["title"], content=content, show_nav=True)
 
@@ -445,6 +465,26 @@ def create_app() -> Flask:
         selected_board=selected_board,
       )
       return render_template_string(BASE_TEMPLATE, title="New Bulletin", content=content, show_nav=True)
+
+    @app.route("/channels/new", methods=["GET", "POST"])
+    @login_required
+    def channel_new():
+      if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        url = request.form.get("url", "").strip()
+
+        if not all([name, url]):
+          flash("All fields are required.", "error")
+        else:
+          execute_write(
+            "INSERT INTO channels (name, url) VALUES (?, ?)",
+            (name, url),
+          )
+          flash("Channel entry created.", "success")
+          return redirect(url_for("table_list", table="channels"))
+
+      content = render_template_string(NEW_CHANNEL_CONTENT)
+      return render_template_string(BASE_TEMPLATE, title="New Channel", content=content, show_nav=True)
 
     @app.route("/<table>/<int:row_id>/edit", methods=["GET", "POST"])
     @login_required
