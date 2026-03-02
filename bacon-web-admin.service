@@ -1,0 +1,16 @@
+[Unit]
+Description=BACON BBS Web Admin GUI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+User=pi
+WorkingDirectory=/home/pi/TC2-BaconBS-mesh
+EnvironmentFile=-/home/pi/TC2-BaconBS-mesh/web-admin.env
+ExecStart=/home/pi/TC2-BaconBS-mesh/venv/bin/python3 /home/pi/TC2-BaconBS-mesh/web_admin.py
+
+[Install]
+WantedBy=multi-user.target
