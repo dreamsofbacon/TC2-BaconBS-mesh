@@ -86,6 +86,7 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('table_list', table='bulletins') }}\">Bulletins</a>
       <a href=\"{{ url_for('table_list', table='mail') }}\">Mail</a>
       <a href=\"{{ url_for('table_list', table='channels') }}\">Channels</a>
+      <a href=\"{{ url_for('clients_summary') }}\">Clients</a>
       <a href=\"{{ url_for('board_settings') }}\">Boards</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
     </div>
@@ -345,6 +346,36 @@ CHANNEL_COMMENTS_CONTENT = """
 """
 
 
+CLIENTS_CONTENT = """
+<div class=\"card\">
+  <h2>Client Post Counts</h2>
+  <p class=\"muted\">Unique clients and how many bulletin posts each has created.</p>
+  <p class=\"muted\">Clients: {{ rows|length }} | Total bulletin posts: {{ total_posts }}</p>
+  <table>
+    <thead>
+      <tr>
+        <th>sender_short_name</th>
+        <th>post_count</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row['sender_short_name'] }}</td>
+        <td>{{ row['post_count'] }}</td>
+      </tr>
+      {% endfor %}
+      {% if not rows %}
+      <tr>
+        <td colspan=\"2\" class=\"muted\">No client posts found.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+"""
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     app.secret_key = os.getenv("BBS_WEBGUI_SECRET", "change-this-secret")
@@ -462,6 +493,30 @@ def create_app() -> Flask:
         env_override=env_override,
       )
       return render_template_string(BASE_TEMPLATE, title="Board Settings", content=content, show_nav=True)
+
+    @app.route("/clients")
+    @login_required
+    def clients_summary():
+      with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+          """
+          SELECT sender_short_name, COUNT(*) AS post_count
+          FROM bulletins
+          WHERE sender_short_name IS NOT NULL AND TRIM(sender_short_name) != ''
+          GROUP BY sender_short_name
+          ORDER BY post_count DESC, sender_short_name ASC
+          """
+        )
+        rows = cursor.fetchall()
+        total_posts = sum(row["post_count"] for row in rows)
+
+      content = render_template_string(
+        CLIENTS_CONTENT,
+        rows=rows,
+        total_posts=total_posts,
+      )
+      return render_template_string(BASE_TEMPLATE, title="Clients", content=content, show_nav=True)
 
     @app.route("/<table>")
     @login_required
