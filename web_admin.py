@@ -145,9 +145,6 @@ LIST_CONTENT = """
       </tr>
     </thead>
     <tbody>
-              {% if comments_enabled %}
-              <a class="btn" href="{{ url_for('channel_comments', channel_id=row['id']) }}">Comments</a>
-              {% endif %}
       {% for row in rows %}
         <tr>
           {% for col in columns %}
@@ -156,6 +153,9 @@ LIST_CONTENT = """
           <td>
             <div class=\"row-actions\">
               <a class=\"btn\" href=\"{{ url_for('table_edit', table=table_name, row_id=row['id']) }}\">{{ edit_label }}</a>
+              {% if comments_enabled %}
+              <a class="btn" href="{{ url_for('channel_comments', channel_id=row['id']) }}">Comments</a>
+              {% endif %}
               <form method=\"post\" action=\"{{ url_for('table_delete', table=table_name, row_id=row['id']) }}\" class=\"inline\" onsubmit=\"return confirm('Delete this row?');\">
                 <button type=\"submit\" class=\"btn btn-danger\">Delete</button>
               </form>
