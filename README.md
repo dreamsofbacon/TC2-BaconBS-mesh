@@ -155,6 +155,49 @@ export BBS_BULLETIN_BOARDS=General,Info,News,Urgent,Events
 
 To reduce lock/corruption risk while `server.py` and `web_admin.py` are both active, the web admin uses SQLite WAL mode, busy timeout, and atomic write transactions.
 
+### Run Web Admin GUI with systemd
+
+The repository includes `bacon-web-admin.service` for running the web admin at boot.
+
+1. Edit these lines in `bacon-web-admin.service` for your username/path:
+
+```sh
+User=pi
+WorkingDirectory=/home/pi/TC2-BaconBS-mesh
+ExecStart=/home/pi/TC2-BaconBS-mesh/venv/bin/python3 /home/pi/TC2-BaconBS-mesh/web_admin.py
+```
+
+2. Create an environment file for credentials and bind settings:
+
+```sh
+cat > /home/pi/TC2-BaconBS-mesh/web-admin.env << 'EOF'
+BBS_WEBGUI_USER=admin
+BBS_WEBGUI_PASSWORD=change-this
+BBS_WEBGUI_SECRET=change-this-session-secret
+BBS_WEBGUI_HOST=0.0.0.0
+BBS_WEBGUI_PORT=8081
+# Optional:
+# BBS_DB_PATH=/home/pi/TC2-BaconBS-mesh/bulletins.db
+# BBS_CONFIG_PATH=/home/pi/TC2-BaconBS-mesh/config.ini
+EOF
+```
+
+3. Install and enable the service:
+
+```sh
+sudo cp bacon-web-admin.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable bacon-web-admin.service
+sudo systemctl start bacon-web-admin.service
+```
+
+4. Check status and logs:
+
+```sh
+sudo systemctl status bacon-web-admin.service
+journalctl -u bacon-web-admin.service -f
+```
+
 ## Smoke Test (No Radio Required)
 
 Run a basic mocked integration smoke test for sync parsing and menu input validation:
