@@ -466,9 +466,16 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
             channel_name = categories[category_index][0]
             posts = get_channels_by_name(channel_name)
             if posts:
-                response = f"{channel_name} posts:\n" + "\n".join(
-                    [f"[{i}] Post #{post[0]}" for i, post in enumerate(posts)]
-                )
+                post_lines = []
+                for i, post in enumerate(posts):
+                    post_id = post[0]
+                    comments = get_channel_comments(post_id)
+                    if comments:
+                        latest_commenter = comments[-1][0]
+                        post_lines.append(f"[{i}] {latest_commenter}")
+                    else:
+                        post_lines.append(f"[{i}] No comments yet")
+                response = f"{channel_name} posts:\n" + "\n".join(post_lines)
                 send_message(response, sender_id, interface)
                 update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 5, 'posts': posts, 'channel_name': channel_name})
                 return
