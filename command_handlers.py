@@ -20,6 +20,7 @@ from utils import (
     update_user_state
 )
 from zork_port import (
+    has_zork_save,
     has_zork_session,
     resume_zork_session,
     send_zork_command,
@@ -158,10 +159,14 @@ def handle_zork_command(sender_id, interface):
         intro = resume_zork_session(sender_id)
         send_message(intro, sender_id, interface)
         send_message("Zork resumed. Send your next command, or send X to exit.", sender_id, interface)
+    elif has_zork_save(sender_id):
+        intro = start_zork_session(sender_id)
+        send_message(intro, sender_id, interface)
+        send_message("Saved game restored. Send commands (LOOK, NORTH, TAKE LAMP). Send X to exit.", sender_id, interface)
     else:
         intro = start_zork_session(sender_id)
         send_message(intro, sender_id, interface)
-        send_message("Zork mode active. Send commands (LOOK, NORTH, TAKE LAMP). Send X to exit.", sender_id, interface)
+        send_message("Zork started. Send commands (LOOK, NORTH, TAKE LAMP). Send X to exit.", sender_id, interface)
 
     update_user_state(sender_id, {'command': 'ZORK', 'step': 1})
 
@@ -170,6 +175,11 @@ def handle_zork_steps(sender_id, message, interface):
     choice = message.strip()
     if len(choice) == 2 and choice[1].lower() == 'x':
         choice = choice[0]
+
+    if choice.lower() in ('save', 'restore'):
+        send_message("Your game auto-saves after each command. No manual save needed.", sender_id, interface)
+        update_user_state(sender_id, {'command': 'ZORK', 'step': 1})
+        return
 
     if choice.lower() in ('x', 'quit', 'exit'):
         stop_zork_session(sender_id)
