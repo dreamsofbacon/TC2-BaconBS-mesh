@@ -823,30 +823,54 @@ FLOWCHART_CONTENT = """
       <line x1=\"750\" y1=\"300\" x2=\"1400\" y2=\"360\" stroke=\"#666\" stroke-width=\"1\" stroke-dasharray=\"5,5\"/>
       <text x=\"1070\" y=\"320\" font-size=\"9\" fill=\"#666\">U</text>
       
-      <rect x=\"1300\" y=\"360\" width=\"200\" height=\"60\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
+      <rect x=\"1240\" y=\"360\" width=\"310\" height=\"60\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
       <text x=\"1400\" y=\"380\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Utilities [U]</text>
       <text x=\"1400\" y=\"395\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">Various utilities</text>
       <line x1=\"1400\" y1=\"420\" x2=\"1400\" y2=\"460\" stroke=\"#4caf50\" stroke-width=\"1\"/>
       
-      <!-- Utility sub-options -->
+      <!-- Utility sub-options: S, F, W, Z -->
+      <line x1=\"1400\" y1=\"420\" x2=\"1400\" y2=\"450\" stroke=\"#4caf50\" stroke-width=\"1\"/>
+      <line x1=\"1277\" y1=\"450\" x2=\"1533\" y2=\"450\" stroke=\"#4caf50\" stroke-width=\"1\"/>
       <g id=\"utility-suboptions\">
         <!-- Stats -->
-        <rect x=\"1300\" y=\"460\" width=\"90\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
-        <text x=\"1345\" y=\"475\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[S] Stats</text>
-        <text x=\"1345\" y=\"488\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">Count messages</text>
-        <line x1=\"1345\" y1=\"510\" x2=\"1345\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"1300\" y=\"540\" width=\"90\" height=\"40\" fill=\"#ffebee\" stroke=\"#b91c1c\" stroke-width=\"1\" rx=\"2\"/>
-        <text x=\"1345\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">📤 Send</text>
-        <text x=\"1345\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">statistics</text>
-        
+        <line x1=\"1277\" y1=\"450\" x2=\"1277\" y2=\"470\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
+        <rect x=\"1237\" y=\"470\" width=\"80\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
+        <text x=\"1277\" y=\"485\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[S] Stats</text>
+        <text x=\"1277\" y=\"498\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">Count messages</text>
+        <line x1=\"1277\" y1=\"520\" x2=\"1277\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
+        <rect x=\"1237\" y=\"540\" width=\"80\" height=\"40\" fill=\"#ffebee\" stroke=\"#b91c1c\" stroke-width=\"1\" rx=\"2\"/>
+        <text x=\"1277\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">📤 Send</text>
+        <text x=\"1277\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">statistics</text>
+
         <!-- Fortune -->
-        <rect x=\"1400\" y=\"460\" width=\"90\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
-        <text x=\"1445\" y=\"475\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[F] Fortune</text>
-        <text x=\"1445\" y=\"488\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">Random quote</text>
-        <line x1=\"1445\" y1=\"510\" x2=\"1445\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"1400\" y=\"540\" width=\"90\" height=\"40\" fill=\"#ffebee\" stroke=\"#b91c1c\" stroke-width=\"1\" rx=\"2\"/>
-        <text x=\"1445\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">📤 Send</text>
-        <text x=\"1445\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">fortune</text>
+        <line x1=\"1362\" y1=\"450\" x2=\"1362\" y2=\"470\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
+        <rect x=\"1322\" y=\"470\" width=\"80\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
+        <text x=\"1362\" y=\"485\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[F] Fortune</text>
+        <text x=\"1362\" y=\"498\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">Random quote</text>
+        <line x1=\"1362\" y1=\"520\" x2=\"1362\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
+        <rect x=\"1322\" y=\"540\" width=\"80\" height=\"40\" fill=\"#ffebee\" stroke=\"#b91c1c\" stroke-width=\"1\" rx=\"2\"/>
+        <text x=\"1362\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">📤 Send</text>
+        <text x=\"1362\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">fortune</text>
+
+        <!-- Wall of Shame -->
+        <line x1=\"1447\" y1=\"450\" x2=\"1447\" y2=\"470\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
+        <rect x=\"1407\" y=\"470\" width=\"80\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
+        <text x=\"1447\" y=\"485\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[W] Shame</text>
+        <text x=\"1447\" y=\"498\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">Wall of Shame</text>
+        <line x1=\"1447\" y1=\"520\" x2=\"1447\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
+        <rect x=\"1407\" y=\"540\" width=\"80\" height=\"40\" fill=\"#ffebee\" stroke=\"#b91c1c\" stroke-width=\"1\" rx=\"2\"/>
+        <text x=\"1447\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">📤 Send</text>
+        <text x=\"1447\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">shame list</text>
+
+        <!-- Zork -->
+        <line x1=\"1532\" y1=\"450\" x2=\"1532\" y2=\"470\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
+        <rect x=\"1492\" y=\"470\" width=\"80\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
+        <text x=\"1532\" y=\"485\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[Z] Zork</text>
+        <text x=\"1532\" y=\"498\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">Z-machine game</text>
+        <line x1=\"1532\" y1=\"520\" x2=\"1532\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
+        <rect x=\"1492\" y=\"540\" width=\"80\" height=\"40\" fill=\"#ffebee\" stroke=\"#b91c1c\" stroke-width=\"1\" rx=\"2\"/>
+        <text x=\"1532\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">▶️ Play</text>
+        <text x=\"1532\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">interactive</text>
       </g>
     </g>
     
