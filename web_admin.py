@@ -64,12 +64,18 @@ BASE_TEMPLATE = """
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td { border: 1px solid #ddd; padding: 8px; vertical-align: top; text-align: left; }
     th { background: #f0f3fa; }
+    tr.dragging { opacity: 0.5; background: #f9f9f9; }
+    tr.drag-over { border-top: 3px solid #0056d6; }
     input[type=text], input[type=password], textarea, select { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px; }
     textarea { min-height: 180px; }
     .row-actions { display: flex; gap: 8px; }
     .btn { border: 1px solid #bbb; border-radius: 6px; padding: 6px 10px; background: #fff; cursor: pointer; }
     .btn-primary { border-color: #0056d6; color: #fff; background: #0056d6; }
     .btn-danger { border-color: #b91c1c; color: #fff; background: #b91c1c; }
+    .btn-small { padding: 4px 6px; font-size: 12px; }
+    .reorder-handle { cursor: grab; color: #999; padding: 4px 8px; }
+    .reorder-handle:hover { color: #0056d6; }
+    .reorder-handle:active { cursor: grabbing; }
     .muted { color: #666; font-size: 12px; }
     .flash { padding: 10px; border-radius: 6px; margin-bottom: 12px; border: 1px solid #ddd; background: #fafafa; }
     .flash-error { border-color: #b91c1c; background: #fff1f2; }
@@ -88,6 +94,7 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('table_list', table='channels') }}\">Channels</a>
       <a href=\"{{ url_for('clients_summary') }}\">Clients</a>
       <a href=\"{{ url_for('board_settings') }}\">Boards</a>
+      <a href=\"{{ url_for('admin_settings') }}\">Admin</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
     </div>
     {% endif %}
@@ -102,6 +109,77 @@ BASE_TEMPLATE = """
 
     {{ content|safe }}
   </div>
+  <script>
+    function enableDragAndDrop(tableName) {
+      const table = document.querySelector('table tbody');
+      if (!table) return;
+      
+      let draggedRow = null;
+      
+      const rows = table.querySelectorAll('tr');
+      rows.forEach(row => {
+        row.draggable = true;
+        
+        row.addEventListener('dragstart', (e) => {
+          draggedRow = row;
+          row.classList.add('dragging');
+          e.dataTransfer.effectAllowed = 'move';
+        });
+        
+        row.addEventListener('dragend', () => {
+          draggedRow = null;
+          row.classList.remove('dragging');
+          rows.forEach(r => r.classList.remove('drag-over'));
+        });
+        
+        row.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          if (row !== draggedRow) {
+            row.classList.add('drag-over');
+          }
+        });
+        
+        row.addEventListener('dragleave', () => {
+          row.classList.remove('drag-over');
+        });
+        
+        row.addEventListener('drop', async (e) => {
+          e.preventDefault();
+          row.classList.remove('drag-over');
+          
+          if (row !== draggedRow && draggedRow) {
+            const draggedId = draggedRow.dataset.rowId;
+            const targetId = row.dataset.rowId;
+            
+            try {
+              const response = await fetch(`/api/reorder/${tableName}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ from_id: draggedId, to_id: targetId })
+              });
+              
+              if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                  location.reload();
+                }
+              }
+            } catch (err) {
+              console.error('Reorder failed:', err);
+            }
+          }
+        });
+      });
+    }
+    
+    document.addEventListener('DOMContentLoaded', () => {
+      const table = document.querySelector('table');
+      if (table && table.dataset.draggable) {
+        enableDragAndDrop(table.dataset.tableName);
+      }
+    });
+  </script>
 </body>
 </html>
 """
@@ -125,6 +203,7 @@ LOGIN_CONTENT = """
 LIST_CONTENT = """
 <div class=\"card\">
   <h2>{{ table_title }}</h2>
+  <p class=\"muted\">Drag and drop rows to reorder them. New posts appear at the top after refresh.</p>
   {% if create_url %}
   <div style=\"margin-bottom: 12px;\">
     <a class=\"btn btn-primary\" href=\"{{ create_url }}\">{{ create_label }}</a>
@@ -136,9 +215,10 @@ LIST_CONTENT = """
     <a class=\"btn\" href=\"{{ url_for('table_list', table=table_name) }}\">Clear</a>
   </form>
   <p class=\"muted\">Rows: {{ rows|length }} | DB: <code>{{ db_path }}</code></p>
-  <table>
+  <table draggable=\"true\" data-draggable=\"true\" data-table-name=\"{{ table_name }}\">
     <thead>
       <tr>
+        <th></th>
         {% for col in columns %}
           <th>{{ col }}</th>
         {% endfor %}
@@ -147,7 +227,8 @@ LIST_CONTENT = """
     </thead>
     <tbody>
       {% for row in rows %}
-        <tr>
+        <tr draggable=\"true\" data-row-id=\"{{ row['id'] }}\">
+          <td class=\"reorder-handle\">⋮⋮</td>
           {% for col in columns %}
             <td>{{ row[col] }}</td>
           {% endfor %}
@@ -166,7 +247,7 @@ LIST_CONTENT = """
       {% endfor %}
       {% if not rows %}
         <tr>
-          <td colspan=\"{{ columns|length + 1 }}\" class=\"muted\">No rows found.</td>
+          <td colspan=\"{{ columns|length + 2 }}\" class=\"muted\">No rows found.</td>
         </tr>
       {% endif %}
     </tbody>
@@ -283,6 +364,30 @@ BOARD_SETTINGS_CONTENT = """
     <label>Boards (comma separated)</label><br>
     <textarea name=\"bulletin_boards\" required>{{ boards_text }}</textarea><br><br>
     <button class=\"btn btn-primary\" type=\"submit\">Save Boards</button>
+    <a class=\"btn\" href=\"{{ url_for('table_list', table='bulletins') }}\">Back</a>
+  </form>
+</div>
+"""
+
+
+ADMIN_SETTINGS_CONTENT = """
+<div class=\"card\" style=\"max-width: 600px;\">
+  <h2>Admin Credentials</h2>
+  <p class=\"muted\">Change the username and password for the web admin interface.</p>
+  <form method=\"post\">
+    <label>Current Password (required)</label><br>
+    <input type=\"password\" name=\"current_password\" required><br><br>
+    
+    <label>New Username (leave blank to keep current)</label><br>
+    <input type=\"text\" name=\"new_username\" placeholder=\"Current: {{ current_username }}\"><br><br>
+    
+    <label>New Password (leave blank to keep current)</label><br>
+    <input type=\"password\" name=\"new_password\" placeholder=\"Leave blank to keep current\"><br><br>
+    
+    <label>Confirm New Password</label><br>
+    <input type=\"password\" name=\"confirm_password\" placeholder=\"Confirm new password\"><br><br>
+    
+    <button class=\"btn btn-primary\" type=\"submit\">Update Credentials</button>
     <a class=\"btn\" href=\"{{ url_for('table_list', table='bulletins') }}\">Back</a>
   </form>
 </div>
@@ -493,6 +598,112 @@ def create_app() -> Flask:
         env_override=env_override,
       )
       return render_template_string(BASE_TEMPLATE, title="Board Settings", content=content, show_nav=True)
+
+    @app.route("/settings/admin", methods=["GET", "POST"])
+    @login_required
+    def admin_settings():
+      if request.method == "POST":
+        current_password = request.form.get("current_password", "")
+        new_username = request.form.get("new_username", "").strip()
+        new_password = request.form.get("new_password", "").strip()
+        confirm_password = request.form.get("confirm_password", "").strip()
+
+        # Verify current password
+        if current_password != app.config["ADMIN_PASSWORD"]:
+          flash("Current password is incorrect.", "error")
+        elif new_password != confirm_password:
+          flash("New passwords do not match.", "error")
+        elif new_password and len(new_password) < 4:
+          flash("New password must be at least 4 characters.", "error")
+        else:
+          # Update credentials
+          config = configparser.ConfigParser()
+          config.read(app.config["CONFIG_PATH"])
+          
+          if not config.has_section("admin"):
+            config.add_section("admin")
+          
+          if new_username:
+            config.set("admin", "username", new_username)
+            app.config["ADMIN_USER"] = new_username
+          
+          if new_password:
+            config.set("admin", "password", new_password)
+            app.config["ADMIN_PASSWORD"] = new_password
+          
+          with open(app.config["CONFIG_PATH"], "w", encoding="utf-8") as config_file:
+            config.write(config_file)
+          
+          flash("Credentials updated successfully. Use your new credentials on next login.", "success")
+          return redirect(url_for("logout"))
+
+      content = render_template_string(
+        ADMIN_SETTINGS_CONTENT,
+        current_username=app.config["ADMIN_USER"],
+      )
+      return render_template_string(BASE_TEMPLATE, title="Admin Settings", content=content, show_nav=True)
+
+    @app.post("/api/reorder/<table>")
+    @login_required
+    def api_reorder(table: str):
+      try:
+        data = request.get_json()
+        from_id = int(data.get("from_id", 0))
+        to_id = int(data.get("to_id", 0))
+        
+        if table not in TABLE_CONFIG:
+          return {"success": False, "error": "Unknown table"}, 400
+        
+        if from_id == to_id:
+          return {"success": True}
+        
+        with get_db_connection() as conn:
+          cursor = conn.cursor()
+          
+          # Get both rows
+          cursor.execute(f"SELECT id FROM {table} WHERE id IN (?, ?)", (from_id, to_id))
+          rows = cursor.fetchall()
+          
+          if len(rows) != 2:
+            return {"success": False, "error": "Rows not found"}, 404
+          
+          # Swap the rows by swapping their content (except id and unique_id)
+          cursor.execute(f"SELECT * FROM {table} WHERE id = ?", (from_id,))
+          from_row = dict(cursor.fetchone())
+          
+          cursor.execute(f"SELECT * FROM {table} WHERE id = ?", (to_id,))
+          to_row = dict(cursor.fetchone())
+          
+          # Create a temporary table to facilitate the swap
+          cursor.execute("BEGIN IMMEDIATE")
+          
+          # We'll just update by swapping the data while keeping IDs fixed
+          cfg = TABLE_CONFIG[table]
+          editable_fields = cfg["editable"]
+          
+          # Store to_row values temporarily
+          from_values = tuple(from_row[f] for f in editable_fields)
+          to_values = tuple(to_row[f] for f in editable_fields)
+          
+          # Update from_row with to_row values
+          set_clause = ", ".join([f"{field} = ?" for field in editable_fields])
+          cursor.execute(
+            f"UPDATE {table} SET {set_clause} WHERE id = ?",
+            (*to_values, from_id)
+          )
+          
+          # Update to_row with from_row values
+          cursor.execute(
+            f"UPDATE {table} SET {set_clause} WHERE id = ?",
+            (*from_values, to_id)
+          )
+          
+          conn.commit()
+        
+        return {"success": True}
+      except Exception as e:
+        print(f"Reorder error: {e}")
+        return {"success": False, "error": str(e)}, 500
 
     @app.route("/clients")
     @login_required
