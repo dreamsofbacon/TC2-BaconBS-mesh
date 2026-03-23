@@ -56,36 +56,98 @@ BASE_TEMPLATE = """
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
   <title>{{ title }}</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 24px; background: #f6f7fb; color: #222; }
+    :root {
+      --bg: #0f141b;
+      --text: #d7dde5;
+      --card-bg: #161d27;
+      --card-border: #2b3645;
+      --link: #7ab2ff;
+      --table-header-bg: #1f2937;
+      --table-border: #2b3645;
+      --input-bg: #0f141b;
+      --input-text: #d7dde5;
+      --input-border: #3b4a5f;
+      --btn-bg: #1b2533;
+      --btn-border: #3b4a5f;
+      --muted: #9aa8ba;
+      --flash-bg: #17202b;
+      --code-bg: #0b1016;
+      --drag-bg: #243044;
+      --drag-over: #7ab2ff;
+    }
+    body[data-theme='light'] {
+      --bg: #f6f7fb;
+      --text: #222;
+      --card-bg: #fff;
+      --card-border: #ddd;
+      --link: #0056d6;
+      --table-header-bg: #f0f3fa;
+      --table-border: #ddd;
+      --input-bg: #fff;
+      --input-text: #222;
+      --input-border: #ccc;
+      --btn-bg: #fff;
+      --btn-border: #bbb;
+      --muted: #666;
+      --flash-bg: #fafafa;
+      --code-bg: #f3f4f6;
+      --drag-bg: #f9f9f9;
+      --drag-over: #0056d6;
+    }
+    body { font-family: Arial, sans-serif; margin: 24px; background: var(--bg); color: var(--text); }
     .container { max-width: 1200px; margin: 0 auto; }
-    .card { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-    .nav a { margin-right: 12px; text-decoration: none; color: #0056d6; }
-    .nav { margin-bottom: 16px; }
+    .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    .nav a { text-decoration: none; color: var(--link); }
+    .nav { margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
-    th, td { border: 1px solid #ddd; padding: 8px; vertical-align: top; text-align: left; }
-    th { background: #f0f3fa; }
-    tr.dragging { opacity: 0.5; background: #f9f9f9; }
-    tr.drag-over { border-top: 3px solid #0056d6; }
-    input[type=text], input[type=password], textarea, select { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px; }
+    th, td { border: 1px solid var(--table-border); padding: 8px; vertical-align: top; text-align: left; }
+    th { background: var(--table-header-bg); }
+    tr.dragging { opacity: 0.5; background: var(--drag-bg); }
+    tr.drag-over { border-top: 3px solid var(--drag-over); }
+    input[type=text], input[type=password], textarea, select {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid var(--input-border);
+      border-radius: 6px;
+      background: var(--input-bg);
+      color: var(--input-text);
+    }
     textarea { min-height: 180px; }
     .row-actions { display: flex; gap: 8px; }
-    .btn { border: 1px solid #bbb; border-radius: 6px; padding: 6px 10px; background: #fff; cursor: pointer; }
+    .btn { border: 1px solid var(--btn-border); border-radius: 6px; padding: 6px 10px; background: var(--btn-bg); color: var(--text); cursor: pointer; }
     .btn-primary { border-color: #0056d6; color: #fff; background: #0056d6; }
     .btn-danger { border-color: #b91c1c; color: #fff; background: #b91c1c; }
     .btn-small { padding: 4px 6px; font-size: 12px; }
+    .theme-toggle { margin-left: auto; }
     .reorder-handle { cursor: grab; color: #999; padding: 4px 8px; }
     .reorder-handle:hover { color: #0056d6; }
     .reorder-handle:active { cursor: grabbing; }
-    .muted { color: #666; font-size: 12px; }
-    .flash { padding: 10px; border-radius: 6px; margin-bottom: 12px; border: 1px solid #ddd; background: #fafafa; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .flash { padding: 10px; border-radius: 6px; margin-bottom: 12px; border: 1px solid var(--table-border); background: var(--flash-bg); }
     .flash-error { border-color: #b91c1c; background: #fff1f2; }
     .flash-success { border-color: #0f766e; background: #f0fdfa; }
     .search-bar { display: flex; gap: 8px; margin-bottom: 12px; }
     .inline { display: inline; }
-    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; }
+    code { background: var(--code-bg); padding: 2px 6px; border-radius: 4px; }
+    .flowchart-controls { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
+    .flowchart-controls .zoom-label { color: var(--muted); font-size: 12px; }
+    .flowchart-viewport {
+      overflow: hidden;
+      border: 1px solid var(--table-border);
+      border-radius: 8px;
+      background: var(--bg);
+      cursor: grab;
+      touch-action: none;
+    }
+    .flowchart-viewport.dragging { cursor: grabbing; }
+    .flowchart-svg {
+      width: 100%;
+      min-height: 2400px;
+      display: block;
+    }
   </style>
 </head>
-<body>
+<body data-theme="dark">
   <div class=\"container\">
     {% if show_nav %}
     <div class=\"nav\">
@@ -97,6 +159,7 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('admin_settings') }}\">Admin</a>
       <a href=\"{{ url_for('system_flowchart') }}\">System Flowchart</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
+      <button id="theme-toggle" class="btn btn-small theme-toggle" type="button">Switch to Light</button>
     </div>
     {% endif %}
 
@@ -111,6 +174,29 @@ BASE_TEMPLATE = """
     {{ content|safe }}
   </div>
   <script>
+    function applyTheme(theme) {
+      document.body.setAttribute('data-theme', theme);
+      const toggle = document.getElementById('theme-toggle');
+      if (toggle) {
+        toggle.textContent = theme === 'dark' ? 'Switch to Light' : 'Switch to Dark';
+      }
+    }
+
+    function initializeTheme() {
+      const savedTheme = localStorage.getItem('bbs_theme');
+      const theme = savedTheme === 'light' ? 'light' : 'dark';
+      applyTheme(theme);
+
+      const toggle = document.getElementById('theme-toggle');
+      if (toggle) {
+        toggle.addEventListener('click', () => {
+          const nextTheme = document.body.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+          localStorage.setItem('bbs_theme', nextTheme);
+          applyTheme(nextTheme);
+        });
+      }
+    }
+
     function enableDragAndDrop(tableName) {
       const table = document.querySelector('table tbody');
       if (!table) return;
@@ -173,8 +259,96 @@ BASE_TEMPLATE = """
         });
       });
     }
+
+    function initializeFlowchartNavigation() {
+      const viewport = document.getElementById('flowchart-viewport');
+      const contentGroup = document.getElementById('flowchart-content-group');
+      if (!viewport || !contentGroup) {
+        return;
+      }
+
+      const zoomIn = document.getElementById('flowchart-zoom-in');
+      const zoomOut = document.getElementById('flowchart-zoom-out');
+      const reset = document.getElementById('flowchart-reset');
+      const zoomLabel = document.getElementById('flowchart-zoom-label');
+
+      let scale = 1;
+      let panX = 0;
+      let panY = 0;
+      let isDragging = false;
+      let lastX = 0;
+      let lastY = 0;
+
+      function updateTransform() {
+        contentGroup.setAttribute('transform', `translate(${panX} ${panY}) scale(${scale})`);
+        if (zoomLabel) {
+          zoomLabel.textContent = `${Math.round(scale * 100)}%`;
+        }
+      }
+
+      function clampScale(value) {
+        return Math.min(3.5, Math.max(0.4, value));
+      }
+
+      viewport.addEventListener('wheel', (event) => {
+        event.preventDefault();
+        const factor = event.deltaY < 0 ? 1.1 : 0.9;
+        scale = clampScale(scale * factor);
+        updateTransform();
+      }, { passive: false });
+
+      viewport.addEventListener('mousedown', (event) => {
+        isDragging = true;
+        lastX = event.clientX;
+        lastY = event.clientY;
+        viewport.classList.add('dragging');
+      });
+
+      window.addEventListener('mousemove', (event) => {
+        if (!isDragging) {
+          return;
+        }
+        panX += event.clientX - lastX;
+        panY += event.clientY - lastY;
+        lastX = event.clientX;
+        lastY = event.clientY;
+        updateTransform();
+      });
+
+      window.addEventListener('mouseup', () => {
+        isDragging = false;
+        viewport.classList.remove('dragging');
+      });
+
+      if (zoomIn) {
+        zoomIn.addEventListener('click', () => {
+          scale = clampScale(scale * 1.15);
+          updateTransform();
+        });
+      }
+
+      if (zoomOut) {
+        zoomOut.addEventListener('click', () => {
+          scale = clampScale(scale * 0.87);
+          updateTransform();
+        });
+      }
+
+      if (reset) {
+        reset.addEventListener('click', () => {
+          scale = 1;
+          panX = 0;
+          panY = 0;
+          updateTransform();
+        });
+      }
+
+      updateTransform();
+    }
     
     document.addEventListener('DOMContentLoaded', () => {
+      initializeTheme();
+      initializeFlowchartNavigation();
       const table = document.querySelector('table');
       if (table && table.dataset.draggable) {
         enableDragAndDrop(table.dataset.tableName);
@@ -488,8 +662,16 @@ FLOWCHART_CONTENT = """
   <p class=\"muted\">Tree view showing command routing and communication messages between system components.</p>
 </div>
 
-<div class=\"card\" style=\"overflow-x: auto; background: #fafafa;\">
-  <svg viewBox=\"0 0 1600 2200\" style=\"width: 100%; min-height: 2200px; border: 1px solid #ddd; border-radius: 8px;\">
+<div class=\"card\" style=\"background: transparent;\">
+  <div class=\"flowchart-controls\">
+    <button id=\"flowchart-zoom-in\" class=\"btn btn-small\" type=\"button\">Zoom In</button>
+    <button id=\"flowchart-zoom-out\" class=\"btn btn-small\" type=\"button\">Zoom Out</button>
+    <button id=\"flowchart-reset\" class=\"btn btn-small\" type=\"button\">Reset View</button>
+    <span id=\"flowchart-zoom-label\" class=\"zoom-label\">100%</span>
+  </div>
+  <div id=\"flowchart-viewport\" class=\"flowchart-viewport\">
+  <svg id=\"flowchart-svg\" class=\"flowchart-svg\" viewBox=\"0 0 1600 2500\">
+    <g id=\"flowchart-content-group\">
     <!-- Title -->
     <text x=\"800\" y=\"30\" font-size=\"24\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#222\">TC²-BBS Command Handler Tree & Message Flow</text>
     
@@ -868,7 +1050,41 @@ FLOWCHART_CONTENT = """
         <text x=\"800\" y=\"1832\" font-size=\"10\" text-anchor=\"middle\" fill=\"#666\">No bulletin posts yet. Create a bulletin and refresh to see branches.</text>
       {% endif %}
     </g>
+
+    <!-- LIVE CHANNEL COMMENTS TREE -->
+    <g id=\"live-channel-comments-tree\">
+      <text x=\"800\" y=\"2140\" font-size=\"14\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#0056d6\">Live Channel Comments Tree</text>
+      <text x=\"800\" y=\"2157\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">Comments grouped by channel topic.</text>
+
+      <rect x=\"700\" y=\"2175\" width=\"200\" height=\"38\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"800\" y=\"2198\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Channels</text>
+
+      {% set comment_branch_count = comment_branches|length %}
+      {% if comment_branch_count > 0 %}
+        {% set cstep = 1400 // (comment_branch_count + 1) %}
+        {% for branch in comment_branches %}
+          {% set branch_x = 100 + (cstep * loop.index) %}
+          <line x1=\"800\" y1=\"2213\" x2=\"{{ branch_x }}\" y2=\"2255\" stroke=\"#4caf50\" stroke-width=\"1.5\"/>
+          <rect x=\"{{ branch_x - 90 }}\" y=\"2255\" width=\"180\" height=\"42\" fill=\"#f3e5f5\" stroke=\"#9c27b0\" stroke-width=\"1.2\" rx=\"4\"/>
+          <text x=\"{{ branch_x }}\" y=\"2272\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\" fill=\"#333\">{{ branch.channel }}</text>
+          <text x=\"{{ branch_x }}\" y=\"2286\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">{{ branch.comments|length }} latest comments</text>
+
+          {% for item in branch.comments %}
+            {% set comment_y = 2310 + (loop.index0 * 52) %}
+            <line x1=\"{{ branch_x }}\" y1=\"2298\" x2=\"{{ branch_x }}\" y2=\"{{ comment_y }}\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
+            <rect x=\"{{ branch_x - 120 }}\" y=\"{{ comment_y }}\" width=\"240\" height=\"42\" fill=\"#ffffff\" stroke=\"#cfd8dc\" stroke-width=\"1\" rx=\"4\"/>
+            <text x=\"{{ branch_x - 112 }}\" y=\"{{ comment_y + 15 }}\" font-size=\"7\" fill=\"#222\">#{{ item.id }} {{ item.preview }}</text>
+            <text x=\"{{ branch_x - 112 }}\" y=\"{{ comment_y + 29 }}\" font-size=\"7\" fill=\"#666\">{{ item.sender }} | {{ item.date }}</text>
+          {% endfor %}
+        {% endfor %}
+      {% else %}
+        <rect x=\"560\" y=\"2258\" width=\"480\" height=\"40\" fill=\"#f7f7f7\" stroke=\"#bbb\" stroke-width=\"1\" rx=\"4\"/>
+        <text x=\"800\" y=\"2283\" font-size=\"10\" text-anchor=\"middle\" fill=\"#666\">No channel comments yet. Add comments on a channel post to populate this branch.</text>
+      {% endif %}
+    </g>
+    </g>
   </svg>
+  </div>
 </div>
 
 <div class=\"card\">
@@ -1261,6 +1477,17 @@ def create_app() -> Flask:
         )
         recent_channels = cursor.fetchall()
 
+        cursor.execute(
+          """
+          SELECT cc.id, c.name AS channel_name, cc.sender_short_name, cc.date, cc.content
+          FROM channel_comments cc
+          JOIN channels c ON c.id = cc.channel_id
+          ORDER BY cc.id DESC
+          LIMIT 60
+          """
+        )
+        recent_channel_comments = cursor.fetchall()
+
       board_posts = {}
       for row in recent_bulletins:
         board_name = (row["board"] or "Uncategorized").strip() or "Uncategorized"
@@ -1290,12 +1517,41 @@ def create_app() -> Flask:
       for board_name, posts in board_posts.items():
         topic_branches.append({"board": board_name, "posts": posts})
 
+      channel_comment_posts = {}
+      for row in recent_channel_comments:
+        channel_name = (row["channel_name"] or "Unknown Channel").strip() or "Unknown Channel"
+        if channel_name not in channel_comment_posts:
+          channel_comment_posts[channel_name] = []
+
+        if len(channel_comment_posts[channel_name]) >= 4:
+          continue
+
+        sender = (row["sender_short_name"] or "unknown").strip() or "unknown"
+        content = (row["content"] or "").strip()
+        preview = content
+        if len(preview) > 34:
+          preview = f"{preview[:31]}..."
+
+        channel_comment_posts[channel_name].append(
+          {
+            "id": row["id"],
+            "sender": sender,
+            "date": row["date"],
+            "preview": preview,
+          }
+        )
+
+      comment_branches = []
+      for channel_name, comments in channel_comment_posts.items():
+        comment_branches.append({"channel": channel_name, "comments": comments})
+
       content = render_template_string(
         FLOWCHART_CONTENT,
         recent_bulletins=recent_bulletins,
         recent_mail=recent_mail,
         recent_channels=recent_channels,
         topic_branches=topic_branches,
+        comment_branches=comment_branches,
       )
       return render_template_string(BASE_TEMPLATE, title="System Flowchart", content=content, show_nav=True)
 
