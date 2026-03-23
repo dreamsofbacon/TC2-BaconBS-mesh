@@ -97,6 +97,25 @@ def initialize_database():
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, game_id)
                 );''')
+    c.execute('''CREATE TABLE IF NOT EXISTS user_profiles (
+                    user_id TEXT PRIMARY KEY,
+                    short_name TEXT NOT NULL DEFAULT '',
+                    long_name TEXT NOT NULL DEFAULT '',
+                    first_seen TEXT NOT NULL,
+                    last_seen TEXT NOT NULL,
+                    messages_sent INTEGER NOT NULL DEFAULT 0,
+                    bio TEXT NOT NULL DEFAULT ''
+                );''')
+    c.execute('''CREATE TABLE IF NOT EXISTS game_scores (
+                    user_id TEXT NOT NULL,
+                    game_id TEXT NOT NULL,
+                    short_name TEXT NOT NULL DEFAULT '',
+                    score INTEGER NOT NULL DEFAULT 0,
+                    max_score INTEGER NOT NULL DEFAULT 0,
+                    moves INTEGER NOT NULL DEFAULT 0,
+                    achieved_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, game_id)
+                );''')
     conn.commit()
     print("Database schema initialized.")
 
@@ -290,3 +309,89 @@ def delete_zork_save(user_id: int, game_id: str = 'zork1') -> None:
     c = conn.cursor()
     c.execute("DELETE FROM zork_saves WHERE user_id = ? AND game_id = ?", (str(user_id), game_id))
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# User profiles
+# ---------------------------------------------------------------------------
+
+def auto_upsert_user_profile(user_id: int, short_name: str, long_name: str) -> None:
+    conn = get_db_connection()
+    c = conn.cursor()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    c.execute(
+        '''INSERT INTO user_profiles (user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio)
+           VALUES (?, ?, ?, ?, ?, 1, '')
+           ON CONFLICT(user_id) DO UPDATE SET
+             short_name = excluded.short_name,
+             long_name = excluded.long_name,
+             last_seen = excluded.last_seen,
+             messages_sent = messages_sent + 1''',
+        (str(user_id), short_name, long_name, now, now)
+    )
+    conn.commit()
+
+
+def get_user_profile(user_id: int):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio "
+        "FROM user_profiles WHERE user_id = ?",
+        (str(user_id),)
+    )
+    return c.fetchone()
+
+
+def update_user_bio(user_id: int, bio: str) -> None:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("UPDATE user_profiles SET bio = ? WHERE user_id = ?", (bio[:100], str(user_id)))
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Game scores / scoreboard
+# ---------------------------------------------------------------------------
+
+def upsert_game_score(user_id: int, game_id: str, short_name: str,
+                      score: int, max_score: int, moves: int) -> None:
+    conn = get_db_connection()
+    c = conn.cursor()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    # Only promote the record when the new score is strictly higher
+    c.execute(
+        '''INSERT INTO game_scores (user_id, game_id, short_name, score, max_score, moves, achieved_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, game_id) DO UPDATE SET
+             short_name   = excluded.short_name,
+             score        = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
+             max_score    = CASE WHEN excluded.score > score THEN excluded.max_score ELSE max_score END,
+             moves        = CASE WHEN excluded.score > score THEN excluded.moves ELSE moves END,
+             achieved_at  = CASE WHEN excluded.score > score THEN excluded.achieved_at ELSE achieved_at END''',
+        (str(user_id), game_id, short_name, score, max_score, moves, now)
+    )
+    conn.commit()
+
+
+def get_game_scoreboard(game_id: str, limit: int = 5) -> list:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        '''SELECT short_name, score, max_score, moves FROM game_scores
+           WHERE game_id = ?
+           ORDER BY score DESC, moves ASC
+           LIMIT ?''',
+        (game_id, limit)
+    )
+    return c.fetchall()
+
+
+def get_user_game_scores(user_id: int) -> list:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT game_id, score, max_score FROM game_scores WHERE user_id = ? ORDER BY score DESC",
+        (str(user_id),)
+    )
+    return c.fetchall()

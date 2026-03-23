@@ -10,9 +10,14 @@ from command_handlers import (
     handle_check_bulletin_command, handle_read_bulletin_command, handle_read_channel_command,
     handle_post_channel_command, handle_list_channels_command, handle_quick_help_command,
     handle_zork_command, handle_zork_steps,
-    handle_games_command, handle_games_steps
+    handle_games_command, handle_games_steps,
+    handle_scoreboard_command, handle_scoreboard_steps,
+    handle_profile_command, handle_profile_steps,
 )
-from db_operations import add_bulletin, add_mail, delete_bulletin, delete_mail, get_db_connection, add_channel
+from db_operations import (
+    add_bulletin, add_mail, delete_bulletin, delete_mail, get_db_connection, add_channel,
+    auto_upsert_user_profile,
+)
 from js8call_integration import handle_js8call_command, handle_js8call_steps, handle_group_message_selection
 from utils import get_user_state, get_node_short_name, get_node_id_from_num, send_message
 
@@ -20,6 +25,7 @@ main_menu_handlers = {
     "q": handle_quick_help_command,
     "b": lambda sender_id, interface: handle_help_command(sender_id, interface, 'bbs'),
     "u": lambda sender_id, interface: handle_help_command(sender_id, interface, 'utilities'),
+    "p": handle_profile_command,
     "x": handle_help_command
 }
 
@@ -52,6 +58,9 @@ def process_message(sender_id, message, interface, is_sync_message=False):
     state = get_user_state(sender_id)
     message_lower = message.lower().strip()
     message_strip = message.strip()
+
+    if not is_sync_message:
+        _auto_update_profile(sender_id, interface)
 
     bbs_nodes = interface.bbs_nodes
 
@@ -198,6 +207,10 @@ def process_message(sender_id, message, interface, is_sync_message=False):
                     handle_games_steps(sender_id, message, interface)
                 elif command == 'ZORK':
                     handle_zork_steps(sender_id, message, interface)
+                elif command == 'SCOREBOARD':
+                    handle_scoreboard_steps(sender_id, message, interface)
+                elif command == 'PROFILE':
+                    handle_profile_steps(sender_id, message, interface)
                 else:
                     handle_help_command(sender_id, interface)
             else:
@@ -205,6 +218,19 @@ def process_message(sender_id, message, interface, is_sync_message=False):
 
 
 def on_receive(packet, interface):
+    def _auto_update_profile(sender_id, interface):
+        try:
+            node_id = get_node_id_from_num(sender_id, interface)
+            if node_id and node_id in interface.nodes:
+                user = interface.nodes[node_id].get('user', {})
+                short_name = user.get('shortName', '')
+                long_name = user.get('longName', '')
+                auto_upsert_user_profile(sender_id, short_name, long_name)
+        except Exception:
+            pass
+
+
+    def on_receive(packet, interface):
     try:
         if 'decoded' in packet and packet['decoded']['portnum'] == 'TEXT_MESSAGE_APP':
             message_bytes = packet['decoded']['payload']

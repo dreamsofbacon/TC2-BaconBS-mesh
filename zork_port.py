@@ -2,6 +2,7 @@ import atexit
 import configparser
 import os
 import queue
+import re
 import shlex
 import shutil
 import subprocess
@@ -406,3 +407,28 @@ def stop_all_sessions() -> None:
 
 
 atexit.register(stop_all_sessions)
+
+
+# ---------------------------------------------------------------------------
+# Score parsing
+# ---------------------------------------------------------------------------
+
+# Matches Infocom "Your score is 57 (total of 350 points), in 32 moves."
+# or "Your score is 57 of a possible 350, in 32 moves."
+_SCORE_RE = re.compile(
+    r'score is (\d+)\s*'
+    r'(?:[\(\[](?:total of |out of )?(\d+)|of a possible (\d+))?'
+    r'.*?in (\d+)\s*moves?',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def parse_game_score(text: str) -> tuple[int, int, int] | None:
+    """Parse Infocom score output. Returns (score, max_score, moves) or None."""
+    m = _SCORE_RE.search(text)
+    if not m:
+        return None
+    score = int(m.group(1))
+    max_score = int(m.group(2) or m.group(3) or 0)
+    moves = int(m.group(4))
+    return score, max_score, moves
