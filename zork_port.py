@@ -1,4 +1,5 @@
 import atexit
+import configparser
 import os
 import queue
 import shutil
@@ -12,6 +13,14 @@ DEFAULT_STORY_URL = "https://raw.githubusercontent.com/historicalsource/zork1/ma
 DEFAULT_STORY_PATH = os.path.join("data", "zork1.z3")
 SAVE_DIR = os.path.join("data", "zork_saves")
 MAX_RESPONSE_CHARS = 900
+
+_config = configparser.ConfigParser()
+_config.read("config.ini")
+
+
+def _cfg(key: str, fallback: str = "") -> str:
+    """Read a value from [zork] section of config.ini. Empty string if absent."""
+    return _config.get("zork", key, fallback=fallback).strip()
 
 
 _sessions_lock = threading.Lock()
@@ -81,7 +90,8 @@ class ZorkSession:
 
 
 def _get_interpreter_command() -> list[str] | None:
-    configured = os.getenv("BBS_ZORK_INTERPRETER", "").strip()
+    # env var overrides config, config overrides built-in defaults
+    configured = os.getenv("BBS_ZORK_INTERPRETER") or _cfg("interpreter")
     candidates = [configured] if configured else ["dfrotz", "frotz"]
 
     for candidate in candidates:
@@ -91,9 +101,10 @@ def _get_interpreter_command() -> list[str] | None:
 
 
 def _ensure_story_file() -> tuple[bool, str]:
-    story_path = os.getenv("BBS_ZORK_STORY_PATH", DEFAULT_STORY_PATH).strip() or DEFAULT_STORY_PATH
-    story_url = os.getenv("BBS_ZORK_STORY_URL", DEFAULT_STORY_URL).strip() or DEFAULT_STORY_URL
-    autodownload = os.getenv("BBS_ZORK_AUTODOWNLOAD", "true").strip().lower() not in {"0", "false", "no"}
+    story_path = os.getenv("BBS_ZORK_STORY_PATH") or _cfg("story_path") or DEFAULT_STORY_PATH
+    story_url = os.getenv("BBS_ZORK_STORY_URL") or _cfg("story_url") or DEFAULT_STORY_URL
+    autodownload_raw = os.getenv("BBS_ZORK_AUTODOWNLOAD") or _cfg("autodownload", "true")
+    autodownload = autodownload_raw.strip().lower() not in {"0", "false", "no"}
 
     if os.path.exists(story_path):
         return True, story_path
