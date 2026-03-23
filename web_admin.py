@@ -835,6 +835,39 @@ FLOWCHART_CONTENT = """
       <rect x=\"1350\" y=\"1600\" width=\"15\" height=\"15\" fill=\"#ffe0e0\" stroke=\"#b91c1c\" stroke-width=\"1\"/>
       <text x=\"1375\" y=\"1612\" font-size=\"9\" fill=\"#333\">Problem Area</text>
     </g>
+
+    <!-- LIVE BBS BRANCHING TREE -->
+    <g id=\"live-bbs-tree\">
+      <text x=\"800\" y=\"1685\" font-size=\"14\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#0056d6\">Live Bulletin Topic Tree</text>
+      <text x=\"800\" y=\"1702\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">Actual posts grouped by board/topic directly inside the flowchart.</text>
+
+      <rect x=\"700\" y=\"1720\" width=\"200\" height=\"38\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"800\" y=\"1743\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">BBS Boards</text>
+
+      {% set branch_count = topic_branches|length %}
+      {% if branch_count > 0 %}
+        {% set step = 1400 // (branch_count + 1) %}
+        {% for branch in topic_branches %}
+          {% set branch_x = 100 + (step * loop.index) %}
+
+          <line x1=\"800\" y1=\"1758\" x2=\"{{ branch_x }}\" y2=\"1804\" stroke=\"#4caf50\" stroke-width=\"1.5\"/>
+          <rect x=\"{{ branch_x - 90 }}\" y=\"1804\" width=\"180\" height=\"42\" fill=\"#f3e5f5\" stroke=\"#9c27b0\" stroke-width=\"1.2\" rx=\"4\"/>
+          <text x=\"{{ branch_x }}\" y=\"1821\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\" fill=\"#333\">{{ branch.board }}</text>
+          <text x=\"{{ branch_x }}\" y=\"1835\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">{{ branch.posts|length }} latest posts</text>
+
+          {% for post in branch.posts %}
+            {% set post_y = 1860 + (loop.index0 * 58) %}
+            <line x1=\"{{ branch_x }}\" y1=\"1846\" x2=\"{{ branch_x }}\" y2=\"{{ post_y }}\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
+            <rect x=\"{{ branch_x - 120 }}\" y=\"{{ post_y }}\" width=\"240\" height=\"46\" fill=\"#ffffff\" stroke=\"#cfd8dc\" stroke-width=\"1\" rx=\"4\"/>
+            <text x=\"{{ branch_x - 112 }}\" y=\"{{ post_y + 16 }}\" font-size=\"8\" fill=\"#222\">#{{ post.id }} {{ post.preview }}</text>
+            <text x=\"{{ branch_x - 112 }}\" y=\"{{ post_y + 31 }}\" font-size=\"7\" fill=\"#666\">{{ post.sender }} | {{ post.date }}</text>
+          {% endfor %}
+        {% endfor %}
+      {% else %}
+        <rect x=\"590\" y=\"1808\" width=\"420\" height=\"40\" fill=\"#f7f7f7\" stroke=\"#bbb\" stroke-width=\"1\" rx=\"4\"/>
+        <text x=\"800\" y=\"1832\" font-size=\"10\" text-anchor=\"middle\" fill=\"#666\">No bulletin posts yet. Create a bulletin and refresh to see branches.</text>
+      {% endif %}
+    </g>
   </svg>
 </div>
 
@@ -1203,7 +1236,7 @@ def create_app() -> Flask:
           SELECT id, board, sender_short_name, date, subject, content
           FROM bulletins
           ORDER BY id DESC
-          LIMIT 15
+          LIMIT 60
           """
         )
         recent_bulletins = cursor.fetchall()
@@ -1228,11 +1261,41 @@ def create_app() -> Flask:
         )
         recent_channels = cursor.fetchall()
 
+      board_posts = {}
+      for row in recent_bulletins:
+        board_name = (row["board"] or "Uncategorized").strip() or "Uncategorized"
+        if board_name not in board_posts:
+          board_posts[board_name] = []
+
+        if len(board_posts[board_name]) >= 4:
+          continue
+
+        sender = (row["sender_short_name"] or "unknown").strip() or "unknown"
+        subject = (row["subject"] or "").strip()
+        content = (row["content"] or "").strip()
+        preview = subject if subject else content
+        if len(preview) > 34:
+          preview = f"{preview[:31]}..."
+
+        board_posts[board_name].append(
+          {
+            "id": row["id"],
+            "sender": sender,
+            "date": row["date"],
+            "preview": preview,
+          }
+        )
+
+      topic_branches = []
+      for board_name, posts in board_posts.items():
+        topic_branches.append({"board": board_name, "posts": posts})
+
       content = render_template_string(
         FLOWCHART_CONTENT,
         recent_bulletins=recent_bulletins,
         recent_mail=recent_mail,
         recent_channels=recent_channels,
+        topic_branches=topic_branches,
       )
       return render_template_string(BASE_TEMPLATE, title="System Flowchart", content=content, show_nav=True)
 
