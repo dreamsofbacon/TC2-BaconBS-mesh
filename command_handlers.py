@@ -32,9 +32,14 @@ from zork_port import (
 config = configparser.ConfigParser()
 config.read('config.ini')
 
-main_menu_items = [item.strip() for item in config.get('menu', 'main_menu_items', fallback='Q,B,U,X').split(',') if item.strip()]
-bbs_menu_items = [item.strip() for item in config.get('menu', 'bbs_menu_items', fallback='M,B,C,J,X').split(',') if item.strip()]
-utilities_menu_items = [item.strip() for item in config.get('menu', 'utilities_menu_items', fallback='S,F,W,Z,X').split(',') if item.strip()]
+
+def _parse_menu_items(value: str) -> list[str]:
+    return [item.strip().upper() for item in value.split(',') if item.strip()]
+
+
+main_menu_items = _parse_menu_items(config.get('menu', 'main_menu_items', fallback='Q,B,U,X'))
+bbs_menu_items = _parse_menu_items(config.get('menu', 'bbs_menu_items', fallback='M,B,C,J,X'))
+utilities_menu_items = _parse_menu_items(config.get('menu', 'utilities_menu_items', fallback='S,F,W,Z,X'))
 
 if 'Z' not in utilities_menu_items:
     if 'X' in utilities_menu_items:
@@ -60,32 +65,39 @@ def get_bulletin_boards() -> list[str]:
 
 
 def build_menu(items, menu_name):
+    menu_items = [item.strip().upper() for item in items if item and item.strip()]
+    if menu_name == "🛠️Utilities Menu🛠️" and 'Z' not in menu_items:
+        if 'X' in menu_items:
+            menu_items.insert(menu_items.index('X'), 'Z')
+        else:
+            menu_items.append('Z')
+
     menu_str = f"{menu_name}\n"
-    for item in items:
-        if item.strip() == 'Q':
+    for item in menu_items:
+        if item == 'Q':
             menu_str += "[Q]uick Commands\n"
-        elif item.strip() == 'B':
+        elif item == 'B':
             if menu_name == "📰BBS Menu📰":
                 menu_str += "[B]ulletins\n"
             else:
                 menu_str += "[B]BS\n"
-        elif item.strip() == 'U':
+        elif item == 'U':
             menu_str += "[U]tilities\n"
-        elif item.strip() == 'X':
+        elif item == 'X':
             menu_str += "E[X]IT\n"
-        elif item.strip() == 'M':
+        elif item == 'M':
             menu_str += "[M]ail\n"
-        elif item.strip() == 'C':
+        elif item == 'C':
             menu_str += "[C]hannel Dir\n"
-        elif item.strip() == 'J':
+        elif item == 'J':
             menu_str += "[J]S8CALL\n"
-        elif item.strip() == 'S':
+        elif item == 'S':
             menu_str += "[S]tats\n"
-        elif item.strip() == 'F':
+        elif item == 'F':
             menu_str += "[F]ortune\n"
-        elif item.strip() == 'W':
+        elif item == 'W':
             menu_str += "[W]all of Shame\n"
-        elif item.strip() == 'Z':
+        elif item == 'Z':
             menu_str += "[Z]ork\n"
     return menu_str
 
