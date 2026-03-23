@@ -96,7 +96,19 @@ def _get_interpreter_command() -> list[str] | None:
 
     # env var overrides config, config overrides built-in defaults
     configured = (os.getenv("BBS_ZORK_INTERPRETER") or _cfg("interpreter") or "").strip()
-    candidates = [configured] if configured else ["dfrotz", "frotz", "dumb-frotz", "dumb_frotz"]
+    if configured:
+        candidates = [configured]
+    else:
+        candidates = [
+            "dfrotz",
+            "frotz",
+            "dumb-frotz",
+            "dumb_frotz",
+            "/usr/games/dfrotz",
+            "/usr/bin/dfrotz",
+            "/usr/games/frotz",
+            "/usr/bin/frotz",
+        ]
     _last_interpreter_candidates = [candidate for candidate in candidates if candidate]
 
     for candidate in candidates:
