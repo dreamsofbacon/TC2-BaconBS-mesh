@@ -13,8 +13,55 @@ import urllib.request
 from db_operations import get_zork_save, upsert_zork_save
 
 
-DEFAULT_STORY_URL = "https://raw.githubusercontent.com/historicalsource/zork1/master/COMPILED/zork1.z3"
-DEFAULT_STORY_PATH = os.path.join("data", "zork1.z3")
+# ---------------------------------------------------------------------------
+# Game registry – every Infocom title we support
+# ---------------------------------------------------------------------------
+GAMES: dict[str, dict] = {
+    'zork1': {
+        'name': 'Zork I',
+        'story_path': os.path.join('data', 'zork1.z3'),
+        'story_url': 'https://raw.githubusercontent.com/historicalsource/zork1/master/COMPILED/zork1.z3',
+    },
+    'zork2': {
+        'name': 'Zork II',
+        'story_path': os.path.join('data', 'zork2.z3'),
+        'story_url': 'https://raw.githubusercontent.com/historicalsource/zork2/master/COMPILED/zork2.z3',
+    },
+    'zork3': {
+        'name': 'Zork III',
+        'story_path': os.path.join('data', 'zork3.z3'),
+        'story_url': 'https://raw.githubusercontent.com/historicalsource/zork3/master/COMPILED/zork3.z3',
+    },
+    'hhgttg': {
+        'name': "Hitchhiker's Guide",
+        'story_path': os.path.join('data', 'hhgttg.z3'),
+        'story_url': 'https://raw.githubusercontent.com/historicalsource/hitchhikersguide/master/COMPILED/s4.z3',
+    },
+    'deadline': {
+        'name': 'Deadline',
+        'story_path': os.path.join('data', 'deadline.z3'),
+        'story_url': 'https://raw.githubusercontent.com/historicalsource/deadline/master/COMPILED/deadline.z3',
+    },
+    'enchanter': {
+        'name': 'Enchanter',
+        'story_path': os.path.join('data', 'enchanter.z3'),
+        'story_url': 'https://raw.githubusercontent.com/historicalsource/enchanter/master/COMPILED/enchanter.z3',
+    },
+    'planetfall': {
+        'name': 'Planetfall',
+        'story_path': os.path.join('data', 'planetfall.z3'),
+        'story_url': 'https://raw.githubusercontent.com/historicalsource/planetfall/master/COMPILED/planetfall.z3',
+    },
+    'starcross': {
+        'name': 'Starcross',
+        'story_path': os.path.join('data', 'starcross.z3'),
+        'story_url': 'https://raw.githubusercontent.com/historicalsource/starcross/master/COMPILED/starcross.z3',
+    },
+}
+
+# Legacy constants kept for any external references
+DEFAULT_STORY_URL = GAMES['zork1']['story_url']
+DEFAULT_STORY_PATH = GAMES['zork1']['story_path']
 MAX_RESPONSE_CHARS = 900
 
 _config = configparser.ConfigParser()
@@ -26,8 +73,9 @@ def _cfg(key: str, fallback: str = "") -> str:
     return _config.get("zork", key, fallback=fallback).strip()
 
 
+# Sessions are keyed by (user_id, game_id) – each game has an independent session
 _sessions_lock = threading.Lock()
-_sessions = {}
+_sessions: dict[tuple, "ZorkSession"] = {}
 _last_interpreter_candidates: list[str] = []
 
 
@@ -139,16 +187,23 @@ def _missing_interpreter_message() -> str:
     configured = (os.getenv("BBS_ZORK_INTERPRETER") or _cfg("interpreter") or "").strip()
     configured_hint = configured if configured else "(not set)"
     return (
-        "No Zork interpreter found.\n"
+        "No Z-machine interpreter found.\n"
         f"Tried: {tried}\n"
-        f"Configured BBS_ZORK_INTERPRETER / [zork].interpreter: {configured_hint}\n"
-        "Install frotz/dfrotz on the host, or set [zork] interpreter in config.ini to a full executable path."
+        f"Configured interpreter: {configured_hint}\n"
+        "Install frotz/dfrotz, or set [zork] interpreter in config.ini."
     )
 
 
-def _ensure_story_file() -> tuple[bool, str]:
-    story_path = os.getenv("BBS_ZORK_STORY_PATH") or _cfg("story_path") or DEFAULT_STORY_PATH
-    story_url = os.getenv("BBS_ZORK_STORY_URL") or _cfg("story_url") or DEFAULT_STORY_URL
+def _ensure_story_file(game_id: str = 'zork1') -> tuple[bool, str]:
+    game = GAMES.get(game_id, GAMES['zork1'])
+    # For zork1 only, honour legacy env-var / config overrides
+    if game_id == 'zork1':
+        story_path = os.getenv("BBS_ZORK_STORY_PATH") or _cfg("story_path") or game['story_path']
+        story_url = os.getenv("BBS_ZORK_STORY_URL") or _cfg("story_url") or game['story_url']
+    else:
+        story_path = game['story_path']
+        story_url = game['story_url']
+
     autodownload_raw = os.getenv("BBS_ZORK_AUTODOWNLOAD") or _cfg("autodownload", "true")
     autodownload = autodownload_raw.strip().lower() not in {"0", "false", "no"}
 
@@ -166,14 +221,14 @@ def _ensure_story_file() -> tuple[bool, str]:
         return False, story_path
 
 
-def _temp_save_file_path(user_id: int) -> str:
+def _temp_save_file_path(user_id: int, game_id: str = 'zork1') -> str:
     temp_dir = tempfile.gettempdir()
-    return os.path.join(temp_dir, f"tc2_zork_{user_id}_{int(time.time() * 1000)}.qzl")
+    return os.path.join(temp_dir, f"tc2_{game_id}_{user_id}_{int(time.time() * 1000)}.qzl")
 
 
-def has_zork_save(user_id: int) -> bool:
-    """Return True if a DB-backed save exists for this user."""
-    return get_zork_save(user_id) is not None
+def has_zork_save(user_id: int, game_id: str = 'zork1') -> bool:
+    """Return True if a DB-backed save exists for this user and game."""
+    return get_zork_save(user_id, game_id) is not None
 
 
 def _drain_output(session: "ZorkSession", settle_seconds: float = 0.8) -> None:
@@ -188,11 +243,11 @@ def _drain_output(session: "ZorkSession", settle_seconds: float = 0.8) -> None:
                 break
 
 
-def _autosave(session: "ZorkSession", user_id: int) -> None:
+def _autosave(session: "ZorkSession", user_id: int, game_id: str = 'zork1') -> None:
     """Save game via interpreter, then store resulting save file bytes in SQLite."""
     if session.process.poll() is not None or session.process.stdin is None:
         return
-    save_path = _temp_save_file_path(user_id)
+    save_path = _temp_save_file_path(user_id, game_id)
     try:
         session.process.stdin.write("save\n")
         session.process.stdin.flush()
@@ -205,7 +260,7 @@ def _autosave(session: "ZorkSession", user_id: int) -> None:
     try:
         if os.path.exists(save_path):
             with open(save_path, "rb") as f:
-                upsert_zork_save(user_id, f.read())
+                upsert_zork_save(user_id, f.read(), game_id)
     finally:
         try:
             if os.path.exists(save_path):
@@ -214,44 +269,44 @@ def _autosave(session: "ZorkSession", user_id: int) -> None:
             pass
 
 
-def has_zork_session(user_id: int) -> bool:
+def has_zork_session(user_id: int, game_id: str = 'zork1') -> bool:
     with _sessions_lock:
-        session = _sessions.get(user_id)
+        session = _sessions.get((user_id, game_id))
     return session is not None and session.process.poll() is None
 
 
-def resume_zork_session(user_id: int) -> str:
+def resume_zork_session(user_id: int, game_id: str = 'zork1') -> str:
     with _sessions_lock:
-        session = _sessions.get(user_id)
+        session = _sessions.get((user_id, game_id))
 
     if session is None:
-        return "No active Zork session."
+        return f"No active {GAMES.get(game_id, {}).get('name', 'game')} session."
 
     if session.process.poll() is not None:
         with _sessions_lock:
-            _sessions.pop(user_id, None)
-        return "Your previous Zork session ended. Start a new one with Z."
+            _sessions.pop((user_id, game_id), None)
+        return "Your previous session ended. Start a new one from Games."
 
     if session.last_output:
-        return f"Resuming your Zork session:\n\n{session.last_output}"
+        return f"Resuming:\n\n{session.last_output}"
 
-    return "Resuming your Zork session. Enter your next command."
+    return "Session resumed. Enter your next command."
 
 
-def start_zork_session(user_id: int) -> str:
+def start_zork_session(user_id: int, game_id: str = 'zork1') -> str:
     with _sessions_lock:
-        if user_id in _sessions:
-            return resume_zork_session(user_id)
+        if (user_id, game_id) in _sessions:
+            return resume_zork_session(user_id, game_id)
 
     interpreter_cmd = _get_interpreter_command()
     if interpreter_cmd is None:
         return _missing_interpreter_message()
 
-    story_ok, story_path = _ensure_story_file()
+    story_ok, story_path = _ensure_story_file(game_id)
     if not story_ok:
         return (
-            f"Zork story file not found at '{story_path}'.\n"
-            "Set BBS_ZORK_STORY_PATH or enable BBS_ZORK_AUTODOWNLOAD=true."
+            f"Story file not found at '{story_path}'.\n"
+            "Set BBS_ZORK_AUTODOWNLOAD=true to auto-download."
         )
 
     cmd = [*interpreter_cmd, story_path]
@@ -265,18 +320,17 @@ def start_zork_session(user_id: int) -> str:
             bufsize=1,
         )
     except Exception as exc:
-        return f"Failed to start Zork: {exc}"
+        return f"Failed to start game: {exc}"
 
     session = ZorkSession(process)
     with _sessions_lock:
-        _sessions[user_id] = session
+        _sessions[(user_id, game_id)] = session
 
-    # Drain the intro splash (we'll replace it if restoring from a save)
     intro = session.read_output()
 
-    save_blob = get_zork_save(user_id)
+    save_blob = get_zork_save(user_id, game_id)
     if save_blob:
-        save_path = _temp_save_file_path(user_id)
+        save_path = _temp_save_file_path(user_id, game_id)
         try:
             with open(save_path, "wb") as f:
                 f.write(save_blob)
@@ -292,7 +346,6 @@ def start_zork_session(user_id: int) -> str:
                     pass
             restore_output = session.read_output()
             if restore_output:
-                # Send 'look' so the player immediately sees their current location
                 look_output = session.send("look")
                 result = look_output if look_output else restore_output
                 session.last_output = result
@@ -305,38 +358,40 @@ def start_zork_session(user_id: int) -> str:
                 pass
 
     if not intro:
-        intro = "Zork started. Enter commands like LOOK, NORTH, TAKE LAMP, INVENTORY."
+        game_name = GAMES.get(game_id, {}).get('name', 'Game')
+        intro = f"{game_name} started. Enter commands like LOOK, NORTH, TAKE LAMP, INVENTORY."
     session.last_output = intro
     return intro
 
-def send_zork_command(user_id: int, command: str) -> str:
+
+def send_zork_command(user_id: int, command: str, game_id: str = 'zork1') -> str:
     with _sessions_lock:
-        session = _sessions.get(user_id)
+        session = _sessions.get((user_id, game_id))
 
     if session is None:
-        return "No active Zork session. Open Utilities and choose Zork first."
+        return "No active game session. Go to the Games menu to start a game."
 
     if not command.strip():
-        return "Enter a command for Zork, or send X to exit."
+        return "Enter a command, or send X to exit."
 
     if session.process.poll() is not None:
         with _sessions_lock:
-            _sessions.pop(user_id, None)
-        return "Zork session ended. Start a new one from Utilities."
+            _sessions.pop((user_id, game_id), None)
+        return "Game session ended. Go to the Games menu to start a new one."
 
     output = session.send(command.strip())
     if not output:
         return "[No output]"
 
     if session.process.poll() is None:
-        _autosave(session, user_id)
+        _autosave(session, user_id, game_id)
 
     return output
 
 
-def stop_zork_session(user_id: int) -> None:
+def stop_zork_session(user_id: int, game_id: str = 'zork1') -> None:
     with _sessions_lock:
-        session = _sessions.pop(user_id, None)
+        session = _sessions.pop((user_id, game_id), None)
 
     if session is not None:
         session.stop()
@@ -344,10 +399,10 @@ def stop_zork_session(user_id: int) -> None:
 
 def stop_all_sessions() -> None:
     with _sessions_lock:
-        user_ids = list(_sessions.keys())
+        keys = list(_sessions.keys())
 
-    for user_id in user_ids:
-        stop_zork_session(user_id)
+    for user_id, game_id in keys:
+        stop_zork_session(user_id, game_id)
 
 
 atexit.register(stop_all_sessions)

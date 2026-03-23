@@ -20,12 +20,35 @@ thread_local = threading.local()
 def _ensure_zork_saves_table() -> None:
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS zork_saves (
-                    user_id TEXT PRIMARY KEY,
-                    save_data BLOB NOT NULL,
-                    updated_at TEXT NOT NULL
-                );''')
-    conn.commit()
+    # Check if table already exists
+    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='zork_saves'")
+    table_exists = c.fetchone() is not None
+    if table_exists:
+        # Migrate from old single-PK schema (no game_id column) if needed
+        c.execute("PRAGMA table_info(zork_saves)")
+        columns = {row[1] for row in c.fetchall()}
+        if 'game_id' not in columns:
+            c.execute("ALTER TABLE zork_saves RENAME TO zork_saves_old")
+            c.execute('''CREATE TABLE zork_saves (
+                            user_id TEXT NOT NULL,
+                            game_id TEXT NOT NULL DEFAULT 'zork1',
+                            save_data BLOB NOT NULL,
+                            updated_at TEXT NOT NULL,
+                            PRIMARY KEY (user_id, game_id)
+                        );''')
+            c.execute('''INSERT INTO zork_saves (user_id, game_id, save_data, updated_at)
+                         SELECT user_id, 'zork1', save_data, updated_at FROM zork_saves_old''')
+            c.execute("DROP TABLE zork_saves_old")
+            conn.commit()
+    else:
+        c.execute('''CREATE TABLE zork_saves (
+                        user_id TEXT NOT NULL,
+                        game_id TEXT NOT NULL DEFAULT 'zork1',
+                        save_data BLOB NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (user_id, game_id)
+                    );''')
+        conn.commit()
 
 def get_db_connection():
     if not hasattr(thread_local, 'connection'):
@@ -68,9 +91,11 @@ def initialize_database():
                     FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
                 );''')
     c.execute('''CREATE TABLE IF NOT EXISTS zork_saves (
-                    user_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    game_id TEXT NOT NULL DEFAULT 'zork1',
                     save_data BLOB NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, game_id)
                 );''')
     conn.commit()
     print("Database schema initialized.")
@@ -232,36 +257,36 @@ def get_sender_id_by_mail_id(mail_id):
     return None
 
 
-def upsert_zork_save(user_id: int, save_data: bytes) -> None:
+def upsert_zork_save(user_id: int, save_data: bytes, game_id: str = 'zork1') -> None:
     _ensure_zork_saves_table()
     conn = get_db_connection()
     c = conn.cursor()
     updated_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     c.execute(
-        '''INSERT INTO zork_saves (user_id, save_data, updated_at)
-           VALUES (?, ?, ?)
-           ON CONFLICT(user_id) DO UPDATE SET
+        '''INSERT INTO zork_saves (user_id, game_id, save_data, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(user_id, game_id) DO UPDATE SET
              save_data = excluded.save_data,
              updated_at = excluded.updated_at''',
-        (str(user_id), save_data, updated_at)
+        (str(user_id), game_id, save_data, updated_at)
     )
     conn.commit()
 
 
-def get_zork_save(user_id: int) -> bytes | None:
+def get_zork_save(user_id: int, game_id: str = 'zork1') -> bytes | None:
     _ensure_zork_saves_table()
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT save_data FROM zork_saves WHERE user_id = ?", (str(user_id),))
+    c.execute("SELECT save_data FROM zork_saves WHERE user_id = ? AND game_id = ?", (str(user_id), game_id))
     row = c.fetchone()
     if not row:
         return None
     return row[0]
 
 
-def delete_zork_save(user_id: int) -> None:
+def delete_zork_save(user_id: int, game_id: str = 'zork1') -> None:
     _ensure_zork_saves_table()
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("DELETE FROM zork_saves WHERE user_id = ?", (str(user_id),))
+    c.execute("DELETE FROM zork_saves WHERE user_id = ? AND game_id = ?", (str(user_id), game_id))
     conn.commit()
