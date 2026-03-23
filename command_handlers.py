@@ -12,7 +12,9 @@ from db_operations import (
     get_mail, get_mail_content,
     add_channel, get_channels, get_sender_id_by_mail_id,
     get_channel_categories, get_channels_by_name, get_channel_by_id,
-    add_channel_comment, get_channel_comments
+    add_channel_comment, get_channel_comments,
+    auto_upsert_user_profile, get_user_profile, update_user_bio,
+    upsert_game_score, get_game_scoreboard, get_user_game_scores,
 )
 from utils import (
     get_node_id_from_num, get_node_info,
@@ -23,6 +25,7 @@ from zork_port import (
     GAMES,
     has_zork_save,
     has_zork_session,
+    parse_game_score,
     resume_zork_session,
     send_zork_command,
     start_zork_session,
@@ -41,7 +44,7 @@ def _parse_menu_items(value: str) -> list[str]:
     return [item.strip().upper() for item in value.split(',') if item.strip()]
 
 
-main_menu_items = _parse_menu_items(config.get('menu', 'main_menu_items', fallback='Q,B,U,X'))
+main_menu_items = _parse_menu_items(config.get('menu', 'main_menu_items', fallback='Q,B,U,P,X'))
 bbs_menu_items = _parse_menu_items(config.get('menu', 'bbs_menu_items', fallback='M,B,C,J,X'))
 utilities_menu_items = _parse_menu_items(config.get('menu', 'utilities_menu_items', fallback='S,F,W,G,X'))
 
@@ -125,6 +128,8 @@ def build_menu(items, menu_name):
             menu_str += "[G]ames\n"
         elif item == 'Z':
             menu_str += "[G]ames\n"  # legacy alias
+        elif item == 'P':
+            menu_str += "[P]rofile\n"
     return menu_str
 
 def handle_help_command(sender_id, interface, menu_name=None):
@@ -196,7 +201,7 @@ def handle_games_command(sender_id, interface):
     menu = "🎮 Games 🎮\n"
     for i, (game_id, info) in enumerate(GAME_LIST, start=1):
         menu += f"[{i}] {info['name']}\n"
-    menu += "[0] Exit"
+    menu += "[S]cores [0]Exit"
     send_message(menu, sender_id, interface)
     update_user_state(sender_id, {'command': 'GAMES_MENU', 'step': 1})
 
@@ -207,6 +212,10 @@ def handle_games_steps(sender_id, message, interface):
         handle_help_command(sender_id, interface, 'utilities')
         return
 
+    if choice.lower() == 's':
+        handle_scoreboard_command(sender_id, interface)
+        return
+
     try:
         idx = int(choice) - 1
         if idx < 0:
@@ -214,7 +223,7 @@ def handle_games_steps(sender_id, message, interface):
         game_id, info = GAME_LIST[idx]
     except (ValueError, IndexError):
         send_message(
-            f"Invalid choice. Enter 1-{len(GAME_LIST)} or 0 to exit.",
+            f"Invalid choice. Enter 1-{len(GAME_LIST)}, S for scores, or 0.",
             sender_id, interface
         )
         return
@@ -246,6 +255,82 @@ def handle_zork_command(sender_id, interface):
     handle_games_command(sender_id, interface)
 
 
+def handle_scoreboard_command(sender_id, interface):
+    menu = "🏆 Scoreboard 🏆\n"
+    for i, (game_id, info) in enumerate(GAME_LIST, start=1):
+        menu += f"[{i}] {info['name']}\n"
+    menu += "[0] Back"
+    send_message(menu, sender_id, interface)
+    update_user_state(sender_id, {'command': 'SCOREBOARD', 'step': 1})
+
+
+def handle_scoreboard_steps(sender_id, message, interface):
+    choice = message.strip()
+    if choice in ('0', 'x', 'back'):
+        handle_games_command(sender_id, interface)
+        return
+    try:
+        idx = int(choice) - 1
+        if idx < 0:
+            raise ValueError
+        game_id, info = GAME_LIST[idx]
+    except (ValueError, IndexError):
+        send_message(f"Enter 1-{len(GAME_LIST)} or 0 to go back.", sender_id, interface)
+        return
+    scores = get_game_scoreboard(game_id, limit=5)
+    if not scores:
+        send_message(f"No scores yet for {info['name']}. Be first!", sender_id, interface)
+    else:
+        lines = [f"🏆 {info['name']}"]
+        for rank, (short_name, score, max_score, moves) in enumerate(scores, 1):
+            ms = f"/{max_score}" if max_score else ""
+            lines.append(f"{rank}. {short_name} {score}{ms} {moves}mv")
+        send_message("\n".join(lines), sender_id, interface)
+    update_user_state(sender_id, {'command': 'SCOREBOARD', 'step': 1})
+
+
+def handle_profile_command(sender_id, interface):
+    profile = get_user_profile(sender_id)
+    if not profile:
+        send_message("No profile yet - send any command to create one!", sender_id, interface)
+        return
+    _, short_name, long_name, first_seen, last_seen, msg_count, bio = profile
+    first_date = first_seen[:10] if first_seen else "?"
+    scores = get_user_game_scores(sender_id)
+    lines = [f"👤 {short_name}", f"Since:{first_date} Msgs:{msg_count}"]
+    if scores:
+        parts = []
+        for game_id, score, max_score in scores[:3]:
+            gname = GAMES.get(game_id, {}).get('name', game_id)[:8]
+            ms = f"/{max_score}" if max_score else ""
+            parts.append(f"{gname}:{score}{ms}")
+        lines.append("Scores: " + " ".join(parts))
+    if bio:
+        lines.append(f"Bio: {bio}")
+    lines.append("[E]dit Bio [0]Back")
+    send_message("\n".join(lines), sender_id, interface)
+    update_user_state(sender_id, {'command': 'PROFILE', 'step': 1})
+
+
+def handle_profile_steps(sender_id, message, interface):
+    state = get_user_state(sender_id) or {}
+    choice = message.strip()
+    if state.get('step') == 2:
+        bio = choice[:100]
+        update_user_bio(sender_id, bio)
+        send_message("Bio updated!", sender_id, interface)
+        handle_profile_command(sender_id, interface)
+        return
+    if choice.lower() in ('0', 'x', 'back', 'exit'):
+        handle_help_command(sender_id, interface)
+        return
+    if choice.lower() == 'e':
+        send_message("Enter your bio (max 100 chars):", sender_id, interface)
+        update_user_state(sender_id, {'command': 'PROFILE', 'step': 2})
+        return
+    handle_profile_command(sender_id, interface)
+
+
 def handle_zork_steps(sender_id, message, interface):
     state = get_user_state(sender_id) or {}
     game_id = state.get('game_id', 'zork1')
@@ -266,6 +351,13 @@ def handle_zork_steps(sender_id, message, interface):
 
     response = send_zork_command(sender_id, choice, game_id)
     send_message(response, sender_id, interface)
+    # Capture score if the game output contains one
+    parsed = parse_game_score(response)
+    if parsed:
+        score, max_score, moves = parsed
+        node_id = get_node_id_from_num(sender_id, interface)
+        short_name = get_node_short_name(node_id, interface) or str(sender_id)
+        upsert_game_score(sender_id, game_id, short_name, score, max_score, moves)
     update_user_state(sender_id, {'command': 'ZORK', 'step': 1, 'game_id': game_id})
 
 
