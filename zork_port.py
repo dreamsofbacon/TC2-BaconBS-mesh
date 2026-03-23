@@ -2,6 +2,7 @@ import atexit
 import configparser
 import os
 import queue
+import shlex
 import shutil
 import subprocess
 import threading
@@ -25,6 +26,7 @@ def _cfg(key: str, fallback: str = "") -> str:
 
 _sessions_lock = threading.Lock()
 _sessions = {}
+_last_interpreter_candidates: list[str] = []
 
 
 class ZorkSession:
@@ -90,14 +92,44 @@ class ZorkSession:
 
 
 def _get_interpreter_command() -> list[str] | None:
+    global _last_interpreter_candidates
+
     # env var overrides config, config overrides built-in defaults
-    configured = os.getenv("BBS_ZORK_INTERPRETER") or _cfg("interpreter")
-    candidates = [configured] if configured else ["dfrotz", "frotz"]
+    configured = (os.getenv("BBS_ZORK_INTERPRETER") or _cfg("interpreter") or "").strip()
+    candidates = [configured] if configured else ["dfrotz", "frotz", "dumb-frotz", "dumb_frotz"]
+    _last_interpreter_candidates = [candidate for candidate in candidates if candidate]
 
     for candidate in candidates:
-        if candidate and shutil.which(candidate):
-            return [candidate]
+        if not candidate:
+            continue
+
+        parts = shlex.split(candidate)
+        if not parts:
+            continue
+
+        exe = parts[0]
+        if os.path.isfile(exe) or shutil.which(exe):
+            return parts
+
+        # Common Windows case where configured path omits .exe
+        if os.name == "nt" and not exe.lower().endswith(".exe"):
+            exe_with_ext = exe + ".exe"
+            if os.path.isfile(exe_with_ext) or shutil.which(exe_with_ext):
+                return [exe_with_ext, *parts[1:]]
+
     return None
+
+
+def _missing_interpreter_message() -> str:
+    tried = ", ".join(_last_interpreter_candidates or ["dfrotz", "frotz"])
+    configured = (os.getenv("BBS_ZORK_INTERPRETER") or _cfg("interpreter") or "").strip()
+    configured_hint = configured if configured else "(not set)"
+    return (
+        "No Zork interpreter found.\n"
+        f"Tried: {tried}\n"
+        f"Configured BBS_ZORK_INTERPRETER / [zork].interpreter: {configured_hint}\n"
+        "Install frotz/dfrotz on the host, or set [zork] interpreter in config.ini to a full executable path."
+    )
 
 
 def _ensure_story_file() -> tuple[bool, str]:
@@ -189,10 +221,7 @@ def start_zork_session(user_id: int) -> str:
 
     interpreter_cmd = _get_interpreter_command()
     if interpreter_cmd is None:
-        return (
-            "No Zork interpreter found. Install frotz/dfrotz and try again.\n"
-            "You can also set BBS_ZORK_INTERPRETER to a custom command."
-        )
+        return _missing_interpreter_message()
 
     story_ok, story_path = _ensure_story_file()
     if not story_ok:
