@@ -21,6 +21,7 @@ class ZorkSession:
     def __init__(self, process: subprocess.Popen):
         self.process = process
         self.output_queue: queue.Queue[str] = queue.Queue()
+        self.last_output = ""
         self.reader_thread = threading.Thread(target=self._read_output, daemon=True)
         self.reader_thread.start()
 
@@ -50,6 +51,8 @@ class ZorkSession:
         text = "".join(chunks).strip()
         if len(text) > MAX_RESPONSE_CHARS:
             text = f"{text[:MAX_RESPONSE_CHARS]}\n\n[Output truncated]"
+        if text:
+            self.last_output = text
         return text
 
     def send(self, command: str) -> str:
@@ -105,10 +108,34 @@ def _ensure_story_file() -> tuple[bool, str]:
         return False, story_path
 
 
+def has_zork_session(user_id: int) -> bool:
+    with _sessions_lock:
+        session = _sessions.get(user_id)
+    return session is not None and session.process.poll() is None
+
+
+def resume_zork_session(user_id: int) -> str:
+    with _sessions_lock:
+        session = _sessions.get(user_id)
+
+    if session is None:
+        return "No active Zork session."
+
+    if session.process.poll() is not None:
+        with _sessions_lock:
+            _sessions.pop(user_id, None)
+        return "Your previous Zork session ended. Start a new one with Z."
+
+    if session.last_output:
+        return f"Resuming your Zork session:\n\n{session.last_output}"
+
+    return "Resuming your Zork session. Enter your next command."
+
+
 def start_zork_session(user_id: int) -> str:
     with _sessions_lock:
         if user_id in _sessions:
-            return "Zork session already running. Enter a command, or send X to exit."
+            return resume_zork_session(user_id)
 
     interpreter_cmd = _get_interpreter_command()
     if interpreter_cmd is None:
@@ -144,8 +171,8 @@ def start_zork_session(user_id: int) -> str:
     intro = session.read_output()
     if not intro:
         intro = "Zork started. Enter commands like LOOK, NORTH, TAKE LAMP, INVENTORY."
+    session.last_output = intro
     return intro
-
 
 def send_zork_command(user_id: int, command: str) -> str:
     with _sessions_lock:
