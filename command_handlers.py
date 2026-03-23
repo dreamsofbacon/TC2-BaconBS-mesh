@@ -19,6 +19,7 @@ from utils import (
     get_node_short_name, send_message,
     update_user_state
 )
+from zork_port import send_zork_command, start_zork_session, stop_zork_session
 
 # Read the configuration for menu options
 config = configparser.ConfigParser()
@@ -26,7 +27,7 @@ config.read('config.ini')
 
 main_menu_items = [item.strip() for item in config.get('menu', 'main_menu_items', fallback='Q,B,U,X').split(',') if item.strip()]
 bbs_menu_items = [item.strip() for item in config.get('menu', 'bbs_menu_items', fallback='M,B,C,J,X').split(',') if item.strip()]
-utilities_menu_items = [item.strip() for item in config.get('menu', 'utilities_menu_items', fallback='S,F,W,X').split(',') if item.strip()]
+utilities_menu_items = [item.strip() for item in config.get('menu', 'utilities_menu_items', fallback='S,F,W,Z,X').split(',') if item.strip()]
 
 
 def get_bulletin_boards() -> list[str]:
@@ -70,6 +71,8 @@ def build_menu(items, menu_name):
             menu_str += "[F]ortune\n"
         elif item.strip() == 'W':
             menu_str += "[W]all of Shame\n"
+        elif item.strip() == 'Z':
+            menu_str += "[Z]ork\n"
     return menu_str
 
 def handle_help_command(sender_id, interface, menu_name=None):
@@ -135,6 +138,29 @@ def handle_fortune_command(sender_id, interface):
         send_message(decorated_fortune, sender_id, interface)
     except Exception as e:
         send_message(f"Error generating fortune: {e}", sender_id, interface)
+
+
+def handle_zork_command(sender_id, interface):
+    intro = start_zork_session(sender_id)
+    send_message(intro, sender_id, interface)
+    send_message("Zork mode active. Send commands (LOOK, NORTH, TAKE LAMP). Send X to exit.", sender_id, interface)
+    update_user_state(sender_id, {'command': 'ZORK', 'step': 1})
+
+
+def handle_zork_steps(sender_id, message, interface):
+    choice = message.strip()
+    if len(choice) == 2 and choice[1].lower() == 'x':
+        choice = choice[0]
+
+    if choice.lower() in ('x', 'quit', 'exit'):
+        stop_zork_session(sender_id)
+        send_message("Exited Zork mode.", sender_id, interface)
+        handle_help_command(sender_id, interface, 'utilities')
+        return
+
+    response = send_zork_command(sender_id, choice)
+    send_message(response, sender_id, interface)
+    update_user_state(sender_id, {'command': 'ZORK', 'step': 1})
 
 
 def handle_stats_steps(sender_id, message, step, interface):
