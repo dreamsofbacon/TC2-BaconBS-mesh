@@ -95,6 +95,7 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('clients_summary') }}\">Clients</a>
       <a href=\"{{ url_for('board_settings') }}\">Boards</a>
       <a href=\"{{ url_for('admin_settings') }}\">Admin</a>
+      <a href=\"{{ url_for('system_flowchart') }}\">System Flowchart</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
     </div>
     {% endif %}
@@ -481,6 +482,206 @@ CLIENTS_CONTENT = """
 """
 
 
+FLOWCHART_CONTENT = """
+<div class=\"card\">
+  <h2>Message System Flowchart</h2>
+  <p class=\"muted\">Visual representation of how messages flow through the TC²-BBS system.</p>
+</div>
+
+<div class=\"card\" style=\"overflow-x: auto; background: #fafafa;\">
+  <svg viewBox=\"0 0 1200 1400\" style=\"width: 100%; min-height: 1400px; border: 1px solid #ddd; border-radius: 8px;\">
+    <!-- Title -->
+    <text x=\"600\" y=\"30\" font-size=\"24\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#222\">TC²-BBS Message Flow Architecture</text>
+    
+    <!-- Input Layer -->
+    <g id=\"input-layer\">
+      <text x=\"600\" y=\"70\" font-size=\"14\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#0056d6\">INPUT LAYER</text>
+      
+      <!-- User Input -->
+      <rect x=\"450\" y=\"100\" width=\"300\" height=\"60\" fill=\"#e8f0ff\" stroke=\"#0056d6\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"600\" y=\"135\" font-size=\"12\" text-anchor=\"middle\" font-weight=\"bold\">User Message</text>
+      <text x=\"600\" y=\"150\" font-size=\"10\" text-anchor=\"middle\" fill=\"#666\">(Text from Meshtastic device)</text>
+      
+      <!-- Vertical line down -->
+      <line x1=\"600\" y1=\"160\" x2=\"600\" y2=\"200\" stroke=\"#0056d6\" stroke-width=\"2\"/>
+    </g>
+    
+    <!-- Process Layer -->
+    <g id=\"process-layer\">
+      <text x=\"600\" y=\"220\" font-size=\"14\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#0056d6\">MESSAGE PROCESSING</text>
+      
+      <!-- Main processor -->
+      <rect x=\"400\" y=\"240\" width=\"400\" height=\"80\" fill=\"#fff3cd\" stroke=\"#ff9800\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"600\" y=\"265\" font-size=\"12\" text-anchor=\"middle\" font-weight=\"bold\">process_message()</text>
+      <text x=\"600\" y=\"283\" font-size=\"10\" text-anchor=\"middle\" fill=\"#666\">Parse command & get user state</text>
+      <text x=\"600\" y=\"298\" font-size=\"10\" text-anchor=\"middle\" fill=\"#666\">Route to appropriate handler</text>
+      <text x=\"600\" y=\"313\" font-size=\"10\" text-anchor=\"middle\" fill=\"#666\">(Main Menu, BBS, Utilities, etc.)</text>
+      
+      <!-- Lines to handlers -->
+      <line x1=\"600\" y1=\"320\" x2=\"600\" y2=\"360\" stroke=\"#ff9800\" stroke-width=\"2\"/>
+    </g>
+    
+    <!-- Handler Branching -->
+    <g id=\"handlers-layer\">
+      <text x=\"600\" y=\"380\" font-size=\"14\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#0056d6\">COMMAND HANDLERS</text>
+      
+      <!-- Bulletin Handler -->
+      <rect x=\"80\" y=\"410\" width=\"180\" height=\"80\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"170\" y=\"430\" font-size=\"11\" text-anchor=\"middle\" font-weight=\"bold\">Bulletin Commands</text>
+      <text x=\"170\" y=\"447\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">• Check bulletins</text>
+      <text x=\"170\" y=\"460\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">• Read bulletin</text>
+      <text x=\"170\" y=\"473\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">• Post bulletin</text>
+      
+      <!-- Mail Handler -->
+      <rect x=\"310\" y=\"410\" width=\"180\" height=\"80\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"400\" y=\"430\" font-size=\"11\" text-anchor=\"middle\" font-weight=\"bold\">Mail Commands</text>
+      <text x=\"400\" y=\"447\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">• Check mail</text>
+      <text x=\"400\" y=\"460\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">• Read mail</text>
+      <text x=\"400\" y=\"473\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">• Send mail</text>
+      
+      <!-- Channel Handler -->
+      <rect x=\"540\" y=\"410\" width=\"180\" height=\"80\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"630\" y=\"430\" font-size=\"11\" text-anchor=\"middle\" font-weight=\"bold\">Channel Commands</text>
+      <text x=\"630\" y=\"447\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">• List channels</text>
+      <text x=\"630\" y=\"460\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">• Read channel</text>
+      <text x=\"630\" y=\"473\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">• Post to channel</text>
+      
+      <!-- Other Handlers -->
+      <rect x=\"770\" y=\"410\" width=\"180\" height=\"80\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"860\" y=\"430\" font-size=\"11\" text-anchor=\"middle\" font-weight=\"bold\">Other Commands</text>
+      <text x=\"860\" y=\"447\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">• Stats</text>
+      <text x=\"860\" y=\"460\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">• Fortune</text>
+      <text x=\"860\" y=\"473\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">• JS8Call</text>
+      
+      <!-- JS8 Handler -->
+      <rect x=\"1000\" y=\"410\" width=\"150\" height=\"80\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"1075\" y=\"430\" font-size=\"11\" text-anchor=\"middle\" font-weight=\"bold\">JS8Call</text>
+      <text x=\"1075\" y=\"447\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">• Integration</text>
+      <text x=\"1075\" y=\"460\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">• Group Msgs</text>
+      <text x=\"1075\" y=\"473\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">• Forwarding</text>
+      
+      <!-- Lines from processor to handlers -->
+      <line x1=\"470\" y1=\"365\" x2=\"170\" y2=\"410\" stroke=\"#666\" stroke-width=\"1\" stroke-dasharray=\"5,5\"/>
+      <line x1=\"520\" y1=\"360\" x2=\"400\" y2=\"410\" stroke=\"#666\" stroke-width=\"1\" stroke-dasharray=\"5,5\"/>
+      <line x1=\"600\" y1=\"360\" x2=\"630\" y2=\"410\" stroke=\"#666\" stroke-width=\"1\" stroke-dasharray=\"5,5\"/>
+      <line x1=\"700\" y1=\"360\" x2=\"860\" y2=\"410\" stroke=\"#666\" stroke-width=\"1\" stroke-dasharray=\"5,5\"/>
+      <line x1=\"730\" y1=\"365\" x2=\"1075\" y2=\"410\" stroke=\"#666\" stroke-width=\"1\" stroke-dasharray=\"5,5\"/>
+    </g>
+    
+    <!-- Database Layer -->
+    <g id=\"database-layer\">
+      <text x=\"600\" y=\"540\" font-size=\"14\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#0056d6\">DATABASE OPERATIONS</text>
+      
+      <!-- Bulletins DB -->
+      <rect x=\"100\" y=\"560\" width=\"160\" height=\"80\" fill=\"#f3e5f5\" stroke=\"#9c27b0\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"180\" y=\"580\" font-size=\"11\" text-anchor=\"middle\" font-weight=\"bold\">Bulletins DB</text>
+      <text x=\"180\" y=\"597\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">add_bulletin()</text>
+      <text x=\"180\" y=\"610\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">get_bulletins()</text>
+      <text x=\"180\" y=\"623\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">delete_bulletin()</text>
+      
+      <!-- Mail DB -->
+      <rect x=\"330\" y=\"560\" width=\"160\" height=\"80\" fill=\"#f3e5f5\" stroke=\"#9c27b0\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"410\" y=\"580\" font-size=\"11\" text-anchor=\"middle\" font-weight=\"bold\">Mail DB</text>
+      <text x=\"410\" y=\"597\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">add_mail()</text>
+      <text x=\"410\" y=\"610\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">get_mail()</text>
+      <text x=\"410\" y=\"623\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">delete_mail()</text>
+      
+      <!-- Channel DB -->
+      <rect x=\"560\" y=\"560\" width=\"160\" height=\"80\" fill=\"#f3e5f5\" stroke=\"#9c27b0\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"640\" y=\"580\" font-size=\"11\" text-anchor=\"middle\" font-weight=\"bold\">Channels DB</text>
+      <text x=\"640\" y=\"597\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">add_channel()</text>
+      <text x=\"640\" y=\"610\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">get_channels()</text>
+      <text x=\"640\" y=\"623\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">add_comment()</text>
+      
+      <!-- SQLite Core -->
+      <rect x=\"790\" y=\"560\" width=\"160\" height=\"80\" fill=\"#f3e5f5\" stroke=\"#9c27b0\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"870\" y=\"580\" font-size=\"11\" text-anchor=\"middle\" font-weight=\"bold\">SQLite DB</text>
+      <text x=\"870\" y=\"597\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">bulletins.db</text>
+      <text x=\"870\" y=\"610\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">Persistent storage</text>
+      <text x=\"870\" y=\"623\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">Sync messages</text>
+    </g>
+    
+    <!-- Sync Layer -->
+    <g id=\"sync-layer\">
+      <text x=\"600\" y=\"710\" font-size=\"14\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#0056d6\">SYNC OPERATIONS (Optional)</text>
+      
+      <!-- Sync decision -->
+      <polygon points=\"600,730 650,760 600,790 550,760\" fill=\"#ffe0b2\" stroke=\"#ff9800\" stroke-width=\"2\"/>
+      <text x=\"600\" y=\"765\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Sync Enabled?</text>
+      
+      <!-- Yes branch - Build message -->
+      <line x1=\"650\" y1=\"760\" x2=\"800\" y2=\"760\" stroke=\"#ff9800\" stroke-width=\"2\"/>
+      <text x=\"720\" y=\"752\" font-size=\"9\" fill=\"#ff9800\">YES</text>
+      
+      <rect x=\"800\" y=\"730\" width=\"180\" height=\"60\" fill=\"#fff9e6\" stroke=\"#ff9800\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"890\" y=\"750\" font-size=\"11\" text-anchor=\"middle\" font-weight=\"bold\">Build Sync Message</text>
+      <text x=\"890\" y=\"765\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">BULLETIN|MAIL|DELETE|etc</text>
+      
+      <!-- BROADCAST message -->
+      <line x1=\"890\" y1=\"790\" x2=\"890\" y2=\"830\" stroke=\"#ff9800\" stroke-width=\"2\"/>
+      
+      <rect x=\"800\" y=\"830\" width=\"180\" height=\"80\" fill=\"#ffccbc\" stroke=\"#ff5722\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"890\" y=\"850\" font-size=\"11\" text-anchor=\"middle\" font-weight=\"bold\">send_message()</text>
+      <text x=\"890\" y=\"867\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">→ Each BBS Node</text>
+      <text x=\"890\" y=\"882\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">⚠ Multiple messages sent</text>
+      <text x=\"890\" y=\"897\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">(One per sync node)</text>
+      
+      <!-- No branch -->
+      <line x1=\"550\" y1=\"760\" x2=\"400\" y2=\"760\" stroke=\"#666\" stroke-width=\"2\" stroke-dasharray=\"5,5\"/>
+      <text x=\"470\" y=\"752\" font-size=\"9\" fill=\"#666\">NO</text>
+      
+      <rect x=\"270\" y=\"730\" width=\"130\" height=\"60\" fill=\"#f0f0f0\" stroke=\"#999\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"335\" y=\"755\" font-size=\"11\" text-anchor=\"middle\" font-weight=\"bold\">No Sync</text>
+      <text x=\"335\" y=\"770\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">(Local only)</text>
+    </g>
+    
+    <!-- Response Layer -->
+    <g id=\"response-layer\">
+      <text x=\"600\" y=\"970\" font-size=\"14\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#0056d6\">RESPONSE TO USER</text>
+      
+      <rect x=\"350\" y=\"990\" width=\"500\" height=\"100\" fill=\"#c8e6c9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
+      <text x=\"600\" y=\"1010\" font-size=\"11\" text-anchor=\"middle\" font-weight=\"bold\">send_message() via Meshtastic</text>
+      <text x=\"600\" y=\"1028\" font-size=\"10\" text-anchor=\"middle\" fill=\"#333\">Response sent back to user device</text>
+      <text x=\"600\" y=\"1043\" font-size=\"10\" text-anchor=\"middle\" fill=\"#333\">Max 200 bytes per chunk (chunked if needed)</text>
+      <text x=\"600\" y=\"1058\" font-size=\"10\" text-anchor=\"middle\" fill=\"#333\">2 second delay between chunks</text>
+      <text x=\"600\" y=\"1073\" font-size=\"10\" text-anchor=\"middle\" fill=\"#333\">Message acknowledgement requested</text>
+    </g>
+    
+    <!-- Summary Legend -->
+    <g id=\"legend\">
+      <text x=\"50\" y=\"1190\" font-size=\"12\" font-weight=\"bold\" fill=\"#222\">Key Data Flows:</text>
+      
+      <line x1=\"50\" y1=\"1210\" x2=\"90\" y2=\"1210\" stroke=\"#0056d6\" stroke-width=\"2\"/>
+      <text x=\"100\" y=\"1215\" font-size=\"10\" fill=\"#333\">Primary flow (one message)</text>
+      
+      <line x1=\"50\" y1=\"1240\" x2=\"90\" y2=\"1240\" stroke=\"#666\" stroke-width=\"1\" stroke-dasharray=\"5,5\"/>
+      <text x=\"100\" y=\"1245\" font-size=\"10\" fill=\"#333\">Branching/conditional paths</text>
+      
+      <rect x=\"50\" y=\"1260\" width=\"20\" height=\"20\" fill=\"#ffccbc\" stroke=\"#ff5722\" stroke-width=\"2\"/>
+      <text x=\"100\" y=\"1275\" font-size=\"10\" fill=\"#333\">Bottleneck: Multiple messages sent (see notes below)</text>
+      
+      <text x=\"50\" y=\"1320\" font-size=\"11\" font-weight=\"bold\" fill=\"#b91c1c\">⚠ Current Issue - Message Multiplication:</text>
+      <text x=\"50\" y=\"1340\" font-size=\"9\" fill=\"#333\">• Each sync-enabled operation sends N messages (one per BBS node in network)</text>
+      <text x=\"50\" y=\"1355\" font-size=\"9\" fill=\"#333\">• Example: 1 user posts bulletin + 3 sync nodes = 3 messages sent to mesh</text>
+      <text x=\"50\" y=\"1370\" font-size=\"9\" fill=\"#333\">• This can be optimized by: batching, local-only mode, broadcast instead of unicast</text>
+    </g>
+  </svg>
+</div>
+
+<div class=\"card\">
+  <h3>How to Use This View</h3>
+  <ul style=\"margin: 0; padding-left: 20px;\">
+    <li><strong>Blue boxes</strong> = Core processing functions</li>
+    <li><strong>Green boxes</strong> = Command handlers and database operations</li>
+    <li><strong>Orange/Red boxes</strong> = Sync operations (where message multiplication happens)</li>
+    <li><strong>Solid lines</strong> = Primary data flow</li>
+    <li><strong>Dashed lines</strong> = Branching/conditional paths</li>
+  </ul>
+  <p class=\"muted\" style=\"margin-top: 16px;\">Next step: You can modify the system to reduce message counts by configuring sync behavior, implementing batch messages, or switching to broadcast mode.</p>
+</div>
+"""
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     app.secret_key = os.getenv("BBS_WEBGUI_SECRET", "change-this-secret")
@@ -728,6 +929,12 @@ def create_app() -> Flask:
         total_posts=total_posts,
       )
       return render_template_string(BASE_TEMPLATE, title="Clients", content=content, show_nav=True)
+
+    @app.route("/system/flowchart")
+    @login_required
+    def system_flowchart():
+      content = render_template_string(FLOWCHART_CONTENT)
+      return render_template_string(BASE_TEMPLATE, title="System Flowchart", content=content, show_nav=True)
 
     @app.route("/<table>")
     @login_required
