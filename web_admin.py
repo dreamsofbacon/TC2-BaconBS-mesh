@@ -850,6 +850,98 @@ FLOWCHART_CONTENT = """
     <li><strong>Response</strong> → User gets answer back (chunked if >200 bytes)</li>
   </ul>
 </div>
+
+<div class=\"card\">
+  <h3>Live Messages From Database</h3>
+  <p class=\"muted\">Latest posted messages currently stored in your database.</p>
+
+  <h4>Recent Bulletins</h4>
+  <table>
+    <thead>
+      <tr>
+        <th>id</th>
+        <th>board</th>
+        <th>sender</th>
+        <th>date</th>
+        <th>subject</th>
+        <th>content</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in recent_bulletins %}
+      <tr>
+        <td>{{ row['id'] }}</td>
+        <td>{{ row['board'] }}</td>
+        <td>{{ row['sender_short_name'] }}</td>
+        <td>{{ row['date'] }}</td>
+        <td>{{ row['subject'] }}</td>
+        <td>{{ row['content'] }}</td>
+      </tr>
+      {% endfor %}
+      {% if not recent_bulletins %}
+      <tr>
+        <td colspan=\"6\" class=\"muted\">No bulletin messages found.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+
+  <h4 style=\"margin-top: 20px;\">Recent Mail</h4>
+  <table>
+    <thead>
+      <tr>
+        <th>id</th>
+        <th>from</th>
+        <th>to</th>
+        <th>date</th>
+        <th>subject</th>
+        <th>content</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in recent_mail %}
+      <tr>
+        <td>{{ row['id'] }}</td>
+        <td>{{ row['sender_short_name'] }}</td>
+        <td>{{ row['recipient'] }}</td>
+        <td>{{ row['date'] }}</td>
+        <td>{{ row['subject'] }}</td>
+        <td>{{ row['content'] }}</td>
+      </tr>
+      {% endfor %}
+      {% if not recent_mail %}
+      <tr>
+        <td colspan=\"6\" class=\"muted\">No mail messages found.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+
+  <h4 style=\"margin-top: 20px;\">Recent Channels</h4>
+  <table>
+    <thead>
+      <tr>
+        <th>id</th>
+        <th>name</th>
+        <th>url / psk</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in recent_channels %}
+      <tr>
+        <td>{{ row['id'] }}</td>
+        <td>{{ row['name'] }}</td>
+        <td>{{ row['url'] }}</td>
+      </tr>
+      {% endfor %}
+      {% if not recent_channels %}
+      <tr>
+        <td colspan=\"3\" class=\"muted\">No channels found.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
 """
 
 
@@ -1104,7 +1196,44 @@ def create_app() -> Flask:
     @app.route("/system/flowchart")
     @login_required
     def system_flowchart():
-      content = render_template_string(FLOWCHART_CONTENT)
+      with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+          """
+          SELECT id, board, sender_short_name, date, subject, content
+          FROM bulletins
+          ORDER BY id DESC
+          LIMIT 15
+          """
+        )
+        recent_bulletins = cursor.fetchall()
+
+        cursor.execute(
+          """
+          SELECT id, sender_short_name, recipient, date, subject, content
+          FROM mail
+          ORDER BY id DESC
+          LIMIT 15
+          """
+        )
+        recent_mail = cursor.fetchall()
+
+        cursor.execute(
+          """
+          SELECT id, name, url
+          FROM channels
+          ORDER BY id DESC
+          LIMIT 15
+          """
+        )
+        recent_channels = cursor.fetchall()
+
+      content = render_template_string(
+        FLOWCHART_CONTENT,
+        recent_bulletins=recent_bulletins,
+        recent_mail=recent_mail,
+        recent_channels=recent_channels,
+      )
       return render_template_string(BASE_TEMPLATE, title="System Flowchart", content=content, show_nav=True)
 
     @app.route("/<table>")
