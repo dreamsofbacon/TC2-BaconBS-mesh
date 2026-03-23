@@ -19,7 +19,13 @@ from utils import (
     get_node_short_name, send_message,
     update_user_state
 )
-from zork_port import send_zork_command, start_zork_session, stop_zork_session
+from zork_port import (
+    has_zork_session,
+    resume_zork_session,
+    send_zork_command,
+    start_zork_session,
+    stop_zork_session,
+)
 
 # Read the configuration for menu options
 config = configparser.ConfigParser()
@@ -28,6 +34,13 @@ config.read('config.ini')
 main_menu_items = [item.strip() for item in config.get('menu', 'main_menu_items', fallback='Q,B,U,X').split(',') if item.strip()]
 bbs_menu_items = [item.strip() for item in config.get('menu', 'bbs_menu_items', fallback='M,B,C,J,X').split(',') if item.strip()]
 utilities_menu_items = [item.strip() for item in config.get('menu', 'utilities_menu_items', fallback='S,F,W,Z,X').split(',') if item.strip()]
+
+if 'Z' not in utilities_menu_items:
+    if 'X' in utilities_menu_items:
+        exit_index = utilities_menu_items.index('X')
+        utilities_menu_items.insert(exit_index, 'Z')
+    else:
+        utilities_menu_items.append('Z')
 
 
 def get_bulletin_boards() -> list[str]:
@@ -141,9 +154,15 @@ def handle_fortune_command(sender_id, interface):
 
 
 def handle_zork_command(sender_id, interface):
-    intro = start_zork_session(sender_id)
-    send_message(intro, sender_id, interface)
-    send_message("Zork mode active. Send commands (LOOK, NORTH, TAKE LAMP). Send X to exit.", sender_id, interface)
+    if has_zork_session(sender_id):
+        intro = resume_zork_session(sender_id)
+        send_message(intro, sender_id, interface)
+        send_message("Zork resumed. Send your next command, or send X to exit.", sender_id, interface)
+    else:
+        intro = start_zork_session(sender_id)
+        send_message(intro, sender_id, interface)
+        send_message("Zork mode active. Send commands (LOOK, NORTH, TAKE LAMP). Send X to exit.", sender_id, interface)
+
     update_user_state(sender_id, {'command': 'ZORK', 'step': 1})
 
 
