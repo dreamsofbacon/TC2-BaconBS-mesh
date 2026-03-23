@@ -9,7 +9,8 @@ from command_handlers import (
     handle_read_mail_command, handle_check_mail_command, handle_delete_mail_confirmation, handle_post_bulletin_command,
     handle_check_bulletin_command, handle_read_bulletin_command, handle_read_channel_command,
     handle_post_channel_command, handle_list_channels_command, handle_quick_help_command,
-    handle_zork_command, handle_zork_steps
+    handle_zork_command, handle_zork_steps,
+    handle_games_command, handle_games_steps
 )
 from db_operations import add_bulletin, add_mail, delete_bulletin, delete_mail, get_db_connection, add_channel
 from js8call_integration import handle_js8call_command, handle_js8call_steps, handle_group_message_selection
@@ -35,7 +36,8 @@ utilities_menu_handlers = {
     "s": handle_stats_command,
     "f": handle_fortune_command,
     "w": handle_wall_of_shame_command,
-    "z": handle_zork_command,
+    "g": handle_games_command,
+    "z": handle_games_command,  # legacy alias
     "x": handle_help_command
 }
 
@@ -123,7 +125,7 @@ def process_message(sender_id, message, interface, is_sync_message=False):
                         '1': 's',
                         '2': 'f',
                         '3': 'w',
-                        '4': 'z',
+                        '4': 'g',
                         '0': 'x',
                     }
                     message_lower = number_alias.get(message_lower, message_lower)
@@ -192,6 +194,8 @@ def process_message(sender_id, message, interface, is_sync_message=False):
                     handle_js8call_steps(sender_id, message, step, interface, state)
                 elif command == 'GROUP_MESSAGES':
                     handle_group_message_selection(sender_id, message, step, state, interface)
+                elif command == 'GAMES_MENU':
+                    handle_games_steps(sender_id, message, interface)
                 elif command == 'ZORK':
                     handle_zork_steps(sender_id, message, interface)
                 else:

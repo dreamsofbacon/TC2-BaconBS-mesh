@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 
 user_states = {}
@@ -12,10 +13,46 @@ def get_user_state(user_id):
     return user_states.get(user_id, None)
 
 
+def _split_into_chunks(text, max_len=200):
+    """Split text into chunks of at most max_len chars, breaking at sentence boundaries."""
+    # Collapse 3+ consecutive newlines to at most 2, and runs of spaces/tabs to one space
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = text.strip()
+
+    chunks = []
+    while text:
+        if len(text) <= max_len:
+            chunks.append(text)
+            break
+
+        segment = text[:max_len]
+
+        # Find the last sentence-ending punctuation followed by whitespace in the segment
+        best = -1
+        for m in re.finditer(r'[.!?]["\']?(?=\s)', segment):
+            best = m.end()
+
+        if best > 10:
+            split_pos = best
+        else:
+            # Fall back to last newline
+            nl = segment.rfind('\n')
+            if nl > 10:
+                split_pos = nl + 1
+            else:
+                # Fall back to last space
+                sp = segment.rfind(' ')
+                split_pos = sp + 1 if sp > 10 else max_len
+
+        chunks.append(text[:split_pos].rstrip())
+        text = text[split_pos:].lstrip()
+
+    return chunks
+
+
 def send_message(message, destination, interface):
-    max_payload_size = 200
-    for i in range(0, len(message), max_payload_size):
-        chunk = message[i:i + max_payload_size]
+    for chunk in _split_into_chunks(message):
         try:
             d = interface.sendText(
                 text=chunk,
@@ -24,12 +61,11 @@ def send_message(message, destination, interface):
                 wantResponse=False
             )
             destid = get_node_id_from_num(destination, interface)
-            chunk = chunk.replace('\n', '\\n')
-            logging.info(f"Sending message to user '{get_node_short_name(destid, interface)}' ({destid}) with sendID {d.id}: \"{chunk}\"")
+            log_chunk = chunk.replace('\n', '\\n')
+            logging.info(f"Sending message to user '{get_node_short_name(destid, interface)}' ({destid}) with sendID {d.id}: \"{log_chunk}\"")
         except Exception as e:
-            logging.info(f"REPLY SEND ERROR {e.message}")
+            logging.info(f"REPLY SEND ERROR {e}")
 
-        
         time.sleep(2)
 
 

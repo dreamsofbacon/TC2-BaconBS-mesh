@@ -16,10 +16,11 @@ from db_operations import (
 )
 from utils import (
     get_node_id_from_num, get_node_info,
-    get_node_short_name, send_message,
+    get_node_short_name, get_user_state, send_message,
     update_user_state
 )
 from zork_port import (
+    GAMES,
     has_zork_save,
     has_zork_session,
     resume_zork_session,
@@ -27,6 +28,9 @@ from zork_port import (
     start_zork_session,
     stop_zork_session,
 )
+
+# Ordered list of playable games (matches GAMES keys in zork_port)
+GAME_LIST = list(GAMES.items())  # [(game_id, {name, ...}), ...]
 
 # Read the configuration for menu options
 config = configparser.ConfigParser()
@@ -39,14 +43,17 @@ def _parse_menu_items(value: str) -> list[str]:
 
 main_menu_items = _parse_menu_items(config.get('menu', 'main_menu_items', fallback='Q,B,U,X'))
 bbs_menu_items = _parse_menu_items(config.get('menu', 'bbs_menu_items', fallback='M,B,C,J,X'))
-utilities_menu_items = _parse_menu_items(config.get('menu', 'utilities_menu_items', fallback='S,F,W,Z,X'))
+utilities_menu_items = _parse_menu_items(config.get('menu', 'utilities_menu_items', fallback='S,F,W,G,X'))
 
-if 'Z' not in utilities_menu_items:
+if 'G' not in utilities_menu_items and 'Z' not in utilities_menu_items:
     if 'X' in utilities_menu_items:
         exit_index = utilities_menu_items.index('X')
-        utilities_menu_items.insert(exit_index, 'Z')
+        utilities_menu_items.insert(exit_index, 'G')
     else:
-        utilities_menu_items.append('Z')
+        utilities_menu_items.append('G')
+# Treat legacy Z config entry as G
+if 'Z' in utilities_menu_items and 'G' not in utilities_menu_items:
+    utilities_menu_items[utilities_menu_items.index('Z')] = 'G'
 
 
 def get_bulletin_boards() -> list[str]:
@@ -66,18 +73,21 @@ def get_bulletin_boards() -> list[str]:
 
 def build_menu(items, menu_name):
     menu_items = [item.strip().upper() for item in items if item and item.strip()]
-    if menu_name == "🛠️Utilities Menu🛠️" and 'Z' not in menu_items:
-        if 'X' in menu_items:
-            menu_items.insert(menu_items.index('X'), 'Z')
-        else:
-            menu_items.append('Z')
-
     if menu_name == "🛠️Utilities Menu🛠️":
+        # Ensure G is present; migrate legacy Z
+        if 'Z' in menu_items and 'G' not in menu_items:
+            menu_items[menu_items.index('Z')] = 'G'
+        if 'G' not in menu_items:
+            if 'X' in menu_items:
+                menu_items.insert(menu_items.index('X'), 'G')
+            else:
+                menu_items.append('G')
+
         number_map = {
             'S': "[1] Stats",
             'F': "[2] Fortune",
             'W': "[3] Wall of Shame",
-            'Z': "[4] Zork",
+            'G': "[4] Games",
             'X': "[0] Exit",
         }
         menu_str = f"{menu_name}\n"
@@ -111,8 +121,10 @@ def build_menu(items, menu_name):
             menu_str += "[F]ortune\n"
         elif item == 'W':
             menu_str += "[W]all of Shame\n"
+        elif item == 'G':
+            menu_str += "[G]ames\n"
         elif item == 'Z':
-            menu_str += "[Z]ork\n"
+            menu_str += "[G]ames\n"  # legacy alias
     return menu_str
 
 def handle_help_command(sender_id, interface, menu_name=None):
@@ -180,42 +192,81 @@ def handle_fortune_command(sender_id, interface):
         send_message(f"Error generating fortune: {e}", sender_id, interface)
 
 
-def handle_zork_command(sender_id, interface):
-    if has_zork_session(sender_id):
-        intro = resume_zork_session(sender_id)
-        send_message(intro, sender_id, interface)
-        send_message("Zork resumed. Send your next command, or send X to exit.", sender_id, interface)
-    elif has_zork_save(sender_id):
-        intro = start_zork_session(sender_id)
-        send_message(intro, sender_id, interface)
-        send_message("Saved game restored. Send commands (LOOK, NORTH, TAKE LAMP). Send X to exit.", sender_id, interface)
-    else:
-        intro = start_zork_session(sender_id)
-        send_message(intro, sender_id, interface)
-        send_message("Zork started. Send commands (LOOK, NORTH, TAKE LAMP). Send X to exit.", sender_id, interface)
+def handle_games_command(sender_id, interface):
+    menu = "🎮 Games 🎮\n"
+    for i, (game_id, info) in enumerate(GAME_LIST, start=1):
+        menu += f"[{i}] {info['name']}\n"
+    menu += "[0] Exit"
+    send_message(menu, sender_id, interface)
+    update_user_state(sender_id, {'command': 'GAMES_MENU', 'step': 1})
 
-    update_user_state(sender_id, {'command': 'ZORK', 'step': 1})
+
+def handle_games_steps(sender_id, message, interface):
+    choice = message.strip()
+    if choice.lower() in ('x', '0', 'exit'):
+        handle_help_command(sender_id, interface, 'utilities')
+        return
+
+    try:
+        idx = int(choice) - 1
+        if idx < 0:
+            raise ValueError
+        game_id, info = GAME_LIST[idx]
+    except (ValueError, IndexError):
+        send_message(
+            f"Invalid choice. Enter 1-{len(GAME_LIST)} or 0 to exit.",
+            sender_id, interface
+        )
+        return
+
+    _launch_game(sender_id, interface, game_id, info['name'])
+
+
+def _launch_game(sender_id, interface, game_id, game_name):
+    if has_zork_session(sender_id, game_id):
+        intro = resume_zork_session(sender_id, game_id)
+        send_message(intro, sender_id, interface)
+        send_message(f"{game_name} resumed. Send X to exit.", sender_id, interface)
+    elif has_zork_save(sender_id, game_id):
+        intro = start_zork_session(sender_id, game_id)
+        send_message(intro, sender_id, interface)
+        send_message(f"Saved game restored. Send X to exit.", sender_id, interface)
+    else:
+        intro = start_zork_session(sender_id, game_id)
+        send_message(intro, sender_id, interface)
+        send_message(
+            f"{game_name} started. Send commands (LOOK, NORTH, TAKE LAMP). Send X to exit.",
+            sender_id, interface
+        )
+    update_user_state(sender_id, {'command': 'ZORK', 'step': 1, 'game_id': game_id})
+
+
+def handle_zork_command(sender_id, interface):
+    """Legacy entry point – redirects to the games menu."""
+    handle_games_command(sender_id, interface)
 
 
 def handle_zork_steps(sender_id, message, interface):
+    state = get_user_state(sender_id) or {}
+    game_id = state.get('game_id', 'zork1')
     choice = message.strip()
     if len(choice) == 2 and choice[1].lower() == 'x':
         choice = choice[0]
 
     if choice.lower() in ('save', 'restore'):
         send_message("Your game auto-saves after each command. No manual save needed.", sender_id, interface)
-        update_user_state(sender_id, {'command': 'ZORK', 'step': 1})
+        update_user_state(sender_id, {'command': 'ZORK', 'step': 1, 'game_id': game_id})
         return
 
     if choice.lower() in ('x', 'quit', 'exit'):
-        stop_zork_session(sender_id)
-        send_message("Exited Zork mode.", sender_id, interface)
+        stop_zork_session(sender_id, game_id)
+        send_message("Exited game.", sender_id, interface)
         handle_help_command(sender_id, interface, 'utilities')
         return
 
-    response = send_zork_command(sender_id, choice)
+    response = send_zork_command(sender_id, choice, game_id)
     send_message(response, sender_id, interface)
-    update_user_state(sender_id, {'command': 'ZORK', 'step': 1})
+    update_user_state(sender_id, {'command': 'ZORK', 'step': 1, 'game_id': game_id})
 
 
 def handle_stats_steps(sender_id, message, step, interface):
