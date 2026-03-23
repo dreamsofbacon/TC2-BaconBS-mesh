@@ -72,6 +72,20 @@ def build_menu(items, menu_name):
         else:
             menu_items.append('Z')
 
+    if menu_name == "🛠️Utilities Menu🛠️":
+        number_map = {
+            'S': "[1] Stats",
+            'F': "[2] Fortune",
+            'W': "[3] Wall of Shame",
+            'Z': "[4] Zork",
+            'X': "[0] Exit",
+        }
+        menu_str = f"{menu_name}\n"
+        for item in menu_items:
+            if item in number_map:
+                menu_str += number_map[item] + "\n"
+        return menu_str
+
     menu_str = f"{menu_name}\n"
     for item in menu_items:
         if item == 'Q':

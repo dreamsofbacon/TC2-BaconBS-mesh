@@ -119,6 +119,14 @@ def process_message(sender_id, message, interface, is_sync_message=False):
                     handlers = bbs_menu_handlers
                 elif menu_name == 'utilities':
                     handlers = utilities_menu_handlers
+                    number_alias = {
+                        '1': 's',
+                        '2': 'f',
+                        '3': 'w',
+                        '4': 'z',
+                        '0': 'x',
+                    }
+                    message_lower = number_alias.get(message_lower, message_lower)
                 else:
                     handlers = main_menu_handlers
             elif state and state['command'] == 'BULLETIN_MENU':
