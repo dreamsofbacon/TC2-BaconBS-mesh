@@ -7,12 +7,14 @@ import shutil
 import subprocess
 import threading
 import time
+import tempfile
 import urllib.request
+
+from db_operations import get_zork_save, upsert_zork_save
 
 
 DEFAULT_STORY_URL = "https://raw.githubusercontent.com/historicalsource/zork1/master/COMPILED/zork1.z3"
 DEFAULT_STORY_PATH = os.path.join("data", "zork1.z3")
-SAVE_DIR = os.path.join("data", "zork_saves")
 MAX_RESPONSE_CHARS = 900
 
 _config = configparser.ConfigParser()
@@ -164,13 +166,14 @@ def _ensure_story_file() -> tuple[bool, str]:
         return False, story_path
 
 
-def _save_file_path(user_id: int) -> str:
-    return os.path.join(SAVE_DIR, f"{user_id}.qzl")
+def _temp_save_file_path(user_id: int) -> str:
+    temp_dir = tempfile.gettempdir()
+    return os.path.join(temp_dir, f"tc2_zork_{user_id}_{int(time.time() * 1000)}.qzl")
 
 
 def has_zork_save(user_id: int) -> bool:
-    """Return True if a save file exists for this user."""
-    return os.path.exists(_save_file_path(user_id))
+    """Return True if a DB-backed save exists for this user."""
+    return get_zork_save(user_id) is not None
 
 
 def _drain_output(session: "ZorkSession", settle_seconds: float = 0.8) -> None:
@@ -186,11 +189,10 @@ def _drain_output(session: "ZorkSession", settle_seconds: float = 0.8) -> None:
 
 
 def _autosave(session: "ZorkSession", user_id: int) -> None:
-    """Send a save command to the interpreter and store to the user's save file."""
+    """Save game via interpreter, then store resulting save file bytes in SQLite."""
     if session.process.poll() is not None or session.process.stdin is None:
         return
-    save_path = _save_file_path(user_id)
-    os.makedirs(SAVE_DIR, exist_ok=True)
+    save_path = _temp_save_file_path(user_id)
     try:
         session.process.stdin.write("save\n")
         session.process.stdin.flush()
@@ -200,6 +202,16 @@ def _autosave(session: "ZorkSession", user_id: int) -> None:
     except Exception:
         return
     _drain_output(session)
+    try:
+        if os.path.exists(save_path):
+            with open(save_path, "rb") as f:
+                upsert_zork_save(user_id, f.read())
+    finally:
+        try:
+            if os.path.exists(save_path):
+                os.remove(save_path)
+        except Exception:
+            pass
 
 
 def has_zork_session(user_id: int) -> bool:
@@ -262,24 +274,35 @@ def start_zork_session(user_id: int) -> str:
     # Drain the intro splash (we'll replace it if restoring from a save)
     intro = session.read_output()
 
-    if has_zork_save(user_id):
-        save_path = _save_file_path(user_id)
-        if session.process.stdin is not None and session.process.poll() is None:
+    save_blob = get_zork_save(user_id)
+    if save_blob:
+        save_path = _temp_save_file_path(user_id)
+        try:
+            with open(save_path, "wb") as f:
+                f.write(save_blob)
+
+            if session.process.stdin is not None and session.process.poll() is None:
+                try:
+                    session.process.stdin.write("restore\n")
+                    session.process.stdin.flush()
+                    time.sleep(0.4)
+                    session.process.stdin.write(save_path + "\n")
+                    session.process.stdin.flush()
+                except Exception:
+                    pass
+            restore_output = session.read_output()
+            if restore_output:
+                # Send 'look' so the player immediately sees their current location
+                look_output = session.send("look")
+                result = look_output if look_output else restore_output
+                session.last_output = result
+                return result
+        finally:
             try:
-                session.process.stdin.write("restore\n")
-                session.process.stdin.flush()
-                time.sleep(0.4)
-                session.process.stdin.write(save_path + "\n")
-                session.process.stdin.flush()
+                if os.path.exists(save_path):
+                    os.remove(save_path)
             except Exception:
                 pass
-        restore_output = session.read_output()
-        if restore_output:
-            # Send 'look' so the player immediately sees their current location
-            look_output = session.send("look")
-            result = look_output if look_output else restore_output
-            session.last_output = result
-            return result
 
     if not intro:
         intro = "Zork started. Enter commands like LOOK, NORTH, TAKE LAMP, INVENTORY."

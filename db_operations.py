@@ -16,6 +16,17 @@ from utils import (
 
 thread_local = threading.local()
 
+
+def _ensure_zork_saves_table() -> None:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS zork_saves (
+                    user_id TEXT PRIMARY KEY,
+                    save_data BLOB NOT NULL,
+                    updated_at TEXT NOT NULL
+                );''')
+    conn.commit()
+
 def get_db_connection():
     if not hasattr(thread_local, 'connection'):
         thread_local.connection = sqlite3.connect('bulletins.db')
@@ -55,6 +66,11 @@ def initialize_database():
                     date TEXT NOT NULL,
                     content TEXT NOT NULL,
                     FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+                );''')
+    c.execute('''CREATE TABLE IF NOT EXISTS zork_saves (
+                    user_id TEXT PRIMARY KEY,
+                    save_data BLOB NOT NULL,
+                    updated_at TEXT NOT NULL
                 );''')
     conn.commit()
     print("Database schema initialized.")
@@ -214,3 +230,38 @@ def get_sender_id_by_mail_id(mail_id):
     if result:
         return result[0]
     return None
+
+
+def upsert_zork_save(user_id: int, save_data: bytes) -> None:
+    _ensure_zork_saves_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    updated_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    c.execute(
+        '''INSERT INTO zork_saves (user_id, save_data, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET
+             save_data = excluded.save_data,
+             updated_at = excluded.updated_at''',
+        (str(user_id), save_data, updated_at)
+    )
+    conn.commit()
+
+
+def get_zork_save(user_id: int) -> bytes | None:
+    _ensure_zork_saves_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT save_data FROM zork_saves WHERE user_id = ?", (str(user_id),))
+    row = c.fetchone()
+    if not row:
+        return None
+    return row[0]
+
+
+def delete_zork_save(user_id: int) -> None:
+    _ensure_zork_saves_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM zork_saves WHERE user_id = ?", (str(user_id),))
+    conn.commit()
