@@ -257,6 +257,20 @@ If you would like to have the script automatically run at boot, follow the steps
    
    We just need to replace the 4 parts that have "pi" in those 3 lines with your username.
 
+   If you plan to use Zork, keep these environment lines in `mesh-bbs.service` so the interpreter is found under systemd:
+
+   ```sh
+   Environment="PATH=/usr/games:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   Environment="BBS_ZORK_INTERPRETER=/usr/games/dfrotz"
+   ```
+
+   Verify the interpreter exists:
+
+   ```sh
+   which dfrotz frotz
+   ls -l /usr/games/dfrotz /usr/games/frotz
+   ```
+
 2. **Configuring systemd**
    
    From the TC2-BBS-mesh directory, run the following commands:
