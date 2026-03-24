@@ -14,7 +14,7 @@ from db_operations import (
     get_channel_categories, get_channels_by_name, get_channel_by_id,
     add_channel_comment, get_channel_comments,
     auto_upsert_user_profile, get_user_profile, update_user_bio,
-    upsert_game_score, get_game_scoreboard, get_user_game_scores,
+    upsert_game_score, get_game_scoreboard, get_user_game_scores, get_hall_of_fame,
 )
 from utils import (
     get_node_id_from_num, get_node_info,
@@ -201,7 +201,7 @@ def handle_games_command(sender_id, interface):
     menu = "🎮 Games 🎮\n"
     for i, (game_id, info) in enumerate(GAME_LIST, start=1):
         menu += f"[{i}] {info['name']}\n"
-    menu += "[S]cores [0]Exit"
+    menu += "[S]cores [H]all of Fame [0]Exit"
     send_message(menu, sender_id, interface)
     update_user_state(sender_id, {'command': 'GAMES_MENU', 'step': 1})
 
@@ -214,6 +214,10 @@ def handle_games_steps(sender_id, message, interface):
 
     if choice.lower() == 's':
         handle_scoreboard_command(sender_id, interface)
+        return
+
+    if choice.lower() == 'h':
+        handle_hall_of_fame_command(sender_id, interface)
         return
 
     try:
@@ -248,6 +252,25 @@ def _launch_game(sender_id, interface, game_id, game_name):
             sender_id, interface
         )
     update_user_state(sender_id, {'command': 'ZORK', 'step': 1, 'game_id': game_id})
+
+
+def handle_hall_of_fame_command(sender_id, interface):
+    rows = get_hall_of_fame()
+    if not rows:
+        send_message("🏛 Hall of Fame\nNo scores recorded yet. Start playing!", sender_id, interface)
+        handle_games_command(sender_id, interface)
+        return
+    by_game = {r[0]: r for r in rows}
+    lines = ["🏛 Hall of Fame 🏛"]
+    for game_id, info in GAME_LIST:
+        if game_id in by_game:
+            _, short_name, score, max_score, moves = by_game[game_id]
+            ms = f"/{max_score}" if max_score else ""
+            lines.append(f"{info['name']}: {short_name} {score}{ms} {moves}mv")
+        else:
+            lines.append(f"{info['name']}: —")
+    send_message("\n".join(lines), sender_id, interface)
+    handle_games_command(sender_id, interface)
 
 
 def handle_zork_command(sender_id, interface):
