@@ -5,7 +5,7 @@ import configparser
 from datetime import datetime
 from functools import wraps
 
-from flask import Flask, flash, redirect, render_template_string, request, session, url_for
+from flask import Flask, flash, jsonify, redirect, render_template_string, request, session, url_for
 
 
 TABLE_CONFIG = {
@@ -145,6 +145,45 @@ BASE_TEMPLATE = """
       min-height: 2400px;
       display: block;
     }
+    .terminal-window {
+      background: #070b10;
+      border: 1px solid #2b3645;
+      border-radius: 8px;
+      color: #9fe870;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      line-height: 1.4;
+      height: 320px;
+      overflow-y: auto;
+      padding: 10px;
+      white-space: pre-wrap;
+    }
+    .terminal-line { margin-bottom: 2px; }
+    .terminal-time { color: #7ab2ff; }
+    .terminal-type { color: #f4c95d; }
+    .terminal-controls {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .terminal-btn {
+      background: #1a2535;
+      border: 1px solid #2b3645;
+      border-radius: 4px;
+      color: #9fe870;
+      cursor: pointer;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 11px;
+      padding: 3px 8px;
+      transition: background 0.15s;
+    }
+    .terminal-btn:hover { background: #243040; }
+    .terminal-btn.active { background: #2b4a2b; border-color: #9fe870; color: #fff; }
+    .terminal-btn.btn-pause.active { background: #4a3b1a; border-color: #f4c95d; color: #f4c95d; }
+    .terminal-btn.btn-clear { color: #ff7d7d; border-color: #4a2020; }
+    .terminal-btn.btn-clear:hover { background: #3a1515; }
   </style>
 </head>
 <body data-theme="dark">
@@ -653,6 +692,105 @@ CLIENTS_CONTENT = """
     </tbody>
   </table>
 </div>
+
+<div class=\"card\">
+  <h3>Live Connection Log</h3>
+  <p class=\"muted\">Terminal-style stream of inbound mesh activity. Auto-refreshes every 2 seconds.</p>
+  <div class=\"terminal-controls\">
+    <span class=\"muted\" style=\"font-size:11px;font-family:Consolas,monospace;\">Filter:</span>
+    <button class=\"terminal-btn active\" data-filter=\"all\" onclick=\"setFilter(this,'all')\">All</button>
+    <button class=\"terminal-btn\" data-filter=\"user\" onclick=\"setFilter(this,'user')\">RX</button>
+    <button class=\"terminal-btn\" data-filter=\"sync\" onclick=\"setFilter(this,'sync')\">SYNC</button>
+    <button class=\"terminal-btn\" data-filter=\"direct\" onclick=\"setFilter(this,'direct')\">DIRECT</button>
+    <button class=\"terminal-btn\" data-filter=\"drop\" onclick=\"setFilter(this,'drop')\">DROP</button>
+    <span style=\"flex:1\"></span>
+    <button class=\"terminal-btn btn-pause\" id=\"btn-pause\" onclick=\"togglePause()\">Pause</button>
+    <button class=\"terminal-btn btn-clear\" onclick=\"clearTerminal()\">Clear</button>
+  </div>
+  <div id=\"connection-terminal\" class=\"terminal-window\"></div>
+</div>
+
+<script>
+  (function () {
+    const terminal = document.getElementById('connection-terminal');
+    if (!terminal) return;
+
+    let lastId = {{ last_event_id }};
+    let paused = false;
+    let currentFilter = 'all';
+
+    function setFilter(btn, f) {
+      currentFilter = f;
+      document.querySelectorAll('.terminal-btn[data-filter]').forEach(function(b) {
+        b.classList.toggle('active', b.dataset.filter === f);
+      });
+      terminal.querySelectorAll('.terminal-line').forEach(function(line) {
+        line.style.display = (f === 'all' || line.dataset.type === f) ? '' : 'none';
+      });
+    }
+
+    function togglePause() {
+      paused = !paused;
+      const btn = document.getElementById('btn-pause');
+      btn.textContent = paused ? 'Resume' : 'Pause';
+      btn.classList.toggle('active', paused);
+      if (!paused) terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    function clearTerminal() {
+      terminal.innerHTML = '';
+    }
+
+    function appendLine(evt) {
+      const line = document.createElement('div');
+      line.className = 'terminal-line';
+      line.dataset.type = evt.message_type;
+      if (currentFilter !== 'all' && evt.message_type !== currentFilter) {
+        line.style.display = 'none';
+      }
+      const sender = evt.sender_short_name || evt.sender_node_id || evt.sender_num || '?';
+      const to = evt.to_id || 'group';
+      line.innerHTML =
+        '<span class=\"terminal-time\">[' + evt.event_time + ']</span> ' +
+        '<span class=\"terminal-type\">' + evt.message_type.toUpperCase() + '</span> ' +
+        sender + ' -> ' + to + ' :: ' + evt.event_text;
+      terminal.appendChild(line);
+      if (!paused) terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    {% for evt in connection_events %}
+    appendLine({
+      event_time: {{ evt['event_time']|tojson }},
+      message_type: {{ evt['message_type']|tojson }},
+      sender_short_name: {{ evt['sender_short_name']|tojson }},
+      sender_node_id: {{ evt['sender_node_id']|tojson }},
+      sender_num: {{ evt['sender_num']|tojson }},
+      to_id: {{ evt['to_id']|tojson }},
+      event_text: {{ evt['event_text']|tojson }}
+    });
+    {% endfor %}
+
+    async function poll() {
+      if (paused) return;
+      try {
+        const resp = await fetch('/api/connection-events?since_id=' + encodeURIComponent(lastId), {
+          headers: { 'Accept': 'application/json' }
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (!data.events || !data.events.length) return;
+        data.events.forEach(function(evt) {
+          appendLine(evt);
+          lastId = evt.id;
+        });
+      } catch (e) {
+        // Keep polling even if one request fails.
+      }
+    }
+
+    setInterval(poll, 2000);
+  })();
+</script>
 """
 
 
@@ -1240,6 +1378,16 @@ def create_app() -> Flask:
               content TEXT NOT NULL,
               FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
             )''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS connection_events (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              event_time TEXT NOT NULL,
+              sender_num TEXT,
+              sender_node_id TEXT,
+              sender_short_name TEXT,
+              to_id TEXT,
+              message_type TEXT NOT NULL,
+              event_text TEXT NOT NULL
+            )''')
 
     def get_db_connection() -> sqlite3.Connection:
         conn = sqlite3.connect(app.config["DB_PATH"], timeout=30)
@@ -1459,12 +1607,50 @@ def create_app() -> Flask:
         rows = cursor.fetchall()
         total_posts = sum(row["post_count"] for row in rows)
 
+        cursor.execute(
+          """
+          SELECT id, event_time, sender_num, sender_node_id, sender_short_name, to_id, message_type, event_text
+          FROM connection_events
+          ORDER BY id DESC
+          LIMIT 120
+          """
+        )
+        events_desc = cursor.fetchall()
+
+      connection_events = list(reversed(events_desc))
+      last_event_id = connection_events[-1]["id"] if connection_events else 0
+
       content = render_template_string(
         CLIENTS_CONTENT,
         rows=rows,
         total_posts=total_posts,
+        connection_events=connection_events,
+        last_event_id=last_event_id,
       )
       return render_template_string(BASE_TEMPLATE, title="Clients", content=content, show_nav=True)
+
+    @app.get("/api/connection-events")
+    @login_required
+    def api_connection_events():
+      try:
+        since_id = int(request.args.get("since_id", "0"))
+      except ValueError:
+        since_id = 0
+
+      with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+          """
+          SELECT id, event_time, sender_num, sender_node_id, sender_short_name, to_id, message_type, event_text
+          FROM connection_events
+          WHERE id > ?
+          ORDER BY id ASC
+          LIMIT 200
+          """,
+          (since_id,),
+        )
+        events = [dict(row) for row in cursor.fetchall()]
+      return jsonify({"events": events})
 
     @app.route("/system/flowchart")
     @login_required

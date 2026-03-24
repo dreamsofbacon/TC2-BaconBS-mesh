@@ -1,3 +1,4 @@
+import configparser
 import logging
 import sqlite3
 import threading
@@ -49,6 +50,44 @@ def _ensure_zork_saves_table() -> None:
                         PRIMARY KEY (user_id, game_id)
                     );''')
         conn.commit()
+
+
+_cached_max_connection_log_rows: int | None = None
+
+
+def _get_max_connection_log_rows() -> int:
+    """Read connection_log_max_rows from config.ini once and cache it."""
+    global _cached_max_connection_log_rows
+    if _cached_max_connection_log_rows is None:
+        cfg = configparser.ConfigParser()
+        cfg.read('config.ini')
+        _cached_max_connection_log_rows = cfg.getint('bbs', 'connection_log_max_rows', fallback=5000)
+    return _cached_max_connection_log_rows
+
+
+def _prune_connection_events(conn, max_rows: int) -> None:
+    conn.execute(
+        '''DELETE FROM connection_events WHERE id NOT IN (
+               SELECT id FROM connection_events ORDER BY id DESC LIMIT ?
+           )''',
+        (max_rows,),
+    )
+
+
+def _ensure_connection_events_table() -> None:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS connection_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_time TEXT NOT NULL,
+                    sender_num TEXT,
+                    sender_node_id TEXT,
+                    sender_short_name TEXT,
+                    to_id TEXT,
+                    message_type TEXT NOT NULL,
+                    event_text TEXT NOT NULL
+                );''')
+    conn.commit()
 
 def get_db_connection():
     if not hasattr(thread_local, 'connection'):
@@ -115,6 +154,16 @@ def initialize_database():
                     moves INTEGER NOT NULL DEFAULT 0,
                     achieved_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, game_id)
+                );''')
+    c.execute('''CREATE TABLE IF NOT EXISTS connection_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_time TEXT NOT NULL,
+                    sender_num TEXT,
+                    sender_node_id TEXT,
+                    sender_short_name TEXT,
+                    to_id TEXT,
+                    message_type TEXT NOT NULL,
+                    event_text TEXT NOT NULL
                 );''')
     conn.commit()
     print("Database schema initialized.")
@@ -185,6 +234,11 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
     date = datetime.now().strftime('%Y-%m-%d %H:%M')
     if not unique_id:
         unique_id = str(uuid.uuid4())
+    else:
+        # Idempotency for sync replays
+        c.execute("SELECT 1 FROM bulletins WHERE unique_id = ? LIMIT 1", (unique_id,))
+        if c.fetchone():
+            return unique_id
     c.execute(
         "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id) VALUES (?, ?, ?, ?, ?, ?)",
         (board, sender_short_name, date, subject, content, unique_id))
@@ -226,6 +280,11 @@ def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_n
     date = datetime.now().strftime('%Y-%m-%d %H:%M')
     if not unique_id:
         unique_id = str(uuid.uuid4())
+    else:
+        # Idempotency for sync replays
+        c.execute("SELECT 1 FROM mail WHERE unique_id = ? LIMIT 1", (unique_id,))
+        if c.fetchone():
+            return unique_id
     c.execute("INSERT INTO mail (sender, sender_short_name, recipient, date, subject, content, unique_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
               (sender_id, sender_short_name, recipient_id, date, subject, content, unique_id))
     conn.commit()
@@ -250,17 +309,17 @@ def delete_mail(unique_id, recipient_id, bbs_nodes, interface):
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        c.execute("SELECT recipient FROM mail WHERE unique_id = ?", (unique_id,))
-        result = c.fetchone()
-        if result is None:
-            logging.error(f"No mail found with unique_id: {unique_id}")
-            return  # Early exit if no matching mail found
-        recipient_id = result[0]
-        logging.info(f"Attempting to delete mail with unique_id: {unique_id} by {recipient_id}")
-        c.execute("DELETE FROM mail WHERE unique_id = ? and recipient = ?", (unique_id, recipient_id,))
+        if recipient_id is None:
+            c.execute("DELETE FROM mail WHERE unique_id = ?", (unique_id,))
+        else:
+            c.execute("DELETE FROM mail WHERE unique_id = ? and recipient = ?", (unique_id, recipient_id,))
         conn.commit()
-        send_delete_mail_to_bbs_nodes(unique_id, bbs_nodes, interface)
-        logging.info(f"Mail with unique_id: {unique_id} deleted and sync message sent.")
+        if bbs_nodes and interface:
+            send_delete_mail_to_bbs_nodes(unique_id, bbs_nodes, interface)
+        if c.rowcount == 0:
+            logging.info(f"Delete mail noop for unique_id: {unique_id} (already missing).")
+        else:
+            logging.info(f"Mail with unique_id: {unique_id} deleted.")
     except Exception as e:
         logging.error(f"Error deleting mail with unique_id {unique_id}: {e}")
         raise
@@ -393,5 +452,50 @@ def get_user_game_scores(user_id: int) -> list:
     c.execute(
         "SELECT game_id, score, max_score FROM game_scores WHERE user_id = ? ORDER BY score DESC",
         (str(user_id),)
+    )
+    return c.fetchall()
+
+
+def log_connection_event(
+    sender_num: int | None,
+    sender_node_id: str | None,
+    sender_short_name: str | None,
+    to_id: int | None,
+    message_type: str,
+    event_text: str,
+) -> None:
+    _ensure_connection_events_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    c.execute(
+        '''INSERT INTO connection_events
+           (event_time, sender_num, sender_node_id, sender_short_name, to_id, message_type, event_text)
+           VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        (
+            now,
+            str(sender_num) if sender_num is not None else None,
+            sender_node_id,
+            sender_short_name or '',
+            str(to_id) if to_id is not None else None,
+            message_type,
+            event_text,
+        ),
+    )
+    _prune_connection_events(conn, _get_max_connection_log_rows())
+    conn.commit()
+
+
+def get_connection_events_since(last_id: int = 0, limit: int = 100) -> list:
+    _ensure_connection_events_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        '''SELECT id, event_time, sender_num, sender_node_id, sender_short_name, to_id, message_type, event_text
+           FROM connection_events
+           WHERE id > ?
+           ORDER BY id ASC
+           LIMIT ?''',
+        (last_id, limit),
     )
     return c.fetchall()
