@@ -15,8 +15,8 @@ from command_handlers import (
     handle_profile_command, handle_profile_steps,
 )
 from db_operations import (
-    add_bulletin, add_mail, delete_bulletin, delete_mail, get_db_connection, add_channel,
-    auto_upsert_user_profile,
+    add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel,
+    auto_upsert_user_profile, log_connection_event,
 )
 from js8call_integration import handle_js8call_command, handle_js8call_steps, handle_group_message_selection
 from utils import get_user_state, get_node_short_name, get_node_id_from_num, send_message
@@ -53,6 +53,18 @@ board_action_handlers = {
     "p": lambda sender_id, interface, state: handle_bb_steps(sender_id, 'p', 2, state, interface, None),
     "x": handle_help_command
 }
+
+
+def _auto_update_profile(sender_id, interface):
+    try:
+        node_id = get_node_id_from_num(sender_id, interface)
+        if node_id and node_id in interface.nodes:
+            user = interface.nodes[node_id].get('user', {})
+            short_name = user.get('shortName', '')
+            long_name = user.get('longName', '')
+            auto_upsert_user_profile(sender_id, short_name, long_name)
+    except Exception:
+        pass
 
 def process_message(sender_id, message, interface, is_sync_message=False):
     state = get_user_state(sender_id)
@@ -101,8 +113,7 @@ def process_message(sender_id, message, interface, is_sync_message=False):
                 return
             unique_id = parts[1]
             logging.info(f"Processing delete mail with unique_id: {unique_id}")
-            recipient_id = get_recipient_id_by_mail(unique_id)
-            delete_mail(unique_id, recipient_id, [], interface)
+            delete_mail(unique_id, None, [], interface)
         elif message.startswith("CHANNEL|"):
             parts = message.split("|", 2)
             if len(parts) != 3:
@@ -218,19 +229,6 @@ def process_message(sender_id, message, interface, is_sync_message=False):
 
 
 def on_receive(packet, interface):
-    def _auto_update_profile(sender_id, interface):
-        try:
-            node_id = get_node_id_from_num(sender_id, interface)
-            if node_id and node_id in interface.nodes:
-                user = interface.nodes[node_id].get('user', {})
-                short_name = user.get('shortName', '')
-                long_name = user.get('longName', '')
-                auto_upsert_user_profile(sender_id, short_name, long_name)
-        except Exception:
-            pass
-
-
-    def on_receive(packet, interface):
     try:
         if 'decoded' in packet and packet['decoded']['portnum'] == 'TEXT_MESSAGE_APP':
             message_bytes = packet['decoded']['payload']
@@ -248,24 +246,28 @@ def on_receive(packet, interface):
             is_sync_message = any(message_string.startswith(prefix) for prefix in
                                   ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|", "CHANNEL|"])
 
+            msg_type = "sync" if is_sync_message else "user"
+            log_connection_event(
+                sender_id,
+                sender_node_id,
+                sender_short_name,
+                to_id,
+                msg_type,
+                f"RX {msg_type} message to {to_id if to_id is not None else 'group'}",
+            )
+
             if sender_node_id in bbs_nodes:
                 if is_sync_message:
+                    log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "sync", "Accepted sync message")
                     process_message(sender_id, message_string, interface, is_sync_message=True)
                 else:
+                    log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "drop", "Ignored non-sync from BBS node")
                     logging.info("Ignoring non-sync message from known BBS node")
             elif to_id is not None and to_id != 0 and to_id != 255 and to_id == interface.myInfo.my_node_num:
+                log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "direct", "Accepted direct message")
                 process_message(sender_id, message_string, interface, is_sync_message=False)
             else:
+                log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "drop", "Ignored group/unknown message")
                 logging.info("Ignoring message sent to group chat or from unknown node")
     except KeyError as e:
         logging.error(f"Error processing packet: {e}")
-
-def get_recipient_id_by_mail(unique_id):
-    # Fix for Mail Delete sync issue
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT recipient FROM mail WHERE unique_id = ?", (unique_id,))
-    result = c.fetchone()
-    if result:
-        return result[0]
-    return None
