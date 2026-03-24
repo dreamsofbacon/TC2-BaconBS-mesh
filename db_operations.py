@@ -456,6 +456,23 @@ def get_user_game_scores(user_id: int) -> list:
     return c.fetchall()
 
 
+def get_hall_of_fame() -> list:
+    """Return the top scorer per game (highest score), ordered by game_id."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        '''SELECT gs.game_id, gs.short_name, gs.score, gs.max_score, gs.moves
+           FROM game_scores gs
+           INNER JOIN (
+               SELECT game_id, MAX(score) AS top_score
+               FROM game_scores
+               GROUP BY game_id
+           ) best ON gs.game_id = best.game_id AND gs.score = best.top_score
+           ORDER BY gs.game_id ASC'''
+    )
+    return c.fetchall()
+
+
 def log_connection_event(
     sender_num: int | None,
     sender_node_id: str | None,
