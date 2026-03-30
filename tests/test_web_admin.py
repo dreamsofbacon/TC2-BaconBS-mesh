@@ -1,6 +1,7 @@
 import configparser
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -229,6 +230,90 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("Interface type:</strong> SerialInterface", page)
         self.assertIn("Local short name:</strong> SNAP", page)
         self.assertIn("Configured sync peers:</strong> 2 (!sync1, !sync2)", page)
+
+    def test_database_wipe_clears_application_tables(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("CREATE TABLE IF NOT EXISTS bulletins (id INTEGER PRIMARY KEY AUTOINCREMENT, board TEXT, sender_short_name TEXT, date TEXT, subject TEXT, content TEXT, unique_id TEXT, local_only INTEGER NOT NULL DEFAULT 0)")
+        conn.execute("CREATE TABLE IF NOT EXISTS mail (id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, sender_short_name TEXT, recipient TEXT, date TEXT, subject TEXT, content TEXT, unique_id TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS channels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, url TEXT, local_only INTEGER NOT NULL DEFAULT 0)")
+        conn.execute("CREATE TABLE IF NOT EXISTS channel_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id INTEGER NOT NULL, sender_short_name TEXT NOT NULL, date TEXT NOT NULL, content TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS zork_saves (user_id TEXT NOT NULL, game_id TEXT NOT NULL DEFAULT 'zork1', save_data BLOB NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (user_id, game_id))")
+        conn.execute("CREATE TABLE IF NOT EXISTS user_profiles (user_id TEXT PRIMARY KEY, short_name TEXT NOT NULL DEFAULT '', long_name TEXT NOT NULL DEFAULT '', first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, messages_sent INTEGER NOT NULL DEFAULT 0, bio TEXT NOT NULL DEFAULT '')")
+        conn.execute("CREATE TABLE IF NOT EXISTS game_scores (user_id TEXT NOT NULL, game_id TEXT NOT NULL, short_name TEXT NOT NULL DEFAULT '', score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 0, moves INTEGER NOT NULL DEFAULT 0, achieved_at TEXT NOT NULL, PRIMARY KEY (user_id, game_id))")
+        conn.execute("CREATE TABLE IF NOT EXISTS connection_events (id INTEGER PRIMARY KEY AUTOINCREMENT, event_time TEXT NOT NULL, sender_num TEXT, sender_node_id TEXT, sender_short_name TEXT, to_id TEXT, message_type TEXT NOT NULL, event_text TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS peer_sync_state (peer_node_id TEXT PRIMARY KEY, bulletins INTEGER NOT NULL DEFAULT 0, mail INTEGER NOT NULL DEFAULT 0, channels INTEGER NOT NULL DEFAULT 0, zork_saves INTEGER NOT NULL DEFAULT 0, profiles INTEGER NOT NULL DEFAULT 0, game_scores INTEGER NOT NULL DEFAULT 0, bulletins_hash TEXT NOT NULL DEFAULT '', mail_hash TEXT NOT NULL DEFAULT '', channels_hash TEXT NOT NULL DEFAULT '', zork_saves_hash TEXT NOT NULL DEFAULT '', profiles_hash TEXT NOT NULL DEFAULT '', game_scores_hash TEXT NOT NULL DEFAULT '', reported_at TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS deleted_sync_tombstones (tombstone_key TEXT PRIMARY KEY, deleted_at TEXT NOT NULL)")
+        conn.execute("INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only) VALUES ('General', 'CALL', '2026-03-30', 'Subj', 'Body', 'uid-b', 0)")
+        conn.execute("INSERT INTO mail (sender, sender_short_name, recipient, date, subject, content, unique_id) VALUES ('1', 'CALL', '2', '2026-03-30', 'Mail', 'Body', 'uid-m')")
+        conn.execute("INSERT INTO channels (name, url, local_only) VALUES ('Tech', 'mesh://tech', 0)")
+        conn.execute("INSERT INTO user_profiles (user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio) VALUES ('1', 'CALL', 'Caller', '2026-03-30', '2026-03-30', 1, '')")
+        conn.execute("INSERT INTO game_scores (user_id, game_id, short_name, score, max_score, moves, achieved_at) VALUES ('1', 'zork1', 'CALL', 10, 100, 5, '2026-03-30')")
+        conn.execute("INSERT INTO connection_events (event_time, sender_num, sender_node_id, sender_short_name, to_id, message_type, event_text) VALUES ('2026-03-30', '1', '!node', 'CALL', '2', 'mail', 'test')")
+        conn.execute("INSERT INTO peer_sync_state (peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores, bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, game_scores_hash, reported_at) VALUES ('!peer1', 1, 1, 1, 0, 1, 1, '', '', '', '', '', '', '2026-03-30')")
+        conn.execute("INSERT INTO deleted_sync_tombstones (tombstone_key, deleted_at) VALUES ('bulletins:uid-b', '2026-03-30')")
+        conn.commit()
+        conn.close()
+
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        wipe_response = client.post(
+            "/settings",
+            data={
+                "settings_section": "wipe_database",
+                "wipe_confirmation": "WIPE DATABASE",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(wipe_response.status_code, 200)
+        self.assertIn("Local database wiped.", wipe_response.get_data(as_text=True))
+
+        conn = sqlite3.connect(self.db_path)
+        for table_name in [
+            "bulletins",
+            "mail",
+            "channels",
+            "channel_comments",
+            "zork_saves",
+            "user_profiles",
+            "game_scores",
+            "connection_events",
+            "peer_sync_state",
+            "deleted_sync_tombstones",
+        ]:
+            count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+            self.assertEqual(count, 0, table_name)
+        conn.close()
+
+    def test_database_wipe_requires_exact_confirmation(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("CREATE TABLE IF NOT EXISTS bulletins (id INTEGER PRIMARY KEY AUTOINCREMENT, board TEXT, sender_short_name TEXT, date TEXT, subject TEXT, content TEXT, unique_id TEXT, local_only INTEGER NOT NULL DEFAULT 0)")
+        conn.execute("INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only) VALUES ('General', 'CALL', '2026-03-30', 'Subj', 'Body', 'uid-b', 0)")
+        conn.commit()
+        conn.close()
+
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        wipe_response = client.post(
+            "/settings",
+            data={
+                "settings_section": "wipe_database",
+                "wipe_confirmation": "wipe database",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(wipe_response.status_code, 200)
+        self.assertIn("Database wipe cancelled.", wipe_response.get_data(as_text=True))
+
+        conn = sqlite3.connect(self.db_path)
+        count = conn.execute("SELECT COUNT(*) FROM bulletins").fetchone()[0]
+        conn.close()
+        self.assertEqual(count, 1)
 
 
 if __name__ == "__main__":
