@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 import sqlite3
 import uuid
 import configparser
@@ -7,6 +8,8 @@ from datetime import datetime
 from functools import wraps
 
 from flask import Flask, flash, jsonify, redirect, render_template_string, request, session, url_for
+
+from db_operations import install_connection_log_handler
 
 
 TABLE_CONFIG = {
@@ -118,6 +121,51 @@ def load_runtime_snapshot(snapshot_path: str) -> dict:
   except Exception:
     return {}
   return {}
+
+
+def classify_connection_event_display_type(message_type: str, event_text: str) -> str:
+  normalized = str(message_type or "").strip().lower()
+  text = str(event_text or "")
+  if normalized in {"critical", "error"}:
+    return "error"
+  if normalized == "warning":
+    return "warn"
+  if normalized in {"info", "debug"}:
+    return "log"
+  if text.startswith("RX "):
+    return "rx"
+  if normalized in {"sync", "direct", "drop"}:
+    return normalized
+  if normalized == "user":
+    return "rx"
+  return "log"
+
+
+def get_connection_event_label(message_type: str, event_text: str) -> str:
+  display_type = classify_connection_event_display_type(message_type, event_text)
+  return {
+    "rx": "RX",
+    "sync": "SYNC",
+    "direct": "DIRECT",
+    "drop": "DROP",
+    "log": "LOG",
+    "warn": "WARN",
+    "error": "ERROR",
+  }.get(display_type, display_type.upper())
+
+
+def serialize_connection_event(row) -> dict:
+  raw = dict(row)
+  raw["display_type"] = classify_connection_event_display_type(raw.get("message_type", ""), raw.get("event_text", ""))
+  raw["display_label"] = get_connection_event_label(raw.get("message_type", ""), raw.get("event_text", ""))
+  raw["source_label"] = (
+    raw.get("sender_short_name")
+    or raw.get("sender_node_id")
+    or raw.get("sender_num")
+    or raw.get("message_type")
+    or "system"
+  )
+  return raw
 
 
 BASE_TEMPLATE = """
@@ -281,14 +329,17 @@ BASE_TEMPLATE = """
     {% if show_nav %}
     <div class=\"nav\">
       <a href=\"{{ url_for('table_list', table='bulletins') }}\">Bulletins</a>
-      <a href=\"{{ url_for('table_list', table='mail') }}\">Mail</a>
+      <p class="muted">Unified terminal stream for mesh RX, sync repair, drops, and runtime service logs. Auto-refreshes every 2 seconds.</p>
       <a href=\"{{ url_for('table_list', table='channels') }}\">Channels</a>
       <a href=\"{{ url_for('clients_summary') }}\">Clients</a>
       <a href=\"{{ url_for('settings_page') }}\">Settings</a>
-      <a href=\"{{ url_for('settings_page') }}#diagnostics\">Diagnostics</a>
+        <button class="terminal-btn" data-filter="rx" onclick="setFilter(this,'rx')">RX</button>
       <a href=\"{{ url_for('system_flowchart') }}\">System Flowchart</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
       <div class="nav-right">
+        <button class="terminal-btn" data-filter="log" onclick="setFilter(this,'log')">LOG</button>
+        <button class="terminal-btn" data-filter="warn" onclick="setFilter(this,'warn')">WARN</button>
+        <button class="terminal-btn" data-filter="error" onclick="setFilter(this,'error')">ERROR</button>
         <div id="sync-status-pill" class="sync-pill" title="Hold for 1.2 seconds to force manual sync">Sync 0% | --:--</div>
         <button id="theme-toggle" class="btn btn-small theme-toggle" type="button">Switch to Light</button>
       </div>
@@ -1125,15 +1176,15 @@ CLIENTS_CONTENT = """
     function appendLine(evt) {
       const line = document.createElement('div');
       line.className = 'terminal-line';
-      line.dataset.type = evt.message_type;
-      if (currentFilter !== 'all' && evt.message_type !== currentFilter) {
+      line.dataset.type = evt.display_type;
+      if (currentFilter !== 'all' && evt.display_type !== currentFilter) {
         line.style.display = 'none';
       }
-      const sender = evt.sender_short_name || evt.sender_node_id || evt.sender_num || '?';
+      const sender = evt.source_label || evt.sender_short_name || evt.sender_node_id || evt.sender_num || '?';
       const to = evt.to_id || 'group';
       line.innerHTML =
         '<span class=\"terminal-time\">[' + evt.event_time + ']</span> ' +
-        '<span class=\"terminal-type\">' + evt.message_type.toUpperCase() + '</span> ' +
+        '<span class="terminal-type">' + evt.display_label + '</span> ' +
         sender + ' -> ' + to + ' :: ' + evt.event_text;
       terminal.appendChild(line);
       if (!paused) terminal.scrollTop = terminal.scrollHeight;
@@ -1143,6 +1194,9 @@ CLIENTS_CONTENT = """
     appendLine({
       event_time: {{ evt['event_time']|tojson }},
       message_type: {{ evt['message_type']|tojson }},
+      display_type: {{ evt['display_type']|tojson }},
+      display_label: {{ evt['display_label']|tojson }},
+      source_label: {{ evt['source_label']|tojson }},
       sender_short_name: {{ evt['sender_short_name']|tojson }},
       sender_node_id: {{ evt['sender_node_id']|tojson }},
       sender_num: {{ evt['sender_num']|tojson }},
@@ -1742,6 +1796,7 @@ def create_app(runtime_interface=None) -> Flask:
     app.secret_key = os.getenv("BBS_WEBGUI_SECRET", "change-this-secret")
     app.config["DB_PATH"] = os.getenv("BBS_DB_PATH", "bulletins.db")
     app.config["CONFIG_PATH"] = os.getenv("BBS_CONFIG_PATH", "config.ini")
+    install_connection_log_handler(app.config["DB_PATH"])
     admin_user, admin_password, username_env_override, password_env_override = load_admin_credentials(app.config["CONFIG_PATH"])
     app.config["ADMIN_USER"] = admin_user
     app.config["ADMIN_PASSWORD"] = admin_password
@@ -1753,8 +1808,15 @@ def create_app(runtime_interface=None) -> Flask:
     def get_runtime_interface():
         return runtime_interface
 
+    class ManagedConnection(sqlite3.Connection):
+      def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+          return super().__exit__(exc_type, exc_val, exc_tb)
+        finally:
+          self.close()
+
     def initialize_db_safety() -> None:
-        with sqlite3.connect(app.config["DB_PATH"], timeout=30) as conn:
+        with sqlite3.connect(app.config["DB_PATH"], timeout=30, factory=ManagedConnection) as conn:
             conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("PRAGMA synchronous=FULL;")
             conn.execute("PRAGMA busy_timeout=5000;")
@@ -1834,7 +1896,7 @@ def create_app(runtime_interface=None) -> Flask:
               pass
 
     def get_db_connection() -> sqlite3.Connection:
-        conn = sqlite3.connect(app.config["DB_PATH"], timeout=30)
+        conn = sqlite3.connect(app.config["DB_PATH"], timeout=30, factory=ManagedConnection)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=5000;")
         return conn
@@ -2478,7 +2540,7 @@ def create_app(runtime_interface=None) -> Flask:
         )
         events_desc = cursor.fetchall()
 
-      connection_events = list(reversed(events_desc))
+      connection_events = [serialize_connection_event(row) for row in reversed(events_desc)]
       last_event_id = connection_events[-1]["id"] if connection_events else 0
 
       content = render_template_string(
@@ -2510,7 +2572,7 @@ def create_app(runtime_interface=None) -> Flask:
           """,
           (since_id,),
         )
-        events = [dict(row) for row in cursor.fetchall()]
+        events = [serialize_connection_event(row) for row in cursor.fetchall()]
       return jsonify({"events": events})
 
     @app.route("/system/flowchart")
