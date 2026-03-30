@@ -2,6 +2,8 @@ import os
 import sqlite3
 import threading
 
+from db_operations import delete_bulletin as sync_delete_bulletin, delete_mail as sync_delete_mail
+
 thread_local = threading.local()
 
 def get_db_connection():
@@ -88,12 +90,15 @@ def delete_bulletin():
             print_bold("Deletion cancelled.")
             print_separator()
             return
-        conn = get_db_connection()
-        c = conn.cursor()
+        by_id = {str(row[0]): str(row[5]) for row in bulletins}
+        deleted = []
         for bulletin_id in bulletin_ids:
-            c.execute("DELETE FROM bulletins WHERE id = ?", (bulletin_id.strip(),))
-        conn.commit()
-        print_bold(f"Bulletin(s) with ID(s) {', '.join(bulletin_ids)} deleted.")
+            bid = bulletin_id.strip()
+            unique_id = by_id.get(bid)
+            if unique_id:
+                sync_delete_bulletin(unique_id, [], None)
+                deleted.append(bid)
+        print_bold(f"Bulletin(s) with ID(s) {', '.join(deleted)} deleted.")
         print_separator()
 
 def delete_mail():
@@ -104,12 +109,15 @@ def delete_mail():
             print_bold("Deletion cancelled.")
             print_separator()
             return
-        conn = get_db_connection()
-        c = conn.cursor()
+        by_id = {str(row[0]): str(row[6]) for row in mail}
+        deleted = []
         for mail_id in mail_ids:
-            c.execute("DELETE FROM mail WHERE id = ?", (mail_id.strip(),))
-        conn.commit()
-        print_bold(f"Mail with ID(s) {', '.join(mail_ids)} deleted.")
+            mid = mail_id.strip()
+            unique_id = by_id.get(mid)
+            if unique_id:
+                sync_delete_mail(unique_id, None, [], None)
+                deleted.append(mid)
+        print_bold(f"Mail with ID(s) {', '.join(deleted)} deleted.")
         print_separator()
 
 def delete_channel():
