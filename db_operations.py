@@ -21,6 +21,7 @@ from utils import (
     send_profile_to_bbs_nodes,
     send_game_score_to_bbs_nodes,
     send_zork_save_to_bbs_nodes,
+    get_full_sync_delay_ms,
 )
 
 
@@ -1273,9 +1274,8 @@ def get_connection_events_since(last_id: int = 0, limit: int = 100) -> list:
     return c.fetchall()
 
 
-def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500) -> dict:
+def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] = None) -> dict:
     """
-            now,
     Sync all existing shared records (posts, metadata, directories) to peers.
     
     This function performs a full database sync to new or rejoining BBS peers without spamming.
@@ -1284,7 +1284,7 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
     Args:
         bbs_nodes: List of target BBS node IDs to sync to
         interface: Meshtastic interface object for sending messages
-        delay_ms: Milliseconds to delay between each sync message (default 500ms)
+        delay_ms: Milliseconds to delay between each sync message (defaults from env)
     
     Returns:
           dict: Summary with keys 'bulletins_synced', 'mail_synced', 'channels_synced',
@@ -1319,7 +1319,9 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
     
     conn = get_db_connection()
     c = conn.cursor()
-    delay_seconds = delay_ms / 1000.0
+    if delay_ms is None:
+        delay_ms = get_full_sync_delay_ms()
+    delay_seconds = max(0.0, float(delay_ms) / 1000.0)
     total_messages = 0
 
     c.execute("SELECT COUNT(*) FROM bulletins WHERE local_only = 0")
