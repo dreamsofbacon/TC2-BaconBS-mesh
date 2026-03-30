@@ -170,6 +170,31 @@ def send_game_score_to_bbs_nodes(user_id, game_id, short_name, score, max_score,
         _send_one_sync(message, node_id, interface)
 
 
+def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nodes, interface, pause_seconds=0.75):
+    """Send binary zork save payload as chunked base64 sync frames."""
+    payload_b64 = base64.b64encode(save_data or b"").decode("ascii")
+    user_b64 = _b64(str(user_id))
+    game_b64 = _b64(str(game_id))
+    # Deterministic save_id allows retries/re-sync to reuse the same identity.
+    save_id_raw = f"{user_id}:{game_id}:{updated_at}:{len(payload_b64)}"
+    save_id = base64.urlsafe_b64encode(save_id_raw.encode("utf-8")).decode("ascii").rstrip("=")
+
+    prefix = f"ZORKSAVE|{save_id}|{user_b64}|{game_b64}|{updated_at}|"
+    # Reserve enough room for chunk index and total chunk counters.
+    overhead = len(prefix.encode("utf-8")) + len("9999|9999|".encode("utf-8"))
+    max_chunk = max(20, _MESHTASTIC_MAX_BYTES - overhead)
+
+    chunks = [payload_b64[i:i + max_chunk] for i in range(0, len(payload_b64), max_chunk)]
+    if not chunks:
+        chunks = [""]
+    total_chunks = len(chunks)
+
+    for idx, chunk in enumerate(chunks):
+        message = f"{prefix}{idx}|{total_chunks}|{chunk}"
+        for node_id in bbs_nodes:
+            _send_one_sync(message, node_id, interface, pause_seconds)
+
+
 def _send_one_sync(message, destination, interface, pause_seconds=0.75):
     """Send a single sync packet directly to destination (no chunking)."""
     try:
