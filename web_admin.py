@@ -1553,7 +1553,7 @@ def create_app(runtime_interface=None) -> Flask:
       config.set("boards", "bulletin_boards", ",".join(boards))
       write_config_file(config, app.config["CONFIG_PATH"])
 
-    def save_admin_credentials(username: str | None, password: str | None) -> None:
+    def save_admin_credentials(username, password) -> None:
       config = read_config_file(app.config["CONFIG_PATH"])
       if not config.has_section("admin"):
         config.add_section("admin")
