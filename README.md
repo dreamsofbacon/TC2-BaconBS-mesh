@@ -2,7 +2,7 @@
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/B0B1OZ22Z)
 
-This is the TC²-BBS system integrated with Meshtastic devices. The system allows for message handling, bulletin boards, mail systems, and a channel directory.
+This is the TC²-BBS system integrated with Meshtastic devices. The system includes bulletin boards, mail, channel directory, selective hash-based sync repair across peers, and tombstone-based deletion reconciliation.
 
 ### Docker
 
@@ -32,8 +32,8 @@ If you're a Docker user, TC²-BBS Meshtastic is available on Docker Hub!
    
    ```sh
    cd ~
-   git clone https://github.com/TheCommsChannel/TC2-BBS-mesh.git
-   cd TC2-BBS-mesh
+   git clone https://github.com/dreamsofbacon/TC2-BaconBS-mesh.git
+   cd TC2-BaconBS-mesh
    ```
 
 #### Quick Setup (Automated)
@@ -143,6 +143,23 @@ If you prefer manual setup, follow these steps:
    bbs_nodes = !f53f4abc,!f3abc123  
    ```
 
+### Sync Model (Current)
+
+Peer consistency uses a layered approach designed for low-bandwidth mesh links:
+
+- Periodic count/hash exchange (`SYNCSTATE`) for `bulletins`, `mail`, `channels`, `profiles`, `game_scores`, and `zork_saves`
+- Per-scope hash manifest repair (`HASHREQ`, `HASHREC`, `HASHEND`, `HASHMISS`) so only mismatched scopes are requested
+- Optional compressed manifest transport (`HASHZ`) controlled by `BBS_HASH_MANIFEST_COMPRESSION=1`
+- Tombstone replay for deletes so removed records do not get resurrected after peers reconnect
+
+Deletion reconciliation details:
+
+- Deleting bulletin/mail records creates tombstones that are synced to peers
+- Re-adding a record with the same unique key clears the matching tombstone
+- During hash reconciliation, if a peer is missing a deleted record, the system requests tombstone replay instead of requesting the deleted record itself
+
+Note: deletes that happened before the tombstone feature was introduced have no historical tombstone entry.
+
 ### Running the Server
 
 Run the server with the standalone launch script for your OS:
@@ -238,6 +255,12 @@ Bulletin board categories for the dropdown are configurable and loaded in this o
 
 You can also edit categories in the web UI under the **Boards** tab. Changes are written to `config.ini` and applied immediately in the running web admin process.
 
+The web admin also includes sync diagnostics under **Settings > Diagnostics** (or use the top nav **Diagnostics** link), including:
+
+- Peer consistency status
+- Mismatch re-sync attempt summary/details
+- Peer-advertised per-scope counts
+
 Example:
 
 ```sh
@@ -283,6 +306,38 @@ This installs and restarts:
 - `bacon-web-admin.service`
 
 By default, the web admin service binds to `0.0.0.0:8081` so it is reachable from other devices on your LAN.
+
+## Remote Two-Node Update Automation
+
+For Windows operators updating Linux systemd nodes, the repository includes:
+
+- `scripts/update-two-nodes.ps1` (local orchestrator; uses Posh-SSH)
+- `scripts/remote-node-update.sh` (remote script run on each node)
+- `scripts/node-update-config.json.example` (example config)
+
+### One-time setup
+
+1. Copy `scripts/node-update-config.json.example` to `scripts/node-update-config.json` and set your hostnames/IPs.
+2. Copy `scripts/remote-node-update.sh` to each node (for example `~/remote-node-update.sh`).
+3. On each node:
+
+```sh
+chmod +x ~/remote-node-update.sh
+```
+
+### Run updates from Windows
+
+From the repository root:
+
+```powershell
+.\scripts\update-two-nodes.ps1
+```
+
+Notes:
+
+- First run prompts for SSH credentials and stores them in `%APPDATA%\TC2-BaconBS\node-update-cred.xml`
+- Use `-ResetCredential` to prompt again if credentials change
+- Remote script performs `git fetch`, `git checkout`, `git pull --ff-only`, then restarts `mesh-bbs.service` and `bacon-web-admin.service`
 
 3. Check status and logs:
 

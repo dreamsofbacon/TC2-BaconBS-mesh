@@ -84,6 +84,8 @@ _peer_hash_manifest_buffers = {}
 _peer_hash_compressed_buffers = {}
 _SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "profiles", "game_scores", "zork_saves", "tombstones"]
 _HASH_BUFFER_MAX_AGE_SECONDS = 600
+_recent_hashmiss_requests = {}
+_HASHMISS_REQUEST_TTL_SECONDS = 900
 
 
 def _prune_old_zork_save_chunks() -> None:
@@ -108,18 +110,49 @@ def _hash_manifest_compression_enabled() -> bool:
     return str(os.getenv("BBS_HASH_MANIFEST_COMPRESSION", "0")).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _prune_recent_hashmiss_requests() -> None:
+    now = time.time()
+    stale_keys = [
+        k for k, last_sent in _recent_hashmiss_requests.items()
+        if now - float(last_sent) > _HASHMISS_REQUEST_TTL_SECONDS
+    ]
+    for key in stale_keys:
+        _recent_hashmiss_requests.pop(key, None)
+
+
+def _should_send_hashmiss(sender_node_id: str, scope: str, key: str, local_hash: str, remote_hash: str) -> bool:
+    _prune_recent_hashmiss_requests()
+    now = time.time()
+    sig = (str(sender_node_id), str(scope), str(key), str(local_hash), str(remote_hash))
+    last_sent = _recent_hashmiss_requests.get(sig)
+    if last_sent is not None and (now - float(last_sent)) < _HASHMISS_REQUEST_TTL_SECONDS:
+        return False
+    _recent_hashmiss_requests[sig] = now
+    return True
+
+
 def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> None:
     remote = _peer_hash_manifest_buffers.pop((sender_node_id, scope), {})
     local = get_record_hash_manifest(scope)
-    missing_or_mismatched = [
-        key for key, remote_hash in remote.items()
-        if local.get(key) != remote_hash
-    ]
-    for key in missing_or_mismatched:
+    remote_keys = set(remote.keys())
+    local_keys = set(local.keys())
+
+    # Ask peer for keys we do not have, plus keys that exist on both sides but differ.
+    need_from_remote = set(remote_keys - local_keys)
+    need_from_remote.update(key for key in (remote_keys & local_keys) if local.get(key) != remote.get(key))
+    for key in sorted(need_from_remote):
+        local_hash = str(local.get(key, ""))
+        remote_hash = str(remote.get(key, ""))
+        if not _should_send_hashmiss(sender_node_id, scope, key, local_hash, remote_hash):
+            continue
         if scope in ('bulletins', 'mail') and key not in local and has_sync_tombstone(scope, key):
             _send_one_sync(f"HASHMISS|tombstones|{scope}:{key}", sender_node_id, interface, pause_seconds=0.1)
         else:
             _send_one_sync(f"HASHMISS|{scope}|{key}", sender_node_id, interface, pause_seconds=0.1)
+
+    # Proactively push records the peer is missing to converge in one cycle.
+    for key in sorted(local_keys - remote_keys):
+        _send_requested_record(scope, key, sender_node_id, interface)
 
 
 def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface) -> None:
