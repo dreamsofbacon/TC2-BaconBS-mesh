@@ -1,4 +1,5 @@
 import logging
+import base64
 
 from meshtastic import BROADCAST_NUM
 
@@ -18,6 +19,7 @@ from db_operations import (
     add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel,
     append_bulletin_content, append_mail_content,
     auto_upsert_user_profile, log_connection_event, upsert_peer_sync_state,
+    upsert_synced_user_profile, upsert_synced_game_score,
 )
 from js8call_integration import handle_js8call_command, handle_js8call_steps, handle_group_message_selection
 from utils import get_user_state, get_node_short_name, get_node_id_from_num, send_message
@@ -153,8 +155,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 # Legacy format without offset — blind append
                 append_mail_content(parts[1], None, parts[2])
         elif message.startswith("SYNCSTATE|"):
-            parts = message.split("|", 4)
-            if len(parts) != 5:
+            parts = message.split("|")
+            if len(parts) not in (5, 7):
                 logging.warning(f"Malformed SYNCSTATE sync message ignored: {message}")
                 return
             try:
@@ -162,13 +164,43 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 mail = int(parts[2])
                 channels = int(parts[3])
                 zork_saves = int(parts[4])
+                profiles = int(parts[5]) if len(parts) >= 7 else 0
+                game_scores = int(parts[6]) if len(parts) >= 7 else 0
             except ValueError:
                 logging.warning(f"Invalid SYNCSTATE values ignored: {message}")
                 return
             if sender_node_id:
-                upsert_peer_sync_state(sender_node_id, bulletins, mail, channels, zork_saves)
+                upsert_peer_sync_state(sender_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores)
             else:
                 logging.warning("SYNCSTATE ignored due to missing sender_node_id")
+        elif message.startswith("PROFILESYNC|"):
+            parts = message.split("|", 7)
+            if len(parts) != 8:
+                logging.warning(f"Malformed PROFILESYNC ignored: {message}")
+                return
+            try:
+                short_name = base64.b64decode(parts[2].encode('ascii')).decode('utf-8')
+                long_name = base64.b64decode(parts[3].encode('ascii')).decode('utf-8')
+                messages_sent = int(parts[6])
+                bio = base64.b64decode(parts[7].encode('ascii')).decode('utf-8')
+            except Exception:
+                logging.warning(f"Malformed PROFILESYNC payload ignored: {message}")
+                return
+            upsert_synced_user_profile(parts[1], short_name, long_name, parts[4], parts[5], messages_sent, bio)
+        elif message.startswith("SCORESYNC|"):
+            parts = message.split("|", 7)
+            if len(parts) != 8:
+                logging.warning(f"Malformed SCORESYNC ignored: {message}")
+                return
+            try:
+                short_name = base64.b64decode(parts[3].encode('ascii')).decode('utf-8')
+                score = int(parts[4])
+                max_score = int(parts[5])
+                moves = int(parts[6])
+            except Exception:
+                logging.warning(f"Malformed SCORESYNC payload ignored: {message}")
+                return
+            upsert_synced_game_score(parts[1], parts[2], short_name, score, max_score, moves, parts[7])
     else:
         if message_lower.startswith("sm,,"):
             handle_send_mail_command(sender_id, message_strip, interface, bbs_nodes)
@@ -293,7 +325,8 @@ def on_receive(packet, interface):
             bbs_nodes = interface.bbs_nodes
             is_sync_message = any(message_string.startswith(prefix) for prefix in
                                   ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|",
-                                   "CHANNEL|", "BULLETINCONT|", "MAILCONT|", "SYNCSTATE|"])
+                                   "CHANNEL|", "BULLETINCONT|", "MAILCONT|", "SYNCSTATE|",
+                                   "PROFILESYNC|", "SCORESYNC|"])
 
             msg_type = "sync" if is_sync_message else "user"
             log_connection_event(

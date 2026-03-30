@@ -15,6 +15,8 @@ from utils import (
     send_delete_mail_to_bbs_nodes,
     send_mail_to_bbs_nodes, send_message, send_channel_to_bbs_nodes,
     send_sync_state_to_bbs_nodes,
+    send_profile_to_bbs_nodes,
+    send_game_score_to_bbs_nodes,
 )
 
 
@@ -130,7 +132,8 @@ def initialize_database():
                     date TEXT NOT NULL,
                     subject TEXT NOT NULL,
                     content TEXT NOT NULL,
-                    unique_id TEXT NOT NULL
+                    unique_id TEXT NOT NULL,
+                    local_only INTEGER NOT NULL DEFAULT 0
                 )''')
     c.execute('''CREATE TABLE IF NOT EXISTS mail (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -145,7 +148,8 @@ def initialize_database():
     c.execute('''CREATE TABLE IF NOT EXISTS channels (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
-                    url TEXT NOT NULL
+                    url TEXT NOT NULL,
+                    local_only INTEGER NOT NULL DEFAULT 0
                 );''')
     c.execute('''CREATE TABLE IF NOT EXISTS channel_comments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -197,8 +201,11 @@ def initialize_database():
                     mail INTEGER NOT NULL DEFAULT 0,
                     channels INTEGER NOT NULL DEFAULT 0,
                     zork_saves INTEGER NOT NULL DEFAULT 0,
+                    profiles INTEGER NOT NULL DEFAULT 0,
+                    game_scores INTEGER NOT NULL DEFAULT 0,
                     reported_at TEXT NOT NULL
                 );''')
+    _ensure_local_only_columns(c)
     _dedupe_channels_and_create_unique_index(c)
     conn.commit()
     print("Database schema initialized.")
@@ -208,37 +215,46 @@ def get_local_record_counts() -> dict:
     """Return local record counts used by SYNCSTATE comparisons."""
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM bulletins")
+    c.execute("SELECT COUNT(*) FROM bulletins WHERE local_only = 0")
     bulletins = int(c.fetchone()[0])
     c.execute("SELECT COUNT(*) FROM mail")
     mail = int(c.fetchone()[0])
-    c.execute("SELECT COUNT(*) FROM channels")
+    c.execute("SELECT COUNT(*) FROM channels WHERE local_only = 0")
     channels = int(c.fetchone()[0])
     _ensure_zork_saves_table()
     c.execute("SELECT COUNT(*) FROM zork_saves")
     zork_saves = int(c.fetchone()[0])
+    c.execute("SELECT COUNT(*) FROM user_profiles")
+    profiles = int(c.fetchone()[0])
+    c.execute("SELECT COUNT(*) FROM game_scores")
+    game_scores = int(c.fetchone()[0])
     return {
         'bulletins': bulletins,
         'mail': mail,
         'channels': channels,
         'zork_saves': zork_saves,
+        'profiles': profiles,
+        'game_scores': game_scores,
     }
 
 
-def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channels: int, zork_saves: int) -> None:
+def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channels: int, zork_saves: int,
+                           profiles: int = 0, game_scores: int = 0) -> None:
     """Store the latest advertised SYNCSTATE counts for a peer node."""
     if not peer_node_id:
         return
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        '''INSERT INTO peer_sync_state (peer_node_id, bulletins, mail, channels, zork_saves, reported_at)
-           VALUES (?, ?, ?, ?, ?, ?)
+        '''INSERT INTO peer_sync_state (peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores, reported_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(peer_node_id) DO UPDATE SET
                bulletins=excluded.bulletins,
                mail=excluded.mail,
                channels=excluded.channels,
                zork_saves=excluded.zork_saves,
+               profiles=excluded.profiles,
+               game_scores=excluded.game_scores,
                reported_at=excluded.reported_at''',
         (
             peer_node_id,
@@ -246,6 +262,8 @@ def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channel
             int(mail),
             int(channels),
             int(zork_saves),
+            int(profiles),
+            int(game_scores),
             datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         ),
     )
@@ -257,9 +275,29 @@ def get_peer_sync_states() -> list:
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT peer_node_id, bulletins, mail, channels, zork_saves, reported_at FROM peer_sync_state ORDER BY peer_node_id"
+        "SELECT peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores, reported_at FROM peer_sync_state ORDER BY peer_node_id"
     )
     return c.fetchall()
+
+
+def _ensure_local_only_columns(cursor) -> None:
+    """Backfill schema changes on existing deployments."""
+    cursor.execute("PRAGMA table_info(bulletins)")
+    bulletin_cols = {row[1] for row in cursor.fetchall()}
+    if 'local_only' not in bulletin_cols:
+        cursor.execute("ALTER TABLE bulletins ADD COLUMN local_only INTEGER NOT NULL DEFAULT 0")
+
+    cursor.execute("PRAGMA table_info(channels)")
+    channel_cols = {row[1] for row in cursor.fetchall()}
+    if 'local_only' not in channel_cols:
+        cursor.execute("ALTER TABLE channels ADD COLUMN local_only INTEGER NOT NULL DEFAULT 0")
+
+    cursor.execute("PRAGMA table_info(peer_sync_state)")
+    peer_cols = {row[1] for row in cursor.fetchall()}
+    if 'profiles' not in peer_cols:
+        cursor.execute("ALTER TABLE peer_sync_state ADD COLUMN profiles INTEGER NOT NULL DEFAULT 0")
+    if 'game_scores' not in peer_cols:
+        cursor.execute("ALTER TABLE peer_sync_state ADD COLUMN game_scores INTEGER NOT NULL DEFAULT 0")
 
 
 def _dedupe_channels_and_create_unique_index(cursor) -> None:
@@ -297,14 +335,17 @@ def _dedupe_channels_and_create_unique_index(cursor) -> None:
     )
 
 
-def add_channel(name, url, bbs_nodes=None, interface=None):
+def add_channel(name, url, bbs_nodes=None, interface=None, local_only: bool = False):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO channels (name, url) VALUES (?, ?)", (name, url))
+    c.execute("INSERT OR IGNORE INTO channels (name, url, local_only) VALUES (?, ?, ?)", (name, url, 1 if local_only else 0))
     conn.commit()
 
     if c.rowcount == 0:
         logging.info(f"Duplicate channel ignored (name={name}, url={url})")
+        return
+
+    if local_only:
         return
 
     if bbs_nodes and interface:
@@ -361,7 +402,7 @@ def get_channel_comments(channel_id):
 
 
 
-def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interface, unique_id=None):
+def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interface, unique_id=None, local_only: bool = False):
     conn = get_db_connection()
     c = conn.cursor()
     date = datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -373,10 +414,10 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
         if c.fetchone():
             return unique_id
     c.execute(
-        "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id) VALUES (?, ?, ?, ?, ?, ?)",
-        (board, sender_short_name, date, subject, content, unique_id))
+        "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (board, sender_short_name, date, subject, content, unique_id, 1 if local_only else 0))
     conn.commit()
-    if bbs_nodes and interface:
+    if (not local_only) and bbs_nodes and interface:
         send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface)
 
     # New logic to send group chat notification for urgent bulletins
@@ -385,6 +426,46 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
         send_message(notification_message, BROADCAST_NUM, interface)
 
     return unique_id
+
+
+def upsert_synced_user_profile(user_id: str, short_name: str, long_name: str,
+                               first_seen: str, last_seen: str,
+                               messages_sent: int, bio: str) -> None:
+    """Apply profile metadata learned from a peer sync payload."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        '''INSERT INTO user_profiles (user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET
+             short_name = excluded.short_name,
+             long_name = excluded.long_name,
+             first_seen = CASE WHEN excluded.first_seen < first_seen THEN excluded.first_seen ELSE first_seen END,
+             last_seen = CASE WHEN excluded.last_seen > last_seen THEN excluded.last_seen ELSE last_seen END,
+             messages_sent = CASE WHEN excluded.messages_sent > messages_sent THEN excluded.messages_sent ELSE messages_sent END,
+             bio = excluded.bio''',
+        (str(user_id), short_name, long_name, first_seen, last_seen, int(messages_sent), bio[:100]),
+    )
+    conn.commit()
+
+
+def upsert_synced_game_score(user_id: str, game_id: str, short_name: str,
+                             score: int, max_score: int, moves: int, achieved_at: str) -> None:
+    """Apply game score metadata learned from a peer sync payload."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        '''INSERT INTO game_scores (user_id, game_id, short_name, score, max_score, moves, achieved_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, game_id) DO UPDATE SET
+             short_name   = excluded.short_name,
+             score        = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
+             max_score    = CASE WHEN excluded.score > score THEN excluded.max_score ELSE max_score END,
+             moves        = CASE WHEN excluded.score > score THEN excluded.moves ELSE moves END,
+             achieved_at  = CASE WHEN excluded.score > score THEN excluded.achieved_at ELSE achieved_at END''',
+        (str(user_id), game_id, short_name, int(score), int(max_score), int(moves), achieved_at),
+    )
+    conn.commit()
 
 
 def get_bulletins(board):
@@ -704,7 +785,7 @@ def get_connection_events_since(last_id: int = 0, limit: int = 100) -> list:
 
 def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500) -> dict:
     """
-    Sync all existing bulletins, mail, and channels to specified BBS nodes.
+    Sync all existing shared records (posts, metadata, directories) to peers.
     
     This function performs a full database sync to new or rejoining BBS peers without spamming.
     It includes rate limiting between messages to keep network traffic manageable.
@@ -715,7 +796,8 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
         delay_ms: Milliseconds to delay between each sync message (default 500ms)
     
     Returns:
-        dict: Summary with keys 'bulletins_synced', 'mail_synced', 'channels_synced', 'total_messages'
+          dict: Summary with keys 'bulletins_synced', 'mail_synced', 'channels_synced',
+              'profiles_synced', 'game_scores_synced', 'total_messages'
     
     Example:
         result = sync_full_database_to_nodes([123456, 789012], interface, delay_ms=500)
@@ -734,20 +816,31 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
             last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             last_result='No nodes or interface provided',
         )
-        return {'bulletins_synced': 0, 'mail_synced': 0, 'channels_synced': 0, 'total_messages': 0}
+        return {
+            'bulletins_synced': 0,
+            'mail_synced': 0,
+            'channels_synced': 0,
+            'profiles_synced': 0,
+            'game_scores_synced': 0,
+            'total_messages': 0,
+        }
     
     conn = get_db_connection()
     c = conn.cursor()
     delay_seconds = delay_ms / 1000.0
     total_messages = 0
 
-    c.execute("SELECT COUNT(*) FROM bulletins")
+    c.execute("SELECT COUNT(*) FROM bulletins WHERE local_only = 0")
     bulletin_total = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM mail")
     mail_total = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM channels")
+    c.execute("SELECT COUNT(*) FROM channels WHERE local_only = 0")
     channel_total = c.fetchone()[0]
-    total_items = bulletin_total + mail_total + channel_total
+    c.execute("SELECT COUNT(*) FROM user_profiles")
+    profile_total = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM game_scores")
+    game_score_total = c.fetchone()[0]
+    total_items = bulletin_total + mail_total + channel_total + profile_total + game_score_total
 
     started_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     _update_sync_progress(
@@ -783,7 +876,7 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
     try:
         # Sync all bulletins
         _update_sync_progress(current_phase='syncing_bulletins')
-        c.execute("SELECT board, sender_short_name, subject, content, unique_id FROM bulletins")
+        c.execute("SELECT board, sender_short_name, subject, content, unique_id FROM bulletins WHERE local_only = 0")
         bulletins = c.fetchall()
         bulletins_synced = 0
         
@@ -813,7 +906,7 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
         
         # Sync all channels
         _update_sync_progress(current_phase='syncing_channels')
-        c.execute("SELECT name, url FROM channels")
+        c.execute("SELECT name, url FROM channels WHERE local_only = 0")
         channels = c.fetchall()
         channels_synced = 0
         
@@ -826,6 +919,32 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
         
         logging.info(f"Database sync: Sent {channels_synced} channels to {len(bbs_nodes)} peer(s)")
 
+        # Sync user profile metadata
+        _update_sync_progress(current_phase='syncing_profiles')
+        c.execute("SELECT user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio FROM user_profiles")
+        profiles = c.fetchall()
+        profiles_synced = 0
+        for user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio in profiles:
+            send_profile_to_bbs_nodes(user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio,
+                                      bbs_nodes, interface)
+            profiles_synced += 1
+            total_messages += 1
+            _progress_tick('syncing_profiles')
+            time.sleep(delay_seconds)
+
+        # Sync game score metadata
+        _update_sync_progress(current_phase='syncing_game_scores')
+        c.execute("SELECT user_id, game_id, short_name, score, max_score, moves, achieved_at FROM game_scores")
+        score_rows = c.fetchall()
+        game_scores_synced = 0
+        for user_id, game_id, short_name, score, max_score, moves, achieved_at in score_rows:
+            send_game_score_to_bbs_nodes(user_id, game_id, short_name, score, max_score, moves, achieved_at,
+                                         bbs_nodes, interface)
+            game_scores_synced += 1
+            total_messages += 1
+            _progress_tick('syncing_game_scores')
+            time.sleep(delay_seconds)
+
         # Send a lightweight consistency check payload so peers can compare
         # their local counts against ours and detect missing records.
         local_counts = get_local_record_counts()
@@ -835,6 +954,8 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
             'bulletins_synced': bulletins_synced,
             'mail_synced': mail_synced,
             'channels_synced': channels_synced,
+            'profiles_synced': profiles_synced,
+            'game_scores_synced': game_scores_synced,
             'total_messages': total_messages
         }
         logging.info(f"Database sync complete: {total_messages} total messages sent with {delay_ms}ms delays")

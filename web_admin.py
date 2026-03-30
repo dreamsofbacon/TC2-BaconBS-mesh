@@ -12,9 +12,9 @@ from flask import Flask, flash, jsonify, redirect, render_template_string, reque
 TABLE_CONFIG = {
     "bulletins": {
         "title": "Bulletins",
-        "columns": ["id", "board", "sender_short_name", "date", "subject", "content", "unique_id"],
-        "editable": ["board", "sender_short_name", "date", "subject", "content"],
-        "searchable": ["board", "sender_short_name", "subject", "content", "unique_id"],
+    "columns": ["id", "board", "sender_short_name", "date", "subject", "content", "local_only", "unique_id"],
+    "editable": ["board", "sender_short_name", "date", "subject", "content", "local_only"],
+    "searchable": ["board", "sender_short_name", "subject", "content", "unique_id", "local_only"],
     },
     "mail": {
         "title": "Mail",
@@ -24,9 +24,9 @@ TABLE_CONFIG = {
     },
     "channels": {
         "title": "Channels",
-        "columns": ["id", "name", "url"],
-        "editable": ["name", "url"],
-        "searchable": ["name", "url"],
+      "columns": ["id", "name", "url", "local_only"],
+      "editable": ["name", "url", "local_only"],
+      "searchable": ["name", "url", "local_only"],
     },
 }
 
@@ -672,6 +672,12 @@ NEW_BULLETIN_CONTENT = """
     <label>Content</label><br>
     <textarea name=\"content\" required></textarea><br><br>
 
+    <label>local_only</label><br>
+    <select name=\"local_only\" required>
+      <option value=\"0\" {% if row['local_only']|int == 0 %}selected{% endif %}>0 (sync)</option>
+      <option value=\"1\" {% if row['local_only']|int == 1 %}selected{% endif %}>1 (local only)</option>
+    </select><br><br>
+
     <button class=\"btn btn-primary\" type=\"submit\">Create Post</button>
     <a class=\"btn\" href=\"{{ url_for('table_list', table='bulletins') }}\">Back</a>
   </form>
@@ -690,6 +696,12 @@ NEW_CHANNEL_CONTENT = """
     <label>Channel URL / PSK</label><br>
     <textarea name=\"url\" required></textarea><br><br>
 
+    <label>Local only</label><br>
+    <select name=\"local_only\">
+      <option value=\"0\" selected>No (sync to peers)</option>
+      <option value=\"1\">Yes (keep local)</option>
+    </select><br><br>
+
     <button class=\"btn btn-primary\" type=\"submit\">Create Channel</button>
     <a class=\"btn\" href=\"{{ url_for('table_list', table='channels') }}\">Back</a>
   </form>
@@ -706,6 +718,11 @@ EDIT_CONTENT = """
       <label>{{ field }}</label><br>
       {% if field == 'content' %}
         <textarea name=\"{{ field }}\" required>{{ row[field] }}</textarea><br><br>
+      {% elif field == 'local_only' %}
+        <select name=\"{{ field }}\" required>
+          <option value=\"0\" {% if row[field]|int == 0 %}selected{% endif %}>0 (sync)</option>
+          <option value=\"1\" {% if row[field]|int == 1 %}selected{% endif %}>1 (local only)</option>
+        </select><br><br>
       {% else %}
         <input type=\"text\" name=\"{{ field }}\" value=\"{{ row[field] }}\" required><br><br>
       {% endif %}
@@ -740,6 +757,12 @@ EDIT_BULLETIN_CONTENT = """
 
     <label>content</label><br>
     <textarea name=\"content\" required>{{ row['content'] }}</textarea><br><br>
+
+    <label>Local only</label><br>
+    <select name="local_only">
+      <option value="0" selected>No (sync to peers)</option>
+      <option value="1">Yes (keep local)</option>
+    </select><br><br>
 
     <button class=\"btn btn-primary\" type=\"submit\">Save</button>
     <a class=\"btn\" href=\"{{ url_for('table_list', table=table_name) }}\">Back</a>
@@ -1732,14 +1755,32 @@ def create_app(runtime_interface=None) -> Flask:
               message_type TEXT NOT NULL,
               event_text TEXT NOT NULL
             )''')
+            try:
+              conn.execute("ALTER TABLE bulletins ADD COLUMN local_only INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE channels ADD COLUMN local_only INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+              pass
             conn.execute('''CREATE TABLE IF NOT EXISTS peer_sync_state (
               peer_node_id TEXT PRIMARY KEY,
               bulletins INTEGER NOT NULL DEFAULT 0,
               mail INTEGER NOT NULL DEFAULT 0,
               channels INTEGER NOT NULL DEFAULT 0,
               zork_saves INTEGER NOT NULL DEFAULT 0,
+              profiles INTEGER NOT NULL DEFAULT 0,
+              game_scores INTEGER NOT NULL DEFAULT 0,
               reported_at TEXT NOT NULL
             )''')
+            try:
+              conn.execute("ALTER TABLE peer_sync_state ADD COLUMN profiles INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE peer_sync_state ADD COLUMN game_scores INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+              pass
 
     def get_db_connection() -> sqlite3.Connection:
         conn = sqlite3.connect(app.config["DB_PATH"], timeout=30)
@@ -1975,13 +2016,19 @@ def create_app(runtime_interface=None) -> Flask:
             diagnostics["last_connection_event"] = f"{row['event_time']} | {row['message_type']} | {row['event_text']}"
 
           cursor.execute(
-            "SELECT peer_node_id, bulletins, mail, channels, zork_saves, reported_at FROM peer_sync_state ORDER BY peer_node_id"
+            "SELECT peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores, reported_at FROM peer_sync_state ORDER BY peer_node_id"
           )
           peer_rows = cursor.fetchall()
           if peer_rows:
-            local_b = int(diagnostics["bulletins_count"])
+            cursor.execute("SELECT COUNT(*) FROM bulletins WHERE local_only = 0")
+            local_b = int(cursor.fetchone()[0])
             local_m = int(diagnostics["mail_count"])
-            local_c = int(diagnostics["channels_count"])
+            cursor.execute("SELECT COUNT(*) FROM channels WHERE local_only = 0")
+            local_c = int(cursor.fetchone()[0])
+            cursor.execute("SELECT COUNT(*) FROM user_profiles")
+            local_p = int(cursor.fetchone()[0])
+            cursor.execute("SELECT COUNT(*) FROM game_scores")
+            local_s = int(cursor.fetchone()[0])
             lines = []
             mismatch = False
             for peer in peer_rows:
@@ -1989,11 +2036,13 @@ def create_app(runtime_interface=None) -> Flask:
               pm = int(peer[2])
               pc = int(peer[3])
               pz = int(peer[4])
-              peer_mismatch = (pb != local_b) or (pm != local_m) or (pc != local_c)
+              pp = int(peer[5])
+              ps = int(peer[6])
+              peer_mismatch = (pb != local_b) or (pm != local_m) or (pc != local_c) or (pp != local_p) or (ps != local_s)
               mismatch = mismatch or peer_mismatch
               status = "MISMATCH" if peer_mismatch else "OK"
               lines.append(
-                f"{peer[0]} -> B:{pb} M:{pm} C:{pc} Z:{pz} @ {peer[5]} [{status}]"
+                f"{peer[0]} -> B:{pb} M:{pm} C:{pc} Z:{pz} P:{pp} S:{ps} @ {peer[7]} [{status}]"
               )
             diagnostics["peer_sync_status"] = "Mismatch detected" if mismatch else "Counts aligned"
             diagnostics["peer_sync_counts"] = "\n".join(lines)
@@ -2163,18 +2212,22 @@ def create_app(runtime_interface=None) -> Flask:
         conn = get_db_connection()
         try:
           c = conn.cursor()
-          c.execute("SELECT COUNT(*) FROM bulletins")
+          c.execute("SELECT COUNT(*) FROM bulletins WHERE local_only = 0")
           local_b = int(c.fetchone()[0])
           c.execute("SELECT COUNT(*) FROM mail")
           local_m = int(c.fetchone()[0])
-          c.execute("SELECT COUNT(*) FROM channels")
+          c.execute("SELECT COUNT(*) FROM channels WHERE local_only = 0")
           local_c = int(c.fetchone()[0])
-          c.execute("SELECT bulletins, mail, channels FROM peer_sync_state")
+          c.execute("SELECT COUNT(*) FROM user_profiles")
+          local_p = int(c.fetchone()[0])
+          c.execute("SELECT COUNT(*) FROM game_scores")
+          local_s = int(c.fetchone()[0])
+          c.execute("SELECT bulletins, mail, channels, profiles, game_scores FROM peer_sync_state")
           peers = c.fetchall()
           if peers:
             mismatch_count = 0
-            for pb, pm, pc in peers:
-              if int(pb) != local_b or int(pm) != local_m or int(pc) != local_c:
+            for pb, pm, pc, pp, ps in peers:
+              if int(pb) != local_b or int(pm) != local_m or int(pc) != local_c or int(pp) != local_p or int(ps) != local_s:
                 mismatch_count += 1
             peer_mismatch = mismatch_count > 0
             if peer_mismatch:
@@ -2490,6 +2543,7 @@ def create_app(runtime_interface=None) -> Flask:
         sender_short_name = request.form.get("sender_short_name", "").strip()
         subject = request.form.get("subject", "").strip()
         content = request.form.get("content", "").strip()
+        local_only = 1 if request.form.get("local_only", "0").strip() == "1" else 0
 
         if not all([board, sender_short_name, subject, content]):
           flash("All fields are required.", "error")
@@ -2499,8 +2553,8 @@ def create_app(runtime_interface=None) -> Flask:
           post_date = datetime.now().strftime("%Y-%m-%d %H:%M")
           unique_id = str(uuid.uuid4())
           execute_write(
-            "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (board, sender_short_name, post_date, subject, content, unique_id),
+            "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (board, sender_short_name, post_date, subject, content, unique_id, local_only),
           )
           flash("Bulletin post created.", "success")
           return redirect(url_for("table_list", table="bulletins"))
@@ -2518,13 +2572,14 @@ def create_app(runtime_interface=None) -> Flask:
       if request.method == "POST":
         name = request.form.get("name", "").strip()
         url = request.form.get("url", "").strip()
+        local_only = 1 if request.form.get("local_only", "0").strip() == "1" else 0
 
         if not all([name, url]):
           flash("All fields are required.", "error")
         else:
           execute_write(
-            "INSERT INTO channels (name, url) VALUES (?, ?)",
-            (name, url),
+            "INSERT INTO channels (name, url, local_only) VALUES (?, ?, ?)",
+            (name, url, local_only),
           )
           flash("Channel entry created.", "success")
           return redirect(url_for("table_list", table="channels"))
