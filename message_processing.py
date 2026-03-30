@@ -159,6 +159,7 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
         return
 
     _recent_syncstate_repairs[repair_sig] = now
+    logging.info(f"SYNCSTATE mismatch from {sender_node_id}; requesting targeted repair for scopes: {', '.join(scopes)}")
     for scope in scopes:
         send_hash_request_to_bbs_nodes([sender_node_id], interface, scope=scope)
 
@@ -172,23 +173,32 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
     # Ask peer for keys we do not have, plus keys that exist on both sides but differ.
     need_from_remote = set(remote_keys - local_keys)
     need_from_remote.update(key for key in (remote_keys & local_keys) if local.get(key) != remote.get(key))
+    logging.info(
+        f"Reconciling manifest scope={scope} peer={sender_node_id} "
+        f"remote_keys={len(remote_keys)} local_keys={len(local_keys)} "
+        f"pull={len(need_from_remote)} push={len(local_keys - remote_keys)}"
+    )
     for key in sorted(need_from_remote):
         local_hash = str(local.get(key, ""))
         remote_hash = str(remote.get(key, ""))
         if not _should_send_hashmiss(sender_node_id, scope, key, local_hash, remote_hash):
             continue
         if scope in ('bulletins', 'mail') and key not in local and has_sync_tombstone(scope, key):
+            logging.info(f"Requesting tombstone replay from {sender_node_id} for {scope}:{key}")
             _send_one_sync(f"HASHMISS|tombstones|{scope}:{key}", sender_node_id, interface, pause_seconds=0.1)
         else:
+            logging.info(f"Requesting record from {sender_node_id} scope={scope} key={key}")
             _send_one_sync(f"HASHMISS|{scope}|{key}", sender_node_id, interface, pause_seconds=0.1)
 
     # Proactively push records the peer is missing to converge in one cycle.
     for key in sorted(local_keys - remote_keys):
+        logging.info(f"Pushing local-only record to {sender_node_id} scope={scope} key={key}")
         _send_requested_record(scope, key, sender_node_id, interface)
 
 
 def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface) -> None:
     manifest = get_record_hash_manifest(scope)
+    logging.info(f"Sending hash manifest to {destination_node_id} scope={scope} count={len(manifest)} compressed={_hash_manifest_compression_enabled()}")
     if not _hash_manifest_compression_enabled():
         for key, rec_hash in manifest.items():
             _send_one_sync(f"HASHREC|{scope}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=0.1)
@@ -218,18 +228,28 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
     if scope == 'bulletins':
         row = get_bulletin_by_unique_id(key)
         if row:
+            logging.info(f"Sending requested bulletin to {destination_node_id} key={key}")
             send_bulletin_to_bbs_nodes(row[0], row[1], row[2], row[3], row[4], [destination_node_id], interface)
+        else:
+            logging.warning(f"Requested bulletin missing locally for resend key={key}")
     elif scope == 'mail':
         row = get_mail_by_unique_id(key)
         if row:
+            logging.info(f"Sending requested mail to {destination_node_id} key={key}")
             send_mail_to_bbs_nodes(row[0], row[1], row[2], row[3], row[4], row[5], [destination_node_id], interface)
+        else:
+            logging.warning(f"Requested mail missing locally for resend key={key}")
     elif scope == 'channels':
         row = get_channel_by_manifest_key(key)
         if row:
+            logging.info(f"Sending requested channel to {destination_node_id} key={key}")
             send_channel_to_bbs_nodes(row[0], row[1], [destination_node_id], interface)
+        else:
+            logging.warning(f"Requested channel missing locally for resend key={key}")
     elif scope == 'profiles':
         row = get_profile_by_user_id(key)
         if row:
+            logging.info(f"Sending requested profile to {destination_node_id} key={key}")
             send_profile_to_bbs_nodes(row[0], row[1], row[2], row[3], row[4], row[5], row[6], [destination_node_id], interface)
     elif scope == 'game_scores':
         if ':' not in key:
@@ -237,6 +257,7 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
         user_id, game_id = key.split(':', 1)
         row = get_game_score_by_user_and_game(user_id, game_id)
         if row:
+            logging.info(f"Sending requested game score to {destination_node_id} key={key}")
             send_game_score_to_bbs_nodes(row[0], row[1], row[2], row[3], row[4], row[5], row[6], [destination_node_id], interface)
     elif scope == 'zork_saves':
         if ':' not in key:
@@ -244,13 +265,16 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
         user_id, game_id = key.split(':', 1)
         row = get_zork_save_row_by_user_and_game(user_id, game_id)
         if row:
+            logging.info(f"Sending requested zork save to {destination_node_id} key={key}")
             send_zork_save_to_bbs_nodes(row[0], row[1], row[2], row[3], [destination_node_id], interface, pause_seconds=0.1)
     elif scope == 'tombstones':
         if key.startswith('bulletins:'):
             unique_id = key.split(':', 1)[1]
+            logging.info(f"Replaying bulletin delete to {destination_node_id} key={key}")
             send_delete_bulletin_to_bbs_nodes(unique_id, [destination_node_id], interface)
         elif key.startswith('mail:'):
             unique_id = key.split(':', 1)[1]
+            logging.info(f"Replaying mail delete to {destination_node_id} key={key}")
             send_delete_mail_to_bbs_nodes(unique_id, [destination_node_id], interface)
 
 
@@ -712,6 +736,7 @@ def on_receive(packet, interface):
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|"])
 
             msg_type = "sync" if is_sync_message else "user"
+            sync_frame = message_string.split("|", 1)[0] if is_sync_message and "|" in message_string else (message_string[:24] if is_sync_message else "")
             log_connection_event(
                 sender_id,
                 sender_node_id,
@@ -723,7 +748,7 @@ def on_receive(packet, interface):
 
             if sender_node_id in bbs_nodes:
                 if is_sync_message:
-                    log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "sync", "Accepted sync message")
+                    log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "sync", f"Accepted sync message ({sync_frame})")
                     process_message(sender_id, message_string, interface, is_sync_message=True, sender_node_id=sender_node_id)
                 else:
                     log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "drop", "Ignored non-sync from BBS node")

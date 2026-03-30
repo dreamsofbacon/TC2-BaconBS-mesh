@@ -38,6 +38,36 @@ _sync_progress = {
     'last_updated_at': '',
     'last_result': 'No sync run yet',
 }
+_connection_log_handler_lock = threading.Lock()
+_connection_log_emit_state = threading.local()
+
+
+class ConnectionEventsLogHandler(logging.Handler):
+    def __init__(self, db_path: str):
+        super().__init__(level=logging.INFO)
+        self.db_path = db_path
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if getattr(_connection_log_emit_state, 'active', False):
+            return
+        try:
+            _connection_log_emit_state.active = True
+            message = self.format(record)
+            level_name = str(record.levelname or 'INFO').strip().lower()
+            source_name = str(record.name or 'root').strip()[:48]
+            _write_connection_event_direct(
+                db_path=self.db_path,
+                sender_num=None,
+                sender_node_id=None,
+                sender_short_name=source_name,
+                to_id=None,
+                message_type=level_name,
+                event_text=message,
+            )
+        except Exception:
+            pass
+        finally:
+            _connection_log_emit_state.active = False
 
 
 def _update_sync_progress(**kwargs) -> None:
@@ -56,6 +86,77 @@ def get_database_path() -> str:
 
 def get_config_path() -> str:
     return os.getenv('BBS_CONFIG_PATH', 'config.ini')
+
+
+def _write_connection_event_direct(
+    db_path: str,
+    sender_num: Optional[int],
+    sender_node_id: Optional[str],
+    sender_short_name: Optional[str],
+    to_id: Optional[int],
+    message_type: str,
+    event_text: str,
+) -> None:
+    conn = sqlite3.connect(db_path, timeout=5)
+    try:
+        conn.execute("PRAGMA busy_timeout=5000;")
+        conn.execute(
+            '''CREATE TABLE IF NOT EXISTS connection_events (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   event_time TEXT NOT NULL,
+                   sender_num TEXT,
+                   sender_node_id TEXT,
+                   sender_short_name TEXT,
+                   to_id TEXT,
+                   message_type TEXT NOT NULL,
+                   event_text TEXT NOT NULL
+               );'''
+        )
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        conn.execute(
+            '''INSERT INTO connection_events
+               (event_time, sender_num, sender_node_id, sender_short_name, to_id, message_type, event_text)
+               VALUES (?, ?, ?, ?, ?, ?, ?)''',
+            (
+                now,
+                str(sender_num) if sender_num is not None else None,
+                sender_node_id,
+                sender_short_name or '',
+                str(to_id) if to_id is not None else None,
+                message_type,
+                event_text,
+            )
+        )
+        _prune_connection_events(conn, _get_max_connection_log_rows())
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def install_connection_log_handler(db_path: Optional[str] = None) -> None:
+    handler_db_path = db_path or get_database_path()
+    root_logger = logging.getLogger()
+    with _connection_log_handler_lock:
+        existing = None
+        for handler in list(root_logger.handlers):
+            if isinstance(handler, ConnectionEventsLogHandler):
+                existing = handler
+                break
+        if existing is not None and existing.db_path == handler_db_path:
+            return
+        if existing is not None:
+            root_logger.removeHandler(existing)
+        new_handler = ConnectionEventsLogHandler(handler_db_path)
+        new_handler.setFormatter(logging.Formatter('%(message)s'))
+        root_logger.addHandler(new_handler)
+
+
+def remove_connection_log_handler() -> None:
+    root_logger = logging.getLogger()
+    with _connection_log_handler_lock:
+        for handler in list(root_logger.handlers):
+            if isinstance(handler, ConnectionEventsLogHandler):
+                root_logger.removeHandler(handler)
 
 
 def _ensure_zork_saves_table() -> None:
@@ -1174,6 +1275,7 @@ def get_connection_events_since(last_id: int = 0, limit: int = 100) -> list:
 
 def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500) -> dict:
     """
+            now,
     Sync all existing shared records (posts, metadata, directories) to peers.
     
     This function performs a full database sync to new or rejoining BBS peers without spamming.

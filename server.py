@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from config_init import initialize_config, get_interface, init_cli_parser, merge_config
 from db_operations import (
     initialize_database,
+    install_connection_log_handler,
     sync_full_database_to_nodes,
     get_sync_progress,
     get_mismatched_peer_nodes,
@@ -183,6 +184,7 @@ def main():
     logging.info(f"TC²-BBS is running on {system_config['interface_type']} interface...")
 
     initialize_database()
+    install_connection_log_handler()
 
     def receive_packet(packet, interface):
         on_receive(packet, interface)

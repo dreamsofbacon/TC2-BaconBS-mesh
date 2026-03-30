@@ -73,6 +73,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         if conn is not None:
             conn.close()
             del db_operations.thread_local.connection
+        db_operations.remove_connection_log_handler()
         self.env_patch.stop()
         self.temp_dir.cleanup()
 
@@ -189,6 +190,27 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(payload["progress_percent"], 44)
         self.assertEqual(payload["phase"], "syncing_mail")
         self.assertEqual(payload["sync_interval_minutes"], 5)
+
+    def test_connection_events_api_returns_normalized_display_types(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("CREATE TABLE IF NOT EXISTS connection_events (id INTEGER PRIMARY KEY AUTOINCREMENT, event_time TEXT NOT NULL, sender_num TEXT, sender_node_id TEXT, sender_short_name TEXT, to_id TEXT, message_type TEXT NOT NULL, event_text TEXT NOT NULL)")
+        conn.execute("INSERT INTO connection_events (event_time, sender_num, sender_node_id, sender_short_name, to_id, message_type, event_text) VALUES ('2026-03-30 10:00:00', '1', '!peer1', 'PEER', '2', 'user', 'RX user message to 2')")
+        conn.execute("INSERT INTO connection_events (event_time, sender_num, sender_node_id, sender_short_name, to_id, message_type, event_text) VALUES ('2026-03-30 10:00:01', NULL, NULL, 'root', NULL, 'warning', 'Something is off')")
+        conn.commit()
+        conn.close()
+
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        api_response = client.get("/api/connection-events?since_id=0")
+        self.assertEqual(api_response.status_code, 200)
+        payload = api_response.get_json()
+        self.assertEqual(payload["events"][0]["display_type"], "rx")
+        self.assertEqual(payload["events"][0]["display_label"], "RX")
+        self.assertEqual(payload["events"][1]["display_type"], "warn")
+        self.assertEqual(payload["events"][1]["display_label"], "WARN")
 
     def test_settings_diagnostics_show_runtime_details(self):
         app = create_app(runtime_interface=FakeInterface())
