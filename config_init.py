@@ -115,6 +115,13 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
     if bbs_nodes == ['']:
         bbs_nodes = []
 
+    sync_interval_raw = config.get('sync', 'sync_interval_minutes', fallback='5').strip()
+    try:
+        sync_interval_minutes = int(sync_interval_raw)
+    except ValueError:
+        sync_interval_minutes = 5
+    sync_interval_minutes = max(1, sync_interval_minutes)
+
     print(f"Configured to sync with the following BBS nodes: {bbs_nodes}")
 
     allowed_nodes = config.get('allow_list', 'allowed_nodes', fallback='').split(',')
@@ -125,10 +132,12 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
 
     return {
         'config': config,
+        'config_file': config_file,
         'interface_type': interface_type,
         'hostname': hostname,
         'port': port,
         'bbs_nodes': bbs_nodes,
+        'sync_interval_minutes': sync_interval_minutes,
         'allowed_nodes': allowed_nodes,
         'mqtt_topic': 'meshtastic.receive'
     }

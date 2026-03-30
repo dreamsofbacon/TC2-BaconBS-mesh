@@ -33,6 +33,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.config_path = self.root / "config.ini"
         self.db_path = self.root / "bulletins.db"
         self.runtime_diag_path = self.root / "runtime_diagnostics.json"
+        self.manual_trigger_path = self.root / "manual_sync.trigger"
 
         config = configparser.ConfigParser()
         config["admin"] = {
@@ -44,6 +45,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         }
         config["sync"] = {
             "bbs_nodes": "!oldpeer",
+            "sync_interval_minutes": "5",
         }
         config["allow_list"] = {
             "allowed_nodes": "!oldurgent",
@@ -57,6 +59,7 @@ class WebAdminSettingsTests(unittest.TestCase):
                 "BBS_CONFIG_PATH": str(self.config_path),
                 "BBS_DB_PATH": str(self.db_path),
                 "BBS_RUNTIME_DIAG_PATH": str(self.runtime_diag_path),
+                "BBS_MANUAL_SYNC_TRIGGER_PATH": str(self.manual_trigger_path),
                 "BBS_WEBGUI_SECRET": "test-secret",
             },
             clear=False,
@@ -130,6 +133,7 @@ class WebAdminSettingsTests(unittest.TestCase):
                 "settings_section": "sync",
                 "bbs_nodes": "!node1\n!node2\n!node1",
                 "allowed_nodes": "!allow1, !allow2",
+                "sync_interval_minutes": "5",
             },
             follow_redirects=True,
         )
@@ -140,7 +144,45 @@ class WebAdminSettingsTests(unittest.TestCase):
         config = configparser.ConfigParser()
         config.read(self.config_path)
         self.assertEqual(config.get("sync", "bbs_nodes"), "!node1,!node2")
+        self.assertEqual(config.get("sync", "sync_interval_minutes"), "5")
         self.assertEqual(config.get("allow_list", "allowed_nodes"), "!allow1,!allow2")
+
+    def test_manual_sync_api_creates_trigger_file(self):
+        app = create_app()
+        client = app.test_client()
+
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        api_response = client.post("/api/sync/manual")
+        self.assertEqual(api_response.status_code, 200)
+        self.assertTrue(self.manual_trigger_path.exists())
+
+    def test_sync_status_api_returns_snapshot_values(self):
+        with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:
+            json.dump(
+                {
+                    "sync_in_progress": True,
+                    "sync_progress_percent": 44,
+                    "sync_current_phase": "syncing_mail",
+                    "sync_next_run_epoch": 9999999999,
+                    "sync_interval_minutes": 5,
+                },
+                snapshot_file,
+            )
+
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        api_response = client.get("/api/sync/status")
+        self.assertEqual(api_response.status_code, 200)
+        payload = api_response.get_json()
+        self.assertEqual(payload["in_progress"], True)
+        self.assertEqual(payload["progress_percent"], 44)
+        self.assertEqual(payload["phase"], "syncing_mail")
+        self.assertEqual(payload["sync_interval_minutes"], 5)
 
     def test_settings_diagnostics_show_runtime_details(self):
         app = create_app(runtime_interface=FakeInterface())

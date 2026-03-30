@@ -15,6 +15,7 @@ other BBS servers listed in the config.ini file.
 import logging
 import json
 import os
+import configparser
 import threading
 import time
 from datetime import datetime, timezone
@@ -46,6 +47,37 @@ def get_runtime_diagnostics_path() -> str:
     return os.getenv('BBS_RUNTIME_DIAG_PATH', 'runtime_diagnostics.json')
 
 
+def get_manual_sync_trigger_path() -> str:
+    return os.getenv('BBS_MANUAL_SYNC_TRIGGER_PATH', 'manual_sync.trigger')
+
+
+def read_sync_interval_minutes(config_path: str, default_minutes: int = 5) -> int:
+    cfg = configparser.ConfigParser()
+    cfg.read(config_path)
+    raw = cfg.get('sync', 'sync_interval_minutes', fallback=str(default_minutes)).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = default_minutes
+    return max(1, value)
+
+
+def refresh_peer_lists_from_config(config_path: str, interface, system_config: dict) -> None:
+    cfg = configparser.ConfigParser()
+    cfg.read(config_path)
+
+    bbs_nodes = cfg.get('sync', 'bbs_nodes', fallback='').split(',')
+    bbs_nodes = [node.strip() for node in bbs_nodes if node.strip()]
+
+    allowed_nodes = cfg.get('allow_list', 'allowed_nodes', fallback='').split(',')
+    allowed_nodes = [node.strip() for node in allowed_nodes if node.strip()]
+
+    interface.bbs_nodes = bbs_nodes
+    interface.allowed_nodes = allowed_nodes
+    system_config['bbs_nodes'] = bbs_nodes
+    system_config['allowed_nodes'] = allowed_nodes
+
+
 def write_runtime_diagnostics_snapshot(interface, system_config: dict) -> None:
     sync_progress = get_sync_progress()
     snapshot = {
@@ -59,15 +91,18 @@ def write_runtime_diagnostics_snapshot(interface, system_config: dict) -> None:
         'bbs_nodes': list(getattr(interface, 'bbs_nodes', system_config.get('bbs_nodes', [])) or []),
         'allowed_nodes': list(getattr(interface, 'allowed_nodes', system_config.get('allowed_nodes', [])) or []),
         'sync_in_progress': bool(sync_progress.get('in_progress', False)),
-        'sync_progress_percent': int(sync_progress.get('progress_percent', 100)),
+        'sync_progress_percent': int(sync_progress.get('progress_percent', 0)),
         'sync_completed_items': int(sync_progress.get('completed_items', 0)),
         'sync_total_items': int(sync_progress.get('total_items', 0)),
         'sync_remaining_items': int(sync_progress.get('remaining_items', 0)),
-        'sync_current_phase': str(sync_progress.get('current_phase', 'idle')),
+        'sync_current_phase': str(sync_progress.get('current_phase', 'never_run')),
         'sync_target_nodes': list(sync_progress.get('target_nodes', [])),
         'sync_started_at': str(sync_progress.get('started_at', '')),
         'sync_last_updated_at': str(sync_progress.get('last_updated_at', '')),
         'sync_last_result': str(sync_progress.get('last_result', '')),
+        'sync_interval_minutes': int(system_config.get('sync_interval_minutes_runtime', system_config.get('sync_interval_minutes', 5))),
+        'sync_next_run_epoch': int(system_config.get('sync_next_run_epoch', 0)),
+        'sync_last_trigger_reason': str(system_config.get('sync_last_trigger_reason', 'scheduled')),
         'error': '',
     }
 
@@ -129,6 +164,8 @@ def main():
     interface = get_interface(system_config)
     interface.bbs_nodes = system_config['bbs_nodes']
     interface.allowed_nodes = system_config['allowed_nodes']
+    config_path = system_config.get('config_file', 'config.ini')
+    trigger_path = get_manual_sync_trigger_path()
     write_runtime_diagnostics_snapshot(interface, system_config)
 
     logging.info(f"TC²-BBS is running on {system_config['interface_type']} interface...")
@@ -153,8 +190,12 @@ def main():
         # Empty on startup — receivers use unique_id idempotency, so re-syncing is safe
         synced_nodes: set = set()
         pending_sync_nodes: set = set()
-        synced_at: dict = {}   # node_id -> time.time() when last sync completed
-        _RESYNC_INTERVAL = 6 * 3600  # re-sync each peer every 6 hours
+        sync_interval_minutes = int(system_config.get('sync_interval_minutes', 5))
+        last_schedule_epoch = 0
+        last_manual_trigger_mtime = 0.0
+        system_config['sync_last_trigger_reason'] = 'scheduled'
+        system_config['sync_interval_minutes_runtime'] = sync_interval_minutes
+        system_config['sync_next_run_epoch'] = int(time.time())
 
         def _run_sync(node):
             """Background thread: sync db to a single peer, then record completion."""
@@ -162,7 +203,6 @@ def main():
                 result = sync_full_database_to_nodes([node], interface, delay_ms=500)
                 logging.info(f"DB sync complete for {node}: {result['total_messages']} messages sent")
                 synced_nodes.add(node)
-                synced_at[node] = time.time()
             except Exception as exc:
                 logging.error(f"Error syncing database to {node}: {exc}")
                 # Not added to synced_nodes; will retry on next check cycle
@@ -170,22 +210,44 @@ def main():
                 pending_sync_nodes.discard(node)
 
         while True:
+            now = time.time()
+
             # Refresh diagnostics snapshot (5 s while syncing, 30 s otherwise)
-            if time.time() >= next_diagnostics_write:
+            if now >= next_diagnostics_write:
                 write_runtime_diagnostics_snapshot(interface, system_config)
                 sync_progress = get_sync_progress()
-                next_diagnostics_write = time.time() + (5 if sync_progress.get('in_progress') else 30)
+                next_diagnostics_write = now + (5 if sync_progress.get('in_progress') else 30)
 
-            # Check for new BBS nodes to sync with every 60 seconds
-            if time.time() >= next_node_sync_check:
-                # Expire nodes whose last sync is older than _RESYNC_INTERVAL
-                stale = {n for n, t in synced_at.items()
-                         if time.time() - t > _RESYNC_INTERVAL}
-                if stale:
-                    logging.info(f"Re-sync due for {len(stale)} node(s) after 6-hour interval: {stale}")
-                    synced_nodes -= stale
-                    for n in stale:
-                        synced_at.pop(n, None)
+            # Check/launch sync work frequently so manual triggers feel responsive
+            if now >= next_node_sync_check:
+                refresh_peer_lists_from_config(config_path, interface, system_config)
+                sync_interval_minutes = read_sync_interval_minutes(config_path, default_minutes=5)
+                system_config['sync_interval_minutes_runtime'] = sync_interval_minutes
+
+                manual_triggered = False
+                try:
+                    if os.path.exists(trigger_path):
+                        trigger_mtime = os.path.getmtime(trigger_path)
+                        if trigger_mtime > last_manual_trigger_mtime:
+                            manual_triggered = True
+                            last_manual_trigger_mtime = trigger_mtime
+                            os.remove(trigger_path)
+                except Exception as exc:
+                    logging.debug(f"Unable to process manual sync trigger: {exc}")
+
+                sync_due = (last_schedule_epoch == 0) or (now >= (last_schedule_epoch + (sync_interval_minutes * 60)))
+
+                if (manual_triggered or sync_due) and not pending_sync_nodes:
+                    synced_nodes.clear()
+                    last_schedule_epoch = now
+                    system_config['sync_last_trigger_reason'] = 'manual' if manual_triggered else 'scheduled'
+                    if manual_triggered:
+                        logging.info("Manual sync trigger received from web admin")
+                    else:
+                        logging.info(f"Scheduled sync interval reached ({sync_interval_minutes} minutes)")
+
+                next_run_epoch = int(last_schedule_epoch + (sync_interval_minutes * 60)) if last_schedule_epoch else int(now)
+                system_config['sync_next_run_epoch'] = next_run_epoch
 
                 current_bbs_nodes = set(interface.bbs_nodes or [])
                 new_nodes = current_bbs_nodes - synced_nodes - pending_sync_nodes
@@ -197,7 +259,7 @@ def main():
                         t = threading.Thread(target=_run_sync, args=(new_node,), daemon=True)
                         t.start()
 
-                next_node_sync_check = time.time() + 60
+                next_node_sync_check = now + 5
             
             time.sleep(1)
 
