@@ -1,5 +1,6 @@
 import logging
 import base64
+import hashlib
 import re
 import time
 
@@ -152,12 +153,22 @@ def send_channel_to_bbs_nodes(name, url, bbs_nodes, interface):
 
 
 def send_sync_state_to_bbs_nodes(counts, bbs_nodes, interface):
-    """Send compact local record counts to peers for mismatch detection."""
+    """Send compact local record counts and hashes to peers for mismatch detection."""
     message = (
         f"SYNCSTATE|{int(counts.get('bulletins', 0))}|{int(counts.get('mail', 0))}|"
         f"{int(counts.get('channels', 0))}|{int(counts.get('zork_saves', 0))}|"
-        f"{int(counts.get('profiles', 0))}|{int(counts.get('game_scores', 0))}"
+        f"{int(counts.get('profiles', 0))}|{int(counts.get('game_scores', 0))}|"
+        f"{str(counts.get('bulletins_hash', ''))}|{str(counts.get('mail_hash', ''))}|"
+        f"{str(counts.get('channels_hash', ''))}|{str(counts.get('zork_saves_hash', ''))}|"
+        f"{str(counts.get('profiles_hash', ''))}|{str(counts.get('game_scores_hash', ''))}"
     )
+    for node_id in bbs_nodes:
+        _send_one_sync(message, node_id, interface)
+
+
+def send_hash_request_to_bbs_nodes(bbs_nodes, interface, scope='all'):
+    """Ask peers to send per-record hash manifests for selective repair."""
+    message = f"HASHREQ|{scope}"
     for node_id in bbs_nodes:
         _send_one_sync(message, node_id, interface)
 
@@ -187,13 +198,14 @@ def send_game_score_to_bbs_nodes(user_id, game_id, short_name, score, max_score,
 def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nodes, interface, pause_seconds=0.75):
     """Send binary zork save payload as chunked base64 sync frames."""
     payload_b64 = base64.b64encode(save_data or b"").decode("ascii")
+    payload_hash = base64.urlsafe_b64encode(hashlib.blake2b(save_data or b"", digest_size=8).digest()).decode("ascii").rstrip("=")
     user_b64 = _b64(str(user_id))
     game_b64 = _b64(str(game_id))
     # Deterministic save_id allows retries/re-sync to reuse the same identity.
     save_id_raw = f"{user_id}:{game_id}:{updated_at}:{len(payload_b64)}"
     save_id = base64.urlsafe_b64encode(save_id_raw.encode("utf-8")).decode("ascii").rstrip("=")
 
-    prefix = f"ZORKSAVE|{save_id}|{user_b64}|{game_b64}|{updated_at}|"
+    prefix = f"ZORKSAVE|{save_id}|{user_b64}|{game_b64}|{updated_at}|{payload_hash}|"
     # Reserve enough room for chunk index and total chunk counters.
     overhead = len(prefix.encode("utf-8")) + len("999999|999999|".encode("utf-8"))
     available = _MESHTASTIC_MAX_BYTES - overhead

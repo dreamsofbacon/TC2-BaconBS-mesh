@@ -1,5 +1,6 @@
 import logging
 import base64
+import hashlib
 import time
 
 from meshtastic import BROADCAST_NUM
@@ -22,9 +23,23 @@ from db_operations import (
     auto_upsert_user_profile, log_connection_event, upsert_peer_sync_state,
     upsert_synced_user_profile, upsert_synced_game_score,
     upsert_synced_zork_save,
+    get_record_hash_manifest,
+    get_bulletin_by_unique_id,
+    get_mail_by_unique_id,
+    get_channel_by_manifest_key,
+    get_profile_by_user_id,
+    get_game_score_by_user_and_game,
+    get_zork_save_row_by_user_and_game,
+    has_sync_tombstone,
 )
 from js8call_integration import handle_js8call_command, handle_js8call_steps, handle_group_message_selection
-from utils import get_user_state, get_node_short_name, get_node_id_from_num, send_message
+from utils import (
+    get_user_state, get_node_short_name, get_node_id_from_num, send_message,
+    send_bulletin_to_bbs_nodes, send_mail_to_bbs_nodes, send_channel_to_bbs_nodes,
+    send_profile_to_bbs_nodes, send_game_score_to_bbs_nodes, send_zork_save_to_bbs_nodes,
+    send_delete_bulletin_to_bbs_nodes, send_delete_mail_to_bbs_nodes,
+    _send_one_sync,
+)
 
 main_menu_handlers = {
     "q": handle_quick_help_command,
@@ -62,6 +77,8 @@ board_action_handlers = {
 
 _zork_save_chunk_buffers = {}
 _ZORK_SAVE_BUFFER_MAX_AGE_SECONDS = 600
+_peer_hash_manifest_buffers = {}
+_SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "profiles", "game_scores", "zork_saves", "tombstones"]
 
 
 def _prune_old_zork_save_chunks() -> None:
@@ -70,6 +87,53 @@ def _prune_old_zork_save_chunks() -> None:
                   if now - v.get('updated_at', now) > _ZORK_SAVE_BUFFER_MAX_AGE_SECONDS]
     for key in stale_keys:
         _zork_save_chunk_buffers.pop(key, None)
+
+
+def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface) -> None:
+    manifest = get_record_hash_manifest(scope)
+    for key, rec_hash in manifest.items():
+        _send_one_sync(f"HASHREC|{scope}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=0.1)
+    _send_one_sync(f"HASHEND|{scope}|{len(manifest)}", destination_node_id, interface, pause_seconds=0.1)
+
+
+def _send_requested_record(scope: str, key: str, destination_node_id: str, interface) -> None:
+    if scope == 'bulletins':
+        row = get_bulletin_by_unique_id(key)
+        if row:
+            send_bulletin_to_bbs_nodes(row[0], row[1], row[2], row[3], row[4], [destination_node_id], interface)
+    elif scope == 'mail':
+        row = get_mail_by_unique_id(key)
+        if row:
+            send_mail_to_bbs_nodes(row[0], row[1], row[2], row[3], row[4], row[5], [destination_node_id], interface)
+    elif scope == 'channels':
+        row = get_channel_by_manifest_key(key)
+        if row:
+            send_channel_to_bbs_nodes(row[0], row[1], [destination_node_id], interface)
+    elif scope == 'profiles':
+        row = get_profile_by_user_id(key)
+        if row:
+            send_profile_to_bbs_nodes(row[0], row[1], row[2], row[3], row[4], row[5], row[6], [destination_node_id], interface)
+    elif scope == 'game_scores':
+        if ':' not in key:
+            return
+        user_id, game_id = key.split(':', 1)
+        row = get_game_score_by_user_and_game(user_id, game_id)
+        if row:
+            send_game_score_to_bbs_nodes(row[0], row[1], row[2], row[3], row[4], row[5], row[6], [destination_node_id], interface)
+    elif scope == 'zork_saves':
+        if ':' not in key:
+            return
+        user_id, game_id = key.split(':', 1)
+        row = get_zork_save_row_by_user_and_game(user_id, game_id)
+        if row:
+            send_zork_save_to_bbs_nodes(row[0], row[1], row[2], row[3], [destination_node_id], interface, pause_seconds=0.1)
+    elif scope == 'tombstones':
+        if key.startswith('bulletins:'):
+            unique_id = key.split(':', 1)[1]
+            send_delete_bulletin_to_bbs_nodes(unique_id, [destination_node_id], interface)
+        elif key.startswith('mail:'):
+            unique_id = key.split(':', 1)[1]
+            send_delete_mail_to_bbs_nodes(unique_id, [destination_node_id], interface)
 
 
 def _auto_update_profile(sender_id, interface):
@@ -170,7 +234,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 append_mail_content(parts[1], None, parts[2])
         elif message.startswith("SYNCSTATE|"):
             parts = message.split("|")
-            if len(parts) not in (5, 7):
+            if len(parts) not in (5, 7, 13):
                 logging.warning(f"Malformed SYNCSTATE sync message ignored: {message}")
                 return
             try:
@@ -183,10 +247,85 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             except ValueError:
                 logging.warning(f"Invalid SYNCSTATE values ignored: {message}")
                 return
+            bulletins_hash = parts[7] if len(parts) >= 13 else ''
+            mail_hash = parts[8] if len(parts) >= 13 else ''
+            channels_hash = parts[9] if len(parts) >= 13 else ''
+            zork_saves_hash = parts[10] if len(parts) >= 13 else ''
+            profiles_hash = parts[11] if len(parts) >= 13 else ''
+            game_scores_hash = parts[12] if len(parts) >= 13 else ''
             if sender_node_id:
-                upsert_peer_sync_state(sender_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores)
+                upsert_peer_sync_state(
+                    sender_node_id,
+                    bulletins,
+                    mail,
+                    channels,
+                    zork_saves,
+                    profiles,
+                    game_scores,
+                    bulletins_hash,
+                    mail_hash,
+                    channels_hash,
+                    zork_saves_hash,
+                    profiles_hash,
+                    game_scores_hash,
+                )
             else:
                 logging.warning("SYNCSTATE ignored due to missing sender_node_id")
+        elif message.startswith("HASHREQ|"):
+            if not sender_node_id:
+                logging.warning("HASHREQ ignored due to missing sender_node_id")
+                return
+            requested = message.split("|", 1)[1].strip().lower() if "|" in message else "all"
+            scopes = _SUPPORTED_HASH_SCOPES if requested == 'all' else [requested]
+            for scope in scopes:
+                if scope in _SUPPORTED_HASH_SCOPES:
+                    _send_hash_manifest_to_peer(scope, sender_node_id, interface)
+        elif message.startswith("HASHREC|"):
+            if not sender_node_id:
+                return
+            parts = message.split("|", 3)
+            if len(parts) != 4:
+                logging.warning(f"Malformed HASHREC ignored: {message}")
+                return
+            scope, key, rec_hash = parts[1], parts[2], parts[3]
+            if scope not in _SUPPORTED_HASH_SCOPES:
+                return
+            buf_key = (sender_node_id, scope)
+            if buf_key not in _peer_hash_manifest_buffers:
+                _peer_hash_manifest_buffers[buf_key] = {}
+            _peer_hash_manifest_buffers[buf_key][key] = rec_hash
+        elif message.startswith("HASHEND|"):
+            if not sender_node_id:
+                return
+            parts = message.split("|", 2)
+            if len(parts) != 3:
+                logging.warning(f"Malformed HASHEND ignored: {message}")
+                return
+            scope = parts[1]
+            if scope not in _SUPPORTED_HASH_SCOPES:
+                return
+            remote = _peer_hash_manifest_buffers.pop((sender_node_id, scope), {})
+            local = get_record_hash_manifest(scope)
+            missing_or_mismatched = [
+                key for key, remote_hash in remote.items()
+                if local.get(key) != remote_hash
+            ]
+            for key in missing_or_mismatched:
+                if scope in ('bulletins', 'mail') and key not in local and has_sync_tombstone(scope, key):
+                    _send_one_sync(f"HASHMISS|tombstones|{scope}:{key}", sender_node_id, interface, pause_seconds=0.1)
+                else:
+                    _send_one_sync(f"HASHMISS|{scope}|{key}", sender_node_id, interface, pause_seconds=0.1)
+        elif message.startswith("HASHMISS|"):
+            if not sender_node_id:
+                return
+            parts = message.split("|", 2)
+            if len(parts) != 3:
+                logging.warning(f"Malformed HASHMISS ignored: {message}")
+                return
+            scope, key = parts[1], parts[2]
+            if scope not in _SUPPORTED_HASH_SCOPES:
+                return
+            _send_requested_record(scope, key, sender_node_id, interface)
         elif message.startswith("PROFILESYNC|"):
             parts = message.split("|", 7)
             if len(parts) != 8:
@@ -216,15 +355,17 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 return
             upsert_synced_game_score(parts[1], parts[2], short_name, score, max_score, moves, parts[7])
         elif message.startswith("ZORKSAVE|"):
-            # Format: ZORKSAVE|save_id|user_b64|game_b64|updated_at|chunk_idx|total_chunks|chunk_b64
-            parts = message.split("|", 7)
-            if len(parts) != 8:
+            # Legacy: ZORKSAVE|save_id|user_b64|game_b64|updated_at|chunk_idx|total_chunks|chunk_b64
+            # New:    ZORKSAVE|save_id|user_b64|game_b64|updated_at|payload_hash|chunk_idx|total_chunks|chunk_b64
+            parts = message.split("|", 8)
+            if len(parts) not in (8, 9):
                 logging.warning(f"Malformed ZORKSAVE ignored: {message}")
                 return
             save_id, user_b64, game_b64, updated_at = parts[1], parts[2], parts[3], parts[4]
+            payload_hash = parts[5] if len(parts) == 9 else ''
             try:
-                chunk_idx = int(parts[5])
-                total_chunks = int(parts[6])
+                chunk_idx = int(parts[6] if len(parts) == 9 else parts[5])
+                total_chunks = int(parts[7] if len(parts) == 9 else parts[6])
             except ValueError:
                 logging.warning(f"Malformed ZORKSAVE indices ignored: {message}")
                 return
@@ -241,6 +382,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     'user_b64': user_b64,
                     'game_b64': game_b64,
                     'updated_at_str': updated_at,
+                    'payload_hash': payload_hash,
                     'total': total_chunks,
                     'chunks': {},
                     'updated_at': time.time(),
@@ -252,6 +394,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     'user_b64': user_b64,
                     'game_b64': game_b64,
                     'updated_at_str': updated_at,
+                    'payload_hash': payload_hash,
                     'total': total_chunks,
                     'chunks': {},
                     'updated_at': time.time(),
@@ -260,7 +403,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
 
             buf['updated_at'] = time.time()
             if chunk_idx not in buf['chunks']:
-                buf['chunks'][chunk_idx] = parts[7]
+                buf['chunks'][chunk_idx] = parts[8] if len(parts) == 9 else parts[7]
 
             if len(buf['chunks']) == buf['total']:
                 try:
@@ -268,6 +411,17 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     user_id = base64.b64decode(buf['user_b64'].encode('ascii')).decode('utf-8')
                     game_id = base64.b64decode(buf['game_b64'].encode('ascii')).decode('utf-8')
                     save_data = base64.b64decode(ordered.encode('ascii'))
+                    expected_hash = str(buf.get('payload_hash', '') or '')
+                    if expected_hash:
+                        actual_hash = base64.urlsafe_b64encode(
+                            hashlib.blake2b(save_data, digest_size=8).digest()
+                        ).decode('ascii').rstrip('=')
+                        if actual_hash != expected_hash:
+                            logging.warning(
+                                f"ZORKSAVE hash mismatch for save_id {save_id}: expected {expected_hash}, got {actual_hash}"
+                            )
+                            _zork_save_chunk_buffers.pop(key, None)
+                            return
                     upsert_synced_zork_save(user_id, game_id, save_data, buf['updated_at_str'])
                 except Exception:
                     logging.warning(f"Malformed ZORKSAVE payload ignored: {message}")
@@ -398,7 +552,8 @@ def on_receive(packet, interface):
             is_sync_message = any(message_string.startswith(prefix) for prefix in
                                   ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|",
                                    "CHANNEL|", "BULLETINCONT|", "MAILCONT|", "SYNCSTATE|",
-                                   "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|"])
+                                   "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|",
+                                   "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|"])
 
             msg_type = "sync" if is_sync_message else "user"
             log_connection_event(
