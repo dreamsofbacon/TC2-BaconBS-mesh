@@ -36,6 +36,35 @@ If you're a Docker user, TC²-BBS Meshtastic is available on Docker Hub!
    cd TC2-BBS-mesh
    ```
 
+#### Quick Setup (Automated)
+
+Run the appropriate setup script for your system to automatically create a virtual environment and install all dependencies:
+
+- **Windows (PowerShell):**
+  ```powershell
+  .\setup.ps1
+  ```
+
+- **Windows (Command Prompt):**
+  ```cmd
+  setup.bat
+  ```
+
+- **macOS and Linux:**
+  ```sh
+  bash setup.sh
+  ```
+
+These scripts will:
+- Create a Python virtual environment
+- Activate it
+- Install all dependencies from `requirements.txt`
+- Create `config.ini` from `example_config.ini` (if it doesn't exist)
+
+#### Manual Setup
+
+If you prefer manual setup, follow these steps:
+
 2. Set up a Python virtual environment:  
    
    ```sh
@@ -51,6 +80,8 @@ If you're a Docker user, TC²-BBS Meshtastic is available on Docker Hub!
    ```
    
    - On macOS and Linux:
+   ```sh
+   source venv/bin/activate
    ```
 
 4. Install the required packages:  
@@ -62,8 +93,10 @@ If you're a Docker user, TC²-BBS Meshtastic is available on Docker Hub!
 5. Rename `example_config.ini`:
 
    ```sh
-   mv example_config.ini config.ini
+   cp example_config.ini config.ini
    ```
+
+#### Configuration
 
 6. Set up the configuration in `config.ini`:  
 
