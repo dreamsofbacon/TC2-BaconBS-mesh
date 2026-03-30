@@ -1,5 +1,6 @@
 import logging
 import base64
+import time
 
 from meshtastic import BROADCAST_NUM
 
@@ -20,6 +21,7 @@ from db_operations import (
     append_bulletin_content, append_mail_content,
     auto_upsert_user_profile, log_connection_event, upsert_peer_sync_state,
     upsert_synced_user_profile, upsert_synced_game_score,
+    upsert_synced_zork_save,
 )
 from js8call_integration import handle_js8call_command, handle_js8call_steps, handle_group_message_selection
 from utils import get_user_state, get_node_short_name, get_node_id_from_num, send_message
@@ -56,6 +58,18 @@ board_action_handlers = {
     "p": lambda sender_id, interface, state: handle_bb_steps(sender_id, 'p', 2, state, interface, None),
     "x": handle_help_command
 }
+
+
+_zork_save_chunk_buffers = {}
+_ZORK_SAVE_BUFFER_MAX_AGE_SECONDS = 600
+
+
+def _prune_old_zork_save_chunks() -> None:
+    now = time.time()
+    stale_keys = [k for k, v in _zork_save_chunk_buffers.items()
+                  if now - v.get('updated_at', now) > _ZORK_SAVE_BUFFER_MAX_AGE_SECONDS]
+    for key in stale_keys:
+        _zork_save_chunk_buffers.pop(key, None)
 
 
 def _auto_update_profile(sender_id, interface):
@@ -201,6 +215,64 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed SCORESYNC payload ignored: {message}")
                 return
             upsert_synced_game_score(parts[1], parts[2], short_name, score, max_score, moves, parts[7])
+        elif message.startswith("ZORKSAVE|"):
+            # Format: ZORKSAVE|save_id|user_b64|game_b64|updated_at|chunk_idx|total_chunks|chunk_b64
+            parts = message.split("|", 7)
+            if len(parts) != 8:
+                logging.warning(f"Malformed ZORKSAVE ignored: {message}")
+                return
+            save_id, user_b64, game_b64, updated_at = parts[1], parts[2], parts[3], parts[4]
+            try:
+                chunk_idx = int(parts[5])
+                total_chunks = int(parts[6])
+            except ValueError:
+                logging.warning(f"Malformed ZORKSAVE indices ignored: {message}")
+                return
+            if total_chunks <= 0 or chunk_idx < 0 or chunk_idx >= total_chunks:
+                logging.warning(f"Malformed ZORKSAVE chunk bounds ignored: {message}")
+                return
+
+            _prune_old_zork_save_chunks()
+            sender_key = sender_node_id or "unknown"
+            key = (sender_key, save_id)
+            buf = _zork_save_chunk_buffers.get(key)
+            if buf is None:
+                buf = {
+                    'user_b64': user_b64,
+                    'game_b64': game_b64,
+                    'updated_at_str': updated_at,
+                    'total': total_chunks,
+                    'chunks': {},
+                    'updated_at': time.time(),
+                }
+                _zork_save_chunk_buffers[key] = buf
+            elif buf.get('total') != total_chunks:
+                # Conflicting frame set for same save id; reset buffer.
+                buf = {
+                    'user_b64': user_b64,
+                    'game_b64': game_b64,
+                    'updated_at_str': updated_at,
+                    'total': total_chunks,
+                    'chunks': {},
+                    'updated_at': time.time(),
+                }
+                _zork_save_chunk_buffers[key] = buf
+
+            buf['updated_at'] = time.time()
+            if chunk_idx not in buf['chunks']:
+                buf['chunks'][chunk_idx] = parts[7]
+
+            if len(buf['chunks']) == buf['total']:
+                try:
+                    ordered = ''.join(buf['chunks'][i] for i in range(buf['total']))
+                    user_id = base64.b64decode(buf['user_b64'].encode('ascii')).decode('utf-8')
+                    game_id = base64.b64decode(buf['game_b64'].encode('ascii')).decode('utf-8')
+                    save_data = base64.b64decode(ordered.encode('ascii'))
+                    upsert_synced_zork_save(user_id, game_id, save_data, buf['updated_at_str'])
+                except Exception:
+                    logging.warning(f"Malformed ZORKSAVE payload ignored: {message}")
+                finally:
+                    _zork_save_chunk_buffers.pop(key, None)
     else:
         if message_lower.startswith("sm,,"):
             handle_send_mail_command(sender_id, message_strip, interface, bbs_nodes)
@@ -326,7 +398,7 @@ def on_receive(packet, interface):
             is_sync_message = any(message_string.startswith(prefix) for prefix in
                                   ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|",
                                    "CHANNEL|", "BULLETINCONT|", "MAILCONT|", "SYNCSTATE|",
-                                   "PROFILESYNC|", "SCORESYNC|"])
+                                   "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|"])
 
             msg_type = "sync" if is_sync_message else "user"
             log_connection_event(

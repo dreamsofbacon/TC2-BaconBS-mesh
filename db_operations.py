@@ -17,6 +17,7 @@ from utils import (
     send_sync_state_to_bbs_nodes,
     send_profile_to_bbs_nodes,
     send_game_score_to_bbs_nodes,
+    send_zork_save_to_bbs_nodes,
 )
 
 
@@ -616,6 +617,33 @@ def upsert_zork_save(user_id: int, save_data: bytes, game_id: str = 'zork1') -> 
     conn.commit()
 
 
+def upsert_synced_zork_save(user_id: str, game_id: str, save_data: bytes, updated_at: str) -> None:
+    """Apply a zork save payload received from peer sync.
+
+    Only replaces local save when incoming updated_at is newer.
+    """
+    _ensure_zork_saves_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT updated_at FROM zork_saves WHERE user_id = ? AND game_id = ?",
+        (str(user_id), str(game_id)),
+    )
+    row = c.fetchone()
+    if row and row[0] and row[0] >= updated_at:
+        return
+
+    c.execute(
+        '''INSERT INTO zork_saves (user_id, game_id, save_data, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(user_id, game_id) DO UPDATE SET
+             save_data = excluded.save_data,
+             updated_at = excluded.updated_at''',
+        (str(user_id), str(game_id), save_data, updated_at),
+    )
+    conn.commit()
+
+
 def get_zork_save(user_id: int, game_id: str = 'zork1') -> Optional[bytes]:
     _ensure_zork_saves_table()
     conn = get_db_connection()
@@ -797,7 +825,7 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
     
     Returns:
           dict: Summary with keys 'bulletins_synced', 'mail_synced', 'channels_synced',
-              'profiles_synced', 'game_scores_synced', 'total_messages'
+              'profiles_synced', 'game_scores_synced', 'zork_saves_synced', 'total_messages'
     
     Example:
         result = sync_full_database_to_nodes([123456, 789012], interface, delay_ms=500)
@@ -822,6 +850,7 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
             'channels_synced': 0,
             'profiles_synced': 0,
             'game_scores_synced': 0,
+            'zork_saves_synced': 0,
             'total_messages': 0,
         }
     
@@ -840,7 +869,9 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
     profile_total = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM game_scores")
     game_score_total = c.fetchone()[0]
-    total_items = bulletin_total + mail_total + channel_total + profile_total + game_score_total
+    c.execute("SELECT COUNT(*) FROM zork_saves")
+    zork_total = c.fetchone()[0]
+    total_items = bulletin_total + mail_total + channel_total + profile_total + game_score_total + zork_total
 
     started_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     _update_sync_progress(
@@ -945,6 +976,18 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
             _progress_tick('syncing_game_scores')
             time.sleep(delay_seconds)
 
+        # Sync zork save payload metadata/data
+        _update_sync_progress(current_phase='syncing_zork_saves')
+        c.execute("SELECT user_id, game_id, save_data, updated_at FROM zork_saves")
+        zork_rows = c.fetchall()
+        zork_saves_synced = 0
+        for user_id, game_id, save_data, updated_at in zork_rows:
+            send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nodes, interface)
+            zork_saves_synced += 1
+            total_messages += 1
+            _progress_tick('syncing_zork_saves')
+            time.sleep(delay_seconds)
+
         # Send a lightweight consistency check payload so peers can compare
         # their local counts against ours and detect missing records.
         local_counts = get_local_record_counts()
@@ -956,6 +999,7 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
             'channels_synced': channels_synced,
             'profiles_synced': profiles_synced,
             'game_scores_synced': game_scores_synced,
+            'zork_saves_synced': zork_saves_synced,
             'total_messages': total_messages
         }
         logging.info(f"Database sync complete: {total_messages} total messages sent with {delay_ms}ms delays")
