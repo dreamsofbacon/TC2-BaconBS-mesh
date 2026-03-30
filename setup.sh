@@ -3,6 +3,8 @@
 # TC²-BBS Meshtastic - Linux/Mac Setup Script
 # This script sets up the environment with all necessary dependencies
 
+set -euo pipefail
+
 echo "========================================"
 echo "TC²-BBS Meshtastic - Setup"
 echo "========================================"
@@ -31,26 +33,29 @@ else
 fi
 echo ""
 
-# Activate virtual environment
-echo "Activating virtual environment..."
-source venv/bin/activate
-echo "✓ Virtual environment activated"
-echo ""
+VENV_PYTHON="venv/bin/python"
+VENV_PIP="venv/bin/pip"
 
 # Upgrade pip
 echo "Upgrading pip..."
-python -m pip install --upgrade pip
+$VENV_PYTHON -m pip install --upgrade pip
 echo "✓ pip upgraded"
 echo ""
 
 # Install dependencies
 echo "Installing dependencies from requirements.txt..."
-pip install -r requirements.txt
-if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to install dependencies!"
+$VENV_PIP install -r requirements.txt
+echo "✓ Dependencies installed"
+echo ""
+
+# Verify meshtastic import in the virtual environment
+echo "Verifying meshtastic installation..."
+if ! $VENV_PYTHON -c "import meshtastic.stream_interface"; then
+    echo "ERROR: meshtastic is not importable in venv."
+    echo "Try reinstalling with: $VENV_PIP install --no-cache-dir -r requirements.txt"
     exit 1
 fi
-echo "✓ Dependencies installed"
+echo "✓ meshtastic import verified"
 echo ""
 
 # Check for config file
@@ -69,5 +74,8 @@ echo "========================================"
 echo ""
 echo "Next steps:"
 echo "1. Review and update config.ini with your settings"
-echo "2. Run: python server.py (to start the server)"
+echo "2. Start using venv Python: ./venv/bin/python server.py"
+echo ""
+echo "Optional interactive shell activation: source venv/bin/activate"
+echo "Then you can run: python server.py"
 echo ""
