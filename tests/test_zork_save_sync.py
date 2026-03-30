@@ -8,7 +8,7 @@ if "meshtastic" not in sys.modules:
 
 import db_operations
 import message_processing
-from utils import send_zork_save_to_bbs_nodes
+from utils import send_zork_save_to_bbs_nodes, _MESHTASTIC_MAX_BYTES
 
 
 class _DummyInterface:
@@ -48,6 +48,7 @@ class ZorkSaveSyncTests(unittest.TestCase):
 
         self.assertGreater(len(sender_interface.sent_texts), 1)
         self.assertTrue(all(m.startswith("ZORKSAVE|") for m in sender_interface.sent_texts))
+        self.assertTrue(all(len(m.encode("utf-8")) <= _MESHTASTIC_MAX_BYTES for m in sender_interface.sent_texts))
 
         recv_interface = _DummyInterface()
         for msg in sender_interface.sent_texts:
