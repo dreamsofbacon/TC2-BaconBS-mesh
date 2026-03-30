@@ -21,7 +21,13 @@ import time
 from datetime import datetime, timezone
 
 from config_init import initialize_config, get_interface, init_cli_parser, merge_config
-from db_operations import initialize_database, sync_full_database_to_nodes, get_sync_progress, get_mismatched_peer_nodes
+from db_operations import (
+    initialize_database,
+    sync_full_database_to_nodes,
+    get_sync_progress,
+    get_mismatched_peer_nodes,
+    get_mismatched_peer_scopes,
+)
 from js8call_integration import JS8CallClient
 from message_processing import on_receive
 from pubsub import pub
@@ -259,12 +265,16 @@ def main():
                 # If diagnostics reports mismatch, force targeted re-sync for those peers.
                 if not pending_sync_nodes:
                     mismatch_nodes = get_mismatched_peer_nodes(current_bbs_nodes)
+                    mismatch_scopes_by_peer = get_mismatched_peer_scopes(current_bbs_nodes)
                     eligible = {
                         node for node in mismatch_nodes
                         if (now - float(last_mismatch_resync_at.get(node, 0))) >= mismatch_resync_cooldown_seconds
                     }
                     if eligible:
-                        send_hash_request_to_bbs_nodes(sorted(eligible, key=str), interface, scope='all')
+                        for node in sorted(eligible, key=str):
+                            scopes = mismatch_scopes_by_peer.get(node, ['all'])
+                            for scope in scopes:
+                                send_hash_request_to_bbs_nodes([node], interface, scope=scope)
                         full_sync_fallback_nodes = set()
                         for node in eligible:
                             last_mismatch_resync_at[node] = now

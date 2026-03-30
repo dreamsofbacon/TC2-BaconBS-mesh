@@ -2,6 +2,7 @@ import sqlite3
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 if "meshtastic" not in sys.modules:
     meshtastic_stub = types.ModuleType("meshtastic")
@@ -168,6 +169,42 @@ class HashRepairProtocolTests(unittest.TestCase):
         )
 
         self.assertIn("HASHMISS|tombstones|bulletins:uid-del-b", iface.sent_texts)
+
+    def test_hashreq_uses_compressed_hashz_when_feature_enabled(self):
+        db_operations.add_bulletin("General", "CALL", "Subject", "Body", [], None, unique_id="uid-z-1")
+        iface = _DummyInterface()
+        with patch.dict("os.environ", {"BBS_HASH_MANIFEST_COMPRESSION": "1"}):
+            message_processing.process_message(
+                sender_id=1,
+                message="HASHREQ|bulletins",
+                interface=iface,
+                is_sync_message=True,
+                sender_node_id="!peer1",
+            )
+
+        self.assertTrue(any(m.startswith("HASHZ|bulletins|") for m in iface.sent_texts))
+        self.assertFalse(any(m.startswith("HASHREC|bulletins|") for m in iface.sent_texts))
+
+    def test_hashz_receive_triggers_hashmiss(self):
+        import json
+        import zlib
+        import base64
+
+        iface = _DummyInterface()
+        manifest = {"uid-remote-z": "abc123"}
+        payload = json.dumps(manifest, separators=(",", ":")).encode("utf-8")
+        b64 = base64.urlsafe_b64encode(zlib.compress(payload, level=6)).decode("ascii")
+        msg = f"HASHZ|bulletins|mid1|0|1|{b64}"
+
+        message_processing.process_message(
+            sender_id=1,
+            message=msg,
+            interface=iface,
+            is_sync_message=True,
+            sender_node_id="!peer1",
+        )
+
+        self.assertIn("HASHMISS|bulletins|uid-remote-z", iface.sent_texts)
 
 
 if __name__ == "__main__":

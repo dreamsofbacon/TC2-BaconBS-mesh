@@ -1,7 +1,10 @@
 import logging
 import base64
 import hashlib
+import json
+import os
 import time
+import zlib
 
 from meshtastic import BROADCAST_NUM
 
@@ -38,7 +41,7 @@ from utils import (
     send_bulletin_to_bbs_nodes, send_mail_to_bbs_nodes, send_channel_to_bbs_nodes,
     send_profile_to_bbs_nodes, send_game_score_to_bbs_nodes, send_zork_save_to_bbs_nodes,
     send_delete_bulletin_to_bbs_nodes, send_delete_mail_to_bbs_nodes,
-    _send_one_sync,
+    _send_one_sync, _MESHTASTIC_MAX_BYTES,
 )
 
 main_menu_handlers = {
@@ -78,7 +81,9 @@ board_action_handlers = {
 _zork_save_chunk_buffers = {}
 _ZORK_SAVE_BUFFER_MAX_AGE_SECONDS = 600
 _peer_hash_manifest_buffers = {}
+_peer_hash_compressed_buffers = {}
 _SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "profiles", "game_scores", "zork_saves", "tombstones"]
+_HASH_BUFFER_MAX_AGE_SECONDS = 600
 
 
 def _prune_old_zork_save_chunks() -> None:
@@ -89,11 +94,59 @@ def _prune_old_zork_save_chunks() -> None:
         _zork_save_chunk_buffers.pop(key, None)
 
 
+def _prune_old_hash_manifest_chunks() -> None:
+    now = time.time()
+    stale_keys = [
+        k for k, v in _peer_hash_compressed_buffers.items()
+        if now - v.get('updated_at', now) > _HASH_BUFFER_MAX_AGE_SECONDS
+    ]
+    for key in stale_keys:
+        _peer_hash_compressed_buffers.pop(key, None)
+
+
+def _hash_manifest_compression_enabled() -> bool:
+    return str(os.getenv("BBS_HASH_MANIFEST_COMPRESSION", "0")).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> None:
+    remote = _peer_hash_manifest_buffers.pop((sender_node_id, scope), {})
+    local = get_record_hash_manifest(scope)
+    missing_or_mismatched = [
+        key for key, remote_hash in remote.items()
+        if local.get(key) != remote_hash
+    ]
+    for key in missing_or_mismatched:
+        if scope in ('bulletins', 'mail') and key not in local and has_sync_tombstone(scope, key):
+            _send_one_sync(f"HASHMISS|tombstones|{scope}:{key}", sender_node_id, interface, pause_seconds=0.1)
+        else:
+            _send_one_sync(f"HASHMISS|{scope}|{key}", sender_node_id, interface, pause_seconds=0.1)
+
+
 def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface) -> None:
     manifest = get_record_hash_manifest(scope)
-    for key, rec_hash in manifest.items():
-        _send_one_sync(f"HASHREC|{scope}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=0.1)
-    _send_one_sync(f"HASHEND|{scope}|{len(manifest)}", destination_node_id, interface, pause_seconds=0.1)
+    if not _hash_manifest_compression_enabled():
+        for key, rec_hash in manifest.items():
+            _send_one_sync(f"HASHREC|{scope}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=0.1)
+        _send_one_sync(f"HASHEND|{scope}|{len(manifest)}", destination_node_id, interface, pause_seconds=0.1)
+        return
+
+    payload = json.dumps(manifest, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    compressed = zlib.compress(payload, level=6)
+    b64 = base64.urlsafe_b64encode(compressed).decode("ascii")
+    manifest_id = str(int(time.time() * 1000))
+    prefix = f"HASHZ|{scope}|{manifest_id}|"
+    max_chunk = _MESHTASTIC_MAX_BYTES - len(prefix.encode("utf-8")) - len("999999|999999|".encode("utf-8"))
+    if max_chunk <= 0:
+        logging.warning("HASHZ prefix too large for packet limit; falling back to HASHREC")
+        for key, rec_hash in manifest.items():
+            _send_one_sync(f"HASHREC|{scope}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=0.1)
+        _send_one_sync(f"HASHEND|{scope}|{len(manifest)}", destination_node_id, interface, pause_seconds=0.1)
+        return
+
+    chunks = [b64[i:i + max_chunk] for i in range(0, len(b64), max_chunk)] or [""]
+    total = len(chunks)
+    for idx, chunk in enumerate(chunks):
+        _send_one_sync(f"{prefix}{idx}|{total}|{chunk}", destination_node_id, interface, pause_seconds=0.1)
 
 
 def _send_requested_record(scope: str, key: str, destination_node_id: str, interface) -> None:
@@ -294,6 +347,53 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             if buf_key not in _peer_hash_manifest_buffers:
                 _peer_hash_manifest_buffers[buf_key] = {}
             _peer_hash_manifest_buffers[buf_key][key] = rec_hash
+        elif message.startswith("HASHZ|"):
+            if not sender_node_id:
+                return
+            parts = message.split("|", 5)
+            if len(parts) != 6:
+                logging.warning(f"Malformed HASHZ ignored: {message}")
+                return
+            scope, manifest_id = parts[1], parts[2]
+            if scope not in _SUPPORTED_HASH_SCOPES:
+                return
+            try:
+                chunk_idx = int(parts[3])
+                total_chunks = int(parts[4])
+            except ValueError:
+                logging.warning(f"Malformed HASHZ chunk index ignored: {message}")
+                return
+            if total_chunks <= 0 or chunk_idx < 0 or chunk_idx >= total_chunks:
+                logging.warning(f"Malformed HASHZ chunk bounds ignored: {message}")
+                return
+
+            _prune_old_hash_manifest_chunks()
+            buf_key = (sender_node_id, scope, manifest_id)
+            buf = _peer_hash_compressed_buffers.get(buf_key)
+            if buf is None or int(buf.get('total', -1)) != total_chunks:
+                buf = {
+                    'total': total_chunks,
+                    'chunks': {},
+                    'updated_at': time.time(),
+                }
+                _peer_hash_compressed_buffers[buf_key] = buf
+            buf['updated_at'] = time.time()
+            if chunk_idx not in buf['chunks']:
+                buf['chunks'][chunk_idx] = parts[5]
+
+            if len(buf['chunks']) == total_chunks:
+                try:
+                    payload_b64 = ''.join(buf['chunks'][i] for i in range(total_chunks))
+                    payload_bytes = base64.urlsafe_b64decode(payload_b64.encode('ascii'))
+                    manifest_obj = json.loads(zlib.decompress(payload_bytes).decode('utf-8'))
+                    if isinstance(manifest_obj, dict):
+                        normalized = {str(k): str(v) for k, v in manifest_obj.items()}
+                        _peer_hash_manifest_buffers[(sender_node_id, scope)] = normalized
+                        _reconcile_remote_manifest(scope, sender_node_id, interface)
+                except Exception:
+                    logging.warning(f"Malformed HASHZ payload ignored: {message}")
+                finally:
+                    _peer_hash_compressed_buffers.pop(buf_key, None)
         elif message.startswith("HASHEND|"):
             if not sender_node_id:
                 return
@@ -304,17 +404,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             scope = parts[1]
             if scope not in _SUPPORTED_HASH_SCOPES:
                 return
-            remote = _peer_hash_manifest_buffers.pop((sender_node_id, scope), {})
-            local = get_record_hash_manifest(scope)
-            missing_or_mismatched = [
-                key for key, remote_hash in remote.items()
-                if local.get(key) != remote_hash
-            ]
-            for key in missing_or_mismatched:
-                if scope in ('bulletins', 'mail') and key not in local and has_sync_tombstone(scope, key):
-                    _send_one_sync(f"HASHMISS|tombstones|{scope}:{key}", sender_node_id, interface, pause_seconds=0.1)
-                else:
-                    _send_one_sync(f"HASHMISS|{scope}|{key}", sender_node_id, interface, pause_seconds=0.1)
+            _reconcile_remote_manifest(scope, sender_node_id, interface)
         elif message.startswith("HASHMISS|"):
             if not sender_node_id:
                 return
@@ -553,7 +643,7 @@ def on_receive(packet, interface):
                                   ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|",
                                    "CHANNEL|", "BULLETINCONT|", "MAILCONT|", "SYNCSTATE|",
                                    "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|",
-                                   "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|"])
+                                   "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|"])
 
             msg_type = "sync" if is_sync_message else "user"
             log_connection_event(
