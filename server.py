@@ -218,7 +218,7 @@ def main():
         def _run_sync(node):
             """Background thread: sync db to a single peer, then record completion."""
             try:
-                result = sync_full_database_to_nodes([node], interface, delay_ms=500)
+                result = sync_full_database_to_nodes([node], interface)
                 logging.info(f"DB sync complete for {node}: {result['total_messages']} messages sent")
                 synced_nodes.add(node)
             except Exception as exc:

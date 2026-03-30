@@ -1,6 +1,7 @@
 import logging
 import base64
 import hashlib
+import os
 import re
 import time
 
@@ -10,6 +11,46 @@ user_states = {}
 # Most LoRa/Meshtastic configurations cap the data payload at 228 bytes; we stay
 # under 220 to leave room for packet-layer overhead and multi-byte UTF-8 chars.
 _MESHTASTIC_MAX_BYTES = 220
+
+
+def _is_sync_turbo_enabled() -> bool:
+    return str(os.getenv("BBS_SYNC_TURBO", "0")).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = str(os.getenv(name, str(default))).strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(0.0, value)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = str(os.getenv(name, str(default))).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(0, value)
+
+
+def get_sync_pause_seconds() -> float:
+    if _is_sync_turbo_enabled():
+        return _env_float("BBS_SYNC_PAUSE_SECONDS", 0.02)
+    return _env_float("BBS_SYNC_PAUSE_SECONDS", 0.75)
+
+
+def get_hash_repair_pause_seconds() -> float:
+    if _is_sync_turbo_enabled():
+        return _env_float("BBS_HASH_REPAIR_PAUSE_SECONDS", 0.0)
+    return _env_float("BBS_HASH_REPAIR_PAUSE_SECONDS", 0.1)
+
+
+def get_full_sync_delay_ms() -> int:
+    if _is_sync_turbo_enabled():
+        return _env_int("BBS_FULL_SYNC_DELAY_MS", 0)
+    return _env_int("BBS_FULL_SYNC_DELAY_MS", 500)
 
 
 def _take_prefix_within_bytes(text: str, max_bytes: int) -> tuple[str, str]:
@@ -195,7 +236,7 @@ def send_game_score_to_bbs_nodes(user_id, game_id, short_name, score, max_score,
         _send_one_sync(message, node_id, interface)
 
 
-def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nodes, interface, pause_seconds=0.75):
+def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nodes, interface, pause_seconds=None):
     """Send binary zork save payload as chunked base64 sync frames."""
     payload_b64 = base64.b64encode(save_data or b"").decode("ascii")
     payload_hash = base64.urlsafe_b64encode(hashlib.blake2b(save_data or b"", digest_size=8).digest()).decode("ascii").rstrip("=")
@@ -225,8 +266,10 @@ def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nod
             _send_one_sync(message, node_id, interface, pause_seconds)
 
 
-def _send_one_sync(message, destination, interface, pause_seconds=0.75):
+def _send_one_sync(message, destination, interface, pause_seconds=None):
     """Send a single sync packet directly to destination (no chunking)."""
+    if pause_seconds is None:
+        pause_seconds = get_sync_pause_seconds()
     msg_len = len(message.encode('utf-8'))
     if msg_len > _MESHTASTIC_MAX_BYTES:
         logging.warning(f"SYNC frame exceeds {_MESHTASTIC_MAX_BYTES} bytes ({msg_len}); dropping frame")

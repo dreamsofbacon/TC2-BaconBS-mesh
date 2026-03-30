@@ -43,6 +43,7 @@ from utils import (
     send_profile_to_bbs_nodes, send_game_score_to_bbs_nodes, send_zork_save_to_bbs_nodes,
     send_delete_bulletin_to_bbs_nodes, send_delete_mail_to_bbs_nodes,
     send_hash_request_to_bbs_nodes,
+    get_hash_repair_pause_seconds,
     _send_one_sync, _MESHTASTIC_MAX_BYTES,
 )
 
@@ -185,10 +186,10 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
             continue
         if scope in ('bulletins', 'mail') and key not in local and has_sync_tombstone(scope, key):
             logging.info(f"Requesting tombstone replay from {sender_node_id} for {scope}:{key}")
-            _send_one_sync(f"HASHMISS|tombstones|{scope}:{key}", sender_node_id, interface, pause_seconds=0.1)
+            _send_one_sync(f"HASHMISS|tombstones|{scope}:{key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
         else:
             logging.info(f"Requesting record from {sender_node_id} scope={scope} key={key}")
-            _send_one_sync(f"HASHMISS|{scope}|{key}", sender_node_id, interface, pause_seconds=0.1)
+            _send_one_sync(f"HASHMISS|{scope}|{key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
 
     # Proactively push records the peer is missing to converge in one cycle.
     for key in sorted(local_keys - remote_keys):
@@ -201,8 +202,8 @@ def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface)
     logging.info(f"Sending hash manifest to {destination_node_id} scope={scope} count={len(manifest)} compressed={_hash_manifest_compression_enabled()}")
     if not _hash_manifest_compression_enabled():
         for key, rec_hash in manifest.items():
-            _send_one_sync(f"HASHREC|{scope}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=0.1)
-        _send_one_sync(f"HASHEND|{scope}|{len(manifest)}", destination_node_id, interface, pause_seconds=0.1)
+            _send_one_sync(f"HASHREC|{scope}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+        _send_one_sync(f"HASHEND|{scope}|{len(manifest)}", destination_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
         return
 
     payload = json.dumps(manifest, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
@@ -214,14 +215,14 @@ def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface)
     if max_chunk <= 0:
         logging.warning("HASHZ prefix too large for packet limit; falling back to HASHREC")
         for key, rec_hash in manifest.items():
-            _send_one_sync(f"HASHREC|{scope}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=0.1)
-        _send_one_sync(f"HASHEND|{scope}|{len(manifest)}", destination_node_id, interface, pause_seconds=0.1)
+            _send_one_sync(f"HASHREC|{scope}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+        _send_one_sync(f"HASHEND|{scope}|{len(manifest)}", destination_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
         return
 
     chunks = [b64[i:i + max_chunk] for i in range(0, len(b64), max_chunk)] or [""]
     total = len(chunks)
     for idx, chunk in enumerate(chunks):
-        _send_one_sync(f"{prefix}{idx}|{total}|{chunk}", destination_node_id, interface, pause_seconds=0.1)
+        _send_one_sync(f"{prefix}{idx}|{total}|{chunk}", destination_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
 
 
 def _send_requested_record(scope: str, key: str, destination_node_id: str, interface) -> None:
@@ -266,7 +267,7 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
         row = get_zork_save_row_by_user_and_game(user_id, game_id)
         if row:
             logging.info(f"Sending requested zork save to {destination_node_id} key={key}")
-            send_zork_save_to_bbs_nodes(row[0], row[1], row[2], row[3], [destination_node_id], interface, pause_seconds=0.1)
+            send_zork_save_to_bbs_nodes(row[0], row[1], row[2], row[3], [destination_node_id], interface, pause_seconds=get_hash_repair_pause_seconds())
     elif scope == 'tombstones':
         if key.startswith('bulletins:'):
             unique_id = key.split(':', 1)[1]

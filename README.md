@@ -160,6 +160,30 @@ Deletion reconciliation details:
 
 Note: deletes that happened before the tombstone feature was introduced have no historical tombstone entry.
 
+### Sync Performance Tuning
+
+If you want maximum sync speed, use these environment settings on the running `server.py` process.
+
+- `BBS_SYNC_TURBO=1`
+   This enables aggressive defaults for all sync pacing.
+- `BBS_SYNC_PAUSE_SECONDS`
+   Delay between normal sync frames (default `0.75`, turbo default `0.02`).
+- `BBS_HASH_REPAIR_PAUSE_SECONDS`
+   Delay between hash-repair frames (default `0.1`, turbo default `0.0`).
+- `BBS_FULL_SYNC_DELAY_MS`
+   Extra per-record delay in full database sync (default `500`, turbo default `0`).
+
+Example (Linux systemd env file):
+
+```sh
+BBS_SYNC_TURBO=1
+BBS_SYNC_PAUSE_SECONDS=0.01
+BBS_HASH_REPAIR_PAUSE_SECONDS=0
+BBS_FULL_SYNC_DELAY_MS=0
+```
+
+If packet loss increases on your link, back off gradually (for example `BBS_SYNC_PAUSE_SECONDS=0.03` then `0.05`).
+
 ### Running the Server
 
 Run the server with the standalone launch script for your OS:
