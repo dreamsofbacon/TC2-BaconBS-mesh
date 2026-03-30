@@ -500,7 +500,10 @@ BASE_TEMPLATE = """
         currentInProgress = inProgress;
         currentProgressPercent = progressPercent;
         const left = `Sync ${progressPercent}%`;
-        const right = inProgress ? 'running' : `${formatCountdown(secondsUntilNext)} | ${currentPeerStatus}`;
+        const mismatchRetrying = (!inProgress) && currentPeerStatus.startsWith('mismatch') && String(window._syncLastTriggerReason || '') === 'mismatch';
+        const right = inProgress
+          ? 'running'
+          : (mismatchRetrying ? `retrying | ${currentPeerStatus}` : `${formatCountdown(secondsUntilNext)} | ${currentPeerStatus}`);
         pill.textContent = `${left} | ${right}`;
         pill.classList.toggle('active', inProgress);
       }
@@ -514,6 +517,7 @@ BASE_TEMPLATE = """
           const data = await resp.json();
           secondsUntilNext = Number(data.seconds_until_next || 0);
           currentPeerStatus = String(data.peer_status_text || 'no peer reports');
+          window._syncLastTriggerReason = String(data.last_trigger_reason || 'scheduled');
           renderStatus(Boolean(data.in_progress), Number(data.progress_percent || 0));
         } catch (err) {
           // Keep existing display if one poll fails.
@@ -897,9 +901,13 @@ SETTINGS_CONTENT = """
   <p class="muted"><strong>Notice:</strong> Outbound sync is running. Some historical posts may not be available on peers yet.</p>
   {% endif %}
   <p><strong>Peer consistency:</strong> {{ diagnostics.peer_sync_status }}</p>
+  <p><strong>Mismatch re-sync attempts:</strong> {{ diagnostics.mismatch_retry_summary }}</p>
   <p><strong>Peer-advertised record counts:</strong></p>
   <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.peer_sync_counts }}</pre>
   <p class="muted">Outbound progress can be 100% while peer consistency is mismatched. Peer counts above indicate missing records between nodes.</p>
+  {% if diagnostics.mismatch_retry_details %}
+  <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.mismatch_retry_details }}</pre>
+  {% endif %}
 
   <h3>Database</h3>
   <p><strong>Path:</strong> <code>{{ diagnostics.db_path }}</code></p>
@@ -1771,6 +1779,12 @@ def create_app(runtime_interface=None) -> Flask:
               zork_saves INTEGER NOT NULL DEFAULT 0,
               profiles INTEGER NOT NULL DEFAULT 0,
               game_scores INTEGER NOT NULL DEFAULT 0,
+              bulletins_hash TEXT NOT NULL DEFAULT '',
+              mail_hash TEXT NOT NULL DEFAULT '',
+              channels_hash TEXT NOT NULL DEFAULT '',
+              zork_saves_hash TEXT NOT NULL DEFAULT '',
+              profiles_hash TEXT NOT NULL DEFAULT '',
+              game_scores_hash TEXT NOT NULL DEFAULT '',
               reported_at TEXT NOT NULL
             )''')
             try:
@@ -1779,6 +1793,30 @@ def create_app(runtime_interface=None) -> Flask:
               pass
             try:
               conn.execute("ALTER TABLE peer_sync_state ADD COLUMN game_scores INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE peer_sync_state ADD COLUMN bulletins_hash TEXT NOT NULL DEFAULT ''")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE peer_sync_state ADD COLUMN mail_hash TEXT NOT NULL DEFAULT ''")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE peer_sync_state ADD COLUMN channels_hash TEXT NOT NULL DEFAULT ''")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE peer_sync_state ADD COLUMN zork_saves_hash TEXT NOT NULL DEFAULT ''")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE peer_sync_state ADD COLUMN profiles_hash TEXT NOT NULL DEFAULT ''")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE peer_sync_state ADD COLUMN game_scores_hash TEXT NOT NULL DEFAULT ''")
             except Exception:
               pass
 
@@ -1916,6 +1954,8 @@ def create_app(runtime_interface=None) -> Flask:
         "sync_next_run_epoch": "0",
         "peer_sync_status": "Unknown",
         "peer_sync_counts": "No peer status received yet",
+        "mismatch_retry_summary": "None",
+        "mismatch_retry_details": "",
         "db_path": app.config["DB_PATH"],
         "bulletins_count": "Unknown",
         "mail_count": "Unknown",
@@ -1992,6 +2032,13 @@ def create_app(runtime_interface=None) -> Flask:
           diagnostics["sync_last_result"] = str(snapshot.get("sync_last_result", "Not yet run"))
           diagnostics["sync_interval_minutes"] = str(snapshot.get("sync_interval_minutes", diagnostics["sync_interval_minutes"]))
           diagnostics["sync_next_run_epoch"] = str(snapshot.get("sync_next_run_epoch", 0))
+          mismatch_retry_at = snapshot.get("sync_mismatch_retry_at", {})
+          if isinstance(mismatch_retry_at, dict) and mismatch_retry_at:
+            lines = []
+            for node in sorted(mismatch_retry_at.keys(), key=str):
+              lines.append(f"{node} @ {mismatch_retry_at.get(node)}")
+            diagnostics["mismatch_retry_summary"] = f"{len(lines)} peer(s) retried"
+            diagnostics["mismatch_retry_details"] = "\n".join(lines)
 
           if snapshot.get("error"):
             diagnostics["error"] = str(snapshot.get("error"))
@@ -2016,7 +2063,9 @@ def create_app(runtime_interface=None) -> Flask:
             diagnostics["last_connection_event"] = f"{row['event_time']} | {row['message_type']} | {row['event_text']}"
 
           cursor.execute(
-            "SELECT peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores, reported_at FROM peer_sync_state ORDER BY peer_node_id"
+            "SELECT peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores, "
+            "bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, game_scores_hash, reported_at "
+            "FROM peer_sync_state ORDER BY peer_node_id"
           )
           peer_rows = cursor.fetchall()
           if peer_rows:
@@ -2029,6 +2078,8 @@ def create_app(runtime_interface=None) -> Flask:
             local_p = int(cursor.fetchone()[0])
             cursor.execute("SELECT COUNT(*) FROM game_scores")
             local_s = int(cursor.fetchone()[0])
+            from db_operations import get_local_record_counts
+            local_hashes = get_local_record_counts()
             lines = []
             mismatch = False
             for peer in peer_rows:
@@ -2038,11 +2089,25 @@ def create_app(runtime_interface=None) -> Flask:
               pz = int(peer[4])
               pp = int(peer[5])
               ps = int(peer[6])
-              peer_mismatch = (pb != local_b) or (pm != local_m) or (pc != local_c) or (pp != local_p) or (ps != local_s)
+              phb = str(peer[7] or "")
+              phm = str(peer[8] or "")
+              phc = str(peer[9] or "")
+              phz = str(peer[10] or "")
+              php = str(peer[11] or "")
+              phs = str(peer[12] or "")
+              peer_mismatch = (
+                (pb != local_b) or (pm != local_m) or (pc != local_c) or (pp != local_p) or (ps != local_s)
+                or (phb and phb != str(local_hashes.get("bulletins_hash", "")))
+                or (phm and phm != str(local_hashes.get("mail_hash", "")))
+                or (phc and phc != str(local_hashes.get("channels_hash", "")))
+                or (phz and phz != str(local_hashes.get("zork_saves_hash", "")))
+                or (php and php != str(local_hashes.get("profiles_hash", "")))
+                or (phs and phs != str(local_hashes.get("game_scores_hash", "")))
+              )
               mismatch = mismatch or peer_mismatch
               status = "MISMATCH" if peer_mismatch else "OK"
               lines.append(
-                f"{peer[0]} -> B:{pb} M:{pm} C:{pc} Z:{pz} P:{pp} S:{ps} @ {peer[7]} [{status}]"
+                f"{peer[0]} -> B:{pb} M:{pm} C:{pc} Z:{pz} P:{pp} S:{ps} @ {peer[13]} [{status}]"
               )
             diagnostics["peer_sync_status"] = "Mismatch detected" if mismatch else "Counts aligned"
             diagnostics["peer_sync_counts"] = "\n".join(lines)
@@ -2203,6 +2268,7 @@ def create_app(runtime_interface=None) -> Flask:
       phase = str(snapshot.get("sync_current_phase", "never_run")) if snapshot else "never_run"
       next_run_epoch = int(snapshot.get("sync_next_run_epoch", 0)) if snapshot else 0
       interval_minutes = int(snapshot.get("sync_interval_minutes", config_interval_minutes)) if snapshot else config_interval_minutes
+      last_trigger_reason = str(snapshot.get("sync_last_trigger_reason", "scheduled")) if snapshot else "scheduled"
       now_epoch = int(datetime.utcnow().timestamp())
       seconds_until_next = max(next_run_epoch - now_epoch, 0) if next_run_epoch > 0 else 0
 
@@ -2222,12 +2288,30 @@ def create_app(runtime_interface=None) -> Flask:
           local_p = int(c.fetchone()[0])
           c.execute("SELECT COUNT(*) FROM game_scores")
           local_s = int(c.fetchone()[0])
-          c.execute("SELECT bulletins, mail, channels, profiles, game_scores FROM peer_sync_state")
+          from db_operations import get_local_record_counts
+          local_hashes = get_local_record_counts()
+          c.execute(
+            "SELECT bulletins, mail, channels, profiles, game_scores, "
+            "bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, game_scores_hash "
+            "FROM peer_sync_state"
+          )
           peers = c.fetchall()
           if peers:
             mismatch_count = 0
-            for pb, pm, pc, pp, ps in peers:
-              if int(pb) != local_b or int(pm) != local_m or int(pc) != local_c or int(pp) != local_p or int(ps) != local_s:
+            for pb, pm, pc, pp, ps, phb, phm, phc, phz, php, phs in peers:
+              if (
+                int(pb) != local_b
+                or int(pm) != local_m
+                or int(pc) != local_c
+                or int(pp) != local_p
+                or int(ps) != local_s
+                or (str(phb or '') and str(phb) != str(local_hashes.get('bulletins_hash', '')))
+                or (str(phm or '') and str(phm) != str(local_hashes.get('mail_hash', '')))
+                or (str(phc or '') and str(phc) != str(local_hashes.get('channels_hash', '')))
+                or (str(phz or '') and str(phz) != str(local_hashes.get('zork_saves_hash', '')))
+                or (str(php or '') and str(php) != str(local_hashes.get('profiles_hash', '')))
+                or (str(phs or '') and str(phs) != str(local_hashes.get('game_scores_hash', '')))
+              ):
                 mismatch_count += 1
             peer_mismatch = mismatch_count > 0
             if peer_mismatch:
@@ -2246,6 +2330,7 @@ def create_app(runtime_interface=None) -> Flask:
         "next_run_epoch": next_run_epoch,
         "seconds_until_next": seconds_until_next,
         "sync_interval_minutes": interval_minutes,
+        "last_trigger_reason": last_trigger_reason,
         "peer_mismatch": peer_mismatch,
         "peer_status_text": peer_status_text,
       })
@@ -2704,7 +2789,22 @@ def create_app(runtime_interface=None) -> Flask:
             flash("Unknown table.", "error")
             return redirect(url_for("table_list", table="bulletins"))
 
-        execute_write(f"DELETE FROM {table} WHERE id = ?", (row_id,))
+        if table in ("bulletins", "mail"):
+          with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT unique_id FROM {table} WHERE id = ?", (row_id,))
+            row = cursor.fetchone()
+          if row and row["unique_id"]:
+            if table == "bulletins":
+              from db_operations import delete_bulletin
+              delete_bulletin(str(row["unique_id"]), [], None)
+            else:
+              from db_operations import delete_mail
+              delete_mail(str(row["unique_id"]), None, [], None)
+          else:
+            execute_write(f"DELETE FROM {table} WHERE id = ?", (row_id,))
+        else:
+          execute_write(f"DELETE FROM {table} WHERE id = ?", (row_id,))
 
         flash(f"{cfg['title']} row deleted.", "success")
         return redirect(url_for("table_list", table=table))

@@ -21,10 +21,11 @@ import time
 from datetime import datetime, timezone
 
 from config_init import initialize_config, get_interface, init_cli_parser, merge_config
-from db_operations import initialize_database, sync_full_database_to_nodes, get_sync_progress
+from db_operations import initialize_database, sync_full_database_to_nodes, get_sync_progress, get_mismatched_peer_nodes
 from js8call_integration import JS8CallClient
 from message_processing import on_receive
 from pubsub import pub
+from utils import send_hash_request_to_bbs_nodes
 
 # General logging
 logging.basicConfig(
@@ -80,6 +81,9 @@ def refresh_peer_lists_from_config(config_path: str, interface, system_config: d
 
 def write_runtime_diagnostics_snapshot(interface, system_config: dict) -> None:
     sync_progress = get_sync_progress()
+    mismatch_retry_at = system_config.get('sync_mismatch_retry_at', {})
+    if not isinstance(mismatch_retry_at, dict):
+        mismatch_retry_at = {}
     snapshot = {
         'updated_at': datetime.now(timezone.utc).isoformat(),
         'interface_attached': True,
@@ -103,6 +107,7 @@ def write_runtime_diagnostics_snapshot(interface, system_config: dict) -> None:
         'sync_interval_minutes': int(system_config.get('sync_interval_minutes_runtime', system_config.get('sync_interval_minutes', 5))),
         'sync_next_run_epoch': int(system_config.get('sync_next_run_epoch', 0)),
         'sync_last_trigger_reason': str(system_config.get('sync_last_trigger_reason', 'scheduled')),
+        'sync_mismatch_retry_at': dict(mismatch_retry_at),
         'error': '',
     }
 
@@ -193,9 +198,13 @@ def main():
         sync_interval_minutes = int(system_config.get('sync_interval_minutes', 5))
         last_schedule_epoch = 0
         last_manual_trigger_mtime = 0.0
+        mismatch_resync_cooldown_seconds = 120
+        last_mismatch_resync_at = {}
+        mismatch_attempt_counts = {}
         system_config['sync_last_trigger_reason'] = 'scheduled'
         system_config['sync_interval_minutes_runtime'] = sync_interval_minutes
         system_config['sync_next_run_epoch'] = int(time.time())
+        system_config['sync_mismatch_retry_at'] = {}
 
         def _run_sync(node):
             """Background thread: sync db to a single peer, then record completion."""
@@ -223,6 +232,7 @@ def main():
                 refresh_peer_lists_from_config(config_path, interface, system_config)
                 sync_interval_minutes = read_sync_interval_minutes(config_path, default_minutes=5)
                 system_config['sync_interval_minutes_runtime'] = sync_interval_minutes
+                current_bbs_nodes = set(getattr(interface, 'bbs_nodes', []) or [])
 
                 manual_triggered = False
                 try:
@@ -246,10 +256,32 @@ def main():
                     else:
                         logging.info(f"Scheduled sync interval reached ({sync_interval_minutes} minutes)")
 
+                # If diagnostics reports mismatch, force targeted re-sync for those peers.
+                if not pending_sync_nodes:
+                    mismatch_nodes = get_mismatched_peer_nodes(current_bbs_nodes)
+                    eligible = {
+                        node for node in mismatch_nodes
+                        if (now - float(last_mismatch_resync_at.get(node, 0))) >= mismatch_resync_cooldown_seconds
+                    }
+                    if eligible:
+                        send_hash_request_to_bbs_nodes(sorted(eligible, key=str), interface, scope='all')
+                        full_sync_fallback_nodes = set()
+                        for node in eligible:
+                            last_mismatch_resync_at[node] = now
+                            system_config['sync_mismatch_retry_at'][str(node)] = datetime.now(timezone.utc).isoformat()
+                            mismatch_attempt_counts[node] = int(mismatch_attempt_counts.get(node, 0)) + 1
+                            # Every 3rd mismatch cycle, fall back to full per-peer sync.
+                            if mismatch_attempt_counts[node] % 3 == 0:
+                                full_sync_fallback_nodes.add(node)
+                        if full_sync_fallback_nodes:
+                            synced_nodes -= full_sync_fallback_nodes
+                            logging.info(f"Mismatch persisted; running full-sync fallback for nodes: {full_sync_fallback_nodes}")
+                        system_config['sync_last_trigger_reason'] = 'mismatch'
+                        logging.info(f"Peer mismatch detected; requested hash manifests from nodes: {eligible}")
+
                 next_run_epoch = int(last_schedule_epoch + (sync_interval_minutes * 60)) if last_schedule_epoch else int(now)
                 system_config['sync_next_run_epoch'] = next_run_epoch
 
-                current_bbs_nodes = set(interface.bbs_nodes or [])
                 new_nodes = current_bbs_nodes - synced_nodes - pending_sync_nodes
 
                 if new_nodes:

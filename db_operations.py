@@ -1,4 +1,6 @@
 import configparser
+import base64
+import hashlib
 import logging
 import sqlite3
 import threading
@@ -204,7 +206,17 @@ def initialize_database():
                     zork_saves INTEGER NOT NULL DEFAULT 0,
                     profiles INTEGER NOT NULL DEFAULT 0,
                     game_scores INTEGER NOT NULL DEFAULT 0,
+                    bulletins_hash TEXT NOT NULL DEFAULT '',
+                    mail_hash TEXT NOT NULL DEFAULT '',
+                    channels_hash TEXT NOT NULL DEFAULT '',
+                    zork_saves_hash TEXT NOT NULL DEFAULT '',
+                    profiles_hash TEXT NOT NULL DEFAULT '',
+                    game_scores_hash TEXT NOT NULL DEFAULT '',
                     reported_at TEXT NOT NULL
+                );''')
+    c.execute('''CREATE TABLE IF NOT EXISTS deleted_sync_tombstones (
+                    tombstone_key TEXT PRIMARY KEY,
+                    deleted_at TEXT NOT NULL
                 );''')
     _ensure_local_only_columns(c)
     _dedupe_channels_and_create_unique_index(c)
@@ -212,8 +224,52 @@ def initialize_database():
     print("Database schema initialized.")
 
 
+def _ensure_deleted_sync_tombstones_table() -> None:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS deleted_sync_tombstones (
+                    tombstone_key TEXT PRIMARY KEY,
+                    deleted_at TEXT NOT NULL
+                );''')
+    conn.commit()
+
+
+def _build_tombstone_key(scope: str, record_key: str) -> str:
+    return f"{scope}:{record_key}"
+
+
+def record_sync_tombstone(scope: str, record_key: str) -> None:
+    _ensure_deleted_sync_tombstones_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        '''INSERT INTO deleted_sync_tombstones (tombstone_key, deleted_at)
+           VALUES (?, ?)
+           ON CONFLICT(tombstone_key) DO UPDATE SET
+             deleted_at = excluded.deleted_at''',
+        (_build_tombstone_key(scope, record_key), datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+    )
+    conn.commit()
+
+
+def clear_sync_tombstone(scope: str, record_key: str) -> None:
+    _ensure_deleted_sync_tombstones_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM deleted_sync_tombstones WHERE tombstone_key = ?", (_build_tombstone_key(scope, record_key),))
+    conn.commit()
+
+
+def has_sync_tombstone(scope: str, record_key: str) -> bool:
+    _ensure_deleted_sync_tombstones_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM deleted_sync_tombstones WHERE tombstone_key = ? LIMIT 1", (_build_tombstone_key(scope, record_key),))
+    return c.fetchone() is not None
+
+
 def get_local_record_counts() -> dict:
-    """Return local record counts used by SYNCSTATE comparisons."""
+    """Return local record counts and compact hashes used by SYNCSTATE comparisons."""
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM bulletins WHERE local_only = 0")
@@ -229,6 +285,43 @@ def get_local_record_counts() -> dict:
     profiles = int(c.fetchone()[0])
     c.execute("SELECT COUNT(*) FROM game_scores")
     game_scores = int(c.fetchone()[0])
+
+    def _hash_rows(query: str, params: tuple = ()) -> str:
+        digest = hashlib.blake2b(digest_size=8)
+        row_count = 0
+        for row in c.execute(query, params):
+            row_count += 1
+            for value in row:
+                if value is None:
+                    blob = b''
+                elif isinstance(value, bytes):
+                    blob = value
+                else:
+                    blob = str(value).encode('utf-8')
+                digest.update(len(blob).to_bytes(4, 'big'))
+                digest.update(blob)
+        digest.update(row_count.to_bytes(8, 'big'))
+        return base64.urlsafe_b64encode(digest.digest()).decode('ascii').rstrip('=')
+
+    bulletins_hash = _hash_rows(
+        "SELECT board, sender_short_name, subject, content, unique_id FROM bulletins WHERE local_only = 0 ORDER BY unique_id"
+    )
+    mail_hash = _hash_rows(
+        "SELECT sender, sender_short_name, recipient, subject, content, unique_id FROM mail ORDER BY unique_id"
+    )
+    channels_hash = _hash_rows(
+        "SELECT name, url FROM channels WHERE local_only = 0 ORDER BY name, url"
+    )
+    zork_saves_hash = _hash_rows(
+        "SELECT user_id, game_id, save_data, updated_at FROM zork_saves ORDER BY user_id, game_id"
+    )
+    profiles_hash = _hash_rows(
+        "SELECT user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio FROM user_profiles ORDER BY user_id"
+    )
+    game_scores_hash = _hash_rows(
+        "SELECT user_id, game_id, short_name, score, max_score, moves, achieved_at FROM game_scores ORDER BY user_id, game_id"
+    )
+
     return {
         'bulletins': bulletins,
         'mail': mail,
@@ -236,19 +329,31 @@ def get_local_record_counts() -> dict:
         'zork_saves': zork_saves,
         'profiles': profiles,
         'game_scores': game_scores,
+        'bulletins_hash': bulletins_hash,
+        'mail_hash': mail_hash,
+        'channels_hash': channels_hash,
+        'zork_saves_hash': zork_saves_hash,
+        'profiles_hash': profiles_hash,
+        'game_scores_hash': game_scores_hash,
     }
 
 
 def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channels: int, zork_saves: int,
-                           profiles: int = 0, game_scores: int = 0) -> None:
+                           profiles: int = 0, game_scores: int = 0,
+                           bulletins_hash: str = '', mail_hash: str = '', channels_hash: str = '',
+                           zork_saves_hash: str = '', profiles_hash: str = '', game_scores_hash: str = '') -> None:
     """Store the latest advertised SYNCSTATE counts for a peer node."""
     if not peer_node_id:
         return
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        '''INSERT INTO peer_sync_state (peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores, reported_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        '''INSERT INTO peer_sync_state (
+               peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores,
+               bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, game_scores_hash,
+               reported_at
+           )
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(peer_node_id) DO UPDATE SET
                bulletins=excluded.bulletins,
                mail=excluded.mail,
@@ -256,6 +361,12 @@ def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channel
                zork_saves=excluded.zork_saves,
                profiles=excluded.profiles,
                game_scores=excluded.game_scores,
+               bulletins_hash=excluded.bulletins_hash,
+               mail_hash=excluded.mail_hash,
+               channels_hash=excluded.channels_hash,
+               zork_saves_hash=excluded.zork_saves_hash,
+               profiles_hash=excluded.profiles_hash,
+               game_scores_hash=excluded.game_scores_hash,
                reported_at=excluded.reported_at''',
         (
             peer_node_id,
@@ -265,6 +376,12 @@ def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channel
             int(zork_saves),
             int(profiles),
             int(game_scores),
+            str(bulletins_hash or ''),
+            str(mail_hash or ''),
+            str(channels_hash or ''),
+            str(zork_saves_hash or ''),
+            str(profiles_hash or ''),
+            str(game_scores_hash or ''),
             datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         ),
     )
@@ -276,9 +393,47 @@ def get_peer_sync_states() -> list:
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores, reported_at FROM peer_sync_state ORDER BY peer_node_id"
+        "SELECT peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores, "
+        "bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, game_scores_hash, reported_at "
+        "FROM peer_sync_state ORDER BY peer_node_id"
     )
     return c.fetchall()
+
+
+def get_mismatched_peer_nodes(expected_peer_nodes=None) -> set:
+    """Return peer node IDs whose advertised counts differ from local counts.
+
+    expected_peer_nodes: optional iterable used to scope mismatch checks to the
+    currently configured sync peers.
+    """
+    local = get_local_record_counts()
+    expected = set(expected_peer_nodes or [])
+    mismatched = set()
+    for row in get_peer_sync_states():
+        peer = str(row[0])
+        if expected and peer not in expected:
+            continue
+        pb, pm, pc, pz, pp, ps = (int(row[1]), int(row[2]), int(row[3]), int(row[4]), int(row[5]), int(row[6]))
+        phb, phm, phc, phz, php, phs = (
+            str(row[7] or ''), str(row[8] or ''), str(row[9] or ''),
+            str(row[10] or ''), str(row[11] or ''), str(row[12] or ''),
+        )
+        if (
+            pb != int(local.get('bulletins', 0))
+            or pm != int(local.get('mail', 0))
+            or pc != int(local.get('channels', 0))
+            or pz != int(local.get('zork_saves', 0))
+            or pp != int(local.get('profiles', 0))
+            or ps != int(local.get('game_scores', 0))
+            or (phb and phb != str(local.get('bulletins_hash', '')))
+            or (phm and phm != str(local.get('mail_hash', '')))
+            or (phc and phc != str(local.get('channels_hash', '')))
+            or (phz and phz != str(local.get('zork_saves_hash', '')))
+            or (php and php != str(local.get('profiles_hash', '')))
+            or (phs and phs != str(local.get('game_scores_hash', '')))
+        ):
+            mismatched.add(peer)
+    return mismatched
 
 
 def _ensure_local_only_columns(cursor) -> None:
@@ -299,6 +454,18 @@ def _ensure_local_only_columns(cursor) -> None:
         cursor.execute("ALTER TABLE peer_sync_state ADD COLUMN profiles INTEGER NOT NULL DEFAULT 0")
     if 'game_scores' not in peer_cols:
         cursor.execute("ALTER TABLE peer_sync_state ADD COLUMN game_scores INTEGER NOT NULL DEFAULT 0")
+    if 'bulletins_hash' not in peer_cols:
+        cursor.execute("ALTER TABLE peer_sync_state ADD COLUMN bulletins_hash TEXT NOT NULL DEFAULT ''")
+    if 'mail_hash' not in peer_cols:
+        cursor.execute("ALTER TABLE peer_sync_state ADD COLUMN mail_hash TEXT NOT NULL DEFAULT ''")
+    if 'channels_hash' not in peer_cols:
+        cursor.execute("ALTER TABLE peer_sync_state ADD COLUMN channels_hash TEXT NOT NULL DEFAULT ''")
+    if 'zork_saves_hash' not in peer_cols:
+        cursor.execute("ALTER TABLE peer_sync_state ADD COLUMN zork_saves_hash TEXT NOT NULL DEFAULT ''")
+    if 'profiles_hash' not in peer_cols:
+        cursor.execute("ALTER TABLE peer_sync_state ADD COLUMN profiles_hash TEXT NOT NULL DEFAULT ''")
+    if 'game_scores_hash' not in peer_cols:
+        cursor.execute("ALTER TABLE peer_sync_state ADD COLUMN game_scores_hash TEXT NOT NULL DEFAULT ''")
 
 
 def _dedupe_channels_and_create_unique_index(cursor) -> None:
@@ -418,6 +585,7 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
         "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (board, sender_short_name, date, subject, content, unique_id, 1 if local_only else 0))
     conn.commit()
+    clear_sync_tombstone('bulletins', str(unique_id))
     if (not local_only) and bbs_nodes and interface:
         send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface)
 
@@ -487,6 +655,7 @@ def delete_bulletin(unique_id, bbs_nodes, interface):
     c = conn.cursor()
     c.execute("DELETE FROM bulletins WHERE unique_id = ?", (unique_id,))
     conn.commit()
+    record_sync_tombstone('bulletins', str(unique_id))
     send_delete_bulletin_to_bbs_nodes(unique_id, bbs_nodes, interface)
 
 
@@ -530,6 +699,7 @@ def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_n
     c.execute("INSERT INTO mail (sender, sender_short_name, recipient, date, subject, content, unique_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
               (sender_id, sender_short_name, recipient_id, date, subject, content, unique_id))
     conn.commit()
+    clear_sync_tombstone('mail', str(unique_id))
     if bbs_nodes and interface:
         send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, content, unique_id, bbs_nodes, interface)
     return unique_id
@@ -556,6 +726,7 @@ def delete_mail(unique_id, recipient_id, bbs_nodes, interface):
         else:
             c.execute("DELETE FROM mail WHERE unique_id = ? and recipient = ?", (unique_id, recipient_id,))
         conn.commit()
+        record_sync_tombstone('mail', str(unique_id))
         if bbs_nodes and interface:
             send_delete_mail_to_bbs_nodes(unique_id, bbs_nodes, interface)
         if c.rowcount == 0:
@@ -764,6 +935,147 @@ def get_hall_of_fame() -> list:
            ORDER BY gs.game_id ASC'''
     )
     return c.fetchall()
+
+
+def _compact_row_hash(values: tuple) -> str:
+    digest = hashlib.blake2b(digest_size=8)
+    for value in values:
+        if value is None:
+            blob = b''
+        elif isinstance(value, bytes):
+            blob = value
+        else:
+            blob = str(value).encode('utf-8')
+        digest.update(len(blob).to_bytes(4, 'big'))
+        digest.update(blob)
+    return base64.urlsafe_b64encode(digest.digest()).decode('ascii').rstrip('=')
+
+
+def get_record_hash_manifest(scope: str) -> dict:
+    """Return a per-record hash map for selective mismatch repair.
+
+    Supported scopes: bulletins, mail, channels, profiles, game_scores, zork_saves, tombstones.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    manifest = {}
+
+    if scope == 'bulletins':
+        for row in c.execute(
+            "SELECT board, sender_short_name, subject, content, unique_id FROM bulletins WHERE local_only = 0"
+        ):
+            key = str(row[4])
+            manifest[key] = _compact_row_hash(row)
+    elif scope == 'mail':
+        for row in c.execute(
+            "SELECT sender, sender_short_name, recipient, subject, content, unique_id FROM mail"
+        ):
+            key = str(row[5])
+            manifest[key] = _compact_row_hash(row)
+    elif scope == 'channels':
+        for row in c.execute(
+            "SELECT name, url FROM channels WHERE local_only = 0"
+        ):
+            raw_key = f"{row[0]}\x1f{row[1]}".encode('utf-8')
+            key = base64.urlsafe_b64encode(raw_key).decode('ascii').rstrip('=')
+            manifest[key] = _compact_row_hash(row)
+    elif scope == 'profiles':
+        for row in c.execute(
+            "SELECT user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio FROM user_profiles"
+        ):
+            key = str(row[0])
+            manifest[key] = _compact_row_hash(row)
+    elif scope == 'game_scores':
+        for row in c.execute(
+            "SELECT user_id, game_id, short_name, score, max_score, moves, achieved_at FROM game_scores"
+        ):
+            key = f"{row[0]}:{row[1]}"
+            manifest[key] = _compact_row_hash(row)
+    elif scope == 'zork_saves':
+        _ensure_zork_saves_table()
+        for row in c.execute(
+            "SELECT user_id, game_id, save_data, updated_at FROM zork_saves"
+        ):
+            key = f"{row[0]}:{row[1]}"
+            manifest[key] = _compact_row_hash(row)
+    elif scope == 'tombstones':
+        _ensure_deleted_sync_tombstones_table()
+        for row in c.execute(
+            "SELECT tombstone_key, deleted_at FROM deleted_sync_tombstones"
+        ):
+            key = str(row[0])
+            manifest[key] = _compact_row_hash(row)
+
+    return manifest
+
+
+def get_bulletin_by_unique_id(unique_id: str):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT board, sender_short_name, subject, content, unique_id FROM bulletins WHERE unique_id = ?",
+        (unique_id,),
+    )
+    return c.fetchone()
+
+
+def get_mail_by_unique_id(unique_id: str):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT sender, sender_short_name, recipient, subject, content, unique_id FROM mail WHERE unique_id = ?",
+        (unique_id,),
+    )
+    return c.fetchone()
+
+
+def get_channel_by_manifest_key(manifest_key: str):
+    padded = manifest_key + ('=' * ((4 - len(manifest_key) % 4) % 4))
+    try:
+        decoded = base64.urlsafe_b64decode(padded.encode('ascii')).decode('utf-8')
+    except Exception:
+        return None
+    if '\x1f' not in decoded:
+        return None
+    name, url = decoded.split('\x1f', 1)
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT name, url FROM channels WHERE name = ? AND url = ? AND local_only = 0",
+        (name, url),
+    )
+    return c.fetchone()
+
+
+def get_profile_by_user_id(user_id: str):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio FROM user_profiles WHERE user_id = ?",
+        (str(user_id),),
+    )
+    return c.fetchone()
+
+
+def get_game_score_by_user_and_game(user_id: str, game_id: str):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT user_id, game_id, short_name, score, max_score, moves, achieved_at FROM game_scores WHERE user_id = ? AND game_id = ?",
+        (str(user_id), str(game_id)),
+    )
+    return c.fetchone()
+
+
+def get_zork_save_row_by_user_and_game(user_id: str, game_id: str):
+    _ensure_zork_saves_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT user_id, game_id, save_data, updated_at FROM zork_saves WHERE user_id = ? AND game_id = ?",
+        (str(user_id), str(game_id)),
+    )
+    return c.fetchone()
 
 
 def log_connection_event(
