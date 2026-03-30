@@ -7,10 +7,12 @@ Wants=network-online.target
 Type=simple
 Restart=always
 RestartSec=10
-User=pi
-WorkingDirectory=/home/pi/TC2-BaconBS-mesh
-EnvironmentFile=-/home/pi/TC2-BaconBS-mesh/web-admin.env
-ExecStart=/home/pi/TC2-BaconBS-mesh/venv/bin/python3 /home/pi/TC2-BaconBS-mesh/web_admin.py
+User=__SERVICE_USER__
+WorkingDirectory=__PROJECT_DIR__
+EnvironmentFile=-__PROJECT_DIR__/web-admin.env
+Environment="BBS_WEBGUI_HOST=0.0.0.0"
+Environment="BBS_WEBGUI_PORT=8081"
+ExecStart=__PROJECT_DIR__/venv/bin/python3 __PROJECT_DIR__/web_admin.py
 
 [Install]
 WantedBy=multi-user.target

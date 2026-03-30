@@ -1,16 +1,17 @@
 [Unit]
 Description=TC²-BBS Meshtastic Version
-After=multi-user.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 Restart=always
 RestartSec=20
-User=pi
-WorkingDirectory=/home/pi/TC2-BBS-mesh
+User=__SERVICE_USER__
+WorkingDirectory=__PROJECT_DIR__
 Environment="PATH=/usr/games:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="BBS_ZORK_INTERPRETER=/usr/games/dfrotz"
-ExecStart=/home/pi/TC2-BBS-mesh/venv/bin/python3 /home/pi/TC2-BBS-mesh/server.py
+ExecStart=__PROJECT_DIR__/venv/bin/python3 __PROJECT_DIR__/server.py
 
 [Install]
 WantedBy=multi-user.target
