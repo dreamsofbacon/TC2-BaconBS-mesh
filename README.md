@@ -248,17 +248,9 @@ To reduce lock/corruption risk while `server.py` and `web_admin.py` are both act
 
 ### Run Web Admin GUI with systemd
 
-The repository includes `bacon-web-admin.service` for running the web admin at boot.
+The repository includes `bacon-web-admin.service` and an installer script (`install_services.sh`) that prompts for your Linux username and project path, then installs both services.
 
-1. Edit these lines in `bacon-web-admin.service` for your username/path:
-
-```sh
-User=pi
-WorkingDirectory=/home/pi/TC2-BaconBS-mesh
-ExecStart=/home/pi/TC2-BaconBS-mesh/venv/bin/python3 /home/pi/TC2-BaconBS-mesh/web_admin.py
-```
-
-2. Create an environment file for credentials and bind settings:
+1. Create an environment file for credentials and bind settings:
 
 ```sh
 cat > /home/pi/TC2-BaconBS-mesh/web-admin.env << 'EOF'
@@ -273,20 +265,24 @@ BBS_WEBGUI_PORT=8081
 EOF
 ```
 
-3. Install and enable the service:
+2. Install both services (recommended):
 
 ```sh
-sudo cp bacon-web-admin.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable bacon-web-admin.service
-sudo systemctl start bacon-web-admin.service
+chmod +x install_services.sh
+bash install_services.sh
 ```
 
-4. Check status and logs:
+This installs and restarts:
+- `mesh-bbs.service`
+- `bacon-web-admin.service`
+
+By default, the web admin service binds to `0.0.0.0:8081` so it is reachable from other devices on your LAN.
+
+3. Check status and logs:
 
 ```sh
-sudo systemctl status bacon-web-admin.service
-journalctl -u bacon-web-admin.service -f
+sudo systemctl status mesh-bbs.service bacon-web-admin.service
+journalctl -u mesh-bbs.service -u bacon-web-admin.service -f
 ```
 
 ## Smoke Test (No Radio Required)
@@ -332,23 +328,14 @@ options:
 
 ## Automatically run at boot
 
-If you would like to have the script automatically run at boot, follow the steps below:
+Use the installer script to configure and install both systemd services with your username and project path:
 
-1. **Edit the service file**
-   
-   First, edit the mesh-bbs.service file using your preferred text editor. The 3 following lines in that file are what we need to edit:
-   
-   ```sh
-   User=pi
-   WorkingDirectory=/home/pi/TC2-BBS-mesh
-   ExecStart=/home/pi/TC2-BBS-mesh/venv/bin/python3 /home/pi/TC2-BBS-mesh/server.py
-   ```
-   
-   The file is currently setup for a user named 'pi' and assumes that the TC2-BBS-mesh directory is located in the home directory (which it should be if the earlier directions were followed)
-   
-   We just need to replace the 4 parts that have "pi" in those 3 lines with your username.
+```sh
+chmod +x install_services.sh
+bash install_services.sh
+```
 
-   If you plan to use Zork, keep these environment lines in `mesh-bbs.service` so the interpreter is found under systemd:
+If you plan to use Zork, keep these environment lines in `mesh-bbs.service` so the interpreter is found under systemd:
 
    ```sh
    Environment="PATH=/usr/games:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -362,41 +349,15 @@ If you would like to have the script automatically run at boot, follow the steps
    ls -l /usr/games/dfrotz /usr/games/frotz
    ```
 
-2. **Configuring systemd**
-   
-   From the TC2-BBS-mesh directory, run the following commands:
-   
+2. **Service controls**
+
    ```sh
-   sudo cp mesh-bbs.service /etc/systemd/system/
-   ```
-   
-   ```sh
-   sudo systemctl enable mesh-bbs.service
-   ```
-   
-   ```sh
-   sudo systemctl start mesh-bbs.service
-   ```
-   
-   The service should be started now and should start anytime your device is powered on or rebooted. You can check the status of the service by running the following command:
-   
-   ```sh
-   sudo systemctl status mesh-bbs.service
-   ```
-   
-   If you need to stop the service, you can run the following:
-   
-   ```sh
-   sudo systemctl stop mesh-bbs.service
-   ```
-   
-   If you need to restart the service, you can do so with the following command:
-   
-   ```sh
-   sudo systemctl restart mesh-bbs.service
+   sudo systemctl status mesh-bbs.service bacon-web-admin.service
+   sudo systemctl stop mesh-bbs.service bacon-web-admin.service
+   sudo systemctl restart mesh-bbs.service bacon-web-admin.service
    ```
 
-2. **Viewing Logs**
+3. **Viewing Logs**
 
    Viewing past logs:
    ```sh
