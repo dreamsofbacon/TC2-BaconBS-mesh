@@ -58,6 +58,40 @@ fi
 echo "✓ meshtastic import verified"
 echo ""
 
+# Install dfrotz (required for Zork / Infocom games)
+echo "Checking for dfrotz (Z-machine interpreter for games)..."
+if command -v dfrotz &> /dev/null || command -v frotz &> /dev/null; then
+    echo "✓ frotz/dfrotz already installed"
+else
+    if command -v apt-get &> /dev/null; then
+        echo "dfrotz not found. It is required to play Zork and other Infocom games."
+        read -r -p "Install dfrotz via apt? (requires sudo) [Y/n]: " REPLY
+        REPLY=${REPLY:-Y}
+        if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+            sudo apt-get install -y dfrotz
+            echo "✓ dfrotz installed"
+        else
+            echo "  Skipping dfrotz install. Games will not work until dfrotz is installed."
+            echo "  Install later with: sudo apt install dfrotz"
+        fi
+    elif command -v brew &> /dev/null; then
+        echo "dfrotz not found. It is required to play Zork and other Infocom games."
+        read -r -p "Install frotz via Homebrew? [Y/n]: " REPLY
+        REPLY=${REPLY:-Y}
+        if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+            brew install frotz
+            echo "✓ frotz installed"
+        else
+            echo "  Skipping frotz install. Games will not work until frotz is installed."
+            echo "  Install later with: brew install frotz"
+        fi
+    else
+        echo "  WARNING: Could not find apt-get or brew."
+        echo "  Install dfrotz manually before using games."
+    fi
+fi
+echo ""
+
 # Check for config file
 if [ ! -f "config.ini" ]; then
     if [ -f "example_config.ini" ]; then

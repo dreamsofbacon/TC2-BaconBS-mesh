@@ -69,6 +69,13 @@ if errorlevel 1 (
 echo [OK] meshtastic import verified
 echo.
 
+REM Note about dfrotz (required for Zork / Infocom games)
+echo NOTE: Zork and other Infocom games require the 'dfrotz' interpreter.
+echo       dfrotz is a Linux system package and is not available natively on Windows.
+echo       To use games on Windows, install WSL and run: sudo apt install dfrotz
+echo       Or place a dfrotz.exe somewhere and set BBS_ZORK_INTERPRETER in config.ini.
+echo.
+
 REM Check for config file
 if not exist "config.ini" (
     if exist "example_config.ini" (
