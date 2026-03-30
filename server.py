@@ -153,6 +153,8 @@ def main():
         # Empty on startup — receivers use unique_id idempotency, so re-syncing is safe
         synced_nodes: set = set()
         pending_sync_nodes: set = set()
+        synced_at: dict = {}   # node_id -> time.time() when last sync completed
+        _RESYNC_INTERVAL = 6 * 3600  # re-sync each peer every 6 hours
 
         def _run_sync(node):
             """Background thread: sync db to a single peer, then record completion."""
@@ -160,6 +162,7 @@ def main():
                 result = sync_full_database_to_nodes([node], interface, delay_ms=500)
                 logging.info(f"DB sync complete for {node}: {result['total_messages']} messages sent")
                 synced_nodes.add(node)
+                synced_at[node] = time.time()
             except Exception as exc:
                 logging.error(f"Error syncing database to {node}: {exc}")
                 # Not added to synced_nodes; will retry on next check cycle
@@ -175,6 +178,15 @@ def main():
 
             # Check for new BBS nodes to sync with every 60 seconds
             if time.time() >= next_node_sync_check:
+                # Expire nodes whose last sync is older than _RESYNC_INTERVAL
+                stale = {n for n, t in synced_at.items()
+                         if time.time() - t > _RESYNC_INTERVAL}
+                if stale:
+                    logging.info(f"Re-sync due for {len(stale)} node(s) after 6-hour interval: {stale}")
+                    synced_nodes -= stale
+                    for n in stale:
+                        synced_at.pop(n, None)
+
                 current_bbs_nodes = set(interface.bbs_nodes or [])
                 new_nodes = current_bbs_nodes - synced_nodes - pending_sync_nodes
 

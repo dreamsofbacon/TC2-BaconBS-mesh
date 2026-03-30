@@ -21,15 +21,15 @@ thread_local = threading.local()
 _sync_progress_lock = threading.Lock()
 _sync_progress = {
     'in_progress': False,
-    'progress_percent': 100,
+    'progress_percent': 0,
     'completed_items': 0,
     'total_items': 0,
     'remaining_items': 0,
-    'current_phase': 'idle',
+    'current_phase': 'never_run',
     'target_nodes': [],
     'started_at': '',
     'last_updated_at': '',
-    'last_result': '',
+    'last_result': 'No sync run yet',
 }
 
 
@@ -300,12 +300,26 @@ def delete_bulletin(unique_id, bbs_nodes, interface):
     send_delete_bulletin_to_bbs_nodes(unique_id, bbs_nodes, interface)
 
 
-def append_bulletin_content(unique_id: str, additional_content: str) -> None:
-    """Append a continuation chunk to an existing bulletin's content."""
+def append_bulletin_content(unique_id: str, char_offset: Optional[int], additional_content: str) -> None:
+    """Append a continuation chunk to an existing bulletin's content.
+
+    char_offset is the expected current length of the stored content before
+    this chunk is applied.  Only appends when length(content) == char_offset,
+    making the call idempotent: duplicate or re-synced packets are silent no-ops.
+    Pass None to skip the offset guard (legacy/test usage).
+    """
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("UPDATE bulletins SET content = content || ? WHERE unique_id = ?",
-              (additional_content, unique_id))
+    if char_offset is not None:
+        c.execute(
+            "UPDATE bulletins SET content = content || ? WHERE unique_id = ? AND length(content) = ?",
+            (additional_content, unique_id, char_offset),
+        )
+    else:
+        c.execute(
+            "UPDATE bulletins SET content = content || ? WHERE unique_id = ?",
+            (additional_content, unique_id),
+        )
     if c.rowcount > 0:
         conn.commit()
         logging.info(f"Appended continuation content to bulletin unique_id={unique_id}")
@@ -363,12 +377,23 @@ def delete_mail(unique_id, recipient_id, bbs_nodes, interface):
         raise
 
 
-def append_mail_content(unique_id: str, additional_content: str) -> None:
-    """Append a continuation chunk to an existing mail message's content."""
+def append_mail_content(unique_id: str, char_offset: Optional[int], additional_content: str) -> None:
+    """Append a continuation chunk to an existing mail message's content.
+
+    See append_bulletin_content for char_offset semantics.
+    """
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("UPDATE mail SET content = content || ? WHERE unique_id = ?",
-              (additional_content, unique_id))
+    if char_offset is not None:
+        c.execute(
+            "UPDATE mail SET content = content || ? WHERE unique_id = ? AND length(content) = ?",
+            (additional_content, unique_id, char_offset),
+        )
+    else:
+        c.execute(
+            "UPDATE mail SET content = content || ? WHERE unique_id = ?",
+            (additional_content, unique_id),
+        )
     if c.rowcount > 0:
         conn.commit()
         logging.info(f"Appended continuation content to mail unique_id={unique_id}")
