@@ -6,17 +6,70 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_USER="${SUDO_USER:-${USER}}"
 DEFAULT_PROJECT_DIR="$REPO_DIR"
+NON_INTERACTIVE="false"
+SERVICE_USER=""
+PROJECT_DIR=""
+
+usage() {
+    cat <<EOF
+Usage: bash install_services.sh [options]
+
+Options:
+  -u, --user USER    Linux user for the systemd service User= field
+  -d, --dir PATH     Project directory containing server.py and web_admin.py
+  -y, --yes          Non-interactive mode (use provided/default values)
+  -h, --help         Show this help message
+
+Examples:
+  bash install_services.sh
+  bash install_services.sh --user bacon --dir /home/bacon/TC2-BaconBS-mesh
+  bash install_services.sh --yes --user bacon
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -u|--user)
+            [[ $# -ge 2 ]] || { echo "ERROR: --user requires a value"; exit 1; }
+            SERVICE_USER="$2"
+            shift 2
+            ;;
+        -d|--dir)
+            [[ $# -ge 2 ]] || { echo "ERROR: --dir requires a value"; exit 1; }
+            PROJECT_DIR="$2"
+            shift 2
+            ;;
+        -y|--yes)
+            NON_INTERACTIVE="true"
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "ERROR: Unknown option: $1"
+            usage
+            exit 1
+            ;;
+    esac
+done
 
 if [[ ! -f "$REPO_DIR/mesh-bbs.service" || ! -f "$REPO_DIR/bacon-web-admin.service" ]]; then
     echo "ERROR: Run this script from inside the TC2-BaconBS-mesh repository."
     exit 1
 fi
 
-read -r -p "Service Linux username [${DEFAULT_USER}]: " SERVICE_USER
 SERVICE_USER="${SERVICE_USER:-$DEFAULT_USER}"
-
-read -r -p "Project directory [${DEFAULT_PROJECT_DIR}]: " PROJECT_DIR
 PROJECT_DIR="${PROJECT_DIR:-$DEFAULT_PROJECT_DIR}"
+
+if [[ "$NON_INTERACTIVE" != "true" ]]; then
+    read -r -p "Service Linux username [${SERVICE_USER}]: " INPUT_USER
+    SERVICE_USER="${INPUT_USER:-$SERVICE_USER}"
+
+    read -r -p "Project directory [${PROJECT_DIR}]: " INPUT_DIR
+    PROJECT_DIR="${INPUT_DIR:-$PROJECT_DIR}"
+fi
 
 if [[ ! -d "$PROJECT_DIR" ]]; then
     echo "ERROR: Project directory does not exist: $PROJECT_DIR"

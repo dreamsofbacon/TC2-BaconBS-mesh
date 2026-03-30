@@ -272,6 +272,12 @@ chmod +x install_services.sh
 bash install_services.sh
 ```
 
+For automated installs (no prompts), use:
+
+```sh
+bash install_services.sh --yes --user "$USER" --dir "$HOME/TC2-BaconBS-mesh"
+```
+
 This installs and restarts:
 - `mesh-bbs.service`
 - `bacon-web-admin.service`
@@ -333,6 +339,12 @@ Use the installer script to configure and install both systemd services with you
 ```sh
 chmod +x install_services.sh
 bash install_services.sh
+```
+
+Non-interactive variant:
+
+```sh
+bash install_services.sh --yes --user "$USER" --dir "$HOME/TC2-BaconBS-mesh"
 ```
 
 If you plan to use Zork, keep these environment lines in `mesh-bbs.service` so the interpreter is found under systemd:
