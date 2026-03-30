@@ -689,6 +689,35 @@ SETTINGS_CONTENT = """
     <button class=\"btn btn-primary\" type=\"submit\">Update Credentials</button>
   </form>
 </div>
+
+<div class=\"card\" id=\"diagnostics\" style=\"max-width: 900px;\">
+  <h2>Diagnostics</h2>
+  <p class=\"muted\">Quick runtime and BBS status details for troubleshooting.</p>
+
+  <h3>Runtime</h3>
+  <p><strong>Interface attached:</strong> {{ diagnostics.interface_attached }}</p>
+  <p><strong>Interface type:</strong> {{ diagnostics.interface_type }}</p>
+  <p><strong>Known mesh nodes:</strong> {{ diagnostics.mesh_node_count }}</p>
+  <p><strong>Local node:</strong> {{ diagnostics.local_node_id }}</p>
+  <p><strong>Local short name:</strong> {{ diagnostics.local_short_name }}</p>
+  <p><strong>Local long name:</strong> {{ diagnostics.local_long_name }}</p>
+
+  <h3>BBS</h3>
+  <p><strong>Configured sync peers:</strong> {{ diagnostics.bbs_nodes_count }}{% if diagnostics.bbs_nodes_text %} ({{ diagnostics.bbs_nodes_text }}){% endif %}</p>
+  <p><strong>Configured urgent allow-list:</strong> {{ diagnostics.allowed_nodes_count }}{% if diagnostics.allowed_nodes_text %} ({{ diagnostics.allowed_nodes_text }}){% endif %}</p>
+  <p><strong>Bulletin boards:</strong> {{ diagnostics.board_count }} ({{ diagnostics.board_list }})</p>
+
+  <h3>Database</h3>
+  <p><strong>Path:</strong> <code>{{ diagnostics.db_path }}</code></p>
+  <p><strong>Bulletins:</strong> {{ diagnostics.bulletins_count }}</p>
+  <p><strong>Mail:</strong> {{ diagnostics.mail_count }}</p>
+  <p><strong>Channels:</strong> {{ diagnostics.channels_count }}</p>
+  <p><strong>Connection events:</strong> {{ diagnostics.connection_events_count }}</p>
+  <p><strong>Last connection event:</strong> {{ diagnostics.last_connection_event }}</p>
+  {% if diagnostics.error %}
+  <p class=\"muted\">Diagnostics note: {{ diagnostics.error }}</p>
+  {% endif %}
+</div>
 """
 
 
@@ -1627,8 +1656,84 @@ def create_app(runtime_interface=None) -> Flask:
       flash("Credentials updated successfully. Use your new credentials on next login.", "success")
       return True
 
+    def build_settings_diagnostics() -> dict[str, str]:
+      bbs_nodes, allowed_nodes = load_sync_settings(app.config["CONFIG_PATH"])
+      diagnostics = {
+        "interface_attached": "No",
+        "interface_type": "Unavailable",
+        "mesh_node_count": "Unavailable",
+        "local_node_id": "Unavailable",
+        "local_short_name": "Unavailable",
+        "local_long_name": "Unavailable",
+        "bbs_nodes_count": str(len(bbs_nodes)),
+        "allowed_nodes_count": str(len(allowed_nodes)),
+        "bbs_nodes_text": ", ".join(bbs_nodes),
+        "allowed_nodes_text": ", ".join(allowed_nodes),
+        "board_count": str(len(app.config["BULLETIN_BOARDS"])),
+        "board_list": ", ".join(app.config["BULLETIN_BOARDS"]),
+        "db_path": app.config["DB_PATH"],
+        "bulletins_count": "Unknown",
+        "mail_count": "Unknown",
+        "channels_count": "Unknown",
+        "connection_events_count": "Unknown",
+        "last_connection_event": "None",
+        "error": "",
+      }
+
+      interface = get_runtime_interface()
+      if interface is not None:
+        diagnostics["interface_attached"] = "Yes"
+        diagnostics["interface_type"] = interface.__class__.__name__
+        try:
+          nodes = getattr(interface, "nodes", None)
+          if isinstance(nodes, dict):
+            diagnostics["mesh_node_count"] = str(len(nodes))
+
+          my_info = None
+          get_my_info = getattr(interface, "getMyNodeInfo", None)
+          if callable(get_my_info):
+            my_info = get_my_info()
+
+          if isinstance(my_info, dict):
+            node_num = my_info.get("num")
+            user = my_info.get("user", {}) if isinstance(my_info.get("user"), dict) else {}
+            if node_num is not None:
+              diagnostics["local_node_id"] = str(node_num)
+            if user.get("id"):
+              diagnostics["local_node_id"] = str(user.get("id"))
+            if user.get("shortName"):
+              diagnostics["local_short_name"] = str(user.get("shortName"))
+            if user.get("longName"):
+              diagnostics["local_long_name"] = str(user.get("longName"))
+        except Exception as exc:
+          diagnostics["error"] = f"Runtime diagnostics unavailable: {exc}"
+
+      try:
+        conn = get_db_connection()
+        try:
+          cursor = conn.cursor()
+          cursor.execute("SELECT COUNT(*) FROM bulletins")
+          diagnostics["bulletins_count"] = str(cursor.fetchone()[0])
+          cursor.execute("SELECT COUNT(*) FROM mail")
+          diagnostics["mail_count"] = str(cursor.fetchone()[0])
+          cursor.execute("SELECT COUNT(*) FROM channels")
+          diagnostics["channels_count"] = str(cursor.fetchone()[0])
+          cursor.execute("SELECT COUNT(*) FROM connection_events")
+          diagnostics["connection_events_count"] = str(cursor.fetchone()[0])
+          cursor.execute("SELECT event_time, message_type, event_text FROM connection_events ORDER BY id DESC LIMIT 1")
+          row = cursor.fetchone()
+          if row:
+            diagnostics["last_connection_event"] = f"{row['event_time']} | {row['message_type']} | {row['event_text']}"
+        finally:
+          conn.close()
+      except Exception as exc:
+        diagnostics["error"] = f"Database diagnostics unavailable: {exc}"
+
+      return diagnostics
+
     def render_settings_page():
       bbs_nodes, allowed_nodes = load_sync_settings(app.config["CONFIG_PATH"])
+      diagnostics = build_settings_diagnostics()
       content = render_template_string(
         SETTINGS_CONTENT,
         boards_text=",".join(app.config["BULLETIN_BOARDS"]),
@@ -1639,6 +1744,7 @@ def create_app(runtime_interface=None) -> Flask:
         current_username=app.config["ADMIN_USER"],
         username_env_override=app.config["ADMIN_USER_ENV_OVERRIDE"],
         password_env_override=app.config["ADMIN_PASSWORD_ENV_OVERRIDE"],
+        diagnostics=diagnostics,
       )
       return render_template_string(BASE_TEMPLATE, title="Settings", content=content, show_nav=True)
 
