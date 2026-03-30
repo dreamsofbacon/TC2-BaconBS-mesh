@@ -15,6 +15,7 @@ other BBS servers listed in the config.ini file.
 import logging
 import json
 import os
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -149,31 +150,41 @@ def main():
     try:
         next_diagnostics_write = 0.0
         next_node_sync_check = 0.0
-        synced_nodes = set(interface.bbs_nodes or [])
-        
+        # Empty on startup — receivers use unique_id idempotency, so re-syncing is safe
+        synced_nodes: set = set()
+        pending_sync_nodes: set = set()
+
+        def _run_sync(node):
+            """Background thread: sync db to a single peer, then record completion."""
+            try:
+                result = sync_full_database_to_nodes([node], interface, delay_ms=500)
+                logging.info(f"DB sync complete for {node}: {result['total_messages']} messages sent")
+                synced_nodes.add(node)
+            except Exception as exc:
+                logging.error(f"Error syncing database to {node}: {exc}")
+                # Not added to synced_nodes; will retry on next check cycle
+            finally:
+                pending_sync_nodes.discard(node)
+
         while True:
-            # Check and sync diagnostics every 30 seconds
+            # Refresh diagnostics snapshot (5 s while syncing, 30 s otherwise)
             if time.time() >= next_diagnostics_write:
                 write_runtime_diagnostics_snapshot(interface, system_config)
                 sync_progress = get_sync_progress()
                 next_diagnostics_write = time.time() + (5 if sync_progress.get('in_progress') else 30)
-            
+
             # Check for new BBS nodes to sync with every 60 seconds
             if time.time() >= next_node_sync_check:
                 current_bbs_nodes = set(interface.bbs_nodes or [])
-                new_nodes = current_bbs_nodes - synced_nodes
-                
+                new_nodes = current_bbs_nodes - synced_nodes - pending_sync_nodes
+
                 if new_nodes:
-                    logging.info(f"Detected {len(new_nodes)} new BBS node(s): {new_nodes}")
+                    logging.info(f"Detected {len(new_nodes)} new BBS node(s) to sync: {new_nodes}")
+                    pending_sync_nodes.update(new_nodes)
                     for new_node in sorted(new_nodes, key=str):
-                        try:
-                            result = sync_full_database_to_nodes([new_node], interface, delay_ms=500)
-                            logging.info(f"Full database sync complete for {new_node}: {result['total_messages']} messages sent")
-                            synced_nodes.add(new_node)
-                        except Exception as e:
-                            logging.error(f"Error syncing database to new node {new_node}: {e}")
-                            # Don't mark as synced on error; we'll retry next cycle
-                
+                        t = threading.Thread(target=_run_sync, args=(new_node,), daemon=True)
+                        t.start()
+
                 next_node_sync_check = time.time() + 60
             
             time.sleep(1)
