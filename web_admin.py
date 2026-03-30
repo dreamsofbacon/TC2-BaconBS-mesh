@@ -234,9 +234,7 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('table_list', table='mail') }}\">Mail</a>
       <a href=\"{{ url_for('table_list', table='channels') }}\">Channels</a>
       <a href=\"{{ url_for('clients_summary') }}\">Clients</a>
-      <a href=\"{{ url_for('board_settings') }}\">Boards</a>
-      <a href=\"{{ url_for('sync_settings') }}\">Sync</a>
-      <a href=\"{{ url_for('admin_settings') }}\">Admin</a>
+      <a href=\"{{ url_for('settings_page') }}\">Settings</a>
       <a href=\"{{ url_for('system_flowchart') }}\">System Flowchart</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
       <button id="theme-toggle" class="btn btn-small theme-toggle" type="button">Switch to Light</button>
@@ -620,6 +618,75 @@ BOARD_SETTINGS_CONTENT = """
     <textarea name=\"bulletin_boards\" required>{{ boards_text }}</textarea><br><br>
     <button class=\"btn btn-primary\" type=\"submit\">Save Boards</button>
     <a class=\"btn\" href=\"{{ url_for('table_list', table='bulletins') }}\">Back</a>
+  </form>
+</div>
+"""
+
+
+SETTINGS_CONTENT = """
+<div class=\"card\">
+  <h2>Settings</h2>
+  <p class=\"muted\">Manage boards, sync peers, allowed nodes, and web admin credentials from one place.</p>
+</div>
+
+<div class=\"card\" id=\"boards\">
+  <h2>Board Settings</h2>
+  <p class=\"muted\">Manage bulletin board categories used by create/edit dropdowns.</p>
+  {% if env_override %}
+  <p class=\"muted\">`BBS_BULLETIN_BOARDS` is set in environment and overrides config file at startup.</p>
+  {% endif %}
+  <form method=\"post\" action=\"{{ url_for('settings_page') }}#boards\">
+    <input type=\"hidden\" name=\"settings_section\" value=\"boards\">
+    <label>Boards (comma separated)</label><br>
+    <textarea name=\"bulletin_boards\" required>{{ boards_text }}</textarea><br><br>
+    <button class=\"btn btn-primary\" type=\"submit\">Save Boards</button>
+  </form>
+</div>
+
+<div class=\"card\" id=\"sync\" style=\"max-width: 800px;\">
+  <h2>Sync Settings</h2>
+  <p class=\"muted\">Manage BBS peer sync targets and the node IDs allowed to post to the Urgent board.</p>
+  <form method=\"post\" action=\"{{ url_for('settings_page') }}#sync\">
+    <input type=\"hidden\" name=\"settings_section\" value=\"sync\">
+    <label>Sync BBS Nodes</label><br>
+    <textarea name=\"bbs_nodes\" placeholder=\"One per line or comma separated\">{{ bbs_nodes_text }}</textarea><br>
+    <p class=\"muted\">These nodes receive bulletin, mail, delete, and channel sync traffic.</p>
+
+    <label>Allowed Urgent Board Nodes</label><br>
+    <textarea name=\"allowed_nodes\" placeholder=\"Leave blank to allow all nodes\">{{ allowed_nodes_text }}</textarea><br>
+    <p class=\"muted\">If left blank, any node can post to the Urgent board.</p>
+
+    {% if runtime_updates_enabled %}
+    <p class=\"muted\">Changes are also applied to the active interface immediately.</p>
+    {% else %}
+    <p class=\"muted\">Changes are saved to config.ini. Restart server.py if the BBS process is running separately from this web GUI.</p>
+    {% endif %}
+
+    <button class=\"btn btn-primary\" type=\"submit\">Save Sync Settings</button>
+  </form>
+</div>
+
+<div class=\"card\" id=\"admin\" style=\"max-width: 600px;\">
+  <h2>Admin Credentials</h2>
+  <p class=\"muted\">Change the username and password for the web admin interface.</p>
+  {% if username_env_override or password_env_override %}
+  <p class=\"muted\">Environment variables are overriding stored admin credentials for this running process. GUI changes are saved to config.ini but will be replaced again on restart until those environment variables are removed.</p>
+  {% endif %}
+  <form method=\"post\" action=\"{{ url_for('settings_page') }}#admin\">
+    <input type=\"hidden\" name=\"settings_section\" value=\"admin\">
+    <label>Current Password (required)</label><br>
+    <input type=\"password\" name=\"current_password\" required><br><br>
+
+    <label>New Username (leave blank to keep current)</label><br>
+    <input type=\"text\" name=\"new_username\" placeholder=\"Current: {{ current_username }}\"><br><br>
+
+    <label>New Password (leave blank to keep current)</label><br>
+    <input type=\"password\" name=\"new_password\" placeholder=\"Leave blank to keep current\"><br><br>
+
+    <label>Confirm New Password</label><br>
+    <input type=\"password\" name=\"confirm_password\" placeholder=\"Confirm new password\"><br><br>
+
+    <button class=\"btn btn-primary\" type=\"submit\">Update Credentials</button>
   </form>
 </div>
 """
@@ -1513,6 +1580,68 @@ def create_app(runtime_interface=None) -> Flask:
       interface.bbs_nodes = list(bbs_nodes)
       interface.allowed_nodes = list(allowed_nodes)
 
+    def update_board_settings(raw_boards: str) -> bool:
+      updated_boards = parse_list_input(raw_boards)
+
+      if not updated_boards:
+        flash("At least one board is required.", "error")
+        return False
+
+      save_bulletin_boards(updated_boards)
+      app.config["BULLETIN_BOARDS"] = updated_boards
+      flash("Board list saved.", "success")
+      return True
+
+    def update_sync_settings(raw_bbs_nodes: str, raw_allowed_nodes: str) -> bool:
+      bbs_nodes = parse_list_input(raw_bbs_nodes)
+      allowed_nodes = parse_list_input(raw_allowed_nodes)
+
+      save_sync_lists(bbs_nodes, allowed_nodes)
+      apply_runtime_sync_settings(bbs_nodes, allowed_nodes)
+      flash("Sync settings updated.", "success")
+      return True
+
+    def update_admin_settings(current_password: str, new_username: str, new_password: str, confirm_password: str) -> bool:
+      if current_password != app.config["ADMIN_PASSWORD"]:
+        flash("Current password is incorrect.", "error")
+        return False
+      if new_password != confirm_password:
+        flash("New passwords do not match.", "error")
+        return False
+      if new_password and len(new_password) < 4:
+        flash("New password must be at least 4 characters.", "error")
+        return False
+
+      updated_username = None
+      updated_password = None
+
+      if new_username:
+        updated_username = new_username
+        app.config["ADMIN_USER"] = new_username
+
+      if new_password:
+        updated_password = new_password
+        app.config["ADMIN_PASSWORD"] = new_password
+
+      save_admin_credentials(updated_username, updated_password)
+      flash("Credentials updated successfully. Use your new credentials on next login.", "success")
+      return True
+
+    def render_settings_page():
+      bbs_nodes, allowed_nodes = load_sync_settings(app.config["CONFIG_PATH"])
+      content = render_template_string(
+        SETTINGS_CONTENT,
+        boards_text=",".join(app.config["BULLETIN_BOARDS"]),
+        env_override=bool(os.getenv("BBS_BULLETIN_BOARDS", "").strip()),
+        bbs_nodes_text="\n".join(bbs_nodes),
+        allowed_nodes_text="\n".join(allowed_nodes),
+        runtime_updates_enabled=app.config["RUNTIME_UPDATES_ENABLED"],
+        current_username=app.config["ADMIN_USER"],
+        username_env_override=app.config["ADMIN_USER_ENV_OVERRIDE"],
+        password_env_override=app.config["ADMIN_PASSWORD_ENV_OVERRIDE"],
+      )
+      return render_template_string(BASE_TEMPLATE, title="Settings", content=content, show_nav=True)
+
     initialize_db_safety()
 
     def login_required(view_func):
@@ -1559,93 +1688,63 @@ def create_app(runtime_interface=None) -> Flask:
         session.clear()
         return redirect(url_for("login"))
 
+    @app.route("/settings", methods=["GET", "POST"])
+    @login_required
+    def settings_page():
+      if request.method == "POST":
+        section = request.form.get("settings_section", "").strip().lower()
+
+        if section == "boards":
+          update_board_settings(request.form.get("bulletin_boards", ""))
+          return redirect(url_for("settings_page") + "#boards")
+
+        if section == "sync":
+          update_sync_settings(request.form.get("bbs_nodes", ""), request.form.get("allowed_nodes", ""))
+          return redirect(url_for("settings_page") + "#sync")
+
+        if section == "admin":
+          changed = update_admin_settings(
+            request.form.get("current_password", ""),
+            request.form.get("new_username", "").strip(),
+            request.form.get("new_password", "").strip(),
+            request.form.get("confirm_password", "").strip(),
+          )
+          if changed:
+            return redirect(url_for("logout"))
+          return redirect(url_for("settings_page") + "#admin")
+
+        flash("Unknown settings section.", "error")
+        return redirect(url_for("settings_page"))
+
+      return render_settings_page()
+
     @app.route("/settings/boards", methods=["GET", "POST"])
     @login_required
     def board_settings():
-      boards = app.config["BULLETIN_BOARDS"]
-      boards_text = ",".join(boards)
-      env_override = bool(os.getenv("BBS_BULLETIN_BOARDS", "").strip())
-
       if request.method == "POST":
-        raw_boards = request.form.get("bulletin_boards", "")
-        updated_boards = parse_list_input(raw_boards)
-
-        if not updated_boards:
-          flash("At least one board is required.", "error")
-        else:
-          save_bulletin_boards(updated_boards)
-          app.config["BULLETIN_BOARDS"] = updated_boards
-          boards_text = ",".join(updated_boards)
-          flash("Board list saved.", "success")
-
-      content = render_template_string(
-        BOARD_SETTINGS_CONTENT,
-        boards_text=boards_text,
-        env_override=env_override,
-      )
-      return render_template_string(BASE_TEMPLATE, title="Board Settings", content=content, show_nav=True)
+        update_board_settings(request.form.get("bulletin_boards", ""))
+      return redirect(url_for("settings_page") + "#boards")
 
     @app.route("/settings/sync", methods=["GET", "POST"])
     @login_required
     def sync_settings():
-      bbs_nodes, allowed_nodes = load_sync_settings(app.config["CONFIG_PATH"])
-
       if request.method == "POST":
-        bbs_nodes = parse_list_input(request.form.get("bbs_nodes", ""))
-        allowed_nodes = parse_list_input(request.form.get("allowed_nodes", ""))
-
-        save_sync_lists(bbs_nodes, allowed_nodes)
-        apply_runtime_sync_settings(bbs_nodes, allowed_nodes)
-        flash("Sync settings updated.", "success")
-
-      content = render_template_string(
-        SYNC_SETTINGS_CONTENT,
-        bbs_nodes_text="\n".join(bbs_nodes),
-        allowed_nodes_text="\n".join(allowed_nodes),
-        runtime_updates_enabled=app.config["RUNTIME_UPDATES_ENABLED"],
-      )
-      return render_template_string(BASE_TEMPLATE, title="Sync Settings", content=content, show_nav=True)
+        update_sync_settings(request.form.get("bbs_nodes", ""), request.form.get("allowed_nodes", ""))
+      return redirect(url_for("settings_page") + "#sync")
 
     @app.route("/settings/admin", methods=["GET", "POST"])
     @login_required
     def admin_settings():
       if request.method == "POST":
-        current_password = request.form.get("current_password", "")
-        new_username = request.form.get("new_username", "").strip()
-        new_password = request.form.get("new_password", "").strip()
-        confirm_password = request.form.get("confirm_password", "").strip()
-
-        # Verify current password
-        if current_password != app.config["ADMIN_PASSWORD"]:
-          flash("Current password is incorrect.", "error")
-        elif new_password != confirm_password:
-          flash("New passwords do not match.", "error")
-        elif new_password and len(new_password) < 4:
-          flash("New password must be at least 4 characters.", "error")
-        else:
-          updated_username = None
-          updated_password = None
-
-          if new_username:
-            updated_username = new_username
-            app.config["ADMIN_USER"] = new_username
-
-          if new_password:
-            updated_password = new_password
-            app.config["ADMIN_PASSWORD"] = new_password
-
-          save_admin_credentials(updated_username, updated_password)
-          
-          flash("Credentials updated successfully. Use your new credentials on next login.", "success")
+        changed = update_admin_settings(
+          request.form.get("current_password", ""),
+          request.form.get("new_username", "").strip(),
+          request.form.get("new_password", "").strip(),
+          request.form.get("confirm_password", "").strip(),
+        )
+        if changed:
           return redirect(url_for("logout"))
-
-      content = render_template_string(
-        ADMIN_SETTINGS_CONTENT,
-        current_username=app.config["ADMIN_USER"],
-        username_env_override=app.config["ADMIN_USER_ENV_OVERRIDE"],
-        password_env_override=app.config["ADMIN_PASSWORD_ENV_OVERRIDE"],
-      )
-      return render_template_string(BASE_TEMPLATE, title="Admin Settings", content=content, show_nav=True)
+      return redirect(url_for("settings_page") + "#admin")
 
     @app.post("/api/reorder/<table>")
     @login_required

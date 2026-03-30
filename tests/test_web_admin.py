@@ -60,6 +60,20 @@ class WebAdminSettingsTests(unittest.TestCase):
             follow_redirects=False,
         )
 
+    def test_settings_page_contains_all_sections(self):
+        app = create_app()
+        client = app.test_client()
+
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        settings_response = client.get("/settings")
+        self.assertEqual(settings_response.status_code, 200)
+        page = settings_response.get_data(as_text=True)
+        self.assertIn("Board Settings", page)
+        self.assertIn("Sync Settings", page)
+        self.assertIn("Admin Credentials", page)
+
     def test_admin_password_change_persists_across_app_restart(self):
         app = create_app()
         client = app.test_client()
@@ -68,8 +82,9 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
 
         response = client.post(
-            "/settings/admin",
+            "/settings",
             data={
+                "settings_section": "admin",
                 "current_password": "oldpass",
                 "new_username": "",
                 "new_password": "newpass",
@@ -95,8 +110,9 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
 
         save_response = client.post(
-            "/settings/sync",
+            "/settings",
             data={
+                "settings_section": "sync",
                 "bbs_nodes": "!node1\n!node2\n!node1",
                 "allowed_nodes": "!allow1, !allow2",
             },
