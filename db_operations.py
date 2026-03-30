@@ -2,6 +2,7 @@ import configparser
 import base64
 import hashlib
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -49,6 +50,14 @@ def get_sync_progress() -> dict:
         return dict(_sync_progress)
 
 
+def get_database_path() -> str:
+    return os.getenv('BBS_DB_PATH', 'bulletins.db')
+
+
+def get_config_path() -> str:
+    return os.getenv('BBS_CONFIG_PATH', 'config.ini')
+
+
 def _ensure_zork_saves_table() -> None:
     conn = get_db_connection()
     c = conn.cursor()
@@ -91,7 +100,7 @@ def _get_max_connection_log_rows() -> int:
     global _cached_max_connection_log_rows
     if _cached_max_connection_log_rows is None:
         cfg = configparser.ConfigParser()
-        cfg.read('config.ini')
+        cfg.read(get_config_path())
         _cached_max_connection_log_rows = cfg.getint('bbs', 'connection_log_max_rows', fallback=5000)
     return _cached_max_connection_log_rows
 
@@ -122,7 +131,7 @@ def _ensure_connection_events_table() -> None:
 
 def get_db_connection():
     if not hasattr(thread_local, 'connection'):
-        thread_local.connection = sqlite3.connect('bulletins.db')
+        thread_local.connection = sqlite3.connect(get_database_path())
     return thread_local.connection
 
 def initialize_database():
@@ -221,7 +230,7 @@ def initialize_database():
     _ensure_local_only_columns(c)
     _dedupe_channels_and_create_unique_index(c)
     conn.commit()
-    print("Database schema initialized.")
+    print(f"Database schema initialized at {get_database_path()}.")
 
 
 def _ensure_deleted_sync_tombstones_table() -> None:

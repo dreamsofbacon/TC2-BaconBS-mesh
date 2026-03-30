@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import db_operations
 from web_admin import create_app
 
 
@@ -68,6 +69,10 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.env_patch.start()
 
     def tearDown(self):
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
         self.env_patch.stop()
         self.temp_dir.cleanup()
 

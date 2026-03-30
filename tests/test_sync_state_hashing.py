@@ -1,5 +1,8 @@
+import os
 import sqlite3
+import tempfile
 import unittest
+from unittest import mock
 
 import db_operations
 
@@ -74,6 +77,28 @@ class SyncStateHashingTests(unittest.TestCase):
         self.assertIn("mail", by_peer["!peer1"])
         self.assertIn("tombstones", by_peer["!peer1"])
         self.assertNotIn("channels", by_peer["!peer1"])
+
+    def test_get_db_connection_uses_bbs_db_path_env(self):
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = os.path.join(temp_dir, "custom-bulletins.db")
+            with mock.patch.dict(os.environ, {"BBS_DB_PATH": db_path}, clear=False):
+                conn = db_operations.get_db_connection()
+                conn.execute("CREATE TABLE test_table (id INTEGER PRIMARY KEY)")
+                conn.commit()
+                conn.close()
+                del db_operations.thread_local.connection
+
+            self.assertTrue(os.path.exists(db_path))
+
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
 
 
 if __name__ == "__main__":
