@@ -285,6 +285,7 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('table_list', table='channels') }}\">Channels</a>
       <a href=\"{{ url_for('clients_summary') }}\">Clients</a>
       <a href=\"{{ url_for('settings_page') }}\">Settings</a>
+      <a href=\"{{ url_for('settings_page') }}#diagnostics\">Diagnostics</a>
       <a href=\"{{ url_for('system_flowchart') }}\">System Flowchart</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
       <div class="nav-right">
