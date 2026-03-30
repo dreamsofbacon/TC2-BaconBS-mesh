@@ -30,22 +30,62 @@ TABLE_CONFIG = {
 }
 
 
-def load_bulletin_boards() -> list[str]:
+def read_config_file(config_path: str) -> configparser.ConfigParser:
+  config = configparser.ConfigParser()
+  config.read(config_path)
+  return config
+
+
+def write_config_file(config: configparser.ConfigParser, config_path: str) -> None:
+  with open(config_path, "w", encoding="utf-8") as config_file:
+    config.write(config_file)
+
+
+def parse_list_input(raw_value: str) -> list[str]:
+  normalized = raw_value.replace("\r", "\n").replace("\n", ",")
+  values = []
+  seen = set()
+  for item in normalized.split(","):
+    value = item.strip()
+    if value and value not in seen:
+      seen.add(value)
+      values.append(value)
+  return values
+
+
+def load_bulletin_boards(config_path: str) -> list[str]:
   env_value = os.getenv("BBS_BULLETIN_BOARDS", "").strip()
   if env_value:
-    boards = [item.strip() for item in env_value.split(",") if item.strip()]
+    boards = parse_list_input(env_value)
     if boards:
       return boards
 
-  config = configparser.ConfigParser()
-  config.read("config.ini")
+  config = read_config_file(config_path)
   config_value = config.get("boards", "bulletin_boards", fallback="").strip()
   if config_value:
-    boards = [item.strip() for item in config_value.split(",") if item.strip()]
+    boards = parse_list_input(config_value)
     if boards:
       return boards
 
   return ["General", "Info", "News", "Urgent"]
+
+
+def load_admin_credentials(config_path: str) -> tuple[str, str, bool, bool]:
+  config = read_config_file(config_path)
+  env_user = os.getenv("BBS_WEBGUI_USER", "").strip()
+  env_password = os.getenv("BBS_WEBGUI_PASSWORD", "").strip()
+
+  username = env_user or config.get("admin", "username", fallback="admin").strip() or "admin"
+  password = env_password or config.get("admin", "password", fallback="change-me")
+
+  return username, password, bool(env_user), bool(env_password)
+
+
+def load_sync_settings(config_path: str) -> tuple[list[str], list[str]]:
+  config = read_config_file(config_path)
+  bbs_nodes = parse_list_input(config.get("sync", "bbs_nodes", fallback=""))
+  allowed_nodes = parse_list_input(config.get("allow_list", "allowed_nodes", fallback=""))
+  return bbs_nodes, allowed_nodes
 
 
 BASE_TEMPLATE = """
@@ -195,6 +235,7 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('table_list', table='channels') }}\">Channels</a>
       <a href=\"{{ url_for('clients_summary') }}\">Clients</a>
       <a href=\"{{ url_for('board_settings') }}\">Boards</a>
+      <a href=\"{{ url_for('sync_settings') }}\">Sync</a>
       <a href=\"{{ url_for('admin_settings') }}\">Admin</a>
       <a href=\"{{ url_for('system_flowchart') }}\">System Flowchart</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
@@ -584,10 +625,39 @@ BOARD_SETTINGS_CONTENT = """
 """
 
 
+SYNC_SETTINGS_CONTENT = """
+<div class=\"card\" style=\"max-width: 800px;\">
+  <h2>Sync Settings</h2>
+  <p class=\"muted\">Manage BBS peer sync targets and the node IDs allowed to post to the Urgent board.</p>
+  <form method=\"post\">
+    <label>Sync BBS Nodes</label><br>
+    <textarea name=\"bbs_nodes\" placeholder=\"One per line or comma separated\">{{ bbs_nodes_text }}</textarea><br>
+    <p class=\"muted\">These nodes receive bulletin, mail, delete, and channel sync traffic.</p>
+
+    <label>Allowed Urgent Board Nodes</label><br>
+    <textarea name=\"allowed_nodes\" placeholder=\"Leave blank to allow all nodes\">{{ allowed_nodes_text }}</textarea><br>
+    <p class=\"muted\">If left blank, any node can post to the Urgent board.</p>
+
+    {% if runtime_updates_enabled %}
+    <p class=\"muted\">Changes are also applied to the active interface immediately.</p>
+    {% else %}
+    <p class=\"muted\">Changes are saved to config.ini. Restart server.py if the BBS process is running separately from this web GUI.</p>
+    {% endif %}
+
+    <button class=\"btn btn-primary\" type=\"submit\">Save Sync Settings</button>
+    <a class=\"btn\" href=\"{{ url_for('table_list', table='bulletins') }}\">Back</a>
+  </form>
+</div>
+"""
+
+
 ADMIN_SETTINGS_CONTENT = """
 <div class=\"card\" style=\"max-width: 600px;\">
   <h2>Admin Credentials</h2>
   <p class=\"muted\">Change the username and password for the web admin interface.</p>
+  {% if username_env_override or password_env_override %}
+  <p class=\"muted\">Environment variables are overriding stored admin credentials for this running process. GUI changes are saved to config.ini but will be replaced again on restart until those environment variables are removed.</p>
+  {% endif %}
   <form method=\"post\">
     <label>Current Password (required)</label><br>
     <input type=\"password\" name=\"current_password\" required><br><br>
@@ -1356,14 +1426,21 @@ FLOWCHART_CONTENT = """
 """
 
 
-def create_app() -> Flask:
+def create_app(runtime_interface=None) -> Flask:
     app = Flask(__name__)
     app.secret_key = os.getenv("BBS_WEBGUI_SECRET", "change-this-secret")
     app.config["DB_PATH"] = os.getenv("BBS_DB_PATH", "bulletins.db")
     app.config["CONFIG_PATH"] = os.getenv("BBS_CONFIG_PATH", "config.ini")
-    app.config["ADMIN_USER"] = os.getenv("BBS_WEBGUI_USER", "admin")
-    app.config["ADMIN_PASSWORD"] = os.getenv("BBS_WEBGUI_PASSWORD", "change-me")
-    app.config["BULLETIN_BOARDS"] = load_bulletin_boards()
+    admin_user, admin_password, username_env_override, password_env_override = load_admin_credentials(app.config["CONFIG_PATH"])
+    app.config["ADMIN_USER"] = admin_user
+    app.config["ADMIN_PASSWORD"] = admin_password
+    app.config["ADMIN_USER_ENV_OVERRIDE"] = username_env_override
+    app.config["ADMIN_PASSWORD_ENV_OVERRIDE"] = password_env_override
+    app.config["BULLETIN_BOARDS"] = load_bulletin_boards(app.config["CONFIG_PATH"])
+    app.config["RUNTIME_UPDATES_ENABLED"] = runtime_interface is not None
+
+    def get_runtime_interface():
+        return runtime_interface
 
     def initialize_db_safety() -> None:
         with sqlite3.connect(app.config["DB_PATH"], timeout=30) as conn:
@@ -1403,13 +1480,38 @@ def create_app() -> Flask:
             conn.commit()
 
     def save_bulletin_boards(boards: list[str]) -> None:
-      config = configparser.ConfigParser()
-      config.read(app.config["CONFIG_PATH"])
+      config = read_config_file(app.config["CONFIG_PATH"])
       if not config.has_section("boards"):
         config.add_section("boards")
       config.set("boards", "bulletin_boards", ",".join(boards))
-      with open(app.config["CONFIG_PATH"], "w", encoding="utf-8") as config_file:
-        config.write(config_file)
+      write_config_file(config, app.config["CONFIG_PATH"])
+
+    def save_admin_credentials(username: str | None, password: str | None) -> None:
+      config = read_config_file(app.config["CONFIG_PATH"])
+      if not config.has_section("admin"):
+        config.add_section("admin")
+      if username is not None:
+        config.set("admin", "username", username)
+      if password is not None:
+        config.set("admin", "password", password)
+      write_config_file(config, app.config["CONFIG_PATH"])
+
+    def save_sync_lists(bbs_nodes: list[str], allowed_nodes: list[str]) -> None:
+      config = read_config_file(app.config["CONFIG_PATH"])
+      if not config.has_section("sync"):
+        config.add_section("sync")
+      if not config.has_section("allow_list"):
+        config.add_section("allow_list")
+      config.set("sync", "bbs_nodes", ",".join(bbs_nodes))
+      config.set("allow_list", "allowed_nodes", ",".join(allowed_nodes))
+      write_config_file(config, app.config["CONFIG_PATH"])
+
+    def apply_runtime_sync_settings(bbs_nodes: list[str], allowed_nodes: list[str]) -> None:
+      interface = get_runtime_interface()
+      if interface is None:
+        return
+      interface.bbs_nodes = list(bbs_nodes)
+      interface.allowed_nodes = list(allowed_nodes)
 
     initialize_db_safety()
 
@@ -1466,8 +1568,7 @@ def create_app() -> Flask:
 
       if request.method == "POST":
         raw_boards = request.form.get("bulletin_boards", "")
-        normalized = raw_boards.replace("\n", ",")
-        updated_boards = [item.strip() for item in normalized.split(",") if item.strip()]
+        updated_boards = parse_list_input(raw_boards)
 
         if not updated_boards:
           flash("At least one board is required.", "error")
@@ -1483,6 +1584,27 @@ def create_app() -> Flask:
         env_override=env_override,
       )
       return render_template_string(BASE_TEMPLATE, title="Board Settings", content=content, show_nav=True)
+
+    @app.route("/settings/sync", methods=["GET", "POST"])
+    @login_required
+    def sync_settings():
+      bbs_nodes, allowed_nodes = load_sync_settings(app.config["CONFIG_PATH"])
+
+      if request.method == "POST":
+        bbs_nodes = parse_list_input(request.form.get("bbs_nodes", ""))
+        allowed_nodes = parse_list_input(request.form.get("allowed_nodes", ""))
+
+        save_sync_lists(bbs_nodes, allowed_nodes)
+        apply_runtime_sync_settings(bbs_nodes, allowed_nodes)
+        flash("Sync settings updated.", "success")
+
+      content = render_template_string(
+        SYNC_SETTINGS_CONTENT,
+        bbs_nodes_text="\n".join(bbs_nodes),
+        allowed_nodes_text="\n".join(allowed_nodes),
+        runtime_updates_enabled=app.config["RUNTIME_UPDATES_ENABLED"],
+      )
+      return render_template_string(BASE_TEMPLATE, title="Sync Settings", content=content, show_nav=True)
 
     @app.route("/settings/admin", methods=["GET", "POST"])
     @login_required
@@ -1501,23 +1623,18 @@ def create_app() -> Flask:
         elif new_password and len(new_password) < 4:
           flash("New password must be at least 4 characters.", "error")
         else:
-          # Update credentials
-          config = configparser.ConfigParser()
-          config.read(app.config["CONFIG_PATH"])
-          
-          if not config.has_section("admin"):
-            config.add_section("admin")
-          
+          updated_username = None
+          updated_password = None
+
           if new_username:
-            config.set("admin", "username", new_username)
+            updated_username = new_username
             app.config["ADMIN_USER"] = new_username
-          
+
           if new_password:
-            config.set("admin", "password", new_password)
+            updated_password = new_password
             app.config["ADMIN_PASSWORD"] = new_password
-          
-          with open(app.config["CONFIG_PATH"], "w", encoding="utf-8") as config_file:
-            config.write(config_file)
+
+          save_admin_credentials(updated_username, updated_password)
           
           flash("Credentials updated successfully. Use your new credentials on next login.", "success")
           return redirect(url_for("logout"))
@@ -1525,6 +1642,8 @@ def create_app() -> Flask:
       content = render_template_string(
         ADMIN_SETTINGS_CONTENT,
         current_username=app.config["ADMIN_USER"],
+        username_env_override=app.config["ADMIN_USER_ENV_OVERRIDE"],
+        password_env_override=app.config["ADMIN_PASSWORD_ENV_OVERRIDE"],
       )
       return render_template_string(BASE_TEMPLATE, title="Admin Settings", content=content, show_nav=True)
 
