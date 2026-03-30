@@ -2,6 +2,7 @@ import configparser
 import logging
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -517,3 +518,85 @@ def get_connection_events_since(last_id: int = 0, limit: int = 100) -> list:
         (last_id, limit),
     )
     return c.fetchall()
+
+
+def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500) -> dict:
+    """
+    Sync all existing bulletins, mail, and channels to specified BBS nodes.
+    
+    This function performs a full database sync to new or rejoining BBS peers without spamming.
+    It includes rate limiting between messages to keep network traffic manageable.
+    
+    Args:
+        bbs_nodes: List of target BBS node IDs to sync to
+        interface: Meshtastic interface object for sending messages
+        delay_ms: Milliseconds to delay between each sync message (default 500ms)
+    
+    Returns:
+        dict: Summary with keys 'bulletins_synced', 'mail_synced', 'channels_synced', 'total_messages'
+    
+    Example:
+        result = sync_full_database_to_nodes([123456, 789012], interface, delay_ms=500)
+        print(f"Synced {result['bulletins_synced']} bulletins to {len(bbs_nodes)} nodes")
+    """
+    if not bbs_nodes or not interface:
+        logging.warning("sync_full_database_to_nodes: No bbs_nodes or interface provided")
+        return {'bulletins_synced': 0, 'mail_synced': 0, 'channels_synced': 0, 'total_messages': 0}
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    delay_seconds = delay_ms / 1000.0
+    total_messages = 0
+    
+    try:
+        # Sync all bulletins
+        c.execute("SELECT board, sender_short_name, subject, content, unique_id FROM bulletins")
+        bulletins = c.fetchall()
+        bulletins_synced = 0
+        
+        for board, sender_short_name, subject, content, unique_id in bulletins:
+            send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface)
+            bulletins_synced += 1
+            total_messages += 1
+            time.sleep(delay_seconds)
+        
+        logging.info(f"Database sync: Sent {bulletins_synced} bulletins to {len(bbs_nodes)} peer(s)")
+        
+        # Sync all mail
+        c.execute("SELECT sender, sender_short_name, recipient, subject, content, unique_id FROM mail")
+        mail_messages = c.fetchall()
+        mail_synced = 0
+        
+        for sender_id, sender_short_name, recipient_id, subject, content, unique_id in mail_messages:
+            send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, content, unique_id, bbs_nodes, interface)
+            mail_synced += 1
+            total_messages += 1
+            time.sleep(delay_seconds)
+        
+        logging.info(f"Database sync: Sent {mail_synced} mail messages to {len(bbs_nodes)} peer(s)")
+        
+        # Sync all channels
+        c.execute("SELECT name, url FROM channels")
+        channels = c.fetchall()
+        channels_synced = 0
+        
+        for name, url in channels:
+            send_channel_to_bbs_nodes(name, url, bbs_nodes, interface)
+            channels_synced += 1
+            total_messages += 1
+            time.sleep(delay_seconds)
+        
+        logging.info(f"Database sync: Sent {channels_synced} channels to {len(bbs_nodes)} peer(s)")
+        
+        result = {
+            'bulletins_synced': bulletins_synced,
+            'mail_synced': mail_synced,
+            'channels_synced': channels_synced,
+            'total_messages': total_messages
+        }
+        logging.info(f"Database sync complete: {total_messages} total messages sent with {delay_ms}ms delays")
+        return result
+    
+    except Exception as e:
+        logging.error(f"Error during full database sync: {e}")
+        raise

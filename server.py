@@ -19,7 +19,7 @@ import time
 from datetime import datetime, timezone
 
 from config_init import initialize_config, get_interface, init_cli_parser, merge_config
-from db_operations import initialize_database
+from db_operations import initialize_database, sync_full_database_to_nodes
 from js8call_integration import JS8CallClient
 from message_processing import on_receive
 from pubsub import pub
@@ -137,10 +137,32 @@ def main():
 
     try:
         next_diagnostics_write = 0.0
+        next_node_sync_check = 0.0
+        synced_nodes = set()  # Track which nodes have been synced with
+        
         while True:
+            # Check and sync diagnostics every 30 seconds
             if time.time() >= next_diagnostics_write:
                 write_runtime_diagnostics_snapshot(interface, system_config)
                 next_diagnostics_write = time.time() + 30
+            
+            # Check for new BBS nodes to sync with every 60 seconds
+            if time.time() >= next_node_sync_check:
+                current_bbs_nodes = set(interface.bbs_nodes or [])
+                new_nodes = current_bbs_nodes - synced_nodes
+                
+                if new_nodes:
+                    logging.info(f"Detected {len(new_nodes)} new BBS node(s): {new_nodes}")
+                    try:
+                        result = sync_full_database_to_nodes(list(new_nodes), interface, delay_ms=500)
+                        logging.info(f"Full database sync complete: {result['total_messages']} messages sent to new node(s)")
+                        synced_nodes.update(new_nodes)
+                    except Exception as e:
+                        logging.error(f"Error syncing database to new nodes: {e}")
+                        # Don't mark as synced on error; we'll retry next cycle
+                
+                next_node_sync_check = time.time() + 60
+            
             time.sleep(1)
 
     except KeyboardInterrupt:
