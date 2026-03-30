@@ -26,6 +26,7 @@ from db_operations import (
     auto_upsert_user_profile, log_connection_event, upsert_peer_sync_state,
     upsert_synced_user_profile, upsert_synced_game_score,
     upsert_synced_zork_save,
+    get_mismatched_peer_scopes,
     get_record_hash_manifest,
     get_bulletin_by_unique_id,
     get_mail_by_unique_id,
@@ -41,6 +42,7 @@ from utils import (
     send_bulletin_to_bbs_nodes, send_mail_to_bbs_nodes, send_channel_to_bbs_nodes,
     send_profile_to_bbs_nodes, send_game_score_to_bbs_nodes, send_zork_save_to_bbs_nodes,
     send_delete_bulletin_to_bbs_nodes, send_delete_mail_to_bbs_nodes,
+    send_hash_request_to_bbs_nodes,
     _send_one_sync, _MESHTASTIC_MAX_BYTES,
 )
 
@@ -86,6 +88,8 @@ _SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "profiles", "game_sco
 _HASH_BUFFER_MAX_AGE_SECONDS = 600
 _recent_hashmiss_requests = {}
 _HASHMISS_REQUEST_TTL_SECONDS = 900
+_recent_syncstate_repairs = {}
+_SYNCSTATE_REPAIR_TTL_SECONDS = 60
 
 
 def _prune_old_zork_save_chunks() -> None:
@@ -129,6 +133,34 @@ def _should_send_hashmiss(sender_node_id: str, scope: str, key: str, local_hash:
         return False
     _recent_hashmiss_requests[sig] = now
     return True
+
+
+def _prune_recent_syncstate_repairs() -> None:
+    now = time.time()
+    stale_keys = [
+        k for k, last_sent in _recent_syncstate_repairs.items()
+        if now - float(last_sent) > _SYNCSTATE_REPAIR_TTL_SECONDS
+    ]
+    for key in stale_keys:
+        _recent_syncstate_repairs.pop(key, None)
+
+
+def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
+    by_peer = get_mismatched_peer_scopes({sender_node_id})
+    scopes = by_peer.get(str(sender_node_id), [])
+    if not scopes:
+        return
+
+    _prune_recent_syncstate_repairs()
+    now = time.time()
+    repair_sig = (str(sender_node_id), tuple(sorted(scopes)))
+    last_sent = _recent_syncstate_repairs.get(repair_sig)
+    if last_sent is not None and (now - float(last_sent)) < _SYNCSTATE_REPAIR_TTL_SECONDS:
+        return
+
+    _recent_syncstate_repairs[repair_sig] = now
+    for scope in scopes:
+        send_hash_request_to_bbs_nodes([sender_node_id], interface, scope=scope)
 
 
 def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> None:
@@ -355,6 +387,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     profiles_hash,
                     game_scores_hash,
                 )
+                _request_targeted_repair_if_needed(sender_node_id, interface)
             else:
                 logging.warning("SYNCSTATE ignored due to missing sender_node_id")
         elif message.startswith("HASHREQ|"):
