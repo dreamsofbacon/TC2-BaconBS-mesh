@@ -123,17 +123,35 @@ def process_message(sender_id, message, interface, is_sync_message=False):
             channel_name, channel_url = parts[1], parts[2]
             add_channel(channel_name, channel_url)
         elif message.startswith("BULLETINCONT|"):
-            parts = message.split("|", 2)
-            if len(parts) != 3 or not parts[1]:
+            parts = message.split("|", 3)
+            if len(parts) < 3 or not parts[1]:
                 logging.warning(f"Malformed BULLETINCONT sync message ignored: {message}")
                 return
-            append_bulletin_content(parts[1], parts[2])
+            if len(parts) == 4:
+                try:
+                    offset = int(parts[2])
+                except ValueError:
+                    logging.warning(f"Malformed BULLETINCONT offset ignored: {message}")
+                    return
+                append_bulletin_content(parts[1], offset, parts[3])
+            else:
+                # Legacy format without offset — blind append
+                append_bulletin_content(parts[1], None, parts[2])
         elif message.startswith("MAILCONT|"):
-            parts = message.split("|", 2)
-            if len(parts) != 3 or not parts[1]:
+            parts = message.split("|", 3)
+            if len(parts) < 3 or not parts[1]:
                 logging.warning(f"Malformed MAILCONT sync message ignored: {message}")
                 return
-            append_mail_content(parts[1], parts[2])
+            if len(parts) == 4:
+                try:
+                    offset = int(parts[2])
+                except ValueError:
+                    logging.warning(f"Malformed MAILCONT offset ignored: {message}")
+                    return
+                append_mail_content(parts[1], offset, parts[3])
+            else:
+                # Legacy format without offset — blind append
+                append_mail_content(parts[1], None, parts[2])
     else:
         if message_lower.startswith("sm,,"):
             handle_send_mail_command(sender_id, message_strip, interface, bbs_nodes)

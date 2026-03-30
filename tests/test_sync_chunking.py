@@ -69,7 +69,13 @@ class LongContentSyncTests(unittest.TestCase):
         reconstructed = first_parts[4]  # content field of first BULLETIN
         for cont_msg in msgs[1:]:
             self.assertTrue(cont_msg.startswith(f"BULLETINCONT|{unique_id}|"), cont_msg[:40])
-            reconstructed += cont_msg.split("|", 2)[2]
+            # New format: BULLETINCONT|uid|<offset>|<chunk>
+            cont_parts = cont_msg.split("|", 3)
+            self.assertEqual(len(cont_parts), 4, f"Expected 4 parts, got: {cont_msg[:60]}")
+            offset = int(cont_parts[2])
+            self.assertEqual(offset, len(reconstructed),
+                             f"Offset {offset} should equal current reconstructed length {len(reconstructed)}")
+            reconstructed += cont_parts[3]
         self.assertEqual(reconstructed, content)
 
     def test_single_lost_cont_only_truncates_not_destroys(self):
@@ -83,6 +89,20 @@ class LongContentSyncTests(unittest.TestCase):
         self.assertEqual(len(first_parts), 6)
         # Content is non-empty (partial but valid)
         self.assertGreater(len(first_parts[4]), 0)
+
+    def test_cont_packets_have_correct_offsets(self):
+        """Each BULLETINCONT offset must equal the cumulative length of prior chunks."""
+        content = "Z" * 600
+        unique_id = "uid-006"
+        msgs = self._run_bulletin_sync("General", "CALL", "Long post", content, unique_id)
+        first_parts = msgs[0].split("|", 5)
+        expected_offset = len(first_parts[4])  # first_content length
+        for cont_msg in msgs[1:]:
+            cont_parts = cont_msg.split("|", 3)
+            self.assertEqual(len(cont_parts), 4, cont_msg[:60])
+            actual_offset = int(cont_parts[2])
+            self.assertEqual(actual_offset, expected_offset)
+            expected_offset += len(cont_parts[3])
 
 
 if __name__ == "__main__":

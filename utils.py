@@ -166,6 +166,9 @@ def _send_sync_with_cont(header, footer, content, unique_id, cont_prefix, bbs_no
     footer_bytes = footer.encode('utf-8')
     cont_prefix_bytes = cont_prefix.encode('utf-8')
     content_bytes = content.encode('utf-8')
+    # Reserve bytes for the offset field appended to each continuation packet
+    # e.g. "BULLETINCONT|uid|" + "1234|" + chunk  → reserve 10 chars for offset+pipe
+    _OFFSET_OVERHEAD = 10
 
     # How many content bytes can fit in the first (primary) packet?
     max_first = _MESHTASTIC_MAX_BYTES - len(header_bytes) - len(footer_bytes)
@@ -181,12 +184,16 @@ def _send_sync_with_cont(header, footer, content, unique_id, cont_prefix, bbs_no
 
     # Send continuation packets for any remaining content
     remaining = content_bytes[max_first:]
-    max_cont = _MESHTASTIC_MAX_BYTES - len(cont_prefix_bytes)
+    max_cont = _MESHTASTIC_MAX_BYTES - len(cont_prefix_bytes) - _OFFSET_OVERHEAD
     max_cont = max(10, max_cont)
+
+    content_char_offset = len(first_content)  # chars already stored by the first packet
 
     while remaining:
         chunk = remaining[:max_cont].decode('utf-8', errors='replace')
         remaining = remaining[max_cont:]
-        cont_msg = cont_prefix + chunk
+        # Format: BULLETINCONT|uid|<char_offset>|<chunk>
+        cont_msg = cont_prefix + str(content_char_offset) + "|" + chunk
         for node_id in bbs_nodes:
             _send_one_sync(cont_msg, node_id, interface, pause_seconds)
+        content_char_offset += len(chunk)

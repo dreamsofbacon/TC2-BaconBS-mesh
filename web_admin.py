@@ -722,16 +722,21 @@ SETTINGS_CONTENT = """
   <p><strong>Configured sync peers:</strong> {{ diagnostics.bbs_nodes_count }}{% if diagnostics.bbs_nodes_text %} ({{ diagnostics.bbs_nodes_text }}){% endif %}</p>
   <p><strong>Configured urgent allow-list:</strong> {{ diagnostics.allowed_nodes_count }}{% if diagnostics.allowed_nodes_text %} ({{ diagnostics.allowed_nodes_text }}){% endif %}</p>
   <p><strong>Bulletin boards:</strong> {{ diagnostics.board_count }} ({{ diagnostics.board_list }})</p>
-  <p><strong>DB sync in progress:</strong> {{ diagnostics.sync_in_progress }}</p>
-  <p><strong>DB sync progress:</strong> {{ diagnostics.sync_progress_percent }}%</p>
-  <p><strong>DB sync remaining:</strong> {{ diagnostics.sync_remaining_items }} / {{ diagnostics.sync_total_items }} items</p>
-  <p><strong>DB sync phase:</strong> {{ diagnostics.sync_current_phase }}</p>
-  <p><strong>DB sync target node(s):</strong> {{ diagnostics.sync_target_nodes_text }}</p>
-  <p><strong>DB sync last update:</strong> {{ diagnostics.sync_last_updated_at }}</p>
-  <p><strong>DB sync result:</strong> {{ diagnostics.sync_last_result }}</p>
+  <p><strong>Outbound peer sync:</strong>
   {% if diagnostics.sync_in_progress == "Yes" %}
-  <p class="muted"><strong>Notice:</strong> Database sync is still running. Some historical posts may not be available yet.</p>
+    Sending — {{ diagnostics.sync_progress_percent }}% ({{ diagnostics.sync_completed_items }}/{{ diagnostics.sync_total_items }} items) to {{ diagnostics.sync_target_nodes_text }}
+  {% elif diagnostics.sync_current_phase == "never_run" %}
+    Not yet run since startup
+  {% else %}
+    Complete &mdash; sent {{ diagnostics.sync_total_items }} item(s) to {{ diagnostics.sync_target_nodes_text }}
   {% endif %}
+  </p>
+  <p><strong>Sync phase:</strong> {{ diagnostics.sync_current_phase }} &nbsp;|&nbsp; <strong>Last update:</strong> {{ diagnostics.sync_last_updated_at }}</p>
+  <p><strong>Last sync result:</strong> {{ diagnostics.sync_last_result }}</p>
+  {% if diagnostics.sync_in_progress == "Yes" %}
+  <p class="muted"><strong>Notice:</strong> Outbound sync is running. Some historical posts may not be available on peers yet.</p>
+  {% endif %}
+  <p class="muted">Sync tracks records sent <em>from this node</em> to its peers. Re-sync runs automatically every 6 hours to recover any content dropped on the mesh.</p>
 
   <h3>Database</h3>
   <p><strong>Path:</strong> <code>{{ diagnostics.db_path }}</code></p>
@@ -1700,14 +1705,14 @@ def create_app(runtime_interface=None) -> Flask:
         "board_count": str(len(app.config["BULLETIN_BOARDS"])),
         "board_list": ", ".join(app.config["BULLETIN_BOARDS"]),
         "sync_in_progress": "No",
-        "sync_progress_percent": "100",
+        "sync_progress_percent": "0",
         "sync_completed_items": "0",
         "sync_total_items": "0",
         "sync_remaining_items": "0",
-        "sync_current_phase": "idle",
+        "sync_current_phase": "never_run",
         "sync_target_nodes_text": "None",
         "sync_last_updated_at": "Unavailable",
-        "sync_last_result": "Idle",
+        "sync_last_result": "Not yet run",
         "db_path": app.config["DB_PATH"],
         "bulletins_count": "Unknown",
         "mail_count": "Unknown",
@@ -1772,16 +1777,16 @@ def create_app(runtime_interface=None) -> Flask:
             diagnostics["allowed_nodes_text"] = ", ".join(str(node) for node in snapshot["allowed_nodes"])
 
           diagnostics["sync_in_progress"] = "Yes" if snapshot.get("sync_in_progress", False) else "No"
-          diagnostics["sync_progress_percent"] = str(snapshot.get("sync_progress_percent", 100))
+          diagnostics["sync_progress_percent"] = str(snapshot.get("sync_progress_percent", 0))
           diagnostics["sync_completed_items"] = str(snapshot.get("sync_completed_items", 0))
           diagnostics["sync_total_items"] = str(snapshot.get("sync_total_items", 0))
           diagnostics["sync_remaining_items"] = str(snapshot.get("sync_remaining_items", 0))
-          diagnostics["sync_current_phase"] = str(snapshot.get("sync_current_phase", "idle"))
+          diagnostics["sync_current_phase"] = str(snapshot.get("sync_current_phase", "never_run"))
           target_nodes = snapshot.get("sync_target_nodes", [])
           if isinstance(target_nodes, list) and target_nodes:
             diagnostics["sync_target_nodes_text"] = ", ".join(str(node) for node in target_nodes)
           diagnostics["sync_last_updated_at"] = str(snapshot.get("sync_last_updated_at", "Unavailable"))
-          diagnostics["sync_last_result"] = str(snapshot.get("sync_last_result", "Idle"))
+          diagnostics["sync_last_result"] = str(snapshot.get("sync_last_result", "Not yet run"))
 
           if snapshot.get("error"):
             diagnostics["error"] = str(snapshot.get("error"))
