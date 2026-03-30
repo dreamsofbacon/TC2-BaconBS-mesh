@@ -190,14 +190,55 @@ def initialize_database():
                     message_type TEXT NOT NULL,
                     event_text TEXT NOT NULL
                 );''')
+    _dedupe_channels_and_create_unique_index(c)
     conn.commit()
     print("Database schema initialized.")
+
+
+def _dedupe_channels_and_create_unique_index(cursor) -> None:
+    """Deduplicate channels by (name,url) and enforce uniqueness.
+
+    Older databases may already contain duplicates. We keep the lowest id as
+    the canonical row, repoint comments to it, delete the extras, then add a
+    unique index so future duplicate sync packets are ignored at insert time.
+    """
+    cursor.execute(
+        """
+        SELECT name, url, MIN(id) AS keeper_id
+        FROM channels
+        GROUP BY name, url
+        HAVING COUNT(*) > 1
+        """
+    )
+    duplicate_groups = cursor.fetchall()
+
+    for name, url, keeper_id in duplicate_groups:
+        cursor.execute(
+            "SELECT id FROM channels WHERE name = ? AND url = ? AND id != ?",
+            (name, url, keeper_id),
+        )
+        duplicate_ids = [row[0] for row in cursor.fetchall()]
+        for dup_id in duplicate_ids:
+            cursor.execute(
+                "UPDATE channel_comments SET channel_id = ? WHERE channel_id = ?",
+                (keeper_id, dup_id),
+            )
+            cursor.execute("DELETE FROM channels WHERE id = ?", (dup_id,))
+
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_name_url_unique ON channels(name, url)"
+    )
+
 
 def add_channel(name, url, bbs_nodes=None, interface=None):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("INSERT INTO channels (name, url) VALUES (?, ?)", (name, url))
+    c.execute("INSERT OR IGNORE INTO channels (name, url) VALUES (?, ?)", (name, url))
     conn.commit()
+
+    if c.rowcount == 0:
+        logging.info(f"Duplicate channel ignored (name={name}, url={url})")
+        return
 
     if bbs_nodes and interface:
         send_channel_to_bbs_nodes(name, url, bbs_nodes, interface)
