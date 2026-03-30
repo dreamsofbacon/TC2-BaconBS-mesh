@@ -18,6 +18,29 @@ from utils import (
 
 
 thread_local = threading.local()
+_sync_progress_lock = threading.Lock()
+_sync_progress = {
+    'in_progress': False,
+    'progress_percent': 100,
+    'completed_items': 0,
+    'total_items': 0,
+    'remaining_items': 0,
+    'current_phase': 'idle',
+    'target_nodes': [],
+    'started_at': '',
+    'last_updated_at': '',
+    'last_result': '',
+}
+
+
+def _update_sync_progress(**kwargs) -> None:
+    with _sync_progress_lock:
+        _sync_progress.update(kwargs)
+
+
+def get_sync_progress() -> dict:
+    with _sync_progress_lock:
+        return dict(_sync_progress)
 
 
 def _ensure_zork_saves_table() -> None:
@@ -541,15 +564,66 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
     """
     if not bbs_nodes or not interface:
         logging.warning("sync_full_database_to_nodes: No bbs_nodes or interface provided")
+        _update_sync_progress(
+            in_progress=False,
+            progress_percent=100,
+            completed_items=0,
+            total_items=0,
+            remaining_items=0,
+            current_phase='idle',
+            target_nodes=[],
+            last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            last_result='No nodes or interface provided',
+        )
         return {'bulletins_synced': 0, 'mail_synced': 0, 'channels_synced': 0, 'total_messages': 0}
     
     conn = get_db_connection()
     c = conn.cursor()
     delay_seconds = delay_ms / 1000.0
     total_messages = 0
+
+    c.execute("SELECT COUNT(*) FROM bulletins")
+    bulletin_total = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM mail")
+    mail_total = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM channels")
+    channel_total = c.fetchone()[0]
+    total_items = bulletin_total + mail_total + channel_total
+
+    started_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    _update_sync_progress(
+        in_progress=True,
+        progress_percent=0 if total_items > 0 else 100,
+        completed_items=0,
+        total_items=total_items,
+        remaining_items=total_items,
+        current_phase='starting',
+        target_nodes=[str(node) for node in bbs_nodes],
+        started_at=started_at,
+        last_updated_at=started_at,
+        last_result='Running',
+    )
+
+    completed_items = 0
+
+    def _progress_tick(current_phase: str) -> None:
+        nonlocal completed_items
+        completed_items += 1
+        if total_items > 0:
+            progress_percent = int((completed_items * 100) / total_items)
+        else:
+            progress_percent = 100
+        _update_sync_progress(
+            progress_percent=progress_percent,
+            completed_items=completed_items,
+            remaining_items=max(total_items - completed_items, 0),
+            current_phase=current_phase,
+            last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        )
     
     try:
         # Sync all bulletins
+        _update_sync_progress(current_phase='syncing_bulletins')
         c.execute("SELECT board, sender_short_name, subject, content, unique_id FROM bulletins")
         bulletins = c.fetchall()
         bulletins_synced = 0
@@ -558,11 +632,13 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
             send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface)
             bulletins_synced += 1
             total_messages += 1
+            _progress_tick('syncing_bulletins')
             time.sleep(delay_seconds)
         
         logging.info(f"Database sync: Sent {bulletins_synced} bulletins to {len(bbs_nodes)} peer(s)")
         
         # Sync all mail
+        _update_sync_progress(current_phase='syncing_mail')
         c.execute("SELECT sender, sender_short_name, recipient, subject, content, unique_id FROM mail")
         mail_messages = c.fetchall()
         mail_synced = 0
@@ -571,11 +647,13 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
             send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, content, unique_id, bbs_nodes, interface)
             mail_synced += 1
             total_messages += 1
+            _progress_tick('syncing_mail')
             time.sleep(delay_seconds)
         
         logging.info(f"Database sync: Sent {mail_synced} mail messages to {len(bbs_nodes)} peer(s)")
         
         # Sync all channels
+        _update_sync_progress(current_phase='syncing_channels')
         c.execute("SELECT name, url FROM channels")
         channels = c.fetchall()
         channels_synced = 0
@@ -584,6 +662,7 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
             send_channel_to_bbs_nodes(name, url, bbs_nodes, interface)
             channels_synced += 1
             total_messages += 1
+            _progress_tick('syncing_channels')
             time.sleep(delay_seconds)
         
         logging.info(f"Database sync: Sent {channels_synced} channels to {len(bbs_nodes)} peer(s)")
@@ -595,8 +674,24 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
             'total_messages': total_messages
         }
         logging.info(f"Database sync complete: {total_messages} total messages sent with {delay_ms}ms delays")
+        _update_sync_progress(
+            in_progress=False,
+            progress_percent=100,
+            completed_items=total_items,
+            total_items=total_items,
+            remaining_items=0,
+            current_phase='idle',
+            last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            last_result=f"Completed: {total_messages} messages sent",
+        )
         return result
     
     except Exception as e:
         logging.error(f"Error during full database sync: {e}")
+        _update_sync_progress(
+            in_progress=False,
+            current_phase='error',
+            last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            last_result=f"Error: {e}",
+        )
         raise
