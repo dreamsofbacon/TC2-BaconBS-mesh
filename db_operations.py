@@ -4,6 +4,7 @@ import sqlite3
 import threading
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from meshtastic import BROADCAST_NUM
 
@@ -52,7 +53,7 @@ def _ensure_zork_saves_table() -> None:
         conn.commit()
 
 
-_cached_max_connection_log_rows: int | None = None
+_cached_max_connection_log_rows: Optional[int] = None
 
 
 def _get_max_connection_log_rows() -> int:
@@ -351,7 +352,7 @@ def upsert_zork_save(user_id: int, save_data: bytes, game_id: str = 'zork1') -> 
     conn.commit()
 
 
-def get_zork_save(user_id: int, game_id: str = 'zork1') -> bytes | None:
+def get_zork_save(user_id: int, game_id: str = 'zork1') -> Optional[bytes]:
     _ensure_zork_saves_table()
     conn = get_db_connection()
     c = conn.cursor()
@@ -474,10 +475,10 @@ def get_hall_of_fame() -> list:
 
 
 def log_connection_event(
-    sender_num: int | None,
-    sender_node_id: str | None,
-    sender_short_name: str | None,
-    to_id: int | None,
+    sender_num: Optional[int],
+    sender_node_id: Optional[str],
+    sender_short_name: Optional[str],
+    to_id: Optional[int],
     message_type: str,
     event_text: str,
 ) -> None:
