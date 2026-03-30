@@ -27,11 +27,12 @@ from db_operations import (
     get_sync_progress,
     get_mismatched_peer_nodes,
     get_mismatched_peer_scopes,
+    get_local_record_counts,
 )
 from js8call_integration import JS8CallClient
 from message_processing import on_receive
 from pubsub import pub
-from utils import send_hash_request_to_bbs_nodes
+from utils import send_hash_request_to_bbs_nodes, send_sync_state_to_bbs_nodes
 
 # General logging
 logging.basicConfig(
@@ -254,13 +255,21 @@ def main():
                 sync_due = (last_schedule_epoch == 0) or (now >= (last_schedule_epoch + (sync_interval_minutes * 60)))
 
                 if (manual_triggered or sync_due) and not pending_sync_nodes:
-                    synced_nodes.clear()
                     last_schedule_epoch = now
-                    system_config['sync_last_trigger_reason'] = 'manual' if manual_triggered else 'scheduled'
+                    local_counts = get_local_record_counts()
+                    send_sync_state_to_bbs_nodes(local_counts, list(current_bbs_nodes), interface)
                     if manual_triggered:
+                        # Manual sync remains a force-full-sync operation.
+                        synced_nodes.clear()
+                        system_config['sync_last_trigger_reason'] = 'manual'
                         logging.info("Manual sync trigger received from web admin")
                     else:
-                        logging.info(f"Scheduled sync interval reached ({sync_interval_minutes} minutes)")
+                        # Scheduled cycle is lightweight; mismatch path requests targeted repairs.
+                        system_config['sync_last_trigger_reason'] = 'scheduled'
+                        logging.info(
+                            f"Scheduled sync interval reached ({sync_interval_minutes} minutes); "
+                            f"sent SYNCSTATE to {len(current_bbs_nodes)} peer(s)"
+                        )
 
                 # If diagnostics reports mismatch, force targeted re-sync for those peers.
                 if not pending_sync_nodes:

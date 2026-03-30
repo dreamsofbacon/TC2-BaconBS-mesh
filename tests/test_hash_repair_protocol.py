@@ -87,6 +87,23 @@ class HashRepairProtocolTests(unittest.TestCase):
 
         self.assertIn("HASHMISS|bulletins|uid-remote-only", iface.sent_texts)
 
+    def test_hashend_pushes_local_only_records_to_peer(self):
+        db_operations.add_bulletin(
+            "General", "CALL", "Subject", "Body", [], None, unique_id="uid-local-only"
+        )
+        iface = _DummyInterface()
+
+        # Remote manifest is empty, so peer is missing our local record.
+        message_processing.process_message(
+            sender_id=1,
+            message="HASHEND|bulletins|0",
+            interface=iface,
+            is_sync_message=True,
+            sender_node_id="!peer1",
+        )
+
+        self.assertTrue(any(m.startswith("BULLETIN|General|CALL|Subject|Body|uid-local-only") for m in iface.sent_texts))
+
     def test_hashreq_channels_emits_manifest_and_end(self):
         db_operations.add_channel("Tech", "mesh://tech")
         iface = _DummyInterface()
