@@ -299,6 +299,19 @@ def delete_bulletin(unique_id, bbs_nodes, interface):
     conn.commit()
     send_delete_bulletin_to_bbs_nodes(unique_id, bbs_nodes, interface)
 
+
+def append_bulletin_content(unique_id: str, additional_content: str) -> None:
+    """Append a continuation chunk to an existing bulletin's content."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("UPDATE bulletins SET content = content || ? WHERE unique_id = ?",
+              (additional_content, unique_id))
+    if c.rowcount > 0:
+        conn.commit()
+        logging.info(f"Appended continuation content to bulletin unique_id={unique_id}")
+    else:
+        logging.warning(f"BULLETINCONT received for unknown unique_id={unique_id}; ignored")
+
 def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_nodes, interface, unique_id=None):
     conn = get_db_connection()
     c = conn.cursor()
@@ -348,6 +361,19 @@ def delete_mail(unique_id, recipient_id, bbs_nodes, interface):
     except Exception as e:
         logging.error(f"Error deleting mail with unique_id {unique_id}: {e}")
         raise
+
+
+def append_mail_content(unique_id: str, additional_content: str) -> None:
+    """Append a continuation chunk to an existing mail message's content."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("UPDATE mail SET content = content || ? WHERE unique_id = ?",
+              (additional_content, unique_id))
+    if c.rowcount > 0:
+        conn.commit()
+        logging.info(f"Appended continuation content to mail unique_id={unique_id}")
+    else:
+        logging.warning(f"MAILCONT received for unknown unique_id={unique_id}; ignored")
 
 
 def get_sender_id_by_mail_id(mail_id):
