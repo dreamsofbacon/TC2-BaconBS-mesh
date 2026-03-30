@@ -82,11 +82,29 @@ def load_admin_credentials(config_path: str) -> tuple[str, str, bool, bool]:
   return username, password, bool(env_user), bool(env_password)
 
 
-def load_sync_settings(config_path: str) -> tuple[list[str], list[str]]:
+def load_sync_settings(config_path: str) -> tuple[list[str], list[str], int]:
   config = read_config_file(config_path)
   bbs_nodes = parse_list_input(config.get("sync", "bbs_nodes", fallback=""))
   allowed_nodes = parse_list_input(config.get("allow_list", "allowed_nodes", fallback=""))
-  return bbs_nodes, allowed_nodes
+  interval_raw = config.get("sync", "sync_interval_minutes", fallback="5").strip()
+  try:
+    sync_interval_minutes = int(interval_raw)
+  except ValueError:
+    sync_interval_minutes = 5
+  sync_interval_minutes = max(1, sync_interval_minutes)
+  return bbs_nodes, allowed_nodes, sync_interval_minutes
+
+
+def get_manual_sync_trigger_path() -> str:
+  return os.getenv("BBS_MANUAL_SYNC_TRIGGER_PATH", "manual_sync.trigger")
+
+
+def request_manual_sync_trigger() -> None:
+  trigger_path = get_manual_sync_trigger_path()
+  tmp_path = f"{trigger_path}.tmp"
+  with open(tmp_path, "w", encoding="utf-8") as trigger_file:
+    trigger_file.write(datetime.utcnow().isoformat())
+  os.replace(tmp_path, trigger_path)
 
 
 def load_runtime_snapshot(snapshot_path: str) -> dict:
@@ -172,7 +190,25 @@ BASE_TEMPLATE = """
     .btn-primary { border-color: #0056d6; color: #fff; background: #0056d6; }
     .btn-danger { border-color: #b91c1c; color: #fff; background: #b91c1c; }
     .btn-small { padding: 4px 6px; font-size: 12px; }
-    .theme-toggle { margin-left: auto; }
+    .nav-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+    .theme-toggle { margin-left: 0; }
+    .sync-pill {
+      border: 1px solid var(--btn-border);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      user-select: none;
+      cursor: pointer;
+      white-space: nowrap;
+      min-width: 190px;
+      text-align: center;
+      background: var(--btn-bg);
+      color: var(--text);
+    }
+    .sync-pill.active {
+      border-color: #0f766e;
+      box-shadow: 0 0 0 1px #0f766e inset;
+    }
     .reorder-handle { cursor: grab; color: #999; padding: 4px 8px; }
     .reorder-handle:hover { color: #0056d6; }
     .reorder-handle:active { cursor: grabbing; }
@@ -251,7 +287,10 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('settings_page') }}\">Settings</a>
       <a href=\"{{ url_for('system_flowchart') }}\">System Flowchart</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
-      <button id="theme-toggle" class="btn btn-small theme-toggle" type="button">Switch to Light</button>
+      <div class="nav-right">
+        <div id="sync-status-pill" class="sync-pill" title="Hold for 1.2 seconds to force manual sync">Sync 0% | --:--</div>
+        <button id="theme-toggle" class="btn btn-small theme-toggle" type="button">Switch to Light</button>
+      </div>
     </div>
     {% endif %}
 
@@ -437,9 +476,96 @@ BASE_TEMPLATE = """
 
       updateTransform();
     }
+
+    function formatCountdown(seconds) {
+      const clamped = Math.max(0, Number(seconds || 0));
+      const mm = String(Math.floor(clamped / 60)).padStart(2, '0');
+      const ss = String(clamped % 60).padStart(2, '0');
+      return `${mm}:${ss}`;
+    }
+
+    function initializeSyncNavStatus() {
+      const pill = document.getElementById('sync-status-pill');
+      if (!pill) {
+        return;
+      }
+
+      let secondsUntilNext = 0;
+      let holdTimer = null;
+      let currentProgressPercent = 0;
+      let currentInProgress = false;
+
+      function renderStatus(inProgress, progressPercent) {
+        currentInProgress = inProgress;
+        currentProgressPercent = progressPercent;
+        const left = `Sync ${progressPercent}%`;
+        const right = inProgress ? 'running' : formatCountdown(secondsUntilNext);
+        pill.textContent = `${left} | ${right}`;
+        pill.classList.toggle('active', inProgress);
+      }
+
+      async function refreshStatus() {
+        try {
+          const resp = await fetch('/api/sync/status', { headers: { 'Accept': 'application/json' } });
+          if (!resp.ok) {
+            return;
+          }
+          const data = await resp.json();
+          secondsUntilNext = Number(data.seconds_until_next || 0);
+          renderStatus(Boolean(data.in_progress), Number(data.progress_percent || 0));
+        } catch (err) {
+          // Keep existing display if one poll fails.
+        }
+      }
+
+      async function forceManualSync() {
+        try {
+          const resp = await fetch('/api/sync/manual', { method: 'POST' });
+          if (resp.ok) {
+            pill.textContent = 'Sync requested';
+            setTimeout(refreshStatus, 1000);
+          }
+        } catch (err) {
+          // Ignore transient API failures.
+        }
+      }
+
+      function startHold() {
+        clearTimeout(holdTimer);
+        holdTimer = setTimeout(() => {
+          forceManualSync();
+          holdTimer = null;
+        }, 1200);
+      }
+
+      function cancelHold() {
+        if (holdTimer) {
+          clearTimeout(holdTimer);
+          holdTimer = null;
+        }
+      }
+
+      pill.addEventListener('mousedown', startHold);
+      pill.addEventListener('touchstart', startHold, { passive: true });
+      pill.addEventListener('mouseup', cancelHold);
+      pill.addEventListener('mouseleave', cancelHold);
+      pill.addEventListener('touchend', cancelHold);
+      pill.addEventListener('touchcancel', cancelHold);
+
+      setInterval(() => {
+        if (secondsUntilNext > 0) {
+          secondsUntilNext -= 1;
+        }
+        renderStatus(currentInProgress, currentProgressPercent);
+      }, 1000);
+
+      setInterval(refreshStatus, 5000);
+      refreshStatus();
+    }
     
     document.addEventListener('DOMContentLoaded', () => {
       initializeTheme();
+      initializeSyncNavStatus();
       initializeFlowchartNavigation();
       const table = document.querySelector('table');
       if (table && table.dataset.draggable) {
@@ -670,6 +796,10 @@ SETTINGS_CONTENT = """
     <textarea name=\"allowed_nodes\" placeholder=\"Leave blank to allow all nodes\">{{ allowed_nodes_text }}</textarea><br>
     <p class=\"muted\">If left blank, any node can post to the Urgent board.</p>
 
+    <label>Sync Interval (minutes)</label><br>
+    <input type=\"text\" name=\"sync_interval_minutes\" value=\"{{ sync_interval_minutes }}\"><br>
+    <p class=\"muted\">How often to re-run full peer sync. For testing, set to 5 minutes.</p>
+
     {% if runtime_updates_enabled %}
     <p class=\"muted\">Changes are also applied to the active interface immediately.</p>
     {% else %}
@@ -677,6 +807,11 @@ SETTINGS_CONTENT = """
     {% endif %}
 
     <button class=\"btn btn-primary\" type=\"submit\">Save Sync Settings</button>
+  </form>
+
+  <form method=\"post\" action=\"{{ url_for('settings_page') }}#sync\" style=\"margin-top: 12px;\">
+    <input type=\"hidden\" name=\"settings_section\" value=\"manual_sync\">
+    <button class=\"btn\" type=\"submit\">Run Manual Sync Now</button>
   </form>
 </div>
 
@@ -1623,13 +1758,14 @@ def create_app(runtime_interface=None) -> Flask:
         config.set("admin", "password", password)
       write_config_file(config, app.config["CONFIG_PATH"])
 
-    def save_sync_lists(bbs_nodes: list[str], allowed_nodes: list[str]) -> None:
+    def save_sync_lists(bbs_nodes: list[str], allowed_nodes: list[str], sync_interval_minutes: int) -> None:
       config = read_config_file(app.config["CONFIG_PATH"])
       if not config.has_section("sync"):
         config.add_section("sync")
       if not config.has_section("allow_list"):
         config.add_section("allow_list")
       config.set("sync", "bbs_nodes", ",".join(bbs_nodes))
+      config.set("sync", "sync_interval_minutes", str(sync_interval_minutes))
       config.set("allow_list", "allowed_nodes", ",".join(allowed_nodes))
       write_config_file(config, app.config["CONFIG_PATH"])
 
@@ -1652,11 +1788,20 @@ def create_app(runtime_interface=None) -> Flask:
       flash("Board list saved.", "success")
       return True
 
-    def update_sync_settings(raw_bbs_nodes: str, raw_allowed_nodes: str) -> bool:
+    def update_sync_settings(raw_bbs_nodes: str, raw_allowed_nodes: str, raw_sync_interval_minutes: str) -> bool:
       bbs_nodes = parse_list_input(raw_bbs_nodes)
       allowed_nodes = parse_list_input(raw_allowed_nodes)
+      try:
+        sync_interval_minutes = int((raw_sync_interval_minutes or "").strip())
+      except ValueError:
+        flash("Sync interval must be a whole number of minutes.", "error")
+        return False
 
-      save_sync_lists(bbs_nodes, allowed_nodes)
+      if sync_interval_minutes < 1:
+        flash("Sync interval must be at least 1 minute.", "error")
+        return False
+
+      save_sync_lists(bbs_nodes, allowed_nodes, sync_interval_minutes)
       apply_runtime_sync_settings(bbs_nodes, allowed_nodes)
       flash("Sync settings updated.", "success")
       return True
@@ -1688,7 +1833,7 @@ def create_app(runtime_interface=None) -> Flask:
       return True
 
     def build_settings_diagnostics() -> dict[str, str]:
-      bbs_nodes, allowed_nodes = load_sync_settings(app.config["CONFIG_PATH"])
+      bbs_nodes, allowed_nodes, sync_interval_minutes = load_sync_settings(app.config["CONFIG_PATH"])
       diagnostics = {
         "interface_attached": "No",
         "interface_type": "Unavailable",
@@ -1700,6 +1845,7 @@ def create_app(runtime_interface=None) -> Flask:
         "local_long_name": "Unavailable",
         "bbs_nodes_count": str(len(bbs_nodes)),
         "allowed_nodes_count": str(len(allowed_nodes)),
+        "sync_interval_minutes": str(sync_interval_minutes),
         "bbs_nodes_text": ", ".join(bbs_nodes),
         "allowed_nodes_text": ", ".join(allowed_nodes),
         "board_count": str(len(app.config["BULLETIN_BOARDS"])),
@@ -1713,6 +1859,7 @@ def create_app(runtime_interface=None) -> Flask:
         "sync_target_nodes_text": "None",
         "sync_last_updated_at": "Unavailable",
         "sync_last_result": "Not yet run",
+        "sync_next_run_epoch": "0",
         "db_path": app.config["DB_PATH"],
         "bulletins_count": "Unknown",
         "mail_count": "Unknown",
@@ -1787,6 +1934,8 @@ def create_app(runtime_interface=None) -> Flask:
             diagnostics["sync_target_nodes_text"] = ", ".join(str(node) for node in target_nodes)
           diagnostics["sync_last_updated_at"] = str(snapshot.get("sync_last_updated_at", "Unavailable"))
           diagnostics["sync_last_result"] = str(snapshot.get("sync_last_result", "Not yet run"))
+          diagnostics["sync_interval_minutes"] = str(snapshot.get("sync_interval_minutes", diagnostics["sync_interval_minutes"]))
+          diagnostics["sync_next_run_epoch"] = str(snapshot.get("sync_next_run_epoch", 0))
 
           if snapshot.get("error"):
             diagnostics["error"] = str(snapshot.get("error"))
@@ -1815,7 +1964,7 @@ def create_app(runtime_interface=None) -> Flask:
       return diagnostics
 
     def render_settings_page():
-      bbs_nodes, allowed_nodes = load_sync_settings(app.config["CONFIG_PATH"])
+      bbs_nodes, allowed_nodes, sync_interval_minutes = load_sync_settings(app.config["CONFIG_PATH"])
       diagnostics = build_settings_diagnostics()
       content = render_template_string(
         SETTINGS_CONTENT,
@@ -1823,6 +1972,7 @@ def create_app(runtime_interface=None) -> Flask:
         env_override=bool(os.getenv("BBS_BULLETIN_BOARDS", "").strip()),
         bbs_nodes_text="\n".join(bbs_nodes),
         allowed_nodes_text="\n".join(allowed_nodes),
+        sync_interval_minutes=str(sync_interval_minutes),
         runtime_updates_enabled=app.config["RUNTIME_UPDATES_ENABLED"],
         current_username=app.config["ADMIN_USER"],
         username_env_override=app.config["ADMIN_USER_ENV_OVERRIDE"],
@@ -1888,7 +2038,16 @@ def create_app(runtime_interface=None) -> Flask:
           return redirect(url_for("settings_page") + "#boards")
 
         if section == "sync":
-          update_sync_settings(request.form.get("bbs_nodes", ""), request.form.get("allowed_nodes", ""))
+          update_sync_settings(
+            request.form.get("bbs_nodes", ""),
+            request.form.get("allowed_nodes", ""),
+            request.form.get("sync_interval_minutes", "5"),
+          )
+          return redirect(url_for("settings_page") + "#sync")
+
+        if section == "manual_sync":
+          request_manual_sync_trigger()
+          flash("Manual sync requested. The server will start a sync cycle shortly.", "success")
           return redirect(url_for("settings_page") + "#sync")
 
         if section == "admin":
@@ -1918,7 +2077,11 @@ def create_app(runtime_interface=None) -> Flask:
     @login_required
     def sync_settings():
       if request.method == "POST":
-        update_sync_settings(request.form.get("bbs_nodes", ""), request.form.get("allowed_nodes", ""))
+        update_sync_settings(
+          request.form.get("bbs_nodes", ""),
+          request.form.get("allowed_nodes", ""),
+          request.form.get("sync_interval_minutes", "5"),
+        )
       return redirect(url_for("settings_page") + "#sync")
 
     @app.route("/settings/admin", methods=["GET", "POST"])
@@ -1934,6 +2097,36 @@ def create_app(runtime_interface=None) -> Flask:
         if changed:
           return redirect(url_for("logout"))
       return redirect(url_for("settings_page") + "#admin")
+
+    @app.get("/api/sync/status")
+    @login_required
+    def api_sync_status():
+      snapshot_path = os.getenv("BBS_RUNTIME_DIAG_PATH", "runtime_diagnostics.json")
+      snapshot = load_runtime_snapshot(snapshot_path)
+
+      _, _, config_interval_minutes = load_sync_settings(app.config["CONFIG_PATH"])
+      progress_percent = int(snapshot.get("sync_progress_percent", 0)) if snapshot else 0
+      in_progress = bool(snapshot.get("sync_in_progress", False)) if snapshot else False
+      phase = str(snapshot.get("sync_current_phase", "never_run")) if snapshot else "never_run"
+      next_run_epoch = int(snapshot.get("sync_next_run_epoch", 0)) if snapshot else 0
+      interval_minutes = int(snapshot.get("sync_interval_minutes", config_interval_minutes)) if snapshot else config_interval_minutes
+      now_epoch = int(datetime.utcnow().timestamp())
+      seconds_until_next = max(next_run_epoch - now_epoch, 0) if next_run_epoch > 0 else 0
+
+      return jsonify({
+        "in_progress": in_progress,
+        "progress_percent": progress_percent,
+        "phase": phase,
+        "next_run_epoch": next_run_epoch,
+        "seconds_until_next": seconds_until_next,
+        "sync_interval_minutes": interval_minutes,
+      })
+
+    @app.post("/api/sync/manual")
+    @login_required
+    def api_sync_manual():
+      request_manual_sync_trigger()
+      return jsonify({"ok": True, "message": "Manual sync requested"})
 
     @app.post("/api/reorder/<table>")
     @login_required
