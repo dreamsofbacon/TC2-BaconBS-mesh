@@ -62,6 +62,13 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "✓ meshtastic import verified" -ForegroundColor Green
 Write-Host ""
 
+# Note about dfrotz (required for Zork / Infocom games)
+Write-Host "NOTE: Zork and other Infocom games require the 'dfrotz' interpreter." -ForegroundColor Yellow
+Write-Host "      dfrotz is a Linux system package and is not available natively on Windows." -ForegroundColor Yellow
+Write-Host "      To use games on Windows, install WSL and run 'sudo apt install dfrotz' inside it," -ForegroundColor Yellow
+Write-Host "      or use a pre-built dfrotz.exe and set BBS_ZORK_INTERPRETER in config.ini." -ForegroundColor Yellow
+Write-Host ""
+
 # Check for config file
 if (-not (Test-Path "config.ini")) {
     if (Test-Path "example_config.ini") {
