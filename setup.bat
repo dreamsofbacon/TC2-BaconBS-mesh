@@ -38,21 +38,35 @@ call .venv\Scripts\activate.bat
 echo [OK] Virtual environment activated
 echo.
 
+set VENV_PYTHON=.venv\Scripts\python.exe
+
 REM Upgrade pip
 echo Upgrading pip...
-python -m pip install --upgrade pip
+%VENV_PYTHON% -m pip install --upgrade pip
 echo [OK] pip upgraded
 echo.
 
 REM Install dependencies
 echo Installing dependencies from requirements.txt...
-pip install -r requirements.txt
+%VENV_PYTHON% -m pip install -r requirements.txt
 if errorlevel 1 (
     echo ERROR: Failed to install dependencies!
     pause
     exit /b 1
 )
 echo [OK] Dependencies installed
+echo.
+
+REM Verify meshtastic import in the virtual environment
+echo Verifying meshtastic installation...
+%VENV_PYTHON% -c "import meshtastic.stream_interface"
+if errorlevel 1 (
+    echo ERROR: meshtastic is not importable in .venv.
+    echo Try reinstalling with: .venv\Scripts\python.exe -m pip install --no-cache-dir -r requirements.txt
+    pause
+    exit /b 1
+)
+echo [OK] meshtastic import verified
 echo.
 
 REM Check for config file
@@ -71,6 +85,10 @@ echo ========================================
 echo.
 echo Next steps:
 echo 1. Review and update config.ini with your settings
-echo 2. Run: python server.py (to start the server)
+echo 2. Start using venv Python: .venv\Scripts\python.exe server.py
+echo.
+echo Optional interactive activation for this shell:
+echo    .venv\Scripts\activate.bat
+echo Then run: python server.py
 echo.
 pause

@@ -33,20 +33,33 @@ Write-Host "Activating virtual environment..." -ForegroundColor Yellow
 Write-Host "✓ Virtual environment activated" -ForegroundColor Green
 Write-Host ""
 
+$venvPython = ".\\.venv\\Scripts\\python.exe"
+
 # Upgrade pip
 Write-Host "Upgrading pip..." -ForegroundColor Yellow
-python -m pip install --upgrade pip
+& $venvPython -m pip install --upgrade pip
 Write-Host "✓ pip upgraded" -ForegroundColor Green
 Write-Host ""
 
 # Install dependencies
 Write-Host "Installing dependencies from requirements.txt..." -ForegroundColor Yellow
-pip install -r requirements.txt
+& $venvPython -m pip install -r requirements.txt
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Failed to install dependencies!" -ForegroundColor Red
     exit 1
 }
 Write-Host "✓ Dependencies installed" -ForegroundColor Green
+Write-Host ""
+
+# Verify meshtastic import in the virtual environment
+Write-Host "Verifying meshtastic installation..." -ForegroundColor Yellow
+& $venvPython -c "import meshtastic.stream_interface"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: meshtastic is not importable in .venv." -ForegroundColor Red
+    Write-Host "Try reinstalling with: .\\.venv\\Scripts\\python.exe -m pip install --no-cache-dir -r requirements.txt" -ForegroundColor Red
+    exit 1
+}
+Write-Host "✓ meshtastic import verified" -ForegroundColor Green
 Write-Host ""
 
 # Check for config file
@@ -65,5 +78,9 @@ Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
 Write-Host "1. Review and update config.ini with your settings"
-Write-Host "2. Run: python server.py (to start the server)"
+Write-Host "2. Start using venv Python: .\\.venv\\Scripts\\python.exe server.py"
+Write-Host ""
+Write-Host "Optional interactive activation for your current shell:" -ForegroundColor Cyan
+Write-Host "   .\\.venv\\Scripts\\Activate.ps1"
+Write-Host "Then run: python server.py"
 Write-Host ""

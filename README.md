@@ -57,9 +57,21 @@ Run the appropriate setup script for your system to automatically create a virtu
 
 These scripts will:
 - Create a Python virtual environment
-- Activate it
 - Install all dependencies from `requirements.txt`
+- Verify the `meshtastic` module can be imported in that virtual environment
 - Create `config.ini` from `example_config.ini` (if it doesn't exist)
+
+After setup, run the server with the virtual environment Python executable:
+
+- **Windows (PowerShell/CMD):**
+   ```powershell
+   .\.venv\Scripts\python.exe server.py
+   ```
+
+- **macOS and Linux:**
+   ```sh
+   ./venv/bin/python server.py
+   ```
 
 #### Manual Setup
 
@@ -133,20 +145,66 @@ If you prefer manual setup, follow these steps:
 
 ### Running the Server
 
-Run the server with:
+Run the server with the standalone launch script for your OS:
 
-```sh
-python server.py
+- Windows (PowerShell):
+
+```powershell
+.\run_server.ps1
 ```
 
-Be sure you've followed the Python virtual environment steps above and activated it before running.
+- Windows (Command Prompt):
+
+```cmd
+run_server.bat
+```
+
+- macOS/Linux:
+
+```sh
+bash run_server.sh
+```
+
+You can also run directly with venv Python:
+
+```sh
+./venv/bin/python server.py
+```
+
+On Windows direct equivalent:
+
+```powershell
+.\.venv\Scripts\python.exe server.py
+```
 
 ### Running the Web Admin GUI (Standalone Moderation)
 
 You can run a standalone web interface to moderate the SQLite database (`bulletins`, `mail`, and `channels`).
 
+Use the standalone launch script for your OS:
+
+- Windows (PowerShell):
+
+```powershell
+.\run_web_admin.ps1
+```
+
+- Windows (Command Prompt):
+
+```cmd
+run_web_admin.bat
+```
+
+- macOS/Linux:
+
 ```sh
-python web_admin.py
+bash run_web_admin.sh
+```
+
+Or run directly with venv Python:
+
+```sh
+./venv/bin/python web_admin.py
 ```
 
 By default it starts on `127.0.0.1:8081`.
