@@ -13,7 +13,8 @@ from utils import (
     send_bulletin_to_bbs_nodes,
     send_delete_bulletin_to_bbs_nodes,
     send_delete_mail_to_bbs_nodes,
-    send_mail_to_bbs_nodes, send_message, send_channel_to_bbs_nodes
+    send_mail_to_bbs_nodes, send_message, send_channel_to_bbs_nodes,
+    send_sync_state_to_bbs_nodes,
 )
 
 
@@ -190,9 +191,75 @@ def initialize_database():
                     message_type TEXT NOT NULL,
                     event_text TEXT NOT NULL
                 );''')
+    c.execute('''CREATE TABLE IF NOT EXISTS peer_sync_state (
+                    peer_node_id TEXT PRIMARY KEY,
+                    bulletins INTEGER NOT NULL DEFAULT 0,
+                    mail INTEGER NOT NULL DEFAULT 0,
+                    channels INTEGER NOT NULL DEFAULT 0,
+                    zork_saves INTEGER NOT NULL DEFAULT 0,
+                    reported_at TEXT NOT NULL
+                );''')
     _dedupe_channels_and_create_unique_index(c)
     conn.commit()
     print("Database schema initialized.")
+
+
+def get_local_record_counts() -> dict:
+    """Return local record counts used by SYNCSTATE comparisons."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM bulletins")
+    bulletins = int(c.fetchone()[0])
+    c.execute("SELECT COUNT(*) FROM mail")
+    mail = int(c.fetchone()[0])
+    c.execute("SELECT COUNT(*) FROM channels")
+    channels = int(c.fetchone()[0])
+    _ensure_zork_saves_table()
+    c.execute("SELECT COUNT(*) FROM zork_saves")
+    zork_saves = int(c.fetchone()[0])
+    return {
+        'bulletins': bulletins,
+        'mail': mail,
+        'channels': channels,
+        'zork_saves': zork_saves,
+    }
+
+
+def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channels: int, zork_saves: int) -> None:
+    """Store the latest advertised SYNCSTATE counts for a peer node."""
+    if not peer_node_id:
+        return
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        '''INSERT INTO peer_sync_state (peer_node_id, bulletins, mail, channels, zork_saves, reported_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(peer_node_id) DO UPDATE SET
+               bulletins=excluded.bulletins,
+               mail=excluded.mail,
+               channels=excluded.channels,
+               zork_saves=excluded.zork_saves,
+               reported_at=excluded.reported_at''',
+        (
+            peer_node_id,
+            int(bulletins),
+            int(mail),
+            int(channels),
+            int(zork_saves),
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        ),
+    )
+    conn.commit()
+
+
+def get_peer_sync_states() -> list:
+    """Return peer-advertised record counts for diagnostics."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT peer_node_id, bulletins, mail, channels, zork_saves, reported_at FROM peer_sync_state ORDER BY peer_node_id"
+    )
+    return c.fetchall()
 
 
 def _dedupe_channels_and_create_unique_index(cursor) -> None:
@@ -758,6 +825,11 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: int = 500)
             time.sleep(delay_seconds)
         
         logging.info(f"Database sync: Sent {channels_synced} channels to {len(bbs_nodes)} peer(s)")
+
+        # Send a lightweight consistency check payload so peers can compare
+        # their local counts against ours and detect missing records.
+        local_counts = get_local_record_counts()
+        send_sync_state_to_bbs_nodes(local_counts, bbs_nodes, interface)
         
         result = {
             'bulletins_synced': bulletins_synced,

@@ -136,6 +136,16 @@ def send_channel_to_bbs_nodes(name, url, bbs_nodes, interface):
         _send_one_sync(message, node_id, interface)
 
 
+def send_sync_state_to_bbs_nodes(counts, bbs_nodes, interface):
+    """Send compact local record counts to peers for mismatch detection."""
+    message = (
+        f"SYNCSTATE|{int(counts.get('bulletins', 0))}|{int(counts.get('mail', 0))}|"
+        f"{int(counts.get('channels', 0))}|{int(counts.get('zork_saves', 0))}"
+    )
+    for node_id in bbs_nodes:
+        _send_one_sync(message, node_id, interface)
+
+
 def _send_one_sync(message, destination, interface, pause_seconds=0.75):
     """Send a single sync packet directly to destination (no chunking)."""
     try:

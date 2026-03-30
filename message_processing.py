@@ -17,7 +17,7 @@ from command_handlers import (
 from db_operations import (
     add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel,
     append_bulletin_content, append_mail_content,
-    auto_upsert_user_profile, log_connection_event,
+    auto_upsert_user_profile, log_connection_event, upsert_peer_sync_state,
 )
 from js8call_integration import handle_js8call_command, handle_js8call_steps, handle_group_message_selection
 from utils import get_user_state, get_node_short_name, get_node_id_from_num, send_message
@@ -67,7 +67,7 @@ def _auto_update_profile(sender_id, interface):
     except Exception:
         pass
 
-def process_message(sender_id, message, interface, is_sync_message=False):
+def process_message(sender_id, message, interface, is_sync_message=False, sender_node_id=None):
     state = get_user_state(sender_id)
     message_lower = message.lower().strip()
     message_strip = message.strip()
@@ -152,6 +152,23 @@ def process_message(sender_id, message, interface, is_sync_message=False):
             else:
                 # Legacy format without offset — blind append
                 append_mail_content(parts[1], None, parts[2])
+        elif message.startswith("SYNCSTATE|"):
+            parts = message.split("|", 4)
+            if len(parts) != 5:
+                logging.warning(f"Malformed SYNCSTATE sync message ignored: {message}")
+                return
+            try:
+                bulletins = int(parts[1])
+                mail = int(parts[2])
+                channels = int(parts[3])
+                zork_saves = int(parts[4])
+            except ValueError:
+                logging.warning(f"Invalid SYNCSTATE values ignored: {message}")
+                return
+            if sender_node_id:
+                upsert_peer_sync_state(sender_node_id, bulletins, mail, channels, zork_saves)
+            else:
+                logging.warning("SYNCSTATE ignored due to missing sender_node_id")
     else:
         if message_lower.startswith("sm,,"):
             handle_send_mail_command(sender_id, message_strip, interface, bbs_nodes)
@@ -276,7 +293,7 @@ def on_receive(packet, interface):
             bbs_nodes = interface.bbs_nodes
             is_sync_message = any(message_string.startswith(prefix) for prefix in
                                   ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|",
-                                   "CHANNEL|", "BULLETINCONT|", "MAILCONT|"])
+                                   "CHANNEL|", "BULLETINCONT|", "MAILCONT|", "SYNCSTATE|"])
 
             msg_type = "sync" if is_sync_message else "user"
             log_connection_event(
@@ -291,13 +308,13 @@ def on_receive(packet, interface):
             if sender_node_id in bbs_nodes:
                 if is_sync_message:
                     log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "sync", "Accepted sync message")
-                    process_message(sender_id, message_string, interface, is_sync_message=True)
+                    process_message(sender_id, message_string, interface, is_sync_message=True, sender_node_id=sender_node_id)
                 else:
                     log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "drop", "Ignored non-sync from BBS node")
                     logging.info("Ignoring non-sync message from known BBS node")
             elif to_id is not None and to_id != 0 and to_id != 255 and to_id == interface.myInfo.my_node_num:
                 log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "direct", "Accepted direct message")
-                process_message(sender_id, message_string, interface, is_sync_message=False)
+                process_message(sender_id, message_string, interface, is_sync_message=False, sender_node_id=sender_node_id)
             else:
                 log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "drop", "Ignored group/unknown message")
                 logging.info("Ignoring message sent to group chat or from unknown node")
