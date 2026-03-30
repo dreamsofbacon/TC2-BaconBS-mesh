@@ -11,6 +11,20 @@ user_states = {}
 _MESHTASTIC_MAX_BYTES = 220
 
 
+def _take_prefix_within_bytes(text: str, max_bytes: int) -> tuple[str, str]:
+    """Return the largest UTF-8-safe prefix that fits max_bytes and the remainder."""
+    if max_bytes <= 0 or not text:
+        return "", text
+    used = 0
+    idx = 0
+    for idx, ch in enumerate(text):
+        b = len(ch.encode('utf-8'))
+        if used + b > max_bytes:
+            return text[:idx], text[idx:]
+        used += b
+    return text, ""
+
+
 def update_user_state(user_id, state):
     user_states[user_id] = state
 
@@ -181,8 +195,12 @@ def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nod
 
     prefix = f"ZORKSAVE|{save_id}|{user_b64}|{game_b64}|{updated_at}|"
     # Reserve enough room for chunk index and total chunk counters.
-    overhead = len(prefix.encode("utf-8")) + len("9999|9999|".encode("utf-8"))
-    max_chunk = max(20, _MESHTASTIC_MAX_BYTES - overhead)
+    overhead = len(prefix.encode("utf-8")) + len("999999|999999|".encode("utf-8"))
+    available = _MESHTASTIC_MAX_BYTES - overhead
+    if available <= 0:
+        logging.warning("ZORKSAVE framing prefix too large for packet limit; skipping save sync frame")
+        return
+    max_chunk = available
 
     chunks = [payload_b64[i:i + max_chunk] for i in range(0, len(payload_b64), max_chunk)]
     if not chunks:
@@ -197,6 +215,10 @@ def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nod
 
 def _send_one_sync(message, destination, interface, pause_seconds=0.75):
     """Send a single sync packet directly to destination (no chunking)."""
+    msg_len = len(message.encode('utf-8'))
+    if msg_len > _MESHTASTIC_MAX_BYTES:
+        logging.warning(f"SYNC frame exceeds {_MESHTASTIC_MAX_BYTES} bytes ({msg_len}); dropping frame")
+        return
     try:
         interface.sendText(
             text=message,
@@ -224,33 +246,33 @@ def _send_sync_with_cont(header, footer, content, unique_id, cont_prefix, bbs_no
     header_bytes = header.encode('utf-8')
     footer_bytes = footer.encode('utf-8')
     cont_prefix_bytes = cont_prefix.encode('utf-8')
-    content_bytes = content.encode('utf-8')
     # Reserve bytes for the offset field appended to each continuation packet
     # e.g. "BULLETINCONT|uid|" + "1234|" + chunk  → reserve 10 chars for offset+pipe
     _OFFSET_OVERHEAD = 10
 
     # How many content bytes can fit in the first (primary) packet?
     max_first = _MESHTASTIC_MAX_BYTES - len(header_bytes) - len(footer_bytes)
-    max_first = max(10, max_first)
+    if max_first <= 0:
+        logging.warning("Sync frame header/footer exceed packet limit; skipping message")
+        return
 
-    first_content_bytes = content_bytes[:max_first]
-    # Decode back safely; 'replace' avoids splitting a multi-byte char
-    first_content = first_content_bytes.decode('utf-8', errors='replace')
+    first_content, remaining_text = _take_prefix_within_bytes(content, max_first)
     first_msg = header + first_content + footer
 
     for node_id in bbs_nodes:
         _send_one_sync(first_msg, node_id, interface, pause_seconds)
 
     # Send continuation packets for any remaining content
-    remaining = content_bytes[max_first:]
+    remaining = remaining_text
     max_cont = _MESHTASTIC_MAX_BYTES - len(cont_prefix_bytes) - _OFFSET_OVERHEAD
-    max_cont = max(10, max_cont)
+    if max_cont <= 0:
+        logging.warning("Sync continuation prefix exceeds packet limit; skipping continuations")
+        return
 
     content_char_offset = len(first_content)  # chars already stored by the first packet
 
     while remaining:
-        chunk = remaining[:max_cont].decode('utf-8', errors='replace')
-        remaining = remaining[max_cont:]
+        chunk, remaining = _take_prefix_within_bytes(remaining, max_cont)
         # Format: BULLETINCONT|uid|<char_offset>|<chunk>
         cont_msg = cont_prefix + str(content_char_offset) + "|" + chunk
         for node_id in bbs_nodes:
