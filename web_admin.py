@@ -494,12 +494,13 @@ BASE_TEMPLATE = """
       let holdTimer = null;
       let currentProgressPercent = 0;
       let currentInProgress = false;
+      let currentPeerStatus = 'no peer reports';
 
       function renderStatus(inProgress, progressPercent) {
         currentInProgress = inProgress;
         currentProgressPercent = progressPercent;
         const left = `Sync ${progressPercent}%`;
-        const right = inProgress ? 'running' : formatCountdown(secondsUntilNext);
+        const right = inProgress ? 'running' : `${formatCountdown(secondsUntilNext)} | ${currentPeerStatus}`;
         pill.textContent = `${left} | ${right}`;
         pill.classList.toggle('active', inProgress);
       }
@@ -512,6 +513,7 @@ BASE_TEMPLATE = """
           }
           const data = await resp.json();
           secondsUntilNext = Number(data.seconds_until_next || 0);
+          currentPeerStatus = String(data.peer_status_text || 'no peer reports');
           renderStatus(Boolean(data.in_progress), Number(data.progress_percent || 0));
         } catch (err) {
           // Keep existing display if one poll fails.
@@ -871,7 +873,10 @@ SETTINGS_CONTENT = """
   {% if diagnostics.sync_in_progress == "Yes" %}
   <p class="muted"><strong>Notice:</strong> Outbound sync is running. Some historical posts may not be available on peers yet.</p>
   {% endif %}
-  <p class="muted">Sync tracks records sent <em>from this node</em> to its peers. Re-sync runs automatically every 6 hours to recover any content dropped on the mesh.</p>
+  <p><strong>Peer consistency:</strong> {{ diagnostics.peer_sync_status }}</p>
+  <p><strong>Peer-advertised record counts:</strong></p>
+  <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.peer_sync_counts }}</pre>
+  <p class="muted">Outbound progress can be 100% while peer consistency is mismatched. Peer counts above indicate missing records between nodes.</p>
 
   <h3>Database</h3>
   <p><strong>Path:</strong> <code>{{ diagnostics.db_path }}</code></p>
@@ -1727,6 +1732,14 @@ def create_app(runtime_interface=None) -> Flask:
               message_type TEXT NOT NULL,
               event_text TEXT NOT NULL
             )''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS peer_sync_state (
+              peer_node_id TEXT PRIMARY KEY,
+              bulletins INTEGER NOT NULL DEFAULT 0,
+              mail INTEGER NOT NULL DEFAULT 0,
+              channels INTEGER NOT NULL DEFAULT 0,
+              zork_saves INTEGER NOT NULL DEFAULT 0,
+              reported_at TEXT NOT NULL
+            )''')
 
     def get_db_connection() -> sqlite3.Connection:
         conn = sqlite3.connect(app.config["DB_PATH"], timeout=30)
@@ -1860,6 +1873,8 @@ def create_app(runtime_interface=None) -> Flask:
         "sync_last_updated_at": "Unavailable",
         "sync_last_result": "Not yet run",
         "sync_next_run_epoch": "0",
+        "peer_sync_status": "Unknown",
+        "peer_sync_counts": "No peer status received yet",
         "db_path": app.config["DB_PATH"],
         "bulletins_count": "Unknown",
         "mail_count": "Unknown",
@@ -1950,12 +1965,41 @@ def create_app(runtime_interface=None) -> Flask:
           diagnostics["mail_count"] = str(cursor.fetchone()[0])
           cursor.execute("SELECT COUNT(*) FROM channels")
           diagnostics["channels_count"] = str(cursor.fetchone()[0])
+          cursor.execute("SELECT COUNT(*) FROM zork_saves")
+          zork_count = int(cursor.fetchone()[0])
           cursor.execute("SELECT COUNT(*) FROM connection_events")
           diagnostics["connection_events_count"] = str(cursor.fetchone()[0])
           cursor.execute("SELECT event_time, message_type, event_text FROM connection_events ORDER BY id DESC LIMIT 1")
           row = cursor.fetchone()
           if row:
             diagnostics["last_connection_event"] = f"{row['event_time']} | {row['message_type']} | {row['event_text']}"
+
+          cursor.execute(
+            "SELECT peer_node_id, bulletins, mail, channels, zork_saves, reported_at FROM peer_sync_state ORDER BY peer_node_id"
+          )
+          peer_rows = cursor.fetchall()
+          if peer_rows:
+            local_b = int(diagnostics["bulletins_count"])
+            local_m = int(diagnostics["mail_count"])
+            local_c = int(diagnostics["channels_count"])
+            lines = []
+            mismatch = False
+            for peer in peer_rows:
+              pb = int(peer[1])
+              pm = int(peer[2])
+              pc = int(peer[3])
+              pz = int(peer[4])
+              peer_mismatch = (pb != local_b) or (pm != local_m) or (pc != local_c)
+              mismatch = mismatch or peer_mismatch
+              status = "MISMATCH" if peer_mismatch else "OK"
+              lines.append(
+                f"{peer[0]} -> B:{pb} M:{pm} C:{pc} Z:{pz} @ {peer[5]} [{status}]"
+              )
+            diagnostics["peer_sync_status"] = "Mismatch detected" if mismatch else "Counts aligned"
+            diagnostics["peer_sync_counts"] = "\n".join(lines)
+          else:
+            diagnostics["peer_sync_status"] = "No peer reports yet"
+            diagnostics["peer_sync_counts"] = "No peer status received yet"
         finally:
           conn.close()
       except Exception as exc:
@@ -2113,6 +2157,35 @@ def create_app(runtime_interface=None) -> Flask:
       now_epoch = int(datetime.utcnow().timestamp())
       seconds_until_next = max(next_run_epoch - now_epoch, 0) if next_run_epoch > 0 else 0
 
+      peer_mismatch = False
+      peer_status_text = "no peer reports"
+      try:
+        conn = get_db_connection()
+        try:
+          c = conn.cursor()
+          c.execute("SELECT COUNT(*) FROM bulletins")
+          local_b = int(c.fetchone()[0])
+          c.execute("SELECT COUNT(*) FROM mail")
+          local_m = int(c.fetchone()[0])
+          c.execute("SELECT COUNT(*) FROM channels")
+          local_c = int(c.fetchone()[0])
+          c.execute("SELECT bulletins, mail, channels FROM peer_sync_state")
+          peers = c.fetchall()
+          if peers:
+            mismatch_count = 0
+            for pb, pm, pc in peers:
+              if int(pb) != local_b or int(pm) != local_m or int(pc) != local_c:
+                mismatch_count += 1
+            peer_mismatch = mismatch_count > 0
+            if peer_mismatch:
+              peer_status_text = f"mismatch ({mismatch_count} peer)"
+            else:
+              peer_status_text = "aligned"
+        finally:
+          conn.close()
+      except Exception:
+        pass
+
       return jsonify({
         "in_progress": in_progress,
         "progress_percent": progress_percent,
@@ -2120,6 +2193,8 @@ def create_app(runtime_interface=None) -> Flask:
         "next_run_epoch": next_run_epoch,
         "seconds_until_next": seconds_until_next,
         "sync_interval_minutes": interval_minutes,
+        "peer_mismatch": peer_mismatch,
+        "peer_status_text": peer_status_text,
       })
 
     @app.post("/api/sync/manual")
