@@ -869,6 +869,18 @@ SETTINGS_CONTENT = """
   </form>
 </div>
 
+<div class=\"card\" id=\"danger\" style=\"max-width: 700px; border-color: #6b2323;\">
+  <h2>Danger Zone</h2>
+  <p class=\"muted\">Wipe all local bulletin, mail, channel, profile, score, save, diagnostics, peer-state, and tombstone data from the SQLite database.</p>
+  <p class=\"muted\">Type <strong>WIPE DATABASE</strong> exactly to confirm. If peer sync remains enabled, remote nodes may repopulate data on later sync cycles.</p>
+  <form method=\"post\" action=\"{{ url_for('settings_page') }}#danger\" onsubmit=\"return confirm('This will permanently delete all local database content. Continue?');\">
+    <input type=\"hidden\" name=\"settings_section\" value=\"wipe_database\">
+    <label>Confirmation</label><br>
+    <input type=\"text\" name=\"wipe_confirmation\" placeholder=\"Type WIPE DATABASE\" required><br><br>
+    <button class=\"btn\" type=\"submit\" style=\"background: #521c1c; border-color: #8d3434; color: #ffd7d7;\">Wipe Database</button>
+  </form>
+</div>
+
 <div class=\"card\" id=\"diagnostics\" style=\"max-width: 900px;\">
   <h2>Diagnostics</h2>
   <p class=\"muted\">Quick runtime and BBS status details for troubleshooting.</p>
@@ -1834,6 +1846,32 @@ def create_app(runtime_interface=None) -> Flask:
             cursor.execute(query, params)
             conn.commit()
 
+    def wipe_database_contents() -> None:
+      tables = [
+        "channel_comments",
+        "bulletins",
+        "mail",
+        "channels",
+        "zork_saves",
+        "user_profiles",
+        "game_scores",
+        "connection_events",
+        "peer_sync_state",
+        "deleted_sync_tombstones",
+      ]
+      with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute("PRAGMA foreign_keys = ON")
+        for table_name in tables:
+          cursor.execute(f"DELETE FROM {table_name}")
+        try:
+          placeholders = ",".join("?" for _ in tables)
+          cursor.execute(f"DELETE FROM sqlite_sequence WHERE name IN ({placeholders})", tuple(tables))
+        except sqlite3.OperationalError:
+          pass
+        conn.commit()
+
     def save_bulletin_boards(boards: list[str]) -> None:
       config = read_config_file(app.config["CONFIG_PATH"])
       if not config.has_section("boards"):
@@ -2208,6 +2246,15 @@ def create_app(runtime_interface=None) -> Flask:
           request_manual_sync_trigger()
           flash("Manual sync requested. The server will start a sync cycle shortly.", "success")
           return redirect(url_for("settings_page") + "#sync")
+
+        if section == "wipe_database":
+          confirmation = request.form.get("wipe_confirmation", "").strip()
+          if confirmation != "WIPE DATABASE":
+            flash("Database wipe cancelled. Type WIPE DATABASE exactly to confirm.", "error")
+            return redirect(url_for("settings_page") + "#danger")
+          wipe_database_contents()
+          flash("Local database wiped.", "success")
+          return redirect(url_for("settings_page") + "#danger")
 
         if section == "admin":
           changed = update_admin_settings(
