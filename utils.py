@@ -1,4 +1,5 @@
 import logging
+import base64
 import re
 import time
 
@@ -140,7 +141,30 @@ def send_sync_state_to_bbs_nodes(counts, bbs_nodes, interface):
     """Send compact local record counts to peers for mismatch detection."""
     message = (
         f"SYNCSTATE|{int(counts.get('bulletins', 0))}|{int(counts.get('mail', 0))}|"
-        f"{int(counts.get('channels', 0))}|{int(counts.get('zork_saves', 0))}"
+        f"{int(counts.get('channels', 0))}|{int(counts.get('zork_saves', 0))}|"
+        f"{int(counts.get('profiles', 0))}|{int(counts.get('game_scores', 0))}"
+    )
+    for node_id in bbs_nodes:
+        _send_one_sync(message, node_id, interface)
+
+
+def _b64(text: str) -> str:
+    return base64.b64encode((text or "").encode("utf-8")).decode("ascii")
+
+
+def send_profile_to_bbs_nodes(user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio, bbs_nodes, interface):
+    message = (
+        f"PROFILESYNC|{user_id}|{_b64(short_name)}|{_b64(long_name)}|"
+        f"{first_seen}|{last_seen}|{int(messages_sent)}|{_b64(bio)}"
+    )
+    for node_id in bbs_nodes:
+        _send_one_sync(message, node_id, interface)
+
+
+def send_game_score_to_bbs_nodes(user_id, game_id, short_name, score, max_score, moves, achieved_at, bbs_nodes, interface):
+    message = (
+        f"SCORESYNC|{user_id}|{game_id}|{_b64(short_name)}|"
+        f"{int(score)}|{int(max_score)}|{int(moves)}|{achieved_at}"
     )
     for node_id in bbs_nodes:
         _send_one_sync(message, node_id, interface)
