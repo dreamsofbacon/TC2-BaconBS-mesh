@@ -1,4 +1,5 @@
 import configparser
+import json
 import os
 import tempfile
 import unittest
@@ -31,6 +32,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.root = Path(self.temp_dir.name)
         self.config_path = self.root / "config.ini"
         self.db_path = self.root / "bulletins.db"
+        self.runtime_diag_path = self.root / "runtime_diagnostics.json"
 
         config = configparser.ConfigParser()
         config["admin"] = {
@@ -54,6 +56,7 @@ class WebAdminSettingsTests(unittest.TestCase):
             {
                 "BBS_CONFIG_PATH": str(self.config_path),
                 "BBS_DB_PATH": str(self.db_path),
+                "BBS_RUNTIME_DIAG_PATH": str(self.runtime_diag_path),
                 "BBS_WEBGUI_SECRET": "test-secret",
             },
             clear=False,
@@ -152,6 +155,38 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("Interface attached:</strong> Yes", page)
         self.assertIn("Local short name:</strong> BBS", page)
         self.assertIn("Local long name:</strong> Bacon BBS", page)
+
+    def test_settings_diagnostics_snapshot_fallback(self):
+        with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:
+            json.dump(
+                {
+                    "updated_at": "2026-03-30T01:02:03+00:00",
+                    "interface_attached": True,
+                    "interface_type": "SerialInterface",
+                    "mesh_node_count": 7,
+                    "local_node_id": "!snap1234",
+                    "local_short_name": "SNAP",
+                    "local_long_name": "Snapshot Node",
+                    "bbs_nodes": ["!sync1", "!sync2"],
+                    "allowed_nodes": ["!allow1"],
+                    "error": "",
+                },
+                snapshot_file,
+            )
+
+        app = create_app()
+        client = app.test_client()
+
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        settings_response = client.get("/settings")
+        self.assertEqual(settings_response.status_code, 200)
+        page = settings_response.get_data(as_text=True)
+        self.assertIn("Runtime source:</strong> Snapshot file", page)
+        self.assertIn("Interface type:</strong> SerialInterface", page)
+        self.assertIn("Local short name:</strong> SNAP", page)
+        self.assertIn("Configured sync peers:</strong> 2 (!sync1, !sync2)", page)
 
 
 if __name__ == "__main__":

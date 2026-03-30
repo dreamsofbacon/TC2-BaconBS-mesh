@@ -1,4 +1,5 @@
 import os
+import json
 import sqlite3
 import uuid
 import configparser
@@ -86,6 +87,19 @@ def load_sync_settings(config_path: str) -> tuple[list[str], list[str]]:
   bbs_nodes = parse_list_input(config.get("sync", "bbs_nodes", fallback=""))
   allowed_nodes = parse_list_input(config.get("allow_list", "allowed_nodes", fallback=""))
   return bbs_nodes, allowed_nodes
+
+
+def load_runtime_snapshot(snapshot_path: str) -> dict:
+  if not os.path.exists(snapshot_path):
+    return {}
+  try:
+    with open(snapshot_path, "r", encoding="utf-8") as snapshot_file:
+      data = json.load(snapshot_file)
+      if isinstance(data, dict):
+        return data
+  except Exception:
+    return {}
+  return {}
 
 
 BASE_TEMPLATE = """
@@ -695,6 +709,8 @@ SETTINGS_CONTENT = """
   <p class=\"muted\">Quick runtime and BBS status details for troubleshooting.</p>
 
   <h3>Runtime</h3>
+  <p><strong>Runtime source:</strong> {{ diagnostics.runtime_source }}</p>
+  <p><strong>Snapshot updated at:</strong> {{ diagnostics.snapshot_updated_at }}</p>
   <p><strong>Interface attached:</strong> {{ diagnostics.interface_attached }}</p>
   <p><strong>Interface type:</strong> {{ diagnostics.interface_type }}</p>
   <p><strong>Known mesh nodes:</strong> {{ diagnostics.mesh_node_count }}</p>
@@ -1661,6 +1677,8 @@ def create_app(runtime_interface=None) -> Flask:
       diagnostics = {
         "interface_attached": "No",
         "interface_type": "Unavailable",
+        "runtime_source": "None",
+        "snapshot_updated_at": "Unavailable",
         "mesh_node_count": "Unavailable",
         "local_node_id": "Unavailable",
         "local_short_name": "Unavailable",
@@ -1684,6 +1702,7 @@ def create_app(runtime_interface=None) -> Flask:
       if interface is not None:
         diagnostics["interface_attached"] = "Yes"
         diagnostics["interface_type"] = interface.__class__.__name__
+        diagnostics["runtime_source"] = "Live interface"
         try:
           nodes = getattr(interface, "nodes", None)
           if isinstance(nodes, dict):
@@ -1707,6 +1726,34 @@ def create_app(runtime_interface=None) -> Flask:
               diagnostics["local_long_name"] = str(user.get("longName"))
         except Exception as exc:
           diagnostics["error"] = f"Runtime diagnostics unavailable: {exc}"
+      else:
+        snapshot_path = os.getenv("BBS_RUNTIME_DIAG_PATH", "runtime_diagnostics.json")
+        snapshot = load_runtime_snapshot(snapshot_path)
+        if snapshot:
+          diagnostics["runtime_source"] = "Snapshot file"
+          diagnostics["snapshot_updated_at"] = str(snapshot.get("updated_at", "Unavailable"))
+          diagnostics["interface_attached"] = "Yes" if snapshot.get("interface_attached", False) else "No"
+          diagnostics["interface_type"] = str(snapshot.get("interface_type", diagnostics["interface_type"]))
+
+          mesh_node_count = snapshot.get("mesh_node_count")
+          if mesh_node_count is not None:
+            diagnostics["mesh_node_count"] = str(mesh_node_count)
+          if snapshot.get("local_node_id"):
+            diagnostics["local_node_id"] = str(snapshot.get("local_node_id"))
+          if snapshot.get("local_short_name"):
+            diagnostics["local_short_name"] = str(snapshot.get("local_short_name"))
+          if snapshot.get("local_long_name"):
+            diagnostics["local_long_name"] = str(snapshot.get("local_long_name"))
+
+          if isinstance(snapshot.get("bbs_nodes"), list):
+            diagnostics["bbs_nodes_count"] = str(len(snapshot["bbs_nodes"]))
+            diagnostics["bbs_nodes_text"] = ", ".join(str(node) for node in snapshot["bbs_nodes"])
+          if isinstance(snapshot.get("allowed_nodes"), list):
+            diagnostics["allowed_nodes_count"] = str(len(snapshot["allowed_nodes"]))
+            diagnostics["allowed_nodes_text"] = ", ".join(str(node) for node in snapshot["allowed_nodes"])
+
+          if snapshot.get("error"):
+            diagnostics["error"] = str(snapshot.get("error"))
 
       try:
         conn = get_db_connection()
