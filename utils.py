@@ -1,10 +1,13 @@
 import logging
-import base64
 import re
 import time
-import uuid
 
 user_states = {}
+
+# Conservative single-packet byte ceiling for Meshtastic TEXT_MESSAGE packets.
+# Most LoRa/Meshtastic configurations cap the data payload at 228 bytes; we stay
+# under 220 to leave room for packet-layer overhead and multi-byte UTF-8 chars.
+_MESHTASTIC_MAX_BYTES = 220
 
 
 def update_user_state(user_id, state):
@@ -93,75 +96,97 @@ def get_node_short_name(node_id, interface):
 
 
 def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface):
-    message = f"BULLETIN|{board}|{sender_short_name}|{subject}|{content}|{unique_id}"
-    for node_id in bbs_nodes:
-        send_sync_message(message, node_id, interface)
+    header = f"BULLETIN|{board}|{sender_short_name}|{subject}|"
+    footer = f"|{unique_id}"
+    _send_sync_with_cont(
+        header, footer, content, unique_id,
+        cont_prefix=f"BULLETINCONT|{unique_id}|",
+        bbs_nodes=bbs_nodes, interface=interface,
+    )
 
 
 def send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, content, unique_id, bbs_nodes,
                            interface):
-    message = f"MAIL|{sender_id}|{sender_short_name}|{recipient_id}|{subject}|{content}|{unique_id}"
-    logging.info(f"SERVER SYNC: Syncing new mail message {subject} sent from {sender_short_name} to other BBS systems.")
-    for node_id in bbs_nodes:
-        send_sync_message(message, node_id, interface)
+    logging.info(f"SERVER SYNC: Syncing new mail message '{subject}' from {sender_short_name} to peers.")
+    header = f"MAIL|{sender_id}|{sender_short_name}|{recipient_id}|{subject}|"
+    footer = f"|{unique_id}"
+    _send_sync_with_cont(
+        header, footer, content, unique_id,
+        cont_prefix=f"MAILCONT|{unique_id}|",
+        bbs_nodes=bbs_nodes, interface=interface,
+    )
 
 
 def send_delete_bulletin_to_bbs_nodes(unique_id, bbs_nodes, interface):
     message = f"DELETE_BULLETIN|{unique_id}"
     for node_id in bbs_nodes:
-        send_sync_message(message, node_id, interface)
+        _send_one_sync(message, node_id, interface)
 
 
 def send_delete_mail_to_bbs_nodes(unique_id, bbs_nodes, interface):
     message = f"DELETE_MAIL|{unique_id}"
-    logging.info(f"SERVER SYNC: Sending delete mail sync message with unique_id: {unique_id}")
+    logging.info(f"SERVER SYNC: Sending delete mail sync for unique_id: {unique_id}")
     for node_id in bbs_nodes:
-        send_sync_message(message, node_id, interface)
+        _send_one_sync(message, node_id, interface)
 
 
 def send_channel_to_bbs_nodes(name, url, bbs_nodes, interface):
     message = f"CHANNEL|{name}|{url}"
     for node_id in bbs_nodes:
-        send_sync_message(message, node_id, interface)
+        _send_one_sync(message, node_id, interface)
 
 
-def send_sync_message(message, destination, interface, raw_chunk_size=90, pause_seconds=0.75):
-    """Send sync payload safely; long payloads are framed as reassemblable chunks."""
+def _send_one_sync(message, destination, interface, pause_seconds=0.75):
+    """Send a single sync packet directly to destination (no chunking)."""
     try:
-        message_bytes = message.encode('utf-8')
-    except Exception:
-        logging.info("SYNC SEND ERROR: Unable to encode payload")
-        return
+        interface.sendText(
+            text=message,
+            destinationId=destination,
+            wantAck=True,
+            wantResponse=False,
+        )
+    except Exception as e:
+        logging.info(f"SYNC SEND ERROR {e}")
+    time.sleep(pause_seconds)
 
-    # Small payloads are sent as a single legacy message for compatibility.
-    if len(message) <= 180:
-        try:
-            interface.sendText(
-                text=message,
-                destinationId=destination,
-                wantAck=True,
-                wantResponse=False,
-            )
-        except Exception as e:
-            logging.info(f"SYNC SEND ERROR {e}")
-        time.sleep(pause_seconds)
-        return
 
-    chunks = [message_bytes[i:i + raw_chunk_size] for i in range(0, len(message_bytes), raw_chunk_size)]
-    total = len(chunks)
-    message_id = uuid.uuid4().hex[:12]
+def _send_sync_with_cont(header, footer, content, unique_id, cont_prefix, bbs_nodes, interface, pause_seconds=0.75):
+    """
+    Send a sync message whose content may exceed one Meshtastic packet.
 
-    for index, chunk in enumerate(chunks, start=1):
-        payload = base64.b64encode(chunk).decode('ascii')
-        framed = f"SYNCCHUNK|{message_id}|{index}|{total}|{payload}"
-        try:
-            interface.sendText(
-                text=framed,
-                destinationId=destination,
-                wantAck=True,
-                wantResponse=False,
-            )
-        except Exception as e:
-            logging.info(f"SYNC SEND ERROR {e}")
+    Strategy (graceful degradation — no all-or-nothing failure):
+      1. Pack as much content as fits into the first packet alongside the
+         mandatory header/footer fields.  That packet is always a fully valid,
+         immediately parseable sync record.
+      2. Any remaining content is sent as independent BULLETINCONT / MAILCONT
+         follow-up packets.  Each is self-contained; if one is lost only a
+         slice of content is missing, not the entire record.
+    """
+    header_bytes = header.encode('utf-8')
+    footer_bytes = footer.encode('utf-8')
+    cont_prefix_bytes = cont_prefix.encode('utf-8')
+    content_bytes = content.encode('utf-8')
 
-        time.sleep(pause_seconds)
+    # How many content bytes can fit in the first (primary) packet?
+    max_first = _MESHTASTIC_MAX_BYTES - len(header_bytes) - len(footer_bytes)
+    max_first = max(10, max_first)
+
+    first_content_bytes = content_bytes[:max_first]
+    # Decode back safely; 'replace' avoids splitting a multi-byte char
+    first_content = first_content_bytes.decode('utf-8', errors='replace')
+    first_msg = header + first_content + footer
+
+    for node_id in bbs_nodes:
+        _send_one_sync(first_msg, node_id, interface, pause_seconds)
+
+    # Send continuation packets for any remaining content
+    remaining = content_bytes[max_first:]
+    max_cont = _MESHTASTIC_MAX_BYTES - len(cont_prefix_bytes)
+    max_cont = max(10, max_cont)
+
+    while remaining:
+        chunk = remaining[:max_cont].decode('utf-8', errors='replace')
+        remaining = remaining[max_cont:]
+        cont_msg = cont_prefix + chunk
+        for node_id in bbs_nodes:
+            _send_one_sync(cont_msg, node_id, interface, pause_seconds)
