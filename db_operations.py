@@ -436,6 +436,46 @@ def get_mismatched_peer_nodes(expected_peer_nodes=None) -> set:
     return mismatched
 
 
+def get_mismatched_peer_scopes(expected_peer_nodes=None) -> dict:
+    """Return mismatched scopes per peer for targeted hash manifest requests."""
+    local = get_local_record_counts()
+    expected = set(expected_peer_nodes or [])
+    by_peer = {}
+
+    for row in get_peer_sync_states():
+        peer = str(row[0])
+        if expected and peer not in expected:
+            continue
+
+        scopes = []
+        pb, pm, pc, pz, pp, ps = (int(row[1]), int(row[2]), int(row[3]), int(row[4]), int(row[5]), int(row[6]))
+        phb, phm, phc, phz, php, phs = (
+            str(row[7] or ''), str(row[8] or ''), str(row[9] or ''),
+            str(row[10] or ''), str(row[11] or ''), str(row[12] or ''),
+        )
+
+        if pb != int(local.get('bulletins', 0)) or (phb and phb != str(local.get('bulletins_hash', ''))):
+            scopes.append('bulletins')
+        if pm != int(local.get('mail', 0)) or (phm and phm != str(local.get('mail_hash', ''))):
+            scopes.append('mail')
+        if pc != int(local.get('channels', 0)) or (phc and phc != str(local.get('channels_hash', ''))):
+            scopes.append('channels')
+        if pz != int(local.get('zork_saves', 0)) or (phz and phz != str(local.get('zork_saves_hash', ''))):
+            scopes.append('zork_saves')
+        if pp != int(local.get('profiles', 0)) or (php and php != str(local.get('profiles_hash', ''))):
+            scopes.append('profiles')
+        if ps != int(local.get('game_scores', 0)) or (phs and phs != str(local.get('game_scores_hash', ''))):
+            scopes.append('game_scores')
+
+        if scopes:
+            # Tombstones are only relevant for content scopes where deletion drift exists.
+            if 'bulletins' in scopes or 'mail' in scopes:
+                scopes.append('tombstones')
+            by_peer[peer] = scopes
+
+    return by_peer
+
+
 def _ensure_local_only_columns(cursor) -> None:
     """Backfill schema changes on existing deployments."""
     cursor.execute("PRAGMA table_info(bulletins)")
