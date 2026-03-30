@@ -13,7 +13,10 @@ other BBS servers listed in the config.ini file.
 """
 
 import logging
+import json
+import os
 import time
+from datetime import datetime, timezone
 
 from config_init import initialize_config, get_interface, init_cli_parser, merge_config
 from db_operations import initialize_database
@@ -36,6 +39,58 @@ js8call_handler.setLevel(logging.DEBUG)
 js8call_formatter = logging.Formatter('%(asctime)s - JS8Call - %(levelname)s - %(message)s', '%Y-%m-%d %H:%M:%S')
 js8call_handler.setFormatter(js8call_formatter)
 js8call_logger.addHandler(js8call_handler)
+
+
+def get_runtime_diagnostics_path() -> str:
+    return os.getenv('BBS_RUNTIME_DIAG_PATH', 'runtime_diagnostics.json')
+
+
+def write_runtime_diagnostics_snapshot(interface, system_config: dict) -> None:
+    snapshot = {
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+        'interface_attached': True,
+        'interface_type': interface.__class__.__name__,
+        'mesh_node_count': None,
+        'local_node_id': None,
+        'local_short_name': None,
+        'local_long_name': None,
+        'bbs_nodes': list(getattr(interface, 'bbs_nodes', system_config.get('bbs_nodes', [])) or []),
+        'allowed_nodes': list(getattr(interface, 'allowed_nodes', system_config.get('allowed_nodes', [])) or []),
+        'error': '',
+    }
+
+    try:
+        nodes = getattr(interface, 'nodes', None)
+        if isinstance(nodes, dict):
+            snapshot['mesh_node_count'] = len(nodes)
+
+        my_info = None
+        get_my_info = getattr(interface, 'getMyNodeInfo', None)
+        if callable(get_my_info):
+            my_info = get_my_info()
+
+        if isinstance(my_info, dict):
+            node_num = my_info.get('num')
+            user = my_info.get('user', {}) if isinstance(my_info.get('user'), dict) else {}
+            if node_num is not None:
+                snapshot['local_node_id'] = str(node_num)
+            if user.get('id'):
+                snapshot['local_node_id'] = str(user.get('id'))
+            if user.get('shortName'):
+                snapshot['local_short_name'] = str(user.get('shortName'))
+            if user.get('longName'):
+                snapshot['local_long_name'] = str(user.get('longName'))
+    except Exception as exc:
+        snapshot['error'] = f'Runtime snapshot collection failed: {exc}'
+
+    snapshot_path = get_runtime_diagnostics_path()
+    tmp_path = f"{snapshot_path}.tmp"
+    try:
+        with open(tmp_path, 'w', encoding='utf-8') as snapshot_file:
+            json.dump(snapshot, snapshot_file)
+        os.replace(tmp_path, snapshot_path)
+    except Exception as exc:
+        logging.debug(f"Unable to write runtime diagnostics snapshot: {exc}")
 
 def display_banner():
     banner = """
@@ -62,6 +117,7 @@ def main():
     interface = get_interface(system_config)
     interface.bbs_nodes = system_config['bbs_nodes']
     interface.allowed_nodes = system_config['allowed_nodes']
+    write_runtime_diagnostics_snapshot(interface, system_config)
 
     logging.info(f"TC²-BBS is running on {system_config['interface_type']} interface...")
 
@@ -80,7 +136,11 @@ def main():
         js8call_client.connect()
 
     try:
+        next_diagnostics_write = 0.0
         while True:
+            if time.time() >= next_diagnostics_write:
+                write_runtime_diagnostics_snapshot(interface, system_config)
+                next_diagnostics_write = time.time() + 30
             time.sleep(1)
 
     except KeyboardInterrupt:
