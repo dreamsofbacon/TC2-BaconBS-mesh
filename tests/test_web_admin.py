@@ -12,6 +12,17 @@ class FakeInterface:
     def __init__(self):
         self.bbs_nodes = []
         self.allowed_nodes = []
+        self.nodes = {"!abcd1234": {"num": 1234}}
+
+    def getMyNodeInfo(self):
+        return {
+            "num": 1234,
+            "user": {
+                "id": "!abcd1234",
+                "shortName": "BBS",
+                "longName": "Bacon BBS",
+            },
+        }
 
 
 class WebAdminSettingsTests(unittest.TestCase):
@@ -73,6 +84,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("Board Settings", page)
         self.assertIn("Sync Settings", page)
         self.assertIn("Admin Credentials", page)
+        self.assertIn("Diagnostics", page)
 
     def test_admin_password_change_persists_across_app_restart(self):
         app = create_app()
@@ -126,6 +138,20 @@ class WebAdminSettingsTests(unittest.TestCase):
         config.read(self.config_path)
         self.assertEqual(config.get("sync", "bbs_nodes"), "!node1,!node2")
         self.assertEqual(config.get("allow_list", "allowed_nodes"), "!allow1,!allow2")
+
+    def test_settings_diagnostics_show_runtime_details(self):
+        app = create_app(runtime_interface=FakeInterface())
+        client = app.test_client()
+
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        settings_response = client.get("/settings")
+        self.assertEqual(settings_response.status_code, 200)
+        page = settings_response.get_data(as_text=True)
+        self.assertIn("Interface attached:</strong> Yes", page)
+        self.assertIn("Local short name:</strong> BBS", page)
+        self.assertIn("Local long name:</strong> Bacon BBS", page)
 
 
 if __name__ == "__main__":
