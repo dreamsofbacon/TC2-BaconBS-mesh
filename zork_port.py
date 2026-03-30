@@ -10,6 +10,7 @@ import threading
 import time
 import tempfile
 import urllib.request
+from typing import List, Optional, Tuple
 
 from db_operations import get_zork_save, upsert_zork_save
 
@@ -142,7 +143,7 @@ class ZorkSession:
                 pass
 
 
-def _get_interpreter_command() -> list[str] | None:
+def _get_interpreter_command() -> Optional[List[str]]:
     global _last_interpreter_candidates
 
     # env var overrides config, config overrides built-in defaults
@@ -423,7 +424,7 @@ _SCORE_RE = re.compile(
 )
 
 
-def parse_game_score(text: str) -> tuple[int, int, int] | None:
+def parse_game_score(text: str) -> Optional[Tuple[int, int, int]]:
     """Parse Infocom score output. Returns (score, max_score, moves) or None."""
     m = _SCORE_RE.search(text)
     if not m:
