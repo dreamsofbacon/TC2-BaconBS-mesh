@@ -1,6 +1,8 @@
 import logging
+import base64
 import re
 import time
+import uuid
 
 user_states = {}
 
@@ -93,7 +95,7 @@ def get_node_short_name(node_id, interface):
 def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface):
     message = f"BULLETIN|{board}|{sender_short_name}|{subject}|{content}|{unique_id}"
     for node_id in bbs_nodes:
-        send_message(message, node_id, interface)
+        send_sync_message(message, node_id, interface)
 
 
 def send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, content, unique_id, bbs_nodes,
@@ -101,23 +103,65 @@ def send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, 
     message = f"MAIL|{sender_id}|{sender_short_name}|{recipient_id}|{subject}|{content}|{unique_id}"
     logging.info(f"SERVER SYNC: Syncing new mail message {subject} sent from {sender_short_name} to other BBS systems.")
     for node_id in bbs_nodes:
-        send_message(message, node_id, interface)
+        send_sync_message(message, node_id, interface)
 
 
 def send_delete_bulletin_to_bbs_nodes(unique_id, bbs_nodes, interface):
     message = f"DELETE_BULLETIN|{unique_id}"
     for node_id in bbs_nodes:
-        send_message(message, node_id, interface)
+        send_sync_message(message, node_id, interface)
 
 
 def send_delete_mail_to_bbs_nodes(unique_id, bbs_nodes, interface):
     message = f"DELETE_MAIL|{unique_id}"
     logging.info(f"SERVER SYNC: Sending delete mail sync message with unique_id: {unique_id}")
     for node_id in bbs_nodes:
-        send_message(message, node_id, interface)
+        send_sync_message(message, node_id, interface)
 
 
 def send_channel_to_bbs_nodes(name, url, bbs_nodes, interface):
     message = f"CHANNEL|{name}|{url}"
     for node_id in bbs_nodes:
-        send_message(message, node_id, interface)
+        send_sync_message(message, node_id, interface)
+
+
+def send_sync_message(message, destination, interface, raw_chunk_size=90, pause_seconds=0.75):
+    """Send sync payload safely; long payloads are framed as reassemblable chunks."""
+    try:
+        message_bytes = message.encode('utf-8')
+    except Exception:
+        logging.info("SYNC SEND ERROR: Unable to encode payload")
+        return
+
+    # Small payloads are sent as a single legacy message for compatibility.
+    if len(message) <= 180:
+        try:
+            interface.sendText(
+                text=message,
+                destinationId=destination,
+                wantAck=True,
+                wantResponse=False,
+            )
+        except Exception as e:
+            logging.info(f"SYNC SEND ERROR {e}")
+        time.sleep(pause_seconds)
+        return
+
+    chunks = [message_bytes[i:i + raw_chunk_size] for i in range(0, len(message_bytes), raw_chunk_size)]
+    total = len(chunks)
+    message_id = uuid.uuid4().hex[:12]
+
+    for index, chunk in enumerate(chunks, start=1):
+        payload = base64.b64encode(chunk).decode('ascii')
+        framed = f"SYNCCHUNK|{message_id}|{index}|{total}|{payload}"
+        try:
+            interface.sendText(
+                text=framed,
+                destinationId=destination,
+                wantAck=True,
+                wantResponse=False,
+            )
+        except Exception as e:
+            logging.info(f"SYNC SEND ERROR {e}")
+
+        time.sleep(pause_seconds)

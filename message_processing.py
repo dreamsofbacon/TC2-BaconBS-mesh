@@ -1,4 +1,6 @@
 import logging
+import base64
+import time
 
 from meshtastic import BROADCAST_NUM
 
@@ -53,6 +55,73 @@ board_action_handlers = {
     "p": lambda sender_id, interface, state: handle_bb_steps(sender_id, 'p', 2, state, interface, None),
     "x": handle_help_command
 }
+
+
+SYNC_CHUNK_PREFIX = "SYNCCHUNK|"
+_sync_chunk_buffers = {}
+
+
+def _prune_old_sync_chunks(ttl_seconds=600):
+    now = time.time()
+    stale_keys = [key for key, value in _sync_chunk_buffers.items() if now - value['updated_at'] > ttl_seconds]
+    for key in stale_keys:
+        _sync_chunk_buffers.pop(key, None)
+
+
+def _consume_sync_chunk(sender_node_id, message_string):
+    """Return a fully reassembled sync payload or None when waiting for more chunks."""
+    if not message_string.startswith(SYNC_CHUNK_PREFIX):
+        return message_string
+
+    _prune_old_sync_chunks()
+
+    parts = message_string.split("|", 4)
+    if len(parts) != 5:
+        logging.warning("Malformed SYNCCHUNK frame ignored")
+        return None
+
+    _, message_id, idx_str, total_str, payload_b64 = parts
+    try:
+        chunk_index = int(idx_str)
+        total_chunks = int(total_str)
+    except ValueError:
+        logging.warning("Malformed SYNCCHUNK sequence metadata ignored")
+        return None
+
+    if total_chunks <= 0 or chunk_index <= 0 or chunk_index > total_chunks:
+        logging.warning("Out-of-range SYNCCHUNK indices ignored")
+        return None
+
+    try:
+        payload_bytes = base64.b64decode(payload_b64.encode('ascii'))
+    except Exception:
+        logging.warning("Malformed SYNCCHUNK payload ignored")
+        return None
+
+    key = (sender_node_id, message_id)
+    entry = _sync_chunk_buffers.get(key)
+    if entry is None:
+        entry = {'total': total_chunks, 'parts': {}, 'updated_at': time.time()}
+        _sync_chunk_buffers[key] = entry
+
+    if entry['total'] != total_chunks:
+        _sync_chunk_buffers.pop(key, None)
+        logging.warning("SYNCCHUNK total mismatch; resetting message buffer")
+        return None
+
+    entry['parts'][chunk_index] = payload_bytes
+    entry['updated_at'] = time.time()
+
+    if len(entry['parts']) < total_chunks:
+        return None
+
+    assembled = b''.join(entry['parts'][i] for i in range(1, total_chunks + 1))
+    _sync_chunk_buffers.pop(key, None)
+    try:
+        return assembled.decode('utf-8')
+    except UnicodeDecodeError:
+        logging.warning("SYNCCHUNK decode failure; dropped reconstructed payload")
+        return None
 
 
 def _auto_update_profile(sender_id, interface):
@@ -237,12 +306,20 @@ def on_receive(packet, interface):
             to_id = packet.get('to')
             sender_node_id = packet['fromId']
 
+            bbs_nodes = interface.bbs_nodes
+            if message_string.startswith(SYNC_CHUNK_PREFIX) and sender_node_id not in bbs_nodes:
+                return
+
+            reconstructed = _consume_sync_chunk(sender_node_id, message_string)
+            if reconstructed is None:
+                return
+            message_string = reconstructed
+
             sender_short_name = get_node_short_name(sender_node_id, interface)
             receiver_short_name = get_node_short_name(get_node_id_from_num(to_id, interface),
                                                       interface) if to_id else "Group Chat"
             logging.info(f"Received message from user '{sender_short_name}' ({sender_node_id}) to {receiver_short_name}: {message_string}")
 
-            bbs_nodes = interface.bbs_nodes
             is_sync_message = any(message_string.startswith(prefix) for prefix in
                                   ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|", "CHANNEL|"])
 

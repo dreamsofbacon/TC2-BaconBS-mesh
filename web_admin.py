@@ -722,6 +722,16 @@ SETTINGS_CONTENT = """
   <p><strong>Configured sync peers:</strong> {{ diagnostics.bbs_nodes_count }}{% if diagnostics.bbs_nodes_text %} ({{ diagnostics.bbs_nodes_text }}){% endif %}</p>
   <p><strong>Configured urgent allow-list:</strong> {{ diagnostics.allowed_nodes_count }}{% if diagnostics.allowed_nodes_text %} ({{ diagnostics.allowed_nodes_text }}){% endif %}</p>
   <p><strong>Bulletin boards:</strong> {{ diagnostics.board_count }} ({{ diagnostics.board_list }})</p>
+  <p><strong>DB sync in progress:</strong> {{ diagnostics.sync_in_progress }}</p>
+  <p><strong>DB sync progress:</strong> {{ diagnostics.sync_progress_percent }}%</p>
+  <p><strong>DB sync remaining:</strong> {{ diagnostics.sync_remaining_items }} / {{ diagnostics.sync_total_items }} items</p>
+  <p><strong>DB sync phase:</strong> {{ diagnostics.sync_current_phase }}</p>
+  <p><strong>DB sync target node(s):</strong> {{ diagnostics.sync_target_nodes_text }}</p>
+  <p><strong>DB sync last update:</strong> {{ diagnostics.sync_last_updated_at }}</p>
+  <p><strong>DB sync result:</strong> {{ diagnostics.sync_last_result }}</p>
+  {% if diagnostics.sync_in_progress == "Yes" %}
+  <p class="muted"><strong>Notice:</strong> Database sync is still running. Some historical posts may not be available yet.</p>
+  {% endif %}
 
   <h3>Database</h3>
   <p><strong>Path:</strong> <code>{{ diagnostics.db_path }}</code></p>
@@ -1689,6 +1699,15 @@ def create_app(runtime_interface=None) -> Flask:
         "allowed_nodes_text": ", ".join(allowed_nodes),
         "board_count": str(len(app.config["BULLETIN_BOARDS"])),
         "board_list": ", ".join(app.config["BULLETIN_BOARDS"]),
+        "sync_in_progress": "No",
+        "sync_progress_percent": "100",
+        "sync_completed_items": "0",
+        "sync_total_items": "0",
+        "sync_remaining_items": "0",
+        "sync_current_phase": "idle",
+        "sync_target_nodes_text": "None",
+        "sync_last_updated_at": "Unavailable",
+        "sync_last_result": "Idle",
         "db_path": app.config["DB_PATH"],
         "bulletins_count": "Unknown",
         "mail_count": "Unknown",
@@ -1751,6 +1770,18 @@ def create_app(runtime_interface=None) -> Flask:
           if isinstance(snapshot.get("allowed_nodes"), list):
             diagnostics["allowed_nodes_count"] = str(len(snapshot["allowed_nodes"]))
             diagnostics["allowed_nodes_text"] = ", ".join(str(node) for node in snapshot["allowed_nodes"])
+
+          diagnostics["sync_in_progress"] = "Yes" if snapshot.get("sync_in_progress", False) else "No"
+          diagnostics["sync_progress_percent"] = str(snapshot.get("sync_progress_percent", 100))
+          diagnostics["sync_completed_items"] = str(snapshot.get("sync_completed_items", 0))
+          diagnostics["sync_total_items"] = str(snapshot.get("sync_total_items", 0))
+          diagnostics["sync_remaining_items"] = str(snapshot.get("sync_remaining_items", 0))
+          diagnostics["sync_current_phase"] = str(snapshot.get("sync_current_phase", "idle"))
+          target_nodes = snapshot.get("sync_target_nodes", [])
+          if isinstance(target_nodes, list) and target_nodes:
+            diagnostics["sync_target_nodes_text"] = ", ".join(str(node) for node in target_nodes)
+          diagnostics["sync_last_updated_at"] = str(snapshot.get("sync_last_updated_at", "Unavailable"))
+          diagnostics["sync_last_result"] = str(snapshot.get("sync_last_result", "Idle"))
 
           if snapshot.get("error"):
             diagnostics["error"] = str(snapshot.get("error"))

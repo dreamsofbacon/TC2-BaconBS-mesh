@@ -19,7 +19,7 @@ import time
 from datetime import datetime, timezone
 
 from config_init import initialize_config, get_interface, init_cli_parser, merge_config
-from db_operations import initialize_database, sync_full_database_to_nodes
+from db_operations import initialize_database, sync_full_database_to_nodes, get_sync_progress
 from js8call_integration import JS8CallClient
 from message_processing import on_receive
 from pubsub import pub
@@ -46,6 +46,7 @@ def get_runtime_diagnostics_path() -> str:
 
 
 def write_runtime_diagnostics_snapshot(interface, system_config: dict) -> None:
+    sync_progress = get_sync_progress()
     snapshot = {
         'updated_at': datetime.now(timezone.utc).isoformat(),
         'interface_attached': True,
@@ -56,6 +57,16 @@ def write_runtime_diagnostics_snapshot(interface, system_config: dict) -> None:
         'local_long_name': None,
         'bbs_nodes': list(getattr(interface, 'bbs_nodes', system_config.get('bbs_nodes', [])) or []),
         'allowed_nodes': list(getattr(interface, 'allowed_nodes', system_config.get('allowed_nodes', [])) or []),
+        'sync_in_progress': bool(sync_progress.get('in_progress', False)),
+        'sync_progress_percent': int(sync_progress.get('progress_percent', 100)),
+        'sync_completed_items': int(sync_progress.get('completed_items', 0)),
+        'sync_total_items': int(sync_progress.get('total_items', 0)),
+        'sync_remaining_items': int(sync_progress.get('remaining_items', 0)),
+        'sync_current_phase': str(sync_progress.get('current_phase', 'idle')),
+        'sync_target_nodes': list(sync_progress.get('target_nodes', [])),
+        'sync_started_at': str(sync_progress.get('started_at', '')),
+        'sync_last_updated_at': str(sync_progress.get('last_updated_at', '')),
+        'sync_last_result': str(sync_progress.get('last_result', '')),
         'error': '',
     }
 
@@ -138,13 +149,14 @@ def main():
     try:
         next_diagnostics_write = 0.0
         next_node_sync_check = 0.0
-        synced_nodes = set()  # Track which nodes have been synced with
+        synced_nodes = set(interface.bbs_nodes or [])
         
         while True:
             # Check and sync diagnostics every 30 seconds
             if time.time() >= next_diagnostics_write:
                 write_runtime_diagnostics_snapshot(interface, system_config)
-                next_diagnostics_write = time.time() + 30
+                sync_progress = get_sync_progress()
+                next_diagnostics_write = time.time() + (5 if sync_progress.get('in_progress') else 30)
             
             # Check for new BBS nodes to sync with every 60 seconds
             if time.time() >= next_node_sync_check:
@@ -153,13 +165,14 @@ def main():
                 
                 if new_nodes:
                     logging.info(f"Detected {len(new_nodes)} new BBS node(s): {new_nodes}")
-                    try:
-                        result = sync_full_database_to_nodes(list(new_nodes), interface, delay_ms=500)
-                        logging.info(f"Full database sync complete: {result['total_messages']} messages sent to new node(s)")
-                        synced_nodes.update(new_nodes)
-                    except Exception as e:
-                        logging.error(f"Error syncing database to new nodes: {e}")
-                        # Don't mark as synced on error; we'll retry next cycle
+                    for new_node in sorted(new_nodes, key=str):
+                        try:
+                            result = sync_full_database_to_nodes([new_node], interface, delay_ms=500)
+                            logging.info(f"Full database sync complete for {new_node}: {result['total_messages']} messages sent")
+                            synced_nodes.add(new_node)
+                        except Exception as e:
+                            logging.error(f"Error syncing database to new node {new_node}: {e}")
+                            # Don't mark as synced on error; we'll retry next cycle
                 
                 next_node_sync_check = time.time() + 60
             
