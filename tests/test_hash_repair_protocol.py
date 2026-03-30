@@ -223,6 +223,20 @@ class HashRepairProtocolTests(unittest.TestCase):
 
         self.assertIn("HASHMISS|bulletins|uid-remote-z", iface.sent_texts)
 
+    def test_syncstate_mismatch_triggers_immediate_hash_requests(self):
+        iface = _DummyInterface()
+
+        message_processing.process_message(
+            sender_id=1,
+            message="SYNCSTATE|1|0|0|0|0|0|peer-b-hash|||||",
+            interface=iface,
+            is_sync_message=True,
+            sender_node_id="!peer1",
+        )
+
+        self.assertIn("HASHREQ|bulletins", iface.sent_texts)
+        self.assertIn("HASHREQ|tombstones", iface.sent_texts)
+
 
 if __name__ == "__main__":
     unittest.main()
