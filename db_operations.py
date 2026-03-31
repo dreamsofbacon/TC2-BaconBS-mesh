@@ -329,6 +329,14 @@ def initialize_database():
                     tombstone_key TEXT PRIMARY KEY,
                     deleted_at TEXT NOT NULL
                 );''')
+    c.execute('''CREATE TABLE IF NOT EXISTS sync_transmissions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transmission_time TEXT NOT NULL,
+                    frame_type TEXT NOT NULL,
+                    destination_node_id TEXT,
+                    frame_size_bytes INTEGER,
+                    is_continuation INTEGER NOT NULL DEFAULT 0
+                );''')
     _ensure_local_only_columns(c)
     _dedupe_channels_and_create_unique_index(c)
     conn.commit()
@@ -343,6 +351,102 @@ def _ensure_deleted_sync_tombstones_table() -> None:
                     deleted_at TEXT NOT NULL
                 );''')
     conn.commit()
+
+
+def _ensure_sync_transmissions_table() -> None:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS sync_transmissions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transmission_time TEXT NOT NULL,
+                    frame_type TEXT NOT NULL,
+                    destination_node_id TEXT,
+                    frame_size_bytes INTEGER,
+                    is_continuation INTEGER NOT NULL DEFAULT 0
+                );''')
+    conn.commit()
+
+
+def log_sync_transmission(message: str, destination_node_id: Optional[str], frame_size_bytes: int, is_continuation: bool = False) -> None:
+    """Log a sync frame transmission for monitoring and optimization."""
+    _ensure_sync_transmissions_table()
+    try:
+        # Extract frame type from message (e.g. "SYNCSTATE|..." -> "SYNCSTATE")
+        frame_type = message.split('|')[0] if '|' in message else message[:20]
+        transmission_time = datetime.utcnow().isoformat() + 'Z'
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            '''INSERT INTO sync_transmissions
+               (transmission_time, frame_type, destination_node_id, frame_size_bytes, is_continuation)
+               VALUES (?, ?, ?, ?, ?)''',
+            (transmission_time, frame_type, destination_node_id, frame_size_bytes, 1 if is_continuation else 0)
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+
+def get_sync_transmission_stats(since_seconds: int = 3600) -> dict:
+    """Get transmission statistics over the past N seconds."""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        cutoff_time = (datetime.utcnow() - time.timedelta(seconds=since_seconds)).isoformat() + 'Z'
+        
+        # Total transmissions
+        c.execute(
+            "SELECT COUNT(*) FROM sync_transmissions WHERE transmission_time > ?",
+            (cutoff_time,)
+        )
+        total_transmissions = c.fetchone()[0] or 0
+        
+        # Breakdown by frame type
+        c.execute(
+            "SELECT frame_type, COUNT(*) as count FROM sync_transmissions WHERE transmission_time > ? GROUP BY frame_type ORDER BY count DESC",
+            (cutoff_time,)
+        )
+        frame_breakdown = {row[0]: row[1] for row in c.fetchall()}
+        
+        # Breakdown by destination node
+        c.execute(
+            "SELECT destination_node_id, COUNT(*) as count FROM sync_transmissions WHERE transmission_time > ? GROUP BY destination_node_id ORDER BY count DESC",
+            (cutoff_time,)
+        )
+        node_breakdown = {row[0]: row[1] for row in c.fetchall()}
+        
+        # Total bytes sent
+        c.execute(
+            "SELECT SUM(frame_size_bytes) FROM sync_transmissions WHERE transmission_time > ?",
+            (cutoff_time,)
+        )
+        total_bytes = c.fetchone()[0] or 0
+        
+        return {
+            'total_transmissions': total_transmissions,
+            'total_bytes': total_bytes,
+            'frame_breakdown': frame_breakdown,
+            'node_breakdown': node_breakdown,
+            'period_seconds': since_seconds,
+        }
+    except Exception as e:
+        return {}
+
+
+def prune_old_sync_transmissions(max_rows: int = 10000) -> None:
+    """Keep sync_transmissions table bounded in size."""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            '''DELETE FROM sync_transmissions WHERE id NOT IN (
+               SELECT id FROM sync_transmissions ORDER BY id DESC LIMIT ?)
+            ''',
+            (max_rows,)
+        )
+        conn.commit()
+    except Exception:
+        pass
 
 
 def _build_tombstone_key(scope: str, record_key: str) -> str:

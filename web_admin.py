@@ -334,7 +334,7 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('clients_summary') }}\">Clients</a>
       <a href=\"{{ url_for('settings_page') }}\">Settings</a>
         <button class="terminal-btn" data-filter="rx" onclick="setFilter(this,'rx')">RX</button>
-      <a href=\"{{ url_for('system_flowchart') }}\">System Flowchart</a>
+      <a href=\"{{ url_for('system_flowchart') }}\">System Flowchart</a>\n      <a href=\"{{ url_for('system_transmissions') }}\">Transmission Stats</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
       <div class="nav-right">
         <button class="terminal-btn" data-filter="log" onclick="setFilter(this,'log')">LOG</button>
@@ -2687,6 +2687,98 @@ def create_app(runtime_interface=None) -> Flask:
         comment_branches=comment_branches,
       )
       return render_template_string(BASE_TEMPLATE, title="System Flowchart", content=content, show_nav=True)
+
+    @app.route("/system/transmissions")
+    @login_required
+    def system_transmissions():
+        from db_operations import get_sync_transmission_stats, prune_old_sync_transmissions
+        
+        prune_old_sync_transmissions(max_rows=10000)
+        
+        # Get stats for last hour, last 24 hours, and all-time
+        stats_1h = get_sync_transmission_stats(since_seconds=3600)
+        stats_24h = get_sync_transmission_stats(since_seconds=86400)
+        
+        html = """
+        <h2>Sync Transmission Log</h2>
+        <p>Track sync performance and optimize transmission efficiency.</p>
+        
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 20px 0;">
+            <div style="border: 1px solid #ddd; padding: 15px; border-radius: 5px;">
+                <h3>Last Hour</h3>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr style="border-bottom: 1px solid #ddd;">
+                        <td style="padding: 8px;"><strong>Total Transmissions:</strong></td>
+                        <td style="padding: 8px; text-align: right;"><strong>{}</strong></td>
+                    </tr>
+                    <tr style="border-bottom: 1px solid #ddd;">
+                        <td style="padding: 8px;"><strong>Total Bytes:</strong></td>
+                        <td style="padding: 8px; text-align: right;"><strong>{:,}</strong></td>
+                    </tr>
+                </table>
+                <h4>By Frame Type:</h4>
+                <ul style="margin: 10px 0;">
+        """.format(stats_1h.get('total_transmissions', 0), stats_1h.get('total_bytes', 0))
+        
+        for frame_type, count in sorted(stats_1h.get('frame_breakdown', {}).items(), key=lambda x: -x[1])[:10]:
+            html += f"<li><strong>{frame_type}:</strong> {count} frames</li>"
+        
+        html += """
+                </ul>
+                <h4>By Node:</h4>
+                <ul style="margin: 10px 0;">
+        """
+        
+        for node_id, count in sorted(stats_1h.get('node_breakdown', {}).items(), key=lambda x: -x[1])[:5]:
+            html += f"<li><strong>{node_id or 'broadcast'}:</strong> {count} frames</li>"
+        
+        html += """
+                </ul>
+            </div>
+            <div style="border: 1px solid #ddd; padding: 15px; border-radius: 5px;">
+                <h3>Last 24 Hours</h3>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr style="border-bottom: 1px solid #ddd;">
+                        <td style="padding: 8px;"><strong>Total Transmissions:</strong></td>
+                        <td style="padding: 8px; text-align: right;"><strong>{}</strong></td>
+                    </tr>
+                    <tr style="border-bottom: 1px solid #ddd;">
+                        <td style="padding: 8px;"><strong>Total Bytes:</strong></td>
+                        <td style="padding: 8px; text-align: right;"><strong>{:,}</strong></td>
+                    </tr>
+                </table>
+                <h4>By Frame Type:</h4>
+                <ul style="margin: 10px 0;">
+        """.format(stats_24h.get('total_transmissions', 0), stats_24h.get('total_bytes', 0))
+        
+        for frame_type, count in sorted(stats_24h.get('frame_breakdown', {}).items(), key=lambda x: -x[1])[:10]:
+            html += f"<li><strong>{frame_type}:</strong> {count} frames</li>"
+        
+        html += """
+                </ul>
+                <h4>By Node:</h4>
+                <ul style="margin: 10px 0;">
+        """
+        
+        for node_id, count in sorted(stats_24h.get('node_breakdown', {}).items(), key=lambda x: -x[1])[:5]:
+            html += f"<li><strong>{node_id or 'broadcast'}:</strong> {count} frames</li>"
+        
+        html += """
+                </ul>
+            </div>
+        </div>
+        
+        <h3>Optimization Tips</h3>
+        <ul>
+            <li>After wiping the database, watch this page to see baseline sync transmissions</li>
+            <li>High HASHREQ/HASHREC counts may indicate compression is disabled or peers keep mismatching</li>
+            <li>Enable turbo mode with <code>BBS_SYNC_TURBO=1</code> to reduce pauses between frames</li>
+            <li>Set <code>BBS_HASH_MANIFEST_COMPRESSION=1</code> to enable HASHZ compression (default)</li>
+        </ul>
+        """
+        
+        content = html
+        return render_template_string(BASE_TEMPLATE, title="Transmission Stats", content=content, show_nav=True)
 
     @app.route("/<table>")
     @login_required
