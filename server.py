@@ -64,6 +64,10 @@ def get_force_check_trigger_path() -> str:
     return os.getenv('BBS_FORCE_CHECK_TRIGGER_PATH', 'force_check.trigger')
 
 
+def get_peer_resync_trigger_path() -> str:
+    return os.getenv('BBS_PEER_RESYNC_TRIGGER_PATH', 'resync_peer.trigger')
+
+
 def read_sync_interval_minutes(config_path: str, default_minutes: int = 5) -> int:
     cfg = configparser.ConfigParser()
     cfg.read(config_path)
@@ -184,6 +188,7 @@ def main():
     config_path = system_config.get('config_file', 'config.ini')
     trigger_path = get_manual_sync_trigger_path()
     force_check_trigger_path = get_force_check_trigger_path()
+    peer_resync_trigger_path = get_peer_resync_trigger_path()
     write_runtime_diagnostics_snapshot(interface, system_config)
 
     logging.info(f"TC²-BBS is running on {system_config['interface_type']} interface...")
@@ -213,6 +218,7 @@ def main():
         last_schedule_epoch = 0
         last_manual_trigger_mtime = 0.0
         last_force_check_trigger_mtime = 0.0
+        last_peer_resync_trigger_mtime = 0.0
         mismatch_resync_cooldown_seconds = 300
         last_mismatch_resync_at = {}
         mismatch_attempt_counts = {}
@@ -252,6 +258,7 @@ def main():
 
                 manual_triggered = False
                 force_check_triggered = False
+                peer_resync_triggered_node = None
                 try:
                     if os.path.exists(trigger_path):
                         trigger_mtime = os.path.getmtime(trigger_path)
@@ -272,12 +279,34 @@ def main():
                 except Exception as exc:
                     logging.debug(f"Unable to process force-check trigger: {exc}")
 
+                try:
+                    if os.path.exists(peer_resync_trigger_path):
+                        trigger_mtime = os.path.getmtime(peer_resync_trigger_path)
+                        if trigger_mtime > last_peer_resync_trigger_mtime:
+                            last_peer_resync_trigger_mtime = trigger_mtime
+                            with open(peer_resync_trigger_path, 'r') as _f:
+                                _peer_id = _f.read().strip()
+                            os.remove(peer_resync_trigger_path)
+                            if _peer_id:
+                                peer_resync_triggered_node = _peer_id
+                except Exception as exc:
+                    logging.debug(f"Unable to process peer resync trigger: {exc}")
+
                 sync_due = (last_schedule_epoch == 0) or (now >= (last_schedule_epoch + (sync_interval_minutes * 60)))
 
                 if force_check_triggered:
                     force_mismatch_check = True
                     system_config['sync_last_trigger_reason'] = 'force_check'
                     logging.info("Force mismatch check requested from web admin")
+
+                if peer_resync_triggered_node:
+                    synced_nodes.discard(peer_resync_triggered_node)
+                    pending_sync_nodes.discard(peer_resync_triggered_node)
+                    mismatch_attempt_counts.pop(peer_resync_triggered_node, None)
+                    last_mismatch_resync_at.pop(peer_resync_triggered_node, None)
+                    force_mismatch_check = True
+                    system_config['sync_last_trigger_reason'] = 'peer_resync'
+                    logging.info(f"Peer full-resync requested for {peer_resync_triggered_node}; cleared from synced set")
 
                 if (manual_triggered or sync_due) and not pending_sync_nodes:
                     last_schedule_epoch = now

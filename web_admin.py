@@ -122,6 +122,20 @@ def request_force_check_trigger() -> None:
   os.replace(tmp_path, trigger_path)
 
 
+def get_peer_resync_trigger_path() -> str:
+  return os.getenv("BBS_PEER_RESYNC_TRIGGER_PATH", "resync_peer.trigger")
+
+
+def request_peer_resync_trigger(peer_node_id: str) -> None:
+  """Write a trigger file containing the peer node ID so server.py clears it
+  from its in-memory synced_nodes set and runs a fresh full sync for that peer."""
+  trigger_path = get_peer_resync_trigger_path()
+  tmp_path = f"{trigger_path}.tmp"
+  with open(tmp_path, "w", encoding="utf-8") as trigger_file:
+    trigger_file.write(str(peer_node_id).strip())
+  os.replace(tmp_path, trigger_path)
+
+
 def load_runtime_snapshot(snapshot_path: str) -> dict:
   if not os.path.exists(snapshot_path):
     return {}
@@ -911,6 +925,16 @@ SETTINGS_CONTENT = """
     <input type=\"hidden\" name=\"settings_section\" value=\"force_check\">
     <button class=\"btn\" type=\"submit\">Force Mismatch Check Now</button>
   </form>
+
+  <hr>
+  <h3 style=\"margin-top: 16px;\">Force Full Resync to Peer</h3>
+  <p class=\"muted\">Use this when a peer node was wiped and rebuilt and its game data or other content is not converging via normal hash repair. This clears the in-memory sync cache for that peer and triggers a complete database push to it.</p>
+  <form method=\"post\" action=\"{{ url_for('settings_page') }}#sync\" style=\"margin-top: 8px;\">
+    <input type=\"hidden\" name=\"settings_section\" value=\"peer_resync\">
+    <label>Peer Node ID</label><br>
+    <input type=\"text\" name=\"peer_node_id\" placeholder=\"e.g. !a1b2c3d4\" style=\"width:260px;\" required>
+    <button class=\"btn\" type=\"submit\" style=\"margin-left: 8px;\">Force Full Resync to Peer</button>
+  </form>
 </div>
 
 <div class=\"card\" id=\"admin\" style=\"max-width: 600px;\">
@@ -997,6 +1021,8 @@ SETTINGS_CONTENT = """
   <p><strong>Bulletins:</strong> {{ diagnostics.bulletins_count }}</p>
   <p><strong>Mail:</strong> {{ diagnostics.mail_count }}</p>
   <p><strong>Channels:</strong> {{ diagnostics.channels_count }}</p>
+  <p><strong>Zork saves:</strong> {{ diagnostics.zork_saves_count }}</p>
+  <p><strong>Game scores:</strong> {{ diagnostics.game_scores_count }}</p>
   <p><strong>Connection events:</strong> {{ diagnostics.connection_events_count }}</p>
   <p><strong>Last connection event:</strong> {{ diagnostics.last_connection_event }}</p>
   {% if diagnostics.error %}
@@ -2189,6 +2215,8 @@ def create_app(runtime_interface=None) -> Flask:
         "bulletins_count": "Unknown",
         "mail_count": "Unknown",
         "channels_count": "Unknown",
+        "zork_saves_count": "Unknown",
+        "game_scores_count": "Unknown",
         "connection_events_count": "Unknown",
         "last_connection_event": "None",
         "error": "",
@@ -2283,7 +2311,9 @@ def create_app(runtime_interface=None) -> Flask:
           cursor.execute("SELECT COUNT(*) FROM channels")
           diagnostics["channels_count"] = str(cursor.fetchone()[0])
           cursor.execute("SELECT COUNT(*) FROM zork_saves")
-          zork_count = int(cursor.fetchone()[0])
+          diagnostics["zork_saves_count"] = str(cursor.fetchone()[0])
+          cursor.execute("SELECT COUNT(*) FROM game_scores")
+          diagnostics["game_scores_count"] = str(cursor.fetchone()[0])
           cursor.execute("SELECT COUNT(*) FROM connection_events")
           diagnostics["connection_events_count"] = str(cursor.fetchone()[0])
           cursor.execute("SELECT event_time, message_type, event_text FROM connection_events ORDER BY id DESC LIMIT 1")
@@ -2436,6 +2466,15 @@ def create_app(runtime_interface=None) -> Flask:
           flash("Mismatch check requested. The server will run targeted hash checks shortly.", "success")
           return redirect(url_for("settings_page") + "#sync")
 
+        if section == "peer_resync":
+          peer_node_id = request.form.get("peer_node_id", "").strip()
+          if not peer_node_id:
+            flash("Peer node ID is required.", "error")
+            return redirect(url_for("settings_page") + "#sync")
+          request_peer_resync_trigger(peer_node_id)
+          flash(f"Full resync queued for peer {peer_node_id}. The server will initiate a complete database push to that peer shortly.", "success")
+          return redirect(url_for("settings_page") + "#sync")
+
         if section == "wipe_database":
           confirmation = request.form.get("wipe_confirmation", "").strip()
           if confirmation != "WIPE DATABASE":
@@ -2576,6 +2615,16 @@ def create_app(runtime_interface=None) -> Flask:
     def api_sync_force_check():
       request_force_check_trigger()
       return jsonify({"ok": True, "message": "Force mismatch check requested"})
+
+    @app.post("/api/sync/resync-peer")
+    @login_required
+    def api_sync_resync_peer():
+      data = request.get_json(silent=True) or {}
+      peer_node_id = str(data.get("peer_node_id", "")).strip()
+      if not peer_node_id:
+        return jsonify({"ok": False, "error": "peer_node_id required"}), 400
+      request_peer_resync_trigger(peer_node_id)
+      return jsonify({"ok": True, "message": f"Full resync queued for peer {peer_node_id}"})
 
     @app.post("/api/reorder/<table>")
     @login_required
