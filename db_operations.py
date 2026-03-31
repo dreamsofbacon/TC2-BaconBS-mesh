@@ -7,7 +7,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from meshtastic import BROADCAST_NUM
@@ -383,8 +383,8 @@ def log_sync_transmission(message: str, destination_node_id: Optional[str], fram
             (transmission_time, frame_type, destination_node_id, frame_size_bytes, 1 if is_continuation else 0)
         )
         conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        logging.debug(f"Failed to log sync transmission: {e}")
 
 
 def get_sync_transmission_stats(since_seconds: int = 3600) -> dict:
@@ -392,7 +392,7 @@ def get_sync_transmission_stats(since_seconds: int = 3600) -> dict:
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        cutoff_time = (datetime.utcnow() - time.timedelta(seconds=since_seconds)).isoformat() + 'Z'
+        cutoff_time = (datetime.utcnow() - timedelta(seconds=since_seconds)).isoformat() + 'Z'
         
         # Total transmissions
         c.execute(
@@ -430,6 +430,7 @@ def get_sync_transmission_stats(since_seconds: int = 3600) -> dict:
             'period_seconds': since_seconds,
         }
     except Exception as e:
+        logging.debug(f"Failed to get sync transmission stats: {e}")
         return {}
 
 
@@ -445,8 +446,8 @@ def prune_old_sync_transmissions(max_rows: int = 10000) -> None:
             (max_rows,)
         )
         conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        logging.debug(f"Failed to prune sync transmissions: {e}")
 
 
 def _build_tombstone_key(scope: str, record_key: str) -> str:
