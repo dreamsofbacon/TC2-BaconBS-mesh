@@ -31,7 +31,7 @@ from db_operations import (
     get_local_record_counts,
 )
 from js8call_integration import JS8CallClient
-from message_processing import on_receive
+from message_processing import on_receive, is_hashreq_pending_for_peer_scope
 from pubsub import pub
 from utils import send_hash_request_to_bbs_nodes, send_sync_state_to_bbs_nodes
 
@@ -207,7 +207,7 @@ def main():
         sync_interval_minutes = int(system_config.get('sync_interval_minutes', 5))
         last_schedule_epoch = 0
         last_manual_trigger_mtime = 0.0
-        mismatch_resync_cooldown_seconds = 120
+        mismatch_resync_cooldown_seconds = 300
         last_mismatch_resync_at = {}
         mismatch_attempt_counts = {}
         system_config['sync_last_trigger_reason'] = 'scheduled'
@@ -285,7 +285,8 @@ def main():
                         for node in sorted(eligible, key=str):
                             scopes = mismatch_scopes_by_peer.get(node, ['all'])
                             for scope in scopes:
-                                send_hash_request_to_bbs_nodes([node], interface, scope=scope)
+                                if not is_hashreq_pending_for_peer_scope(node, scope):
+                                    send_hash_request_to_bbs_nodes([node], interface, scope=scope)
                         full_sync_fallback_nodes = set()
                         for node in eligible:
                             last_mismatch_resync_at[node] = now

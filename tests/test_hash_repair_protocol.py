@@ -48,8 +48,7 @@ class HashRepairProtocolTests(unittest.TestCase):
             sender_node_id="!peer1",
         )
 
-        self.assertTrue(any(m.startswith(f"HASHREC|bulletins|{unique_id}|") for m in iface.sent_texts))
-        self.assertIn("HASHEND|bulletins|1", iface.sent_texts)
+        self.assertTrue(any(m.startswith("HASHZ|bulletins|") for m in iface.sent_texts))
 
     def test_hashmiss_resends_requested_bulletin_record(self):
         unique_id = db_operations.add_bulletin(
@@ -116,8 +115,8 @@ class HashRepairProtocolTests(unittest.TestCase):
             sender_node_id="!peer1",
         )
 
-        self.assertTrue(any(m.startswith("HASHREC|channels|") for m in iface.sent_texts))
-        self.assertIn("HASHEND|channels|1", iface.sent_texts)
+        self.assertTrue(any(m.startswith("HASHZ|channels|") for m in iface.sent_texts))
+        self.assertFalse(any(m.startswith("HASHEND|channels|") for m in iface.sent_texts))
 
     def test_hashmiss_channels_resends_requested_channel(self):
         db_operations.add_channel("Tech", "mesh://tech")
@@ -149,8 +148,8 @@ class HashRepairProtocolTests(unittest.TestCase):
             sender_node_id="!peer1",
         )
 
-        self.assertTrue(any(m.startswith("HASHREC|tombstones|bulletins:uid-del-a|") for m in iface.sent_texts))
-        self.assertIn("HASHEND|tombstones|1", iface.sent_texts)
+        self.assertTrue(any(m.startswith("HASHZ|tombstones|") for m in iface.sent_texts))
+        self.assertFalse(any(m.startswith("HASHEND|tombstones|") for m in iface.sent_texts))
 
     def test_hashmiss_tombstone_replays_delete(self):
         db_operations.record_sync_tombstone("mail", "uid-del-mail")
@@ -187,10 +186,10 @@ class HashRepairProtocolTests(unittest.TestCase):
 
         self.assertIn("HASHMISS|tombstones|bulletins:uid-del-b", iface.sent_texts)
 
-    def test_hashreq_uses_compressed_hashz_when_feature_enabled(self):
+    def test_hashreq_falls_back_to_hashrec_when_compression_disabled(self):
         db_operations.add_bulletin("General", "CALL", "Subject", "Body", [], None, unique_id="uid-z-1")
         iface = _DummyInterface()
-        with patch.dict("os.environ", {"BBS_HASH_MANIFEST_COMPRESSION": "1"}):
+        with patch.dict("os.environ", {"BBS_HASH_MANIFEST_COMPRESSION": "0"}):
             message_processing.process_message(
                 sender_id=1,
                 message="HASHREQ|bulletins",
@@ -199,8 +198,8 @@ class HashRepairProtocolTests(unittest.TestCase):
                 sender_node_id="!peer1",
             )
 
-        self.assertTrue(any(m.startswith("HASHZ|bulletins|") for m in iface.sent_texts))
-        self.assertFalse(any(m.startswith("HASHREC|bulletins|") for m in iface.sent_texts))
+        self.assertTrue(any(m.startswith("HASHREC|bulletins|") for m in iface.sent_texts))
+        self.assertFalse(any(m.startswith("HASHZ|bulletins|") for m in iface.sent_texts))
 
     def test_hashz_receive_triggers_hashmiss(self):
         import json
