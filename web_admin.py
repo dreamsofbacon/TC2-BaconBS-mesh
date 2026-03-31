@@ -968,6 +968,8 @@ SETTINGS_CONTENT = """
   <p><strong>Mismatch re-sync attempts:</strong> {{ diagnostics.mismatch_retry_summary }}</p>
   <p><strong>Peer-advertised record counts:</strong></p>
   <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.peer_sync_counts }}</pre>
+  <p><strong>Per-scope mismatch reasons:</strong></p>
+  <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.peer_scope_mismatches }}</pre>
   <p class="muted">Outbound progress can be 100% while peer consistency is mismatched. Peer counts above indicate missing records between nodes.</p>
   {% if diagnostics.mismatch_retry_details %}
   <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.mismatch_retry_details }}</pre>
@@ -2025,6 +2027,85 @@ def create_app(runtime_interface=None) -> Flask:
       flash("Credentials updated successfully. Use your new credentials on next login.", "success")
       return True
 
+    def get_peer_mismatch_snapshot(expected_peer_nodes=None) -> dict:
+      expected = None
+      if expected_peer_nodes is not None:
+        expected = {str(node) for node in expected_peer_nodes if str(node).strip()}
+      snapshot = {
+        "mismatch": False,
+        "mismatch_count": 0,
+        "status_text": "no peer reports",
+        "rows": [],
+        "scope_lines": ["No peer status received yet"],
+      }
+      try:
+        conn = get_db_connection()
+        try:
+          c = conn.cursor()
+          c.execute(
+            "SELECT peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores, "
+            "bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, game_scores_hash, reported_at "
+            "FROM peer_sync_state ORDER BY peer_node_id"
+          )
+          peers = c.fetchall()
+          if expected is not None:
+            peers = [peer for peer in peers if str(peer[0]) in expected]
+          snapshot["rows"] = peers
+          if not peers:
+            return snapshot
+
+          from db_operations import get_local_record_counts, get_mismatched_peer_scopes
+
+          local_hashes = get_local_record_counts()
+          scopes_by_peer = get_mismatched_peer_scopes(expected)
+
+          mismatch_count = 0
+          scope_lines = []
+          for peer in peers:
+            peer_id = str(peer[0])
+            pb = int(peer[1])
+            pm = int(peer[2])
+            pc = int(peer[3])
+            pz = int(peer[4])
+            pp = int(peer[5])
+            ps = int(peer[6])
+            phb = str(peer[7] or "")
+            phm = str(peer[8] or "")
+            phc = str(peer[9] or "")
+            phz = str(peer[10] or "")
+            php = str(peer[11] or "")
+            phs = str(peer[12] or "")
+
+            peer_mismatch = (
+              (pb != int(local_hashes.get("bulletins", 0)))
+              or (pm != int(local_hashes.get("mail", 0)))
+              or (pc != int(local_hashes.get("channels", 0)))
+              or (pz != int(local_hashes.get("zork_saves", 0)))
+              or (pp != int(local_hashes.get("profiles", 0)))
+              or (ps != int(local_hashes.get("game_scores", 0)))
+              or (phb and phb != str(local_hashes.get("bulletins_hash", "")))
+              or (phm and phm != str(local_hashes.get("mail_hash", "")))
+              or (phc and phc != str(local_hashes.get("channels_hash", "")))
+              or (phz and phz != str(local_hashes.get("zork_saves_hash", "")))
+              or (php and php != str(local_hashes.get("profiles_hash", "")))
+              or (phs and phs != str(local_hashes.get("game_scores_hash", "")))
+            )
+            if peer_mismatch:
+              mismatch_count += 1
+            scopes = scopes_by_peer.get(peer_id, [])
+            scope_text = ", ".join(scopes) if scopes else "none"
+            scope_lines.append(f"{peer_id} -> {scope_text}")
+
+          snapshot["mismatch"] = mismatch_count > 0
+          snapshot["mismatch_count"] = mismatch_count
+          snapshot["status_text"] = f"mismatch ({mismatch_count} peer)" if mismatch_count > 0 else "aligned"
+          snapshot["scope_lines"] = scope_lines or ["No mismatched scopes detected"]
+          return snapshot
+        finally:
+          conn.close()
+      except Exception:
+        return snapshot
+
     def build_settings_diagnostics() -> dict[str, str]:
       bbs_nodes, allowed_nodes, sync_interval_minutes = load_sync_settings(app.config["CONFIG_PATH"])
       diagnostics = {
@@ -2055,6 +2136,7 @@ def create_app(runtime_interface=None) -> Flask:
         "sync_next_run_epoch": "0",
         "peer_sync_status": "Unknown",
         "peer_sync_counts": "No peer status received yet",
+        "peer_scope_mismatches": "No peer status received yet",
         "mismatch_retry_summary": "None",
         "mismatch_retry_details": "",
         "db_path": app.config["DB_PATH"],
@@ -2163,22 +2245,8 @@ def create_app(runtime_interface=None) -> Flask:
           if row:
             diagnostics["last_connection_event"] = f"{row['event_time']} | {row['message_type']} | {row['event_text']}"
 
-          cursor.execute(
-            "SELECT peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores, "
-            "bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, game_scores_hash, reported_at "
-            "FROM peer_sync_state ORDER BY peer_node_id"
-          )
-          peer_rows = cursor.fetchall()
+          peer_rows = get_peer_mismatch_snapshot(set(bbs_nodes)).get("rows", [])
           if peer_rows:
-            cursor.execute("SELECT COUNT(*) FROM bulletins WHERE local_only = 0")
-            local_b = int(cursor.fetchone()[0])
-            local_m = int(diagnostics["mail_count"])
-            cursor.execute("SELECT COUNT(*) FROM channels WHERE local_only = 0")
-            local_c = int(cursor.fetchone()[0])
-            cursor.execute("SELECT COUNT(*) FROM user_profiles")
-            local_p = int(cursor.fetchone()[0])
-            cursor.execute("SELECT COUNT(*) FROM game_scores")
-            local_s = int(cursor.fetchone()[0])
             from db_operations import get_local_record_counts
             local_hashes = get_local_record_counts()
             lines = []
@@ -2197,7 +2265,12 @@ def create_app(runtime_interface=None) -> Flask:
               php = str(peer[11] or "")
               phs = str(peer[12] or "")
               peer_mismatch = (
-                (pb != local_b) or (pm != local_m) or (pc != local_c) or (pp != local_p) or (ps != local_s)
+                (pb != int(local_hashes.get("bulletins", 0)))
+                or (pm != int(local_hashes.get("mail", 0)))
+                or (pc != int(local_hashes.get("channels", 0)))
+                or (pz != int(local_hashes.get("zork_saves", 0)))
+                or (pp != int(local_hashes.get("profiles", 0)))
+                or (ps != int(local_hashes.get("game_scores", 0)))
                 or (phb and phb != str(local_hashes.get("bulletins_hash", "")))
                 or (phm and phm != str(local_hashes.get("mail_hash", "")))
                 or (phc and phc != str(local_hashes.get("channels_hash", "")))
@@ -2212,9 +2285,12 @@ def create_app(runtime_interface=None) -> Flask:
               )
             diagnostics["peer_sync_status"] = "Mismatch detected" if mismatch else "Counts aligned"
             diagnostics["peer_sync_counts"] = "\n".join(lines)
+            mismatch_snapshot = get_peer_mismatch_snapshot(set(bbs_nodes))
+            diagnostics["peer_scope_mismatches"] = "\n".join(mismatch_snapshot.get("scope_lines", []))
           else:
             diagnostics["peer_sync_status"] = "No peer reports yet"
             diagnostics["peer_sync_counts"] = "No peer status received yet"
+            diagnostics["peer_scope_mismatches"] = "No peer status received yet"
         finally:
           conn.close()
       except Exception as exc:
@@ -2384,54 +2460,9 @@ def create_app(runtime_interface=None) -> Flask:
 
       peer_mismatch = False
       peer_status_text = "no peer reports"
-      try:
-        conn = get_db_connection()
-        try:
-          c = conn.cursor()
-          c.execute("SELECT COUNT(*) FROM bulletins WHERE local_only = 0")
-          local_b = int(c.fetchone()[0])
-          c.execute("SELECT COUNT(*) FROM mail")
-          local_m = int(c.fetchone()[0])
-          c.execute("SELECT COUNT(*) FROM channels WHERE local_only = 0")
-          local_c = int(c.fetchone()[0])
-          c.execute("SELECT COUNT(*) FROM user_profiles")
-          local_p = int(c.fetchone()[0])
-          c.execute("SELECT COUNT(*) FROM game_scores")
-          local_s = int(c.fetchone()[0])
-          from db_operations import get_local_record_counts
-          local_hashes = get_local_record_counts()
-          c.execute(
-            "SELECT bulletins, mail, channels, profiles, game_scores, "
-            "bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, game_scores_hash "
-            "FROM peer_sync_state"
-          )
-          peers = c.fetchall()
-          if peers:
-            mismatch_count = 0
-            for pb, pm, pc, pp, ps, phb, phm, phc, phz, php, phs in peers:
-              if (
-                int(pb) != local_b
-                or int(pm) != local_m
-                or int(pc) != local_c
-                or int(pp) != local_p
-                or int(ps) != local_s
-                or (str(phb or '') and str(phb) != str(local_hashes.get('bulletins_hash', '')))
-                or (str(phm or '') and str(phm) != str(local_hashes.get('mail_hash', '')))
-                or (str(phc or '') and str(phc) != str(local_hashes.get('channels_hash', '')))
-                or (str(phz or '') and str(phz) != str(local_hashes.get('zork_saves_hash', '')))
-                or (str(php or '') and str(php) != str(local_hashes.get('profiles_hash', '')))
-                or (str(phs or '') and str(phs) != str(local_hashes.get('game_scores_hash', '')))
-              ):
-                mismatch_count += 1
-            peer_mismatch = mismatch_count > 0
-            if peer_mismatch:
-              peer_status_text = f"mismatch ({mismatch_count} peer)"
-            else:
-              peer_status_text = "aligned"
-        finally:
-          conn.close()
-      except Exception:
-        pass
+      mismatch_snapshot = get_peer_mismatch_snapshot()
+      peer_mismatch = bool(mismatch_snapshot.get("mismatch", False))
+      peer_status_text = str(mismatch_snapshot.get("status_text", "no peer reports"))
 
       return jsonify({
         "in_progress": in_progress,
@@ -2443,6 +2474,44 @@ def create_app(runtime_interface=None) -> Flask:
         "last_trigger_reason": last_trigger_reason,
         "peer_mismatch": peer_mismatch,
         "peer_status_text": peer_status_text,
+      })
+
+    @app.get("/api/sync/mismatches")
+    @login_required
+    def api_sync_mismatches():
+      expected_nodes, _, _ = load_sync_settings(app.config["CONFIG_PATH"])
+      snapshot = get_peer_mismatch_snapshot(set(expected_nodes))
+      peers_payload = []
+      scope_map = {}
+      try:
+        from db_operations import get_mismatched_peer_scopes
+        scope_map = get_mismatched_peer_scopes(set(expected_nodes))
+      except Exception:
+        scope_map = {}
+
+      for peer in snapshot.get("rows", []):
+        peer_id = str(peer[0])
+        peers_payload.append({
+          "peer_node_id": peer_id,
+          "reported_at": str(peer[13]),
+          "counts": {
+            "bulletins": int(peer[1]),
+            "mail": int(peer[2]),
+            "channels": int(peer[3]),
+            "zork_saves": int(peer[4]),
+            "profiles": int(peer[5]),
+            "game_scores": int(peer[6]),
+          },
+          "mismatched_scopes": list(scope_map.get(peer_id, [])),
+        })
+
+      return jsonify({
+        "summary": {
+          "mismatch": bool(snapshot.get("mismatch", False)),
+          "mismatch_count": int(snapshot.get("mismatch_count", 0)),
+          "status_text": str(snapshot.get("status_text", "no peer reports")),
+        },
+        "peers": peers_payload,
       })
 
     @app.post("/api/sync/manual")
@@ -2692,93 +2761,232 @@ def create_app(runtime_interface=None) -> Flask:
     @login_required
     def system_transmissions():
         from db_operations import get_sync_transmission_stats, prune_old_sync_transmissions
-        
+
         prune_old_sync_transmissions(max_rows=10000)
-        
-        # Get stats for last hour, last 24 hours, and all-time
-        stats_1h = get_sync_transmission_stats(since_seconds=3600)
+
+        stats_1h  = get_sync_transmission_stats(since_seconds=3600)
         stats_24h = get_sync_transmission_stats(since_seconds=86400)
-        
-        html = """
-        <h2>Sync Transmission Log</h2>
-        <p>Track sync performance and optimize transmission efficiency.</p>
-        
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 20px 0;">
-            <div style="border: 1px solid #ddd; padding: 15px; border-radius: 5px;">
-                <h3>Last Hour</h3>
-                <table style="width: 100%; border-collapse: collapse;">
-                    <tr style="border-bottom: 1px solid #ddd;">
-                        <td style="padding: 8px;"><strong>Total Transmissions:</strong></td>
-                        <td style="padding: 8px; text-align: right;"><strong>{}</strong></td>
-                    </tr>
-                    <tr style="border-bottom: 1px solid #ddd;">
-                        <td style="padding: 8px;"><strong>Total Bytes:</strong></td>
-                        <td style="padding: 8px; text-align: right;"><strong>{:,}</strong></td>
-                    </tr>
-                </table>
-                <h4>By Frame Type:</h4>
-                <ul style="margin: 10px 0;">
-        """.format(stats_1h.get('total_transmissions', 0), stats_1h.get('total_bytes', 0))
-        
-        for frame_type, count in sorted(stats_1h.get('frame_breakdown', {}).items(), key=lambda x: -x[1])[:10]:
-            html += f"<li><strong>{frame_type}:</strong> {count} frames</li>"
-        
-        html += """
-                </ul>
-                <h4>By Node:</h4>
-                <ul style="margin: 10px 0;">
-        """
-        
-        for node_id, count in sorted(stats_1h.get('node_breakdown', {}).items(), key=lambda x: -x[1])[:5]:
-            html += f"<li><strong>{node_id or 'broadcast'}:</strong> {count} frames</li>"
-        
-        html += """
-                </ul>
+
+        # ------------------------------------------------------------------
+        # Frame-type → category mapping
+        # ------------------------------------------------------------------
+        _FRAME_CATEGORIES = {
+            # Game data — potentially heavy (ZORKSAVE is chunked binary save files)
+            'SCORESYNC':       'Game',
+            'ZORKSAVE':        'Game',
+            # Content records
+            'BULLETIN':        'Content',
+            'BULLETINCONT':    'Content',
+            'MAIL':            'Content',
+            'MAILCONT':        'Content',
+            'CHANNEL':         'Content',
+            'DELETE_BULLETIN': 'Content',
+            'DELETE_MAIL':     'Content',
+            # User profiles
+            'PROFILESYNC':     'Profile',
+            # Sync protocol overhead
+            'SYNCSTATE':       'Protocol',
+            'HASHREQ':         'Protocol',
+            'HASHREC':         'Protocol',
+            'HASHZ':           'Protocol',
+            'HASHEND':         'Protocol',
+            'HASHMISS':        'Protocol',
+            'HASHMISS_TOMB':   'Protocol',
+        }
+        _CATEGORY_COLORS = {
+            'Game':     '#e63946',
+            'Content':  '#2a9d8f',
+            'Profile':  '#e9c46a',
+            'Protocol': '#457b9d',
+        }
+        _CATEGORY_ORDER = ['Game', 'Content', 'Profile', 'Protocol', 'Other']
+
+        # ------------------------------------------------------------------
+        # Helper: category summary bar chart (game vs everything else)
+        # ------------------------------------------------------------------
+        def _category_html(stats):
+            total_bytes = stats.get('total_bytes', 0)
+            total_tx    = stats.get('total_transmissions', 0)
+            fb          = stats.get('frame_breakdown', {})
+            fby         = stats.get('frame_bytes', {})
+
+            if not total_tx:
+                return "<p><em>No transmissions recorded in this period.</em></p>"
+
+            # Aggregate by category
+            cat_bytes  = {}
+            cat_counts = {}
+            for ft, cnt in fb.items():
+                cat = _FRAME_CATEGORIES.get(ft, 'Other')
+                cat_bytes[cat]  = cat_bytes.get(cat, 0)  + fby.get(ft, 0)
+                cat_counts[cat] = cat_counts.get(cat, 0) + cnt
+
+            rows = ""
+            for cat in _CATEGORY_ORDER:
+                if cat not in cat_bytes:
+                    continue
+                byt      = cat_bytes[cat]
+                cnt      = cat_counts[cat]
+                b_pct    = round(byt / total_bytes * 100, 1) if total_bytes else 0
+                c_pct    = round(cnt / total_tx    * 100, 1) if total_tx    else 0
+                color    = _CATEGORY_COLORS.get(cat, '#aaa')
+                rows += f"""
+                <tr style="border-bottom:1px solid #eee;">
+                  <td style="padding:8px 4px;">
+                    <span style="display:inline-block;width:12px;height:12px;background:{color};border-radius:2px;margin-right:6px;vertical-align:middle;"></span>
+                    <strong>{cat}</strong>
+                  </td>
+                  <td style="padding:8px 4px;text-align:right;">{cnt:,}</td>
+                  <td style="padding:8px 4px;text-align:right;">{c_pct}%</td>
+                  <td style="padding:8px 4px;text-align:right;">{byt:,}</td>
+                  <td style="padding:8px 4px;text-align:right;font-weight:bold;">{b_pct}%</td>
+                  <td style="padding:8px 4px;min-width:150px;">
+                    <div style="background:{color};height:14px;width:{b_pct}%;border-radius:3px;display:inline-block;vertical-align:middle;"></div>
+                  </td>
+                </tr>"""
+
+            return f"""
+            <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
+              <thead>
+                <tr style="background:#f5f5f5;border-bottom:2px solid #ccc;">
+                  <th style="padding:8px 4px;text-align:left;">Category</th>
+                  <th style="padding:8px 4px;text-align:right;"># Frames</th>
+                  <th style="padding:8px 4px;text-align:right;">% Count</th>
+                  <th style="padding:8px 4px;text-align:right;">Bytes</th>
+                  <th style="padding:8px 4px;text-align:right;">% Bytes</th>
+                  <th style="padding:8px 4px;">Bytes share</th>
+                </tr>
+              </thead>
+              <tbody>{rows}</tbody>
+              <tfoot>
+                <tr style="border-top:2px solid #ccc;font-weight:bold;">
+                  <td style="padding:8px 4px;">TOTAL</td>
+                  <td style="padding:8px 4px;text-align:right;">{total_tx:,}</td>
+                  <td style="padding:8px 4px;text-align:right;">100%</td>
+                  <td style="padding:8px 4px;text-align:right;">{total_bytes:,}</td>
+                  <td style="padding:8px 4px;text-align:right;">100%</td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            </table>"""
+
+        # ------------------------------------------------------------------
+        # Helper: per-frame-type breakdown table with percentage bars
+        # ------------------------------------------------------------------
+        def _breakdown_html(stats):
+            total_tx    = stats.get('total_transmissions', 0)
+            total_bytes = stats.get('total_bytes', 0)
+            fb          = stats.get('frame_breakdown', {})
+            fby         = stats.get('frame_bytes', {})
+            node_bd     = stats.get('node_breakdown', {})
+
+            if not total_tx:
+                return "<p><em>No transmissions recorded in this period.</em></p>"
+
+            # Sort by bytes desc
+            types_sorted = sorted(fb.keys(), key=lambda t: fby.get(t, 0), reverse=True)
+
+            rows_html = ""
+            for ft in types_sorted:
+                cnt       = fb[ft]
+                byt       = fby.get(ft, 0)
+                cnt_pct   = round(cnt  / total_tx    * 100, 1) if total_tx    else 0
+                byte_pct  = round(byt  / total_bytes * 100, 1) if total_bytes else 0
+                cat       = _FRAME_CATEGORIES.get(ft, 'Other')
+                color     = _CATEGORY_COLORS.get(cat, '#aaa')
+                rows_html += f"""
+                <tr style="border-bottom:1px solid #eee;">
+                  <td style="padding:8px 4px;font-weight:bold;white-space:nowrap;">
+                    <span style="display:inline-block;width:8px;height:8px;background:{color};border-radius:50%;margin-right:5px;vertical-align:middle;"></span>
+                    {ft}
+                  </td>
+                  <td style="padding:8px 4px;text-align:right;">{cnt:,}</td>
+                  <td style="padding:8px 4px;text-align:right;">{cnt_pct}%</td>
+                  <td style="padding:8px 4px;text-align:right;">{byt:,}</td>
+                  <td style="padding:8px 4px;text-align:right;">{byte_pct}%</td>
+                  <td style="padding:8px 4px;min-width:120px;">
+                    <div style="background:{color};height:10px;width:{byte_pct}%;border-radius:3px;display:inline-block;vertical-align:middle;"></div>
+                  </td>
+                </tr>"""
+
+            node_rows = ""
+            for nid, cnt in sorted(node_bd.items(), key=lambda x: -x[1])[:8]:
+                n_pct = round(cnt / total_tx * 100, 1) if total_tx else 0
+                node_rows += f"<li><strong>{nid or 'broadcast'}:</strong> {cnt:,} frames ({n_pct}%)</li>"
+
+            return f"""
+            <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
+              <thead>
+                <tr style="background:#f5f5f5;border-bottom:2px solid #ccc;">
+                  <th style="padding:8px 4px;text-align:left;">Frame Type</th>
+                  <th style="padding:8px 4px;text-align:right;"># Frames</th>
+                  <th style="padding:8px 4px;text-align:right;">% Count</th>
+                  <th style="padding:8px 4px;text-align:right;">Bytes</th>
+                  <th style="padding:8px 4px;text-align:right;">% Bytes</th>
+                  <th style="padding:8px 4px;">Bytes share</th>
+                </tr>
+              </thead>
+              <tbody>{rows_html}</tbody>
+              <tfoot>
+                <tr style="border-top:2px solid #ccc;font-weight:bold;">
+                  <td style="padding:8px 4px;">TOTAL</td>
+                  <td style="padding:8px 4px;text-align:right;">{total_tx:,}</td>
+                  <td style="padding:8px 4px;text-align:right;">100%</td>
+                  <td style="padding:8px 4px;text-align:right;">{total_bytes:,}</td>
+                  <td style="padding:8px 4px;text-align:right;">100%</td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            </table>
+            <h4 style="margin-top:14px;">By Destination Node:</h4>
+            <ul style="margin:6px 0;">{node_rows}</ul>"""
+
+        html = f"""
+        <h2>Sync Transmission Stats</h2>
+        <p>Breakdown of every sync frame sent — by type, count percentage, and byte percentage.
+           Sorted by bytes (heaviest types first).</p>
+
+        <h3>Category Summary (Game vs Everything Else)</h3>
+        <p style="font-size:0.85em;color:#555;">
+          <span style="background:#e63946;color:#fff;padding:2px 6px;border-radius:3px;">Game</span> = SCORESYNC + ZORKSAVE &nbsp;
+          <span style="background:#2a9d8f;color:#fff;padding:2px 6px;border-radius:3px;">Content</span> = BULLETIN/MAIL/CHANNEL/deletes &nbsp;
+          <span style="background:#e9c46a;color:#333;padding:2px 6px;border-radius:3px;">Profile</span> = PROFILESYNC &nbsp;
+          <span style="background:#457b9d;color:#fff;padding:2px 6px;border-radius:3px;">Protocol</span> = SYNCSTATE/HASH* frames
+        </p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:10px 0 24px 0;">
+            <div style="border:1px solid #ddd;padding:15px;border-radius:5px;">
+                <h4 style="margin-top:0;">Last Hour</h4>
+                {_category_html(stats_1h)}
             </div>
-            <div style="border: 1px solid #ddd; padding: 15px; border-radius: 5px;">
-                <h3>Last 24 Hours</h3>
-                <table style="width: 100%; border-collapse: collapse;">
-                    <tr style="border-bottom: 1px solid #ddd;">
-                        <td style="padding: 8px;"><strong>Total Transmissions:</strong></td>
-                        <td style="padding: 8px; text-align: right;"><strong>{}</strong></td>
-                    </tr>
-                    <tr style="border-bottom: 1px solid #ddd;">
-                        <td style="padding: 8px;"><strong>Total Bytes:</strong></td>
-                        <td style="padding: 8px; text-align: right;"><strong>{:,}</strong></td>
-                    </tr>
-                </table>
-                <h4>By Frame Type:</h4>
-                <ul style="margin: 10px 0;">
-        """.format(stats_24h.get('total_transmissions', 0), stats_24h.get('total_bytes', 0))
-        
-        for frame_type, count in sorted(stats_24h.get('frame_breakdown', {}).items(), key=lambda x: -x[1])[:10]:
-            html += f"<li><strong>{frame_type}:</strong> {count} frames</li>"
-        
-        html += """
-                </ul>
-                <h4>By Node:</h4>
-                <ul style="margin: 10px 0;">
-        """
-        
-        for node_id, count in sorted(stats_24h.get('node_breakdown', {}).items(), key=lambda x: -x[1])[:5]:
-            html += f"<li><strong>{node_id or 'broadcast'}:</strong> {count} frames</li>"
-        
-        html += """
-                </ul>
+            <div style="border:1px solid #ddd;padding:15px;border-radius:5px;">
+                <h4 style="margin-top:0;">Last 24 Hours</h4>
+                {_category_html(stats_24h)}
             </div>
         </div>
-        
-        <h3>Optimization Tips</h3>
+
+        <h3>Per-Frame-Type Detail</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:20px 0;">
+            <div style="border:1px solid #ddd;padding:15px;border-radius:5px;">
+                <h4 style="margin-top:0;">Last Hour</h4>
+                {_breakdown_html(stats_1h)}
+            </div>
+            <div style="border:1px solid #ddd;padding:15px;border-radius:5px;">
+                <h4 style="margin-top:0;">Last 24 Hours</h4>
+                {_breakdown_html(stats_24h)}
+            </div>
+        </div>
+
+        <h3>Tips</h3>
         <ul>
-            <li>After wiping the database, watch this page to see baseline sync transmissions</li>
-            <li>High HASHREQ/HASHREC counts may indicate compression is disabled or peers keep mismatching</li>
-            <li>Enable turbo mode with <code>BBS_SYNC_TURBO=1</code> to reduce pauses between frames</li>
-            <li>Set <code>BBS_HASH_MANIFEST_COMPRESSION=1</code> to enable HASHZ compression (default)</li>
+          <li>High <strong>HASHREQ / HASHREC / HASHMISS</strong> share means peers keep diverging — check mismatch diagnostics.</li>
+          <li>High <strong>HASHZ</strong> share is normal and efficient (compressed manifest).</li>
+          <li><strong>SYNCSTATE</strong> frames are periodic heartbeats — one per peer per sync cycle.</li>
+          <li>Enable turbo mode with <code>BBS_SYNC_TURBO=1</code> to reduce inter-frame pauses.</li>
+          <li>Use <a href="/api/sync/mismatches">/api/sync/mismatches</a> to see which scopes are currently diverging.</li>
         </ul>
         """
-        
-        content = html
-        return render_template_string(BASE_TEMPLATE, title="Transmission Stats", content=content, show_nav=True)
+
+        return render_template_string(BASE_TEMPLATE, title="Transmission Stats", content=html, show_nav=True)
 
     @app.route("/<table>")
     @login_required

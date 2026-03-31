@@ -401,13 +401,17 @@ def get_sync_transmission_stats(since_seconds: int = 3600) -> dict:
         )
         total_transmissions = c.fetchone()[0] or 0
         
-        # Breakdown by frame type
+        # Breakdown by frame type — count AND bytes
         c.execute(
-            "SELECT frame_type, COUNT(*) as count FROM sync_transmissions WHERE transmission_time > ? GROUP BY frame_type ORDER BY count DESC",
+            """SELECT frame_type, COUNT(*) as count, COALESCE(SUM(frame_size_bytes), 0) as bytes
+               FROM sync_transmissions WHERE transmission_time > ?
+               GROUP BY frame_type ORDER BY bytes DESC""",
             (cutoff_time,)
         )
-        frame_breakdown = {row[0]: row[1] for row in c.fetchall()}
-        
+        frame_rows = c.fetchall()
+        frame_breakdown = {row[0]: row[1] for row in frame_rows}
+        frame_bytes    = {row[0]: row[2] for row in frame_rows}
+
         # Breakdown by destination node
         c.execute(
             "SELECT destination_node_id, COUNT(*) as count FROM sync_transmissions WHERE transmission_time > ? GROUP BY destination_node_id ORDER BY count DESC",
@@ -426,6 +430,7 @@ def get_sync_transmission_stats(since_seconds: int = 3600) -> dict:
             'total_transmissions': total_transmissions,
             'total_bytes': total_bytes,
             'frame_breakdown': frame_breakdown,
+            'frame_bytes': frame_bytes,
             'node_breakdown': node_breakdown,
             'period_seconds': since_seconds,
         }
@@ -616,6 +621,26 @@ def get_peer_sync_states() -> list:
     return c.fetchall()
 
 
+def _get_syncstate_max_age_seconds() -> int:
+    raw = str(os.getenv('BBS_SYNCSTATE_MAX_AGE_SECONDS', '1800')).strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 1800
+
+
+def _is_peer_state_fresh(reported_at: str) -> bool:
+    max_age_seconds = _get_syncstate_max_age_seconds()
+    if max_age_seconds <= 0:
+        return True
+    try:
+        reported_dt = datetime.strptime(str(reported_at or ''), '%Y-%m-%d %H:%M:%S')
+    except Exception:
+        return True
+    age_seconds = (datetime.now() - reported_dt).total_seconds()
+    return age_seconds <= float(max_age_seconds)
+
+
 def get_mismatched_peer_nodes(expected_peer_nodes=None) -> set:
     """Return peer node IDs whose advertised counts differ from local counts.
 
@@ -628,6 +653,8 @@ def get_mismatched_peer_nodes(expected_peer_nodes=None) -> set:
     for row in get_peer_sync_states():
         peer = str(row[0])
         if expected and peer not in expected:
+            continue
+        if not _is_peer_state_fresh(row[13] if len(row) > 13 else ''):
             continue
         pb, pm, pc, pz, pp, ps = (int(row[1]), int(row[2]), int(row[3]), int(row[4]), int(row[5]), int(row[6]))
         phb, phm, phc, phz, php, phs = (
@@ -661,6 +688,8 @@ def get_mismatched_peer_scopes(expected_peer_nodes=None) -> dict:
     for row in get_peer_sync_states():
         peer = str(row[0])
         if expected and peer not in expected:
+            continue
+        if not _is_peer_state_fresh(row[13] if len(row) > 13 else ''):
             continue
 
         scopes = []
@@ -883,11 +912,30 @@ def upsert_synced_game_score(user_id: str, game_id: str, short_name: str,
         '''INSERT INTO game_scores (user_id, game_id, short_name, score, max_score, moves, achieved_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(user_id, game_id) DO UPDATE SET
-             short_name   = excluded.short_name,
-             score        = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
-             max_score    = CASE WHEN excluded.score > score THEN excluded.max_score ELSE max_score END,
-             moves        = CASE WHEN excluded.score > score THEN excluded.moves ELSE moves END,
-             achieved_at  = CASE WHEN excluded.score > score THEN excluded.achieved_at ELSE achieved_at END''',
+                         -- Deterministic merge for eventual consistency across peers.
+                         short_name   = CASE
+                                                            WHEN excluded.score > score THEN excluded.short_name
+                                                            WHEN excluded.score < score THEN short_name
+                                                            WHEN excluded.short_name < short_name THEN excluded.short_name
+                                                            ELSE short_name
+                                                        END,
+                         score        = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
+                         max_score    = CASE
+                                                            WHEN excluded.score > score THEN excluded.max_score
+                                                            WHEN excluded.score = score AND excluded.max_score > max_score THEN excluded.max_score
+                                                            ELSE max_score
+                                                        END,
+                         moves        = CASE
+                                                            WHEN excluded.score > score THEN excluded.moves
+                                                            WHEN excluded.score = score AND excluded.moves < moves THEN excluded.moves
+                                                            ELSE moves
+                                                        END,
+                         achieved_at  = CASE
+                                                            WHEN excluded.score > score THEN excluded.achieved_at
+                                                            WHEN excluded.score = score AND excluded.moves < moves THEN excluded.achieved_at
+                                                            WHEN excluded.score = score AND excluded.moves = moves AND excluded.achieved_at < achieved_at THEN excluded.achieved_at
+                                                            ELSE achieved_at
+                                                        END''',
         (str(user_id), game_id, short_name, int(score), int(max_score), int(moves), achieved_at),
     )
     conn.commit()
@@ -1143,11 +1191,29 @@ def upsert_game_score(user_id: int, game_id: str, short_name: str,
         '''INSERT INTO game_scores (user_id, game_id, short_name, score, max_score, moves, achieved_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(user_id, game_id) DO UPDATE SET
-             short_name   = excluded.short_name,
-             score        = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
-             max_score    = CASE WHEN excluded.score > score THEN excluded.max_score ELSE max_score END,
-             moves        = CASE WHEN excluded.score > score THEN excluded.moves ELSE moves END,
-             achieved_at  = CASE WHEN excluded.score > score THEN excluded.achieved_at ELSE achieved_at END''',
+                         short_name   = CASE
+                                                            WHEN excluded.score > score THEN excluded.short_name
+                                                            WHEN excluded.score < score THEN short_name
+                                                            WHEN excluded.short_name < short_name THEN excluded.short_name
+                                                            ELSE short_name
+                                                        END,
+                         score        = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
+                         max_score    = CASE
+                                                            WHEN excluded.score > score THEN excluded.max_score
+                                                            WHEN excluded.score = score AND excluded.max_score > max_score THEN excluded.max_score
+                                                            ELSE max_score
+                                                        END,
+                         moves        = CASE
+                                                            WHEN excluded.score > score THEN excluded.moves
+                                                            WHEN excluded.score = score AND excluded.moves < moves THEN excluded.moves
+                                                            ELSE moves
+                                                        END,
+                         achieved_at  = CASE
+                                                            WHEN excluded.score > score THEN excluded.achieved_at
+                                                            WHEN excluded.score = score AND excluded.moves < moves THEN excluded.achieved_at
+                                                            WHEN excluded.score = score AND excluded.moves = moves AND excluded.achieved_at < achieved_at THEN excluded.achieved_at
+                                                            ELSE achieved_at
+                                                        END''',
         (str(user_id), game_id, short_name, score, max_score, moves, now)
     )
     conn.commit()

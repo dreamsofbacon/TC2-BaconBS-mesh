@@ -100,6 +100,63 @@ class SyncStateHashingTests(unittest.TestCase):
             conn.close()
             del db_operations.thread_local.connection
 
+    def test_game_score_equal_score_merge_is_deterministic(self):
+        db_operations.upsert_synced_game_score(
+            user_id="u1",
+            game_id="zork1",
+            short_name="ZED",
+            score=100,
+            max_score=100,
+            moves=35,
+            achieved_at="2026-03-31 12:00:00",
+        )
+        db_operations.upsert_synced_game_score(
+            user_id="u1",
+            game_id="zork1",
+            short_name="ALF",
+            score=100,
+            max_score=120,
+            moves=20,
+            achieved_at="2026-03-31 11:30:00",
+        )
+
+        row = db_operations.get_game_score_by_user_and_game("u1", "zork1")
+        self.assertIsNotNone(row)
+        self.assertEqual(row[2], "ALF")
+        self.assertEqual(row[3], 100)
+        self.assertEqual(row[4], 120)
+        self.assertEqual(row[5], 20)
+        self.assertEqual(row[6], "2026-03-31 11:30:00")
+
+    def test_stale_peer_syncstate_is_ignored_for_mismatch(self):
+        counts = db_operations.get_local_record_counts()
+        db_operations.upsert_peer_sync_state(
+            peer_node_id="!peer1",
+            bulletins=counts["bulletins"] + 99,
+            mail=counts["mail"],
+            channels=counts["channels"],
+            zork_saves=counts["zork_saves"],
+            profiles=counts["profiles"],
+            game_scores=counts["game_scores"],
+            bulletins_hash="stale-hash",
+            mail_hash=counts["mail_hash"],
+            channels_hash=counts["channels_hash"],
+            zork_saves_hash=counts["zork_saves_hash"],
+            profiles_hash=counts["profiles_hash"],
+            game_scores_hash=counts["game_scores_hash"],
+        )
+
+        conn = db_operations.get_db_connection()
+        conn.execute(
+            "UPDATE peer_sync_state SET reported_at = ? WHERE peer_node_id = ?",
+            ("2000-01-01 00:00:00", "!peer1"),
+        )
+        conn.commit()
+
+        with mock.patch.dict(os.environ, {"BBS_SYNCSTATE_MAX_AGE_SECONDS": "60"}, clear=False):
+            mismatched = db_operations.get_mismatched_peer_nodes({"!peer1"})
+            self.assertNotIn("!peer1", mismatched)
+
 
 if __name__ == "__main__":
     unittest.main()

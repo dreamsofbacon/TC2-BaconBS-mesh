@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -190,6 +191,34 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(payload["progress_percent"], 44)
         self.assertEqual(payload["phase"], "syncing_mail")
         self.assertEqual(payload["sync_interval_minutes"], 5)
+
+    def test_sync_mismatches_api_returns_scope_breakdown(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("CREATE TABLE IF NOT EXISTS bulletins (id INTEGER PRIMARY KEY AUTOINCREMENT, board TEXT, sender_short_name TEXT, date TEXT, subject TEXT, content TEXT, unique_id TEXT, local_only INTEGER NOT NULL DEFAULT 0)")
+        conn.execute("CREATE TABLE IF NOT EXISTS mail (id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, sender_short_name TEXT, recipient TEXT, date TEXT, subject TEXT, content TEXT, unique_id TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS channels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, url TEXT, local_only INTEGER NOT NULL DEFAULT 0)")
+        conn.execute("CREATE TABLE IF NOT EXISTS zork_saves (user_id TEXT NOT NULL, game_id TEXT NOT NULL DEFAULT 'zork1', save_data BLOB NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (user_id, game_id))")
+        conn.execute("CREATE TABLE IF NOT EXISTS user_profiles (user_id TEXT PRIMARY KEY, short_name TEXT NOT NULL DEFAULT '', long_name TEXT NOT NULL DEFAULT '', first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, messages_sent INTEGER NOT NULL DEFAULT 0, bio TEXT NOT NULL DEFAULT '')")
+        conn.execute("CREATE TABLE IF NOT EXISTS game_scores (user_id TEXT NOT NULL, game_id TEXT NOT NULL, short_name TEXT NOT NULL DEFAULT '', score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 0, moves INTEGER NOT NULL DEFAULT 0, achieved_at TEXT NOT NULL, PRIMARY KEY (user_id, game_id))")
+        conn.execute("CREATE TABLE IF NOT EXISTS peer_sync_state (peer_node_id TEXT PRIMARY KEY, bulletins INTEGER NOT NULL DEFAULT 0, mail INTEGER NOT NULL DEFAULT 0, channels INTEGER NOT NULL DEFAULT 0, zork_saves INTEGER NOT NULL DEFAULT 0, profiles INTEGER NOT NULL DEFAULT 0, game_scores INTEGER NOT NULL DEFAULT 0, bulletins_hash TEXT NOT NULL DEFAULT '', mail_hash TEXT NOT NULL DEFAULT '', channels_hash TEXT NOT NULL DEFAULT '', zork_saves_hash TEXT NOT NULL DEFAULT '', profiles_hash TEXT NOT NULL DEFAULT '', game_scores_hash TEXT NOT NULL DEFAULT '', reported_at TEXT NOT NULL)")
+        reported_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("INSERT INTO peer_sync_state (peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores, bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, game_scores_hash, reported_at) VALUES (?, 1, 0, 0, 0, 0, 0, 'bad', '', '', '', '', '', ?)", ("!oldpeer", reported_at))
+        conn.commit()
+        conn.close()
+
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        api_response = client.get("/api/sync/mismatches")
+        self.assertEqual(api_response.status_code, 200)
+        payload = api_response.get_json()
+        self.assertIn("summary", payload)
+        self.assertIn("peers", payload)
+        self.assertEqual(len(payload["peers"]), 1)
+        self.assertEqual(payload["peers"][0]["peer_node_id"], "!oldpeer")
+        self.assertIn("bulletins", payload["peers"][0]["mismatched_scopes"])
 
     def test_connection_events_api_returns_normalized_display_types(self):
         conn = sqlite3.connect(self.db_path)
