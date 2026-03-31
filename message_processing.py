@@ -668,6 +668,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 menu_name = state['menu']
                 if menu_name == 'bbs':
                     handlers = bbs_menu_handlers
+                    _bbs_alias = {'1': 'm', '2': 'b', '3': 'c', '4': 'j', '0': 'x'}
+                    message_lower = _bbs_alias.get(message_lower, message_lower)
                 elif menu_name == 'utilities':
                     handlers = utilities_menu_handlers
                     number_alias = {
@@ -680,13 +682,17 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     message_lower = number_alias.get(message_lower, message_lower)
                 else:
                     handlers = main_menu_handlers
+                    _main_alias = {'1': 'q', '2': 'b', '3': 'u', '4': 'p', '0': 'x'}
+                    message_lower = _main_alias.get(message_lower, message_lower)
             elif state and state['command'] == 'BULLETIN_MENU':
-                if message_lower == 'x':
+                if message_lower in ('x', '0'):
                     handle_help_command(sender_id, interface)
                 else:
                     handle_bb_steps(sender_id, message_strip, 1, state, interface, bbs_nodes)
                 return
             elif state and state['command'] == 'BULLETIN_ACTION':
+                _bb_action_alias = {'1': 'r', '2': 'p', '0': 'x'}
+                message_lower = _bb_action_alias.get(message_lower, message_lower)
                 handlers = board_action_handlers
             elif state and state['command'] == 'JS8CALL_MENU':
                 handle_js8call_steps(sender_id, message, state['step'], interface, state)

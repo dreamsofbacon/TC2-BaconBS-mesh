@@ -99,37 +99,27 @@ def build_menu(items, menu_name):
                 menu_str += number_map[item] + "\n"
         return menu_str
 
+    if menu_name == "📰BBS Menu📰":
+        number_map = {
+            'M': "[1] Mail",
+            'B': "[2] Bulletins",
+            'C': "[3] Channel Dir",
+            'J': "[4] JS8CALL",
+            'X': "[0] Exit",
+        }
+    else:
+        # Main menu
+        number_map = {
+            'Q': "[1] Quick Commands",
+            'B': "[2] BBS",
+            'U': "[3] Utilities",
+            'P': "[4] Profile",
+            'X': "[0] Exit",
+        }
     menu_str = f"{menu_name}\n"
     for item in menu_items:
-        if item == 'Q':
-            menu_str += "[Q]uick Commands\n"
-        elif item == 'B':
-            if menu_name == "📰BBS Menu📰":
-                menu_str += "[B]ulletins\n"
-            else:
-                menu_str += "[B]BS\n"
-        elif item == 'U':
-            menu_str += "[U]tilities\n"
-        elif item == 'X':
-            menu_str += "E[X]IT\n"
-        elif item == 'M':
-            menu_str += "[M]ail\n"
-        elif item == 'C':
-            menu_str += "[C]hannel Dir\n"
-        elif item == 'J':
-            menu_str += "[J]S8CALL\n"
-        elif item == 'S':
-            menu_str += "[S]tats\n"
-        elif item == 'F':
-            menu_str += "[F]ortune\n"
-        elif item == 'W':
-            menu_str += "[W]all of Shame\n"
-        elif item == 'G':
-            menu_str += "[G]ames\n"
-        elif item == 'Z':
-            menu_str += "[G]ames\n"  # legacy alias
-        elif item == 'P':
-            menu_str += "[P]rofile\n"
+        if item in number_map:
+            menu_str += number_map[item] + "\n"
     return menu_str
 
 def handle_help_command(sender_id, interface, menu_name=None):
@@ -155,7 +145,7 @@ def get_node_name(node_id, interface):
 
 
 def handle_mail_command(sender_id, interface):
-    response = "✉️Mail Menu✉️\nWhat would you like to do with mail?\n[R]ead  [S]end E[X]IT"
+    response = "✉️Mail Menu✉️\nWhat would you like to do with mail?\n[1]Read [2]Send [0]Exit"
     send_message(response, sender_id, interface)
     update_user_state(sender_id, {'command': 'MAIL', 'step': 1})
 
@@ -178,7 +168,7 @@ def handle_exit_command(sender_id, interface):
 
 
 def handle_stats_command(sender_id, interface):
-    response = "📊Stats Menu📊\nWhat stats would you like to view?\n[N]odes  [H]ardware  [R]oles  E[X]IT"
+    response = "📊Stats Menu📊\nWhat stats would you like to view?\n[1]Nodes [2]Hardware [3]Roles [0]Exit"
     send_message(response, sender_id, interface)
     update_user_state(sender_id, {'command': 'STATS', 'step': 1})
 
@@ -330,7 +320,7 @@ def handle_profile_command(sender_id, interface):
         lines.append("Scores: " + " ".join(parts))
     if bio:
         lines.append(f"Bio: {bio}")
-    lines.append("[E]dit Bio [0]Back")
+    lines.append("[1]Edit Bio [0]Back")
     send_message("\n".join(lines), sender_id, interface)
     update_user_state(sender_id, {'command': 'PROFILE', 'step': 1})
 
@@ -347,7 +337,7 @@ def handle_profile_steps(sender_id, message, interface):
     if choice.lower() in ('0', 'x', 'back', 'exit'):
         handle_help_command(sender_id, interface)
         return
-    if choice.lower() == 'e':
+    if choice.lower() in ('e', '1'):
         send_message("Enter your bio (max 100 chars):", sender_id, interface)
         update_user_state(sender_id, {'command': 'PROFILE', 'step': 2})
         return
@@ -390,7 +380,8 @@ def handle_stats_steps(sender_id, message, step, interface):
         message = message[0]
 
     if step == 1:
-        choice = message
+        _stats_alias = {'1': 'n', '2': 'h', '3': 'r', '0': 'x'}
+        choice = _stats_alias.get(message, message)
         if choice == 'x':
             handle_help_command(sender_id, interface)
             return
@@ -466,7 +457,7 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
 
         board_name = boards[board_index]
         bulletins = get_bulletins(board_name)
-        response = f"{board_name} has {len(bulletins)} messages.\n[R]ead  [P]ost"
+        response = f"{board_name} has {len(bulletins)} messages.\n[1]Read [2]Post [0]Exit"
         send_message(response, sender_id, interface)
         update_user_state(sender_id, {'command': 'BULLETIN_ACTION', 'step': 2, 'board': board_name, 'boards': boards})
 
@@ -542,6 +533,8 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
 
     if step == 1:
         choice = message.lower()
+        _mail_step1_alias = {'1': 'r', '2': 's', '0': 'x'}
+        choice = _mail_step1_alias.get(choice, choice)
         if choice == 'r':
             sender_node_id = get_node_id_from_num(sender_id, interface)
             mail = get_mail(sender_node_id)
@@ -569,7 +562,7 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             sender_node_id = get_node_id_from_num(sender_id, interface)
             sender, date, subject, content, unique_id = get_mail_content(mail_id, sender_node_id)
             send_message(f"Date: {date}\nFrom: {sender}\nSubject: {subject}\n{content}", sender_id, interface)
-            send_message("What would you like to do with this message?\n[K]eep  [D]elete  [R]eply", sender_id, interface)
+            send_message("What would you like to do with this message?\n[1]Keep [2]Delete [3]Reply", sender_id, interface)
             update_user_state(sender_id, {'command': 'MAIL', 'step': 4, 'mail_id': mail_id, 'unique_id': unique_id, 'sender': sender, 'subject': subject, 'content': content})
         except TypeError:
             logging.info(f"Node {sender_id} tried to access non-existent message")
@@ -594,13 +587,15 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             update_user_state(sender_id, {'command': 'MAIL', 'step': 6, 'nodes': nodes})
 
     elif step == 4:
-        if message.lower() == "d":
+        _mail_step4_alias = {'2': 'd', '3': 'r', '1': 'k'}
+        choice4 = _mail_step4_alias.get(message.lower(), message.lower())
+        if choice4 == "d":
             unique_id = state['unique_id']
             sender_node_id = get_node_id_from_num(sender_id, interface)
             delete_mail(unique_id, sender_node_id, bbs_nodes, interface)
             send_message("The message has been deleted 🗑️", sender_id, interface)
             update_user_state(sender_id, None)
-        elif message.lower() == "r":
+        elif choice4 == "r":
             sender = state['sender']
             send_message(f"Send your reply to {sender} now, followed by a message with END", sender_id, interface)
             update_user_state(sender_id, {'command': 'MAIL', 'step': 7, 'reply_to_mail_id': state['mail_id'], 'subject': f"Re: {state['subject']}", 'content': ''})
@@ -673,7 +668,7 @@ def handle_wall_of_shame_command(sender_id, interface):
 
 
 def handle_channel_directory_command(sender_id, interface):
-    response = "📚CHANNEL DIRECTORY📚\nWhat would you like to do?\n[V]iew  [P]ost  E[X]IT"
+    response = "📚CHANNEL DIRECTORY📚\nWhat would you like to do?\n[1]View [2]Post [0]Exit"
     send_message(response, sender_id, interface)
     update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 1})
 
@@ -684,11 +679,12 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
         message = message[0]
 
     if step == 1:
-        choice = message
-        if choice.lower() == 'x':
+        _chdir_alias = {'1': 'v', '2': 'p', '0': 'x'}
+        choice = _chdir_alias.get(message.lower(), message.lower())
+        if choice == 'x':
             handle_help_command(sender_id, interface)
             return
-        elif choice.lower() == 'v':
+        elif choice == 'v':
             categories = get_channel_categories()
             if categories:
                 response = "Select a channel category to view:\n" + "\n".join(
@@ -698,7 +694,7 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
             else:
                 send_message("No channels available in the directory.", sender_id, interface)
                 handle_channel_directory_command(sender_id, interface)
-        elif choice.lower() == 'p':
+        elif choice == 'p':
             send_message("Name your channel for the directory:", sender_id, interface)
             update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 3})
 
@@ -751,13 +747,14 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
                 sender_id,
                 interface
             )
-            send_message("[V]iew comments  [C]omment  E[X]IT", sender_id, interface)
+            send_message("[1]View comments [2]Comment [0]Exit", sender_id, interface)
             update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 6, 'channel_id': channel_id, 'channel_name': channel_name})
         else:
             send_message("Invalid post number. Please try again.", sender_id, interface)
 
     elif step == 6:
-        choice = message.lower().strip()
+        _ch6_alias = {'1': 'v', '2': 'c', '0': 'x'}
+        choice = _ch6_alias.get(message.lower().strip(), message.lower().strip())
         if choice == 'x':
             handle_channel_directory_command(sender_id, interface)
             return
@@ -770,7 +767,7 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
                     send_message(f"[{i}] {sender_short_name} @ {date}\n{content}", sender_id, interface)
             else:
                 send_message("No comments yet for this post.", sender_id, interface)
-            send_message("[V]iew comments  [C]omment  E[X]IT", sender_id, interface)
+            send_message("[1]View comments [2]Comment [0]Exit", sender_id, interface)
             return
         if choice == 'c':
             send_message("Send your comment. Send END on a new message when finished.", sender_id, interface)
@@ -782,7 +779,7 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
                 'comment_content': ''
             })
             return
-        send_message("Invalid choice. Use V, C, or X.", sender_id, interface)
+        send_message("Invalid choice. Use 1, 2, or 0.", sender_id, interface)
 
     elif step == 7:
         if message.strip().lower() == 'end':
@@ -793,7 +790,7 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
                 node_short_name = get_node_short_name(get_node_id_from_num(sender_id, interface), interface) or "Unknown"
                 add_channel_comment(state.get('channel_id'), node_short_name, content)
                 send_message("Comment posted.", sender_id, interface)
-            send_message("[V]iew comments  [C]omment  E[X]IT", sender_id, interface)
+            send_message("[1]View comments [2]Comment [0]Exit", sender_id, interface)
             update_user_state(sender_id, {
                 'command': 'CHANNEL_DIRECTORY',
                 'step': 6,
@@ -885,7 +882,7 @@ def handle_read_mail_command(sender_id, message, state, interface):
         sender, date, subject, content, unique_id = get_mail_content(mail_id, sender_node_id)
         response = f"Date: {date}\nFrom: {sender}\nSubject: {subject}\n\n{content}"
         send_message(response, sender_id, interface)
-        send_message("What would you like to do with this message?\n[K]eep  [D]elete  [R]eply", sender_id, interface)
+        send_message("What would you like to do with this message?\n[1]Keep [2]Delete [3]Reply", sender_id, interface)
         update_user_state(sender_id, {'command': 'CHECK_MAIL', 'step': 2, 'mail_id': mail_id, 'unique_id': unique_id, 'sender': sender, 'subject': subject, 'content': content})
 
     except ValueError:
@@ -900,6 +897,8 @@ def handle_delete_mail_confirmation(sender_id, message, state, interface, bbs_no
         choice = message.lower().strip()
         if len(choice) == 2 and choice[1] == 'x':
             choice = choice[0]
+        _kdr_alias = {'2': 'd', '3': 'r', '1': 'k'}
+        choice = _kdr_alias.get(choice, choice)
 
         if choice == 'd':
             unique_id = state['unique_id']
