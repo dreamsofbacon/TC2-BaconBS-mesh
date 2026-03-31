@@ -1116,6 +1116,29 @@ CHANNEL_COMMENTS_CONTENT = """
 """
 
 
+CLIENT_PROFILE_CONTENT = """
+<div class="card">
+  <h2>Client Profile</h2>
+  {% if profile %}
+  <table>
+    <tbody>
+      <tr><th style="width:160px">Short name</th><td>{{ profile['short_name'] or '—' }}</td></tr>
+      <tr><th>Long name</th><td>{{ profile['long_name'] or '—' }}</td></tr>
+      <tr><th>Node ID</th><td>{{ profile['user_id'] }}</td></tr>
+      <tr><th>First seen</th><td>{{ profile['first_seen'] }}</td></tr>
+      <tr><th>Last seen</th><td>{{ profile['last_seen'] }}</td></tr>
+      <tr><th>Messages sent</th><td>{{ profile['messages_sent'] }}</td></tr>
+      <tr><th>Bio</th><td>{{ profile['bio'] or '—' }}</td></tr>
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No profile on record for node <strong>{{ node_id }}</strong>.</p>
+  {% endif %}
+  <p style="margin-top:1rem"><a href="{{ url_for('clients_summary') }}">&larr; Back to Clients</a></p>
+</div>
+"""
+
+
 CLIENTS_CONTENT = """
 <div class=\"card\">
   <h2>Client Post Counts</h2>
@@ -1126,6 +1149,7 @@ CLIENTS_CONTENT = """
       <tr>
         <th>sender_short_name</th>
         <th>post_count</th>
+        <th></th>
       </tr>
     </thead>
     <tbody>
@@ -1133,11 +1157,16 @@ CLIENTS_CONTENT = """
       <tr>
         <td>{{ row['sender_short_name'] }}</td>
         <td>{{ row['post_count'] }}</td>
+        <td>
+          {% if row['sender_node_id'] %}
+          <a href="{{ url_for('client_profile', node_id=row['sender_node_id']) }}" class="btn btn-sm">View Profile</a>
+          {% endif %}
+        </td>
       </tr>
       {% endfor %}
       {% if not rows %}
       <tr>
-        <td colspan=\"2\" class=\"muted\">No client posts found.</td>
+        <td colspan=\"3\" class=\"muted\">No client posts found.</td>
       </tr>
       {% endif %}
     </tbody>
@@ -2617,7 +2646,9 @@ def create_app(runtime_interface=None) -> Flask:
         cursor = conn.cursor()
         cursor.execute(
           """
-          SELECT sender_short_name, COUNT(*) AS post_count
+          SELECT sender_short_name,
+                 MAX(sender_node_id) AS sender_node_id,
+                 COUNT(*) AS post_count
           FROM bulletins
           WHERE sender_short_name IS NOT NULL AND TRIM(sender_short_name) != ''
           GROUP BY sender_short_name
@@ -2648,6 +2679,25 @@ def create_app(runtime_interface=None) -> Flask:
         last_event_id=last_event_id,
       )
       return render_template_string(BASE_TEMPLATE, title="Clients", content=content, show_nav=True)
+
+    @app.route("/clients/<path:node_id>/profile")
+    @login_required
+    def client_profile(node_id):
+      with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+          "SELECT user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio "
+          "FROM user_profiles WHERE user_id = ?",
+          (node_id,),
+        )
+        profile = cursor.fetchone()
+      content = render_template_string(
+        CLIENT_PROFILE_CONTENT,
+        profile=profile,
+        node_id=node_id,
+      )
+      short = profile["short_name"] if profile else node_id
+      return render_template_string(BASE_TEMPLATE, title=f"Profile – {short}", content=content, show_nav=True)
 
     @app.get("/api/connection-events")
     @login_required
