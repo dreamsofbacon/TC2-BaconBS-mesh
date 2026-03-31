@@ -110,6 +110,18 @@ def request_manual_sync_trigger() -> None:
   os.replace(tmp_path, trigger_path)
 
 
+def get_force_check_trigger_path() -> str:
+  return os.getenv("BBS_FORCE_CHECK_TRIGGER_PATH", "force_check.trigger")
+
+
+def request_force_check_trigger() -> None:
+  trigger_path = get_force_check_trigger_path()
+  tmp_path = f"{trigger_path}.tmp"
+  with open(tmp_path, "w", encoding="utf-8") as trigger_file:
+    trigger_file.write(datetime.utcnow().isoformat())
+  os.replace(tmp_path, trigger_path)
+
+
 def load_runtime_snapshot(snapshot_path: str) -> dict:
   if not os.path.exists(snapshot_path):
     return {}
@@ -893,6 +905,11 @@ SETTINGS_CONTENT = """
   <form method=\"post\" action=\"{{ url_for('settings_page') }}#sync\" style=\"margin-top: 12px;\">
     <input type=\"hidden\" name=\"settings_section\" value=\"manual_sync\">
     <button class=\"btn\" type=\"submit\">Run Manual Sync Now</button>
+  </form>
+
+  <form method=\"post\" action=\"{{ url_for('settings_page') }}#sync\" style=\"margin-top: 8px;\">
+    <input type=\"hidden\" name=\"settings_section\" value=\"force_check\">
+    <button class=\"btn\" type=\"submit\">Force Mismatch Check Now</button>
   </form>
 </div>
 
@@ -2385,6 +2402,11 @@ def create_app(runtime_interface=None) -> Flask:
           flash("Manual sync requested. The server will start a sync cycle shortly.", "success")
           return redirect(url_for("settings_page") + "#sync")
 
+        if section == "force_check":
+          request_force_check_trigger()
+          flash("Mismatch check requested. The server will run targeted hash checks shortly.", "success")
+          return redirect(url_for("settings_page") + "#sync")
+
         if section == "wipe_database":
           confirmation = request.form.get("wipe_confirmation", "").strip()
           if confirmation != "WIPE DATABASE":
@@ -2519,6 +2541,12 @@ def create_app(runtime_interface=None) -> Flask:
     def api_sync_manual():
       request_manual_sync_trigger()
       return jsonify({"ok": True, "message": "Manual sync requested"})
+
+    @app.post("/api/sync/force-check")
+    @login_required
+    def api_sync_force_check():
+      request_force_check_trigger()
+      return jsonify({"ok": True, "message": "Force mismatch check requested"})
 
     @app.post("/api/reorder/<table>")
     @login_required
