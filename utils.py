@@ -281,6 +281,12 @@ def _send_one_sync(message, destination, interface, pause_seconds=None):
             wantAck=True,
             wantResponse=False,
         )
+        # Log transmission for sync stats (lazy import to avoid circular dependency)
+        try:
+            from db_operations import log_sync_transmission
+            log_sync_transmission(message, destination, msg_len, is_continuation=False)
+        except Exception:
+            pass
     except Exception as e:
         logging.info(f"SYNC SEND ERROR {e}")
     time.sleep(pause_seconds)
