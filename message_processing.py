@@ -28,6 +28,7 @@ from db_operations import (
     upsert_synced_zork_save,
     get_mismatched_peer_scopes,
     get_record_hash_manifest,
+    get_sync_progress,
     get_bulletin_by_unique_id,
     get_mail_by_unique_id,
     get_channel_by_manifest_key,
@@ -90,7 +91,11 @@ _HASH_BUFFER_MAX_AGE_SECONDS = 600
 _recent_hashmiss_requests = {}
 _HASHMISS_REQUEST_TTL_SECONDS = 900
 _recent_syncstate_repairs = {}
-_SYNCSTATE_REPAIR_TTL_SECONDS = 60
+_SYNCSTATE_REPAIR_TTL_SECONDS = 300
+# Track in-flight HASHREQ exchanges so we don't flood a peer with duplicate requests
+# while their manifest response is still being assembled.
+_pending_hashreq = {}  # (peer_id, scope) -> float timestamp
+_PENDING_HASHREQ_TIMEOUT = 180
 
 
 def _prune_old_zork_save_chunks() -> None:
@@ -112,7 +117,8 @@ def _prune_old_hash_manifest_chunks() -> None:
 
 
 def _hash_manifest_compression_enabled() -> bool:
-    return str(os.getenv("BBS_HASH_MANIFEST_COMPRESSION", "0")).strip().lower() in ("1", "true", "yes", "on")
+    # Compression is ON by default; set BBS_HASH_MANIFEST_COMPRESSION=0 to disable.
+    return str(os.getenv("BBS_HASH_MANIFEST_COMPRESSION", "1")).strip().lower() not in ("0", "false", "no", "off")
 
 
 def _prune_recent_hashmiss_requests() -> None:
@@ -136,6 +142,30 @@ def _should_send_hashmiss(sender_node_id: str, scope: str, key: str, local_hash:
     return True
 
 
+def _mark_hashreq_pending(peer_id: str, scope: str) -> None:
+    _pending_hashreq[(str(peer_id), str(scope))] = time.time()
+
+
+def _clear_hashreq_pending(peer_id: str, scope: str) -> None:
+    _pending_hashreq.pop((str(peer_id), str(scope)), None)
+
+
+def _is_hashreq_pending(peer_id: str, scope: str) -> bool:
+    key = (str(peer_id), str(scope))
+    ts = _pending_hashreq.get(key)
+    if ts is None:
+        return False
+    if time.time() - float(ts) > _PENDING_HASHREQ_TIMEOUT:
+        _pending_hashreq.pop(key, None)
+        return False
+    return True
+
+
+def is_hashreq_pending_for_peer_scope(peer_id: str, scope: str) -> bool:
+    """Public accessor for server.py to check before sending its own HASHREQs."""
+    return _is_hashreq_pending(peer_id, scope)
+
+
 def _prune_recent_syncstate_repairs() -> None:
     now = time.time()
     stale_keys = [
@@ -147,6 +177,10 @@ def _prune_recent_syncstate_repairs() -> None:
 
 
 def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
+    # Don't pile hash-repair on top of an active full sync — it overwhelms LoRa.
+    if get_sync_progress().get('in_progress'):
+        return
+
     by_peer = get_mismatched_peer_scopes({sender_node_id})
     scopes = by_peer.get(str(sender_node_id), [])
     if not scopes:
@@ -160,9 +194,14 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
         return
 
     _recent_syncstate_repairs[repair_sig] = now
-    logging.info(f"SYNCSTATE mismatch from {sender_node_id}; requesting targeted repair for scopes: {', '.join(scopes)}")
-    for scope in scopes:
+    requested_scopes = [s for s in scopes if not _is_hashreq_pending(sender_node_id, s)]
+    if not requested_scopes:
+        logging.debug(f"SYNCSTATE mismatch from {sender_node_id} but all scopes already have in-flight HASHREQ; skipping")
+        return
+    logging.info(f"SYNCSTATE mismatch from {sender_node_id}; requesting targeted repair for scopes: {', '.join(requested_scopes)}")
+    for scope in requested_scopes:
         send_hash_request_to_bbs_nodes([sender_node_id], interface, scope=scope)
+        _mark_hashreq_pending(sender_node_id, scope)
 
 
 def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> None:
@@ -480,9 +519,11 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     if isinstance(manifest_obj, dict):
                         normalized = {str(k): str(v) for k, v in manifest_obj.items()}
                         _peer_hash_manifest_buffers[(sender_node_id, scope)] = normalized
+                        _clear_hashreq_pending(sender_node_id, scope)
                         _reconcile_remote_manifest(scope, sender_node_id, interface)
                 except Exception:
                     logging.warning(f"Malformed HASHZ payload ignored: {message}")
+                    _clear_hashreq_pending(sender_node_id, scope)
                 finally:
                     _peer_hash_compressed_buffers.pop(buf_key, None)
         elif message.startswith("HASHEND|"):
@@ -495,6 +536,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             scope = parts[1]
             if scope not in _SUPPORTED_HASH_SCOPES:
                 return
+            _clear_hashreq_pending(sender_node_id, scope)
             _reconcile_remote_manifest(scope, sender_node_id, interface)
         elif message.startswith("HASHMISS|"):
             if not sender_node_id:
