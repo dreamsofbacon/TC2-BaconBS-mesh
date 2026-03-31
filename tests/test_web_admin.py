@@ -37,6 +37,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.db_path = self.root / "bulletins.db"
         self.runtime_diag_path = self.root / "runtime_diagnostics.json"
         self.manual_trigger_path = self.root / "manual_sync.trigger"
+        self.force_check_trigger_path = self.root / "force_check.trigger"
 
         config = configparser.ConfigParser()
         config["admin"] = {
@@ -63,6 +64,7 @@ class WebAdminSettingsTests(unittest.TestCase):
                 "BBS_DB_PATH": str(self.db_path),
                 "BBS_RUNTIME_DIAG_PATH": str(self.runtime_diag_path),
                 "BBS_MANUAL_SYNC_TRIGGER_PATH": str(self.manual_trigger_path),
+                "BBS_FORCE_CHECK_TRIGGER_PATH": str(self.force_check_trigger_path),
                 "BBS_WEBGUI_SECRET": "test-secret",
             },
             clear=False,
@@ -165,6 +167,32 @@ class WebAdminSettingsTests(unittest.TestCase):
         api_response = client.post("/api/sync/manual")
         self.assertEqual(api_response.status_code, 200)
         self.assertTrue(self.manual_trigger_path.exists())
+
+    def test_force_check_api_creates_trigger_file(self):
+        app = create_app()
+        client = app.test_client()
+
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        api_response = client.post("/api/sync/force-check")
+        self.assertEqual(api_response.status_code, 200)
+        self.assertTrue(self.force_check_trigger_path.exists())
+
+    def test_force_check_settings_action_creates_trigger_file(self):
+        app = create_app()
+        client = app.test_client()
+
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        post_response = client.post(
+            "/settings",
+            data={"settings_section": "force_check"},
+            follow_redirects=False,
+        )
+        self.assertEqual(post_response.status_code, 302)
+        self.assertTrue(self.force_check_trigger_path.exists())
 
     def test_sync_status_api_returns_snapshot_values(self):
         with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:

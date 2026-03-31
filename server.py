@@ -60,6 +60,10 @@ def get_manual_sync_trigger_path() -> str:
     return os.getenv('BBS_MANUAL_SYNC_TRIGGER_PATH', 'manual_sync.trigger')
 
 
+def get_force_check_trigger_path() -> str:
+    return os.getenv('BBS_FORCE_CHECK_TRIGGER_PATH', 'force_check.trigger')
+
+
 def read_sync_interval_minutes(config_path: str, default_minutes: int = 5) -> int:
     cfg = configparser.ConfigParser()
     cfg.read(config_path)
@@ -179,6 +183,7 @@ def main():
     interface.allowed_nodes = system_config['allowed_nodes']
     config_path = system_config.get('config_file', 'config.ini')
     trigger_path = get_manual_sync_trigger_path()
+    force_check_trigger_path = get_force_check_trigger_path()
     write_runtime_diagnostics_snapshot(interface, system_config)
 
     logging.info(f"TC²-BBS is running on {system_config['interface_type']} interface...")
@@ -207,6 +212,7 @@ def main():
         sync_interval_minutes = int(system_config.get('sync_interval_minutes', 5))
         last_schedule_epoch = 0
         last_manual_trigger_mtime = 0.0
+        last_force_check_trigger_mtime = 0.0
         mismatch_resync_cooldown_seconds = 300
         last_mismatch_resync_at = {}
         mismatch_attempt_counts = {}
@@ -229,6 +235,7 @@ def main():
 
         while True:
             now = time.time()
+            force_mismatch_check = False
 
             # Refresh diagnostics snapshot (5 s while syncing, 30 s otherwise)
             if now >= next_diagnostics_write:
@@ -244,6 +251,7 @@ def main():
                 current_bbs_nodes = set(getattr(interface, 'bbs_nodes', []) or [])
 
                 manual_triggered = False
+                force_check_triggered = False
                 try:
                     if os.path.exists(trigger_path):
                         trigger_mtime = os.path.getmtime(trigger_path)
@@ -254,7 +262,22 @@ def main():
                 except Exception as exc:
                     logging.debug(f"Unable to process manual sync trigger: {exc}")
 
+                try:
+                    if os.path.exists(force_check_trigger_path):
+                        trigger_mtime = os.path.getmtime(force_check_trigger_path)
+                        if trigger_mtime > last_force_check_trigger_mtime:
+                            force_check_triggered = True
+                            last_force_check_trigger_mtime = trigger_mtime
+                            os.remove(force_check_trigger_path)
+                except Exception as exc:
+                    logging.debug(f"Unable to process force-check trigger: {exc}")
+
                 sync_due = (last_schedule_epoch == 0) or (now >= (last_schedule_epoch + (sync_interval_minutes * 60)))
+
+                if force_check_triggered:
+                    force_mismatch_check = True
+                    system_config['sync_last_trigger_reason'] = 'force_check'
+                    logging.info("Force mismatch check requested from web admin")
 
                 if (manual_triggered or sync_due) and not pending_sync_nodes:
                     last_schedule_epoch = now
@@ -263,6 +286,8 @@ def main():
                     if manual_triggered:
                         # Manual sync remains a force-full-sync operation.
                         synced_nodes.clear()
+                        # Also force immediate mismatch re-check for currently configured peers.
+                        force_mismatch_check = True
                         system_config['sync_last_trigger_reason'] = 'manual'
                         logging.info("Manual sync trigger received from web admin")
                     else:
@@ -277,10 +302,13 @@ def main():
                 if not pending_sync_nodes:
                     mismatch_nodes = get_mismatched_peer_nodes(current_bbs_nodes)
                     mismatch_scopes_by_peer = get_mismatched_peer_scopes(current_bbs_nodes)
-                    eligible = {
-                        node for node in mismatch_nodes
-                        if (now - float(last_mismatch_resync_at.get(node, 0))) >= mismatch_resync_cooldown_seconds
-                    }
+                    if force_mismatch_check:
+                        eligible = set(mismatch_nodes)
+                    else:
+                        eligible = {
+                            node for node in mismatch_nodes
+                            if (now - float(last_mismatch_resync_at.get(node, 0))) >= mismatch_resync_cooldown_seconds
+                        }
                     if eligible:
                         for node in sorted(eligible, key=str):
                             scopes = mismatch_scopes_by_peer.get(node, ['all'])
