@@ -2958,7 +2958,7 @@ def create_app(runtime_interface=None) -> Flask:
                 c_pct    = round(cnt / total_tx    * 100, 1) if total_tx    else 0
                 color    = _CATEGORY_COLORS.get(cat, '#aaa')
                 rows += f"""
-                <tr style="border-bottom:1px solid #eee;">
+                <tr style="border-bottom:1px solid var(--table-border);">
                   <td style="padding:8px 4px;">
                     <span style="display:inline-block;width:12px;height:12px;background:{color};border-radius:2px;margin-right:6px;vertical-align:middle;"></span>
                     <strong>{cat}</strong>
@@ -2975,7 +2975,7 @@ def create_app(runtime_interface=None) -> Flask:
             return f"""
             <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
               <thead>
-                <tr style="background:#f5f5f5;border-bottom:2px solid #ccc;">
+                <tr style="background:var(--table-header-bg);border-bottom:2px solid var(--table-border);">
                   <th style="padding:8px 4px;text-align:left;">Category</th>
                   <th style="padding:8px 4px;text-align:right;"># Frames</th>
                   <th style="padding:8px 4px;text-align:right;">% Count</th>
@@ -2986,7 +2986,7 @@ def create_app(runtime_interface=None) -> Flask:
               </thead>
               <tbody>{rows}</tbody>
               <tfoot>
-                <tr style="border-top:2px solid #ccc;font-weight:bold;">
+                <tr style="border-top:2px solid var(--table-border);font-weight:bold;">
                   <td style="padding:8px 4px;">TOTAL</td>
                   <td style="padding:8px 4px;text-align:right;">{total_tx:,}</td>
                   <td style="padding:8px 4px;text-align:right;">100%</td>
@@ -3022,7 +3022,7 @@ def create_app(runtime_interface=None) -> Flask:
                 cat       = _FRAME_CATEGORIES.get(ft, 'Other')
                 color     = _CATEGORY_COLORS.get(cat, '#aaa')
                 rows_html += f"""
-                <tr style="border-bottom:1px solid #eee;">
+                <tr style="border-bottom:1px solid var(--table-border);">
                   <td style="padding:8px 4px;font-weight:bold;white-space:nowrap;">
                     <span style="display:inline-block;width:8px;height:8px;background:{color};border-radius:50%;margin-right:5px;vertical-align:middle;"></span>
                     {ft}
@@ -3044,7 +3044,7 @@ def create_app(runtime_interface=None) -> Flask:
             return f"""
             <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
               <thead>
-                <tr style="background:#f5f5f5;border-bottom:2px solid #ccc;">
+                <tr style="background:var(--table-header-bg);border-bottom:2px solid var(--table-border);">
                   <th style="padding:8px 4px;text-align:left;">Frame Type</th>
                   <th style="padding:8px 4px;text-align:right;"># Frames</th>
                   <th style="padding:8px 4px;text-align:right;">% Count</th>
@@ -3055,7 +3055,7 @@ def create_app(runtime_interface=None) -> Flask:
               </thead>
               <tbody>{rows_html}</tbody>
               <tfoot>
-                <tr style="border-top:2px solid #ccc;font-weight:bold;">
+                <tr style="border-top:2px solid var(--table-border);font-weight:bold;">
                   <td style="padding:8px 4px;">TOTAL</td>
                   <td style="padding:8px 4px;text-align:right;">{total_tx:,}</td>
                   <td style="padding:8px 4px;text-align:right;">100%</td>
@@ -3074,18 +3074,18 @@ def create_app(runtime_interface=None) -> Flask:
            Sorted by bytes (heaviest types first).</p>
 
         <h3>Category Summary (Game vs Everything Else)</h3>
-        <p style="font-size:0.85em;color:#555;">
+        <p style="font-size:0.85em;color:var(--muted);">
           <span style="background:#e63946;color:#fff;padding:2px 6px;border-radius:3px;">Game</span> = SCORESYNC + ZORKSAVE &nbsp;
           <span style="background:#2a9d8f;color:#fff;padding:2px 6px;border-radius:3px;">Content</span> = BULLETIN/MAIL/CHANNEL/deletes &nbsp;
           <span style="background:#e9c46a;color:#333;padding:2px 6px;border-radius:3px;">Profile</span> = PROFILESYNC &nbsp;
           <span style="background:#457b9d;color:#fff;padding:2px 6px;border-radius:3px;">Protocol</span> = SYNCSTATE/HASH* frames
         </p>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:10px 0 24px 0;">
-            <div style="border:1px solid #ddd;padding:15px;border-radius:5px;">
+            <div style="border:1px solid var(--card-border);padding:15px;border-radius:5px;background:var(--card-bg);">
                 <h4 style="margin-top:0;">Last Hour</h4>
                 {_category_html(stats_1h)}
             </div>
-            <div style="border:1px solid #ddd;padding:15px;border-radius:5px;">
+            <div style="border:1px solid var(--card-border);padding:15px;border-radius:5px;background:var(--card-bg);">
                 <h4 style="margin-top:0;">Last 24 Hours</h4>
                 {_category_html(stats_24h)}
             </div>
@@ -3093,11 +3093,11 @@ def create_app(runtime_interface=None) -> Flask:
 
         <h3>Per-Frame-Type Detail</h3>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:20px 0;">
-            <div style="border:1px solid #ddd;padding:15px;border-radius:5px;">
+            <div style="border:1px solid var(--card-border);padding:15px;border-radius:5px;background:var(--card-bg);">
                 <h4 style="margin-top:0;">Last Hour</h4>
                 {_breakdown_html(stats_1h)}
             </div>
-            <div style="border:1px solid #ddd;padding:15px;border-radius:5px;">
+            <div style="border:1px solid var(--card-border);padding:15px;border-radius:5px;background:var(--card-bg);">
                 <h4 style="margin-top:0;">Last 24 Hours</h4>
                 {_breakdown_html(stats_24h)}
             </div>
