@@ -2745,27 +2745,58 @@ def create_app(runtime_interface=None) -> Flask:
     def clients_summary():
       with get_db_connection() as conn:
         cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(bulletins)")
+        bulletin_columns = {row[1] for row in cursor.fetchall()}
+        has_bulletin_sender_node = "sender_node_id" in bulletin_columns
+
+        cursor.execute("PRAGMA table_info(connection_events)")
+        event_columns = {row[1] for row in cursor.fetchall()}
+        has_event_sender_node = "sender_node_id" in event_columns
+
         cursor.execute(
-          """
-          SELECT sender_short_name,
-                 MAX(sender_node_id) AS sender_node_id,
-                 COUNT(*) AS post_count
-          FROM bulletins
-          WHERE sender_short_name IS NOT NULL AND TRIM(sender_short_name) != ''
-          GROUP BY sender_short_name
-          ORDER BY post_count DESC, sender_short_name ASC
-          """
+          (
+            """
+            SELECT sender_short_name,
+                   MAX(sender_node_id) AS sender_node_id,
+                   COUNT(*) AS post_count
+            FROM bulletins
+            WHERE sender_short_name IS NOT NULL AND TRIM(sender_short_name) != ''
+            GROUP BY sender_short_name
+            ORDER BY post_count DESC, sender_short_name ASC
+            """
+            if has_bulletin_sender_node
+            else
+            """
+            SELECT sender_short_name,
+                   NULL AS sender_node_id,
+                   COUNT(*) AS post_count
+            FROM bulletins
+            WHERE sender_short_name IS NOT NULL AND TRIM(sender_short_name) != ''
+            GROUP BY sender_short_name
+            ORDER BY post_count DESC, sender_short_name ASC
+            """
+          )
         )
         rows = cursor.fetchall()
         total_posts = sum(row["post_count"] for row in rows)
 
         cursor.execute(
-          """
-          SELECT id, event_time, sender_num, sender_node_id, sender_short_name, to_id, message_type, event_text
-          FROM connection_events
-          ORDER BY id DESC
-          LIMIT 120
-          """
+          (
+            """
+            SELECT id, event_time, sender_num, sender_node_id, sender_short_name, to_id, message_type, event_text
+            FROM connection_events
+            ORDER BY id DESC
+            LIMIT 120
+            """
+            if has_event_sender_node
+            else
+            """
+            SELECT id, event_time, sender_num, NULL AS sender_node_id, sender_short_name, to_id, message_type, event_text
+            FROM connection_events
+            ORDER BY id DESC
+            LIMIT 120
+            """
+          )
         )
         events_desc = cursor.fetchall()
 
@@ -2980,6 +3011,35 @@ def create_app(runtime_interface=None) -> Flask:
         }
         _CATEGORY_ORDER = ['Game', 'Content', 'Profile', 'Protocol', 'Other']
 
+        def _direction_html(stats):
+            total_tx = stats.get('total_transmissions', 0)
+            total_bytes = stats.get('total_bytes', 0)
+            direction_counts = stats.get('direction_breakdown', {})
+            direction_bytes = stats.get('direction_bytes', {})
+            tx_count = int(direction_counts.get('tx', 0) or 0)
+            rx_count = int(direction_counts.get('rx', 0) or 0)
+            tx_bytes = int(direction_bytes.get('tx', 0) or 0)
+            rx_bytes = int(direction_bytes.get('rx', 0) or 0)
+
+            return f"""
+            <div style=\"display:flex;gap:10px;flex-wrap:wrap;margin:8px 0 16px 0;\">
+              <div style=\"border:1px solid var(--card-border);border-radius:6px;padding:10px 12px;background:var(--card-bg);min-width:170px;\">
+                <div style=\"font-size:0.8em;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;\">Sent to peers</div>
+                <div style=\"font-size:1.2em;font-weight:700;\">{tx_count:,} frames</div>
+                <div style=\"font-size:0.9em;color:var(--muted);\">{tx_bytes:,} bytes</div>
+              </div>
+              <div style=\"border:1px solid var(--card-border);border-radius:6px;padding:10px 12px;background:var(--card-bg);min-width:170px;\">
+                <div style=\"font-size:0.8em;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;\">Received from peers</div>
+                <div style=\"font-size:1.2em;font-weight:700;\">{rx_count:,} frames</div>
+                <div style=\"font-size:0.9em;color:var(--muted);\">{rx_bytes:,} bytes</div>
+              </div>
+              <div style=\"border:1px solid var(--card-border);border-radius:6px;padding:10px 12px;background:var(--card-bg);min-width:170px;\">
+                <div style=\"font-size:0.8em;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;\">Combined total</div>
+                <div style=\"font-size:1.2em;font-weight:700;\">{total_tx:,} frames</div>
+                <div style=\"font-size:0.9em;color:var(--muted);\">{total_bytes:,} bytes</div>
+              </div>
+            </div>"""
+
         # ------------------------------------------------------------------
         # Helper: category summary bar chart (game vs everything else)
         # ------------------------------------------------------------------
@@ -3117,13 +3177,26 @@ def create_app(runtime_interface=None) -> Flask:
                 </tr>
               </tfoot>
             </table>
-            <h4 style="margin-top:14px;">By Destination Node:</h4>
+            <h4 style="margin-top:14px;">By Peer Node:</h4>
             <ul style="margin:6px 0;">{node_rows}</ul>"""
 
         html = f"""
         <h2>Sync Transmission Stats</h2>
-        <p>Breakdown of every sync frame sent — by type, count percentage, and byte percentage.
-           Sorted by bytes (heaviest types first).</p>
+          <p>Breakdown of sync frames sent and received by this node — by type, count percentage, and byte percentage.
+             Sorted by bytes (heaviest types first).</p>
+
+          <h3>Direction Summary</h3>
+          <p style="font-size:0.85em;color:var(--muted);">Rebuilding nodes often show most game traffic under received frames, because the primary node is pushing state toward them.</p>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:10px 0 24px 0;">
+            <div style="border:1px solid var(--card-border);padding:15px;border-radius:5px;background:var(--card-bg);">
+              <h4 style="margin-top:0;">Last Hour</h4>
+              {_direction_html(stats_1h)}
+            </div>
+            <div style="border:1px solid var(--card-border);padding:15px;border-radius:5px;background:var(--card-bg);">
+              <h4 style="margin-top:0;">Last 24 Hours</h4>
+              {_direction_html(stats_24h)}
+            </div>
+          </div>
 
         <h3>Category Summary (Game vs Everything Else)</h3>
         <p style="font-size:0.85em;color:var(--muted);">
@@ -3160,6 +3233,7 @@ def create_app(runtime_interface=None) -> Flask:
           <li>High <strong>HASHREQ / HASHREC / HASHMISS</strong> share means peers keep diverging — check mismatch diagnostics.</li>
           <li>High <strong>HASHZ</strong> share is normal and efficient (compressed manifest).</li>
           <li><strong>SYNCSTATE</strong> frames are periodic heartbeats — one per peer per sync cycle.</li>
+          <li>On rebuilding nodes, inbound <strong>SCORESYNC</strong> and <strong>ZORKSAVE</strong> frames are the main signal that game data is arriving.</li>
           <li>Enable turbo mode with <code>BBS_SYNC_TURBO=1</code> to reduce inter-frame pauses.</li>
           <li>Use <a href="/api/sync/mismatches">/api/sync/mismatches</a> to see which scopes are currently diverging.</li>
         </ul>
