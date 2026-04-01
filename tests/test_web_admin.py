@@ -269,6 +269,29 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(payload["events"][1]["display_type"], "warn")
         self.assertEqual(payload["events"][1]["display_label"], "WARN")
 
+    def test_clients_page_renders_without_connection_events_table(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS bulletins (id INTEGER PRIMARY KEY AUTOINCREMENT, board TEXT, sender_short_name TEXT, date TEXT, subject TEXT, content TEXT, unique_id TEXT, local_only INTEGER NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("General", "ALICE", "2026-03-30", "Hi", "Hello", "uid-1", 0),
+        )
+        conn.commit()
+        conn.close()
+
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        page_response = client.get("/clients")
+        self.assertEqual(page_response.status_code, 200)
+        page = page_response.get_data(as_text=True)
+        self.assertIn("Client Post Counts", page)
+        self.assertIn("ALICE", page)
+
     def test_system_transmissions_page_counts_received_game_frames(self):
         conn = sqlite3.connect(self.db_path)
         conn.execute(
@@ -299,6 +322,33 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("Received from peers", page)
         self.assertIn("Game", page)
         self.assertIn("2 frames", page)
+
+    def test_system_transmissions_reset_clears_history(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sync_transmissions (id INTEGER PRIMARY KEY AUTOINCREMENT, transmission_time TEXT NOT NULL, frame_type TEXT NOT NULL, destination_node_id TEXT, frame_size_bytes INTEGER, is_continuation INTEGER NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "INSERT INTO sync_transmissions (transmission_time, frame_type, destination_node_id, frame_size_bytes, is_continuation) VALUES (?, ?, ?, ?, ?)",
+            ("2099-03-30T10:00:00Z", "SYNCSTATE", "!peer1", 64, 0),
+        )
+        conn.commit()
+        conn.close()
+
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        reset_response = client.post("/system/transmissions/reset", follow_redirects=True)
+        self.assertEqual(reset_response.status_code, 200)
+        page = reset_response.get_data(as_text=True)
+        self.assertIn("Transmission stats reset.", page)
+
+        conn = sqlite3.connect(self.db_path)
+        count = conn.execute("SELECT COUNT(*) FROM sync_transmissions").fetchone()[0]
+        conn.close()
+        self.assertEqual(count, 0)
 
     def test_settings_diagnostics_show_runtime_details(self):
         app = create_app(runtime_interface=FakeInterface())

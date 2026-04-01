@@ -34,6 +34,7 @@ TABLE_CONFIG = {
 }
 
 
+
 def read_config_file(config_path: str) -> configparser.ConfigParser:
   config = configparser.ConfigParser()
   config.read(config_path)
@@ -83,7 +84,6 @@ def load_admin_credentials(config_path: str) -> tuple[str, str, bool, bool]:
   password = env_password or config.get("admin", "password", fallback="change-me")
 
   return username, password, bool(env_user), bool(env_password)
-
 
 def load_sync_settings(config_path: str) -> tuple[list[str], list[str], int]:
   config = read_config_file(config_path)
@@ -3182,6 +3182,9 @@ def create_app(runtime_interface=None) -> Flask:
 
         html = f"""
         <h2>Sync Transmission Stats</h2>
+          <form method="post" action="{url_for('system_transmissions_reset')}" onsubmit="return confirm('Reset transmission stats history now?');" style="margin:8px 0 14px 0;">
+            <button type="submit" class="danger-btn">Reset Stats</button>
+          </form>
           <p>Breakdown of sync frames sent and received by this node — by type, count percentage, and byte percentage.
              Sorted by bytes (heaviest types first).</p>
 
@@ -3240,6 +3243,15 @@ def create_app(runtime_interface=None) -> Flask:
         """
 
         return render_template_string(BASE_TEMPLATE, title="Transmission Stats", content=html, show_nav=True)
+
+    @app.route("/system/transmissions/reset", methods=["POST"])
+    @login_required
+    def system_transmissions_reset():
+        from db_operations import clear_sync_transmissions
+
+        clear_sync_transmissions()
+        flash("Transmission stats reset.", "success")
+        return redirect(url_for("system_transmissions"))
 
     @app.route("/<table>")
     @login_required

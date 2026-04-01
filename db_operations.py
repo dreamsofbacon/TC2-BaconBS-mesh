@@ -487,6 +487,18 @@ def prune_old_sync_transmissions(max_rows: int = 10000) -> None:
         logging.debug(f"Failed to prune sync transmissions: {e}")
 
 
+def clear_sync_transmissions() -> None:
+    """Clear all rows from sync_transmissions for manual stats reset."""
+    try:
+        _ensure_sync_transmissions_table()
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("DELETE FROM sync_transmissions")
+        conn.commit()
+    except Exception as e:
+        logging.debug(f"Failed to clear sync transmissions: {e}")
+
+
 def _build_tombstone_key(scope: str, record_key: str) -> str:
     return f"{scope}:{record_key}"
 
