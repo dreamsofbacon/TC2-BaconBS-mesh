@@ -1489,49 +1489,218 @@ def get_connection_events_since(last_id: int = 0, limit: int = 100) -> list:
     return c.fetchall()
 
 
-def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] = None) -> dict:
+def sync_mail_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] = None) -> dict:
+    """P1 — highest priority: direct mail messages."""
+    if not bbs_nodes or not interface:
+        return {'mail_synced': 0, 'total_messages': 0}
+    conn = get_db_connection()
+    c = conn.cursor()
+    if delay_ms is None:
+        delay_ms = get_full_sync_delay_ms()
+    delay_seconds = max(0.0, float(delay_ms) / 1000.0)
+    c.execute("SELECT COUNT(*) FROM mail")
+    total_items = c.fetchone()[0]
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    _update_sync_progress(in_progress=True, progress_percent=0 if total_items else 100,
+                          completed_items=0, total_items=total_items, remaining_items=total_items,
+                          current_phase='syncing_mail', target_nodes=[str(n) for n in bbs_nodes],
+                          started_at=now_str, last_updated_at=now_str, last_result='Running (P1: mail)')
+    mail_synced = 0
+    try:
+        c.execute("SELECT sender, sender_short_name, recipient, subject, content, unique_id FROM mail")
+        for sender_id, sender_short_name, recipient_id, subject, content, unique_id in c.fetchall():
+            send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, content, unique_id,
+                                   bbs_nodes, interface)
+            mail_synced += 1
+            pct = int((mail_synced * 100) / total_items) if total_items else 100
+            _update_sync_progress(progress_percent=pct, completed_items=mail_synced,
+                                  remaining_items=max(total_items - mail_synced, 0),
+                                  current_phase='syncing_mail',
+                                  last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+            time.sleep(delay_seconds)
+        logging.info(f"P1 mail sync: sent {mail_synced} messages to {len(bbs_nodes)} peer(s)")
+        _update_sync_progress(in_progress=False, progress_percent=100, completed_items=total_items,
+                              total_items=total_items, remaining_items=0, current_phase='mail_complete',
+                              last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                              last_result=f"P1 mail done: {mail_synced} sent")
+        return {'mail_synced': mail_synced, 'total_messages': mail_synced}
+    except Exception as e:
+        logging.error(f"Error during mail sync: {e}")
+        _update_sync_progress(in_progress=False, current_phase='error',
+                              last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                              last_result=f"Error: {e}")
+        raise
+
+
+def sync_bulletins_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] = None) -> dict:
+    """P2 — public bulletin board posts."""
+    if not bbs_nodes or not interface:
+        return {'bulletins_synced': 0, 'total_messages': 0}
+    conn = get_db_connection()
+    c = conn.cursor()
+    if delay_ms is None:
+        delay_ms = get_full_sync_delay_ms()
+    delay_seconds = max(0.0, float(delay_ms) / 1000.0)
+    c.execute("SELECT COUNT(*) FROM bulletins WHERE local_only = 0")
+    total_items = c.fetchone()[0]
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    _update_sync_progress(in_progress=True, progress_percent=0 if total_items else 100,
+                          completed_items=0, total_items=total_items, remaining_items=total_items,
+                          current_phase='syncing_bulletins', target_nodes=[str(n) for n in bbs_nodes],
+                          started_at=now_str, last_updated_at=now_str, last_result='Running (P2: bulletins)')
+    bulletins_synced = 0
+    try:
+        c.execute("SELECT board, sender_short_name, subject, content, unique_id FROM bulletins WHERE local_only = 0")
+        for board, sender_short_name, subject, content, unique_id in c.fetchall():
+            send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface)
+            bulletins_synced += 1
+            pct = int((bulletins_synced * 100) / total_items) if total_items else 100
+            _update_sync_progress(progress_percent=pct, completed_items=bulletins_synced,
+                                  remaining_items=max(total_items - bulletins_synced, 0),
+                                  current_phase='syncing_bulletins',
+                                  last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+            time.sleep(delay_seconds)
+        logging.info(f"P2 bulletin sync: sent {bulletins_synced} bulletins to {len(bbs_nodes)} peer(s)")
+        _update_sync_progress(in_progress=False, progress_percent=100, completed_items=total_items,
+                              total_items=total_items, remaining_items=0, current_phase='bulletins_complete',
+                              last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                              last_result=f"P2 bulletins done: {bulletins_synced} sent")
+        return {'bulletins_synced': bulletins_synced, 'total_messages': bulletins_synced}
+    except Exception as e:
+        logging.error(f"Error during bulletin sync: {e}")
+        _update_sync_progress(in_progress=False, current_phase='error',
+                              last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                              last_result=f"Error: {e}")
+        raise
+
+
+def sync_channels_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] = None) -> dict:
+    """P3 — channel directory entries."""
+    if not bbs_nodes or not interface:
+        return {'channels_synced': 0, 'total_messages': 0}
+    conn = get_db_connection()
+    c = conn.cursor()
+    if delay_ms is None:
+        delay_ms = get_full_sync_delay_ms()
+    delay_seconds = max(0.0, float(delay_ms) / 1000.0)
+    c.execute("SELECT COUNT(*) FROM channels WHERE local_only = 0")
+    total_items = c.fetchone()[0]
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    _update_sync_progress(in_progress=True, progress_percent=0 if total_items else 100,
+                          completed_items=0, total_items=total_items, remaining_items=total_items,
+                          current_phase='syncing_channels', target_nodes=[str(n) for n in bbs_nodes],
+                          started_at=now_str, last_updated_at=now_str, last_result='Running (P3: channels)')
+    channels_synced = 0
+    try:
+        c.execute("SELECT name, url FROM channels WHERE local_only = 0")
+        for name, url in c.fetchall():
+            send_channel_to_bbs_nodes(name, url, bbs_nodes, interface)
+            channels_synced += 1
+            pct = int((channels_synced * 100) / total_items) if total_items else 100
+            _update_sync_progress(progress_percent=pct, completed_items=channels_synced,
+                                  remaining_items=max(total_items - channels_synced, 0),
+                                  current_phase='syncing_channels',
+                                  last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+            time.sleep(delay_seconds)
+        logging.info(f"P3 channel sync: sent {channels_synced} channels to {len(bbs_nodes)} peer(s)")
+        _update_sync_progress(in_progress=False, progress_percent=100, completed_items=total_items,
+                              total_items=total_items, remaining_items=0, current_phase='channels_complete',
+                              last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                              last_result=f"P3 channels done: {channels_synced} sent")
+        return {'channels_synced': channels_synced, 'total_messages': channels_synced}
+    except Exception as e:
+        logging.error(f"Error during channel sync: {e}")
+        _update_sync_progress(in_progress=False, current_phase='error',
+                              last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                              last_result=f"Error: {e}")
+        raise
+
+
+def sync_profiles_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] = None) -> dict:
+    """P4 — user profile records."""
+    if not bbs_nodes or not interface:
+        return {'profiles_synced': 0, 'total_messages': 0}
+    conn = get_db_connection()
+    c = conn.cursor()
+    if delay_ms is None:
+        delay_ms = get_full_sync_delay_ms()
+    delay_seconds = max(0.0, float(delay_ms) / 1000.0)
+    c.execute("SELECT COUNT(*) FROM user_profiles")
+    total_items = c.fetchone()[0]
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    _update_sync_progress(in_progress=True, progress_percent=0 if total_items else 100,
+                          completed_items=0, total_items=total_items, remaining_items=total_items,
+                          current_phase='syncing_profiles', target_nodes=[str(n) for n in bbs_nodes],
+                          started_at=now_str, last_updated_at=now_str, last_result='Running (P4: profiles)')
+    profiles_synced = 0
+    try:
+        c.execute("SELECT user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio FROM user_profiles")
+        for user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio in c.fetchall():
+            send_profile_to_bbs_nodes(user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio,
+                                      bbs_nodes, interface)
+            profiles_synced += 1
+            pct = int((profiles_synced * 100) / total_items) if total_items else 100
+            _update_sync_progress(progress_percent=pct, completed_items=profiles_synced,
+                                  remaining_items=max(total_items - profiles_synced, 0),
+                                  current_phase='syncing_profiles',
+                                  last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+            time.sleep(delay_seconds)
+        logging.info(f"P4 profile sync: sent {profiles_synced} profiles to {len(bbs_nodes)} peer(s)")
+        _update_sync_progress(in_progress=False, progress_percent=100, completed_items=total_items,
+                              total_items=total_items, remaining_items=0, current_phase='profiles_complete',
+                              last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                              last_result=f"P4 profiles done: {profiles_synced} sent")
+        return {'profiles_synced': profiles_synced, 'total_messages': profiles_synced}
+    except Exception as e:
+        logging.error(f"Error during profile sync: {e}")
+        _update_sync_progress(in_progress=False, current_phase='error',
+                              last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                              last_result=f"Error: {e}")
+        raise
+
+
+def sync_priority_data_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] = None) -> dict:
     """
-    Sync all existing shared records (posts, metadata, directories) to peers.
-    
-    This function performs a full database sync to new or rejoining BBS peers without spamming.
-    It includes rate limiting between messages to keep network traffic manageable.
-    
-    Args:
-        bbs_nodes: List of target BBS node IDs to sync to
-        interface: Meshtastic interface object for sending messages
-        delay_ms: Milliseconds to delay between each sync message (defaults from env)
-    
-    Returns:
-          dict: Summary with keys 'bulletins_synced', 'mail_synced', 'channels_synced',
-              'profiles_synced', 'game_scores_synced', 'zork_saves_synced', 'total_messages'
-    
-    Example:
-        result = sync_full_database_to_nodes([123456, 789012], interface, delay_ms=500)
-        print(f"Synced {result['bulletins_synced']} bulletins to {len(bbs_nodes)} nodes")
+    Priority sync wrapper: P1 mail → P2 bulletins → P3 channels → P4 profiles.
+    Sends SYNCSTATE after completion so peers can compare content counts.
+    Prefer calling the individual phase functions from server.py for finer-grained
+    phase-completion tracking.
     """
     if not bbs_nodes or not interface:
-        logging.warning("sync_full_database_to_nodes: No bbs_nodes or interface provided")
-        _update_sync_progress(
-            in_progress=False,
-            progress_percent=100,
-            completed_items=0,
-            total_items=0,
-            remaining_items=0,
-            current_phase='idle',
-            target_nodes=[],
-            last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            last_result='No nodes or interface provided',
-        )
-        return {
-            'bulletins_synced': 0,
-            'mail_synced': 0,
-            'channels_synced': 0,
-            'profiles_synced': 0,
-            'game_scores_synced': 0,
-            'zork_saves_synced': 0,
-            'total_messages': 0,
-        }
-    
+        logging.warning("sync_priority_data_to_nodes: No bbs_nodes or interface provided")
+        return {'bulletins_synced': 0, 'mail_synced': 0, 'channels_synced': 0,
+                'profiles_synced': 0, 'total_messages': 0}
+
+    m = sync_mail_to_nodes(bbs_nodes, interface, delay_ms=delay_ms)
+    b = sync_bulletins_to_nodes(bbs_nodes, interface, delay_ms=delay_ms)
+    ch = sync_channels_to_nodes(bbs_nodes, interface, delay_ms=delay_ms)
+    pr = sync_profiles_to_nodes(bbs_nodes, interface, delay_ms=delay_ms)
+
+    # Send SYNCSTATE after all priority phases so peers can immediately compare counts.
+    local_counts = get_local_record_counts()
+    send_sync_state_to_bbs_nodes(local_counts, bbs_nodes, interface)
+
+    total = (m.get('total_messages', 0) + b.get('total_messages', 0)
+             + ch.get('total_messages', 0) + pr.get('total_messages', 0))
+    logging.info(f"Priority sync complete: {total} messages sent to {len(bbs_nodes)} peer(s)")
+    return {
+        'mail_synced': m.get('mail_synced', 0),
+        'bulletins_synced': b.get('bulletins_synced', 0),
+        'channels_synced': ch.get('channels_synced', 0),
+        'profiles_synced': pr.get('profiles_synced', 0),
+        'total_messages': total,
+    }
+
+
+def sync_game_data_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] = None) -> dict:
+    """
+    Phase 2 sync: game scores and zork saves.
+    Runs after priority content sync so game data never blocks bulletins/mail.
+    """
+    if not bbs_nodes or not interface:
+        logging.warning("sync_game_data_to_nodes: No bbs_nodes or interface provided")
+        return {'game_scores_synced': 0, 'zork_saves_synced': 0, 'total_messages': 0}
+
     conn = get_db_connection()
     c = conn.cursor()
     if delay_ms is None:
@@ -1539,43 +1708,18 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[i
     delay_seconds = max(0.0, float(delay_ms) / 1000.0)
     total_messages = 0
 
-    c.execute("SELECT COUNT(*) FROM bulletins WHERE local_only = 0")
-    bulletin_total = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM mail")
-    mail_total = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM channels WHERE local_only = 0")
-    channel_total = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM user_profiles")
-    profile_total = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM game_scores")
     game_score_total = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM zork_saves")
     zork_total = c.fetchone()[0]
-    total_items = bulletin_total + mail_total + channel_total + profile_total + game_score_total + zork_total
-
-    started_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    _update_sync_progress(
-        in_progress=True,
-        progress_percent=0 if total_items > 0 else 100,
-        completed_items=0,
-        total_items=total_items,
-        remaining_items=total_items,
-        current_phase='starting',
-        target_nodes=[str(node) for node in bbs_nodes],
-        started_at=started_at,
-        last_updated_at=started_at,
-        last_result='Running',
-    )
+    total_items = game_score_total + zork_total
 
     completed_items = 0
 
     def _progress_tick(current_phase: str) -> None:
         nonlocal completed_items
         completed_items += 1
-        if total_items > 0:
-            progress_percent = int((completed_items * 100) / total_items)
-        else:
-            progress_percent = 100
+        progress_percent = int((completed_items * 100) / total_items) if total_items > 0 else 100
         _update_sync_progress(
             progress_percent=progress_percent,
             completed_items=completed_items,
@@ -1583,106 +1727,49 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[i
             current_phase=current_phase,
             last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         )
-    
+
+    _update_sync_progress(
+        in_progress=True,
+        progress_percent=0 if total_items > 0 else 100,
+        completed_items=0,
+        total_items=total_items,
+        remaining_items=total_items,
+        current_phase='starting_game_sync',
+        target_nodes=[str(node) for node in bbs_nodes],
+        last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        last_result='Running (game data phase)',
+    )
+
     try:
-        # Sync all bulletins
-        _update_sync_progress(current_phase='syncing_bulletins')
-        c.execute("SELECT board, sender_short_name, subject, content, unique_id FROM bulletins WHERE local_only = 0")
-        bulletins = c.fetchall()
-        bulletins_synced = 0
-        
-        for board, sender_short_name, subject, content, unique_id in bulletins:
-            send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface)
-            bulletins_synced += 1
-            total_messages += 1
-            _progress_tick('syncing_bulletins')
-            time.sleep(delay_seconds)
-        
-        logging.info(f"Database sync: Sent {bulletins_synced} bulletins to {len(bbs_nodes)} peer(s)")
-        
-        # Sync all mail
-        _update_sync_progress(current_phase='syncing_mail')
-        c.execute("SELECT sender, sender_short_name, recipient, subject, content, unique_id FROM mail")
-        mail_messages = c.fetchall()
-        mail_synced = 0
-        
-        for sender_id, sender_short_name, recipient_id, subject, content, unique_id in mail_messages:
-            send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, content, unique_id, bbs_nodes, interface)
-            mail_synced += 1
-            total_messages += 1
-            _progress_tick('syncing_mail')
-            time.sleep(delay_seconds)
-        
-        logging.info(f"Database sync: Sent {mail_synced} mail messages to {len(bbs_nodes)} peer(s)")
-        
-        # Sync all channels
-        _update_sync_progress(current_phase='syncing_channels')
-        c.execute("SELECT name, url FROM channels WHERE local_only = 0")
-        channels = c.fetchall()
-        channels_synced = 0
-        
-        for name, url in channels:
-            send_channel_to_bbs_nodes(name, url, bbs_nodes, interface)
-            channels_synced += 1
-            total_messages += 1
-            _progress_tick('syncing_channels')
-            time.sleep(delay_seconds)
-        
-        logging.info(f"Database sync: Sent {channels_synced} channels to {len(bbs_nodes)} peer(s)")
-
-        # Sync user profile metadata
-        _update_sync_progress(current_phase='syncing_profiles')
-        c.execute("SELECT user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio FROM user_profiles")
-        profiles = c.fetchall()
-        profiles_synced = 0
-        for user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio in profiles:
-            send_profile_to_bbs_nodes(user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio,
-                                      bbs_nodes, interface)
-            profiles_synced += 1
-            total_messages += 1
-            _progress_tick('syncing_profiles')
-            time.sleep(delay_seconds)
-
-        # Sync game score metadata
         _update_sync_progress(current_phase='syncing_game_scores')
         c.execute("SELECT user_id, game_id, short_name, score, max_score, moves, achieved_at FROM game_scores")
-        score_rows = c.fetchall()
         game_scores_synced = 0
-        for user_id, game_id, short_name, score, max_score, moves, achieved_at in score_rows:
+        for user_id, game_id, short_name, score, max_score, moves, achieved_at in c.fetchall():
             send_game_score_to_bbs_nodes(user_id, game_id, short_name, score, max_score, moves, achieved_at,
                                          bbs_nodes, interface)
             game_scores_synced += 1
             total_messages += 1
             _progress_tick('syncing_game_scores')
             time.sleep(delay_seconds)
+        logging.info(f"Game sync: Sent {game_scores_synced} game scores to {len(bbs_nodes)} peer(s)")
 
-        # Sync zork save payload metadata/data
         _update_sync_progress(current_phase='syncing_zork_saves')
         c.execute("SELECT user_id, game_id, save_data, updated_at FROM zork_saves")
-        zork_rows = c.fetchall()
         zork_saves_synced = 0
-        for user_id, game_id, save_data, updated_at in zork_rows:
+        for user_id, game_id, save_data, updated_at in c.fetchall():
             send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nodes, interface)
             zork_saves_synced += 1
             total_messages += 1
             _progress_tick('syncing_zork_saves')
             time.sleep(delay_seconds)
+        logging.info(f"Game sync: Sent {zork_saves_synced} zork saves to {len(bbs_nodes)} peer(s)")
 
-        # Send a lightweight consistency check payload so peers can compare
-        # their local counts against ours and detect missing records.
-        local_counts = get_local_record_counts()
-        send_sync_state_to_bbs_nodes(local_counts, bbs_nodes, interface)
-        
         result = {
-            'bulletins_synced': bulletins_synced,
-            'mail_synced': mail_synced,
-            'channels_synced': channels_synced,
-            'profiles_synced': profiles_synced,
             'game_scores_synced': game_scores_synced,
             'zork_saves_synced': zork_saves_synced,
-            'total_messages': total_messages
+            'total_messages': total_messages,
         }
-        logging.info(f"Database sync complete: {total_messages} total messages sent with {delay_ms}ms delays")
+        logging.info(f"Game data sync complete: {total_messages} messages sent to {len(bbs_nodes)} peer(s)")
         _update_sync_progress(
             in_progress=False,
             progress_percent=100,
@@ -1691,16 +1778,48 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[i
             remaining_items=0,
             current_phase='idle',
             last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            last_result=f"Completed: {total_messages} messages sent",
+            last_result=f"Game sync done: {total_messages} messages sent",
         )
         return result
-    
+
     except Exception as e:
-        logging.error(f"Error during full database sync: {e}")
+        logging.error(f"Error during game data sync: {e}")
         _update_sync_progress(
-            in_progress=False,
-            current_phase='error',
+            in_progress=False, current_phase='error',
             last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             last_result=f"Error: {e}",
         )
         raise
+
+
+def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] = None) -> dict:
+    """
+    Full sync convenience wrapper: runs priority phase then game-data phase sequentially.
+    Prefer calling sync_priority_data_to_nodes + sync_game_data_to_nodes separately in
+    server.py so the node can be marked content-synced between the two phases.
+    """
+    if not bbs_nodes or not interface:
+        logging.warning("sync_full_database_to_nodes: No bbs_nodes or interface provided")
+        _update_sync_progress(
+            in_progress=False, progress_percent=100, completed_items=0, total_items=0,
+            remaining_items=0, current_phase='idle', target_nodes=[],
+            last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            last_result='No nodes or interface provided',
+        )
+        return {
+            'bulletins_synced': 0, 'mail_synced': 0, 'channels_synced': 0,
+            'profiles_synced': 0, 'game_scores_synced': 0, 'zork_saves_synced': 0,
+            'total_messages': 0,
+        }
+
+    p = sync_priority_data_to_nodes(bbs_nodes, interface, delay_ms=delay_ms)
+    g = sync_game_data_to_nodes(bbs_nodes, interface, delay_ms=delay_ms)
+    return {
+        'bulletins_synced':  p.get('bulletins_synced', 0),
+        'mail_synced':       p.get('mail_synced', 0),
+        'channels_synced':   p.get('channels_synced', 0),
+        'profiles_synced':   p.get('profiles_synced', 0),
+        'game_scores_synced': g.get('game_scores_synced', 0),
+        'zork_saves_synced': g.get('zork_saves_synced', 0),
+        'total_messages':    p.get('total_messages', 0) + g.get('total_messages', 0),
+    }
