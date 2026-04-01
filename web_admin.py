@@ -355,17 +355,13 @@ BASE_TEMPLATE = """
     {% if show_nav %}
     <div class=\"nav\">
       <a href=\"{{ url_for('table_list', table='bulletins') }}\">Bulletins</a>
-      <p class="muted">Unified terminal stream for mesh RX, sync repair, drops, and runtime service logs. Auto-refreshes every 2 seconds.</p>
       <a href=\"{{ url_for('table_list', table='channels') }}\">Channels</a>
       <a href=\"{{ url_for('clients_summary') }}\">Clients</a>
       <a href=\"{{ url_for('settings_page') }}\">Settings</a>
-        <button class="terminal-btn" data-filter="rx" onclick="setFilter(this,'rx')">RX</button>
-      <a href=\"{{ url_for('system_flowchart') }}\">System Flowchart</a>\n      <a href=\"{{ url_for('system_transmissions') }}\">Transmission Stats</a>
+      <a href=\"{{ url_for('system_flowchart') }}\">System Flowchart</a>
+      <a href=\"{{ url_for('system_transmissions') }}\">Transmission Stats</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
       <div class="nav-right">
-        <button class="terminal-btn" data-filter="log" onclick="setFilter(this,'log')">LOG</button>
-        <button class="terminal-btn" data-filter="warn" onclick="setFilter(this,'warn')">WARN</button>
-        <button class="terminal-btn" data-filter="error" onclick="setFilter(this,'error')">ERROR</button>
         <div id="sync-status-pill" class="sync-pill" title="Hold for 1.2 seconds to force manual sync">Sync 0% | --:--</div>
         <button id="theme-toggle" class="btn btn-small theme-toggle" type="button">Switch to Light</button>
       </div>
@@ -383,6 +379,17 @@ BASE_TEMPLATE = """
     {{ content|safe }}
   </div>
   <script>
+    // Compatibility shim for client-side helpers that may call mgt.clearMarks.
+    (function ensureMgtClearMarks() {
+      const root = typeof globalThis !== 'undefined' ? globalThis : window;
+      if (!root.mgt || typeof root.mgt !== 'object') {
+        root.mgt = {};
+      }
+      if (typeof root.mgt.clearMarks !== 'function') {
+        root.mgt.clearMarks = function () {};
+      }
+    })();
+
     function applyTheme(theme) {
       document.body.setAttribute('data-theme', theme);
       const toggle = document.getElementById('theme-toggle');
@@ -1200,18 +1207,21 @@ CLIENTS_CONTENT = """
 </div>
 
 <div class=\"card\">
-  <h3>Live Connection Log</h3>
+  <h3>Live Log</h3>
   <p class=\"muted\">Terminal-style stream of inbound mesh activity. Auto-refreshes every 2 seconds.</p>
   <div class=\"terminal-controls\">
     <span class=\"muted\" style=\"font-size:11px;font-family:Consolas,monospace;\">Filter:</span>
-    <button class=\"terminal-btn active\" data-filter=\"all\" onclick=\"setFilter(this,'all')\">All</button>
-    <button class=\"terminal-btn\" data-filter=\"user\" onclick=\"setFilter(this,'user')\">RX</button>
-    <button class=\"terminal-btn\" data-filter=\"sync\" onclick=\"setFilter(this,'sync')\">SYNC</button>
-    <button class=\"terminal-btn\" data-filter=\"direct\" onclick=\"setFilter(this,'direct')\">DIRECT</button>
-    <button class=\"terminal-btn\" data-filter=\"drop\" onclick=\"setFilter(this,'drop')\">DROP</button>
+    <button class=\"terminal-btn active\" data-filter=\"all\">All <span class=\"filter-count\">0</span></button>
+    <button class=\"terminal-btn\" data-filter=\"rx\">RX <span class=\"filter-count\">0</span></button>
+    <button class=\"terminal-btn\" data-filter=\"sync\">SYNC <span class=\"filter-count\">0</span></button>
+    <button class=\"terminal-btn\" data-filter=\"direct\">DIRECT <span class=\"filter-count\">0</span></button>
+    <button class=\"terminal-btn\" data-filter=\"drop\">DROP <span class=\"filter-count\">0</span></button>
+    <button class=\"terminal-btn\" data-filter=\"log\">LOG <span class=\"filter-count\">0</span></button>
+    <button class=\"terminal-btn\" data-filter=\"warn\">WARN <span class=\"filter-count\">0</span></button>
+    <button class=\"terminal-btn\" data-filter=\"error\">ERROR <span class=\"filter-count\">0</span></button>
     <span style=\"flex:1\"></span>
-    <button class=\"terminal-btn btn-pause\" id=\"btn-pause\" onclick=\"togglePause()\">Pause</button>
-    <button class=\"terminal-btn btn-clear\" onclick=\"clearTerminal()\">Clear</button>
+    <button class=\"terminal-btn btn-pause\" id=\"btn-pause\">Pause</button>
+    <button class=\"terminal-btn btn-clear\" id=\"btn-clear\">Clear</button>
   </div>
   <div id=\"connection-terminal\" class=\"terminal-window\"></div>
 </div>
@@ -1224,6 +1234,32 @@ CLIENTS_CONTENT = """
     let lastId = {{ last_event_id }};
     let paused = false;
     let currentFilter = 'all';
+
+    function refreshFilterCounts() {
+      const counts = {
+        all: 0,
+        rx: 0,
+        sync: 0,
+        direct: 0,
+        drop: 0,
+        log: 0,
+        warn: 0,
+        error: 0
+      };
+      terminal.querySelectorAll('.terminal-line').forEach(function(line) {
+        counts.all += 1;
+        const type = (line.dataset.type || '').toLowerCase();
+        if (Object.prototype.hasOwnProperty.call(counts, type)) {
+          counts[type] += 1;
+        }
+      });
+      document.querySelectorAll('.terminal-btn[data-filter]').forEach(function(btn) {
+        const badge = btn.querySelector('.filter-count');
+        if (!badge) return;
+        const key = btn.dataset.filter || 'all';
+        badge.textContent = String(counts[key] || 0);
+      });
+    }
 
     function setFilter(btn, f) {
       currentFilter = f;
@@ -1245,6 +1281,21 @@ CLIENTS_CONTENT = """
 
     function clearTerminal() {
       terminal.innerHTML = '';
+      refreshFilterCounts();
+    }
+
+    document.querySelectorAll('.terminal-btn[data-filter]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        setFilter(btn, btn.dataset.filter);
+      });
+    });
+    const pauseBtn = document.getElementById('btn-pause');
+    if (pauseBtn) {
+      pauseBtn.addEventListener('click', togglePause);
+    }
+    const clearBtn = document.getElementById('btn-clear');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', clearTerminal);
     }
 
     function appendLine(evt) {
@@ -1261,6 +1312,7 @@ CLIENTS_CONTENT = """
         '<span class="terminal-type">' + evt.display_label + '</span> ' +
         sender + ' -> ' + to + ' :: ' + evt.event_text;
       terminal.appendChild(line);
+      refreshFilterCounts();
       if (!paused) terminal.scrollTop = terminal.scrollHeight;
     }
 
