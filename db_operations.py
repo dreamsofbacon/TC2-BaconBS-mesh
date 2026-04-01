@@ -334,6 +334,7 @@ def initialize_database():
                     transmission_time TEXT NOT NULL,
                     frame_type TEXT NOT NULL,
                     destination_node_id TEXT,
+                    direction TEXT NOT NULL DEFAULT 'tx',
                     frame_size_bytes INTEGER,
                     is_continuation INTEGER NOT NULL DEFAULT 0
                 );''')
@@ -361,26 +362,47 @@ def _ensure_sync_transmissions_table() -> None:
                     transmission_time TEXT NOT NULL,
                     frame_type TEXT NOT NULL,
                     destination_node_id TEXT,
+                    direction TEXT NOT NULL DEFAULT 'tx',
                     frame_size_bytes INTEGER,
                     is_continuation INTEGER NOT NULL DEFAULT 0
                 );''')
+    c.execute("PRAGMA table_info(sync_transmissions)")
+    sync_cols = {row[1] for row in c.fetchall()}
+    if 'direction' not in sync_cols:
+        c.execute("ALTER TABLE sync_transmissions ADD COLUMN direction TEXT NOT NULL DEFAULT 'tx'")
     conn.commit()
 
 
-def log_sync_transmission(message: str, destination_node_id: Optional[str], frame_size_bytes: int, is_continuation: bool = False) -> None:
-    """Log a sync frame transmission for monitoring and optimization."""
+def log_sync_transmission(
+    message: str,
+    destination_node_id: Optional[str],
+    frame_size_bytes: int,
+    is_continuation: bool = False,
+    direction: str = 'tx',
+) -> None:
+    """Log a sync frame send/receive event for monitoring and optimization."""
     _ensure_sync_transmissions_table()
     try:
         # Extract frame type from message (e.g. "SYNCSTATE|..." -> "SYNCSTATE")
         frame_type = message.split('|')[0] if '|' in message else message[:20]
         transmission_time = datetime.utcnow().isoformat() + 'Z'
+        direction_value = str(direction or 'tx').strip().lower()
+        if direction_value not in ('tx', 'rx'):
+            direction_value = 'tx'
         conn = get_db_connection()
         c = conn.cursor()
         c.execute(
             '''INSERT INTO sync_transmissions
-               (transmission_time, frame_type, destination_node_id, frame_size_bytes, is_continuation)
-               VALUES (?, ?, ?, ?, ?)''',
-            (transmission_time, frame_type, destination_node_id, frame_size_bytes, 1 if is_continuation else 0)
+               (transmission_time, frame_type, destination_node_id, direction, frame_size_bytes, is_continuation)
+               VALUES (?, ?, ?, ?, ?, ?)''',
+            (
+                transmission_time,
+                frame_type,
+                destination_node_id,
+                direction_value,
+                frame_size_bytes,
+                1 if is_continuation else 0,
+            )
         )
         conn.commit()
     except Exception as e:
@@ -418,6 +440,14 @@ def get_sync_transmission_stats(since_seconds: int = 3600) -> dict:
             (cutoff_time,)
         )
         node_breakdown = {row[0]: row[1] for row in c.fetchall()}
+
+        c.execute(
+            "SELECT direction, COUNT(*) as count, COALESCE(SUM(frame_size_bytes), 0) as bytes FROM sync_transmissions WHERE transmission_time > ? GROUP BY direction ORDER BY count DESC",
+            (cutoff_time,)
+        )
+        direction_rows = c.fetchall()
+        direction_breakdown = {str(row[0] or 'tx'): row[1] for row in direction_rows}
+        direction_bytes = {str(row[0] or 'tx'): row[2] for row in direction_rows}
         
         # Total bytes sent
         c.execute(
@@ -432,6 +462,8 @@ def get_sync_transmission_stats(since_seconds: int = 3600) -> dict:
             'frame_breakdown': frame_breakdown,
             'frame_bytes': frame_bytes,
             'node_breakdown': node_breakdown,
+            'direction_breakdown': direction_breakdown,
+            'direction_bytes': direction_bytes,
             'period_seconds': since_seconds,
         }
     except Exception as e:

@@ -24,6 +24,7 @@ from db_operations import (
     add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel,
     append_bulletin_content, append_mail_content,
     auto_upsert_user_profile, log_connection_event, upsert_peer_sync_state,
+    log_sync_transmission,
     upsert_synced_user_profile, upsert_synced_game_score,
     upsert_synced_zork_save,
     get_mismatched_peer_scopes,
@@ -797,6 +798,16 @@ def on_receive(packet, interface):
 
             if sender_node_id in bbs_nodes:
                 if is_sync_message:
+                    try:
+                        log_sync_transmission(
+                            message_string,
+                            sender_node_id,
+                            len(message_bytes),
+                            is_continuation=message_string.startswith(("BULLETINCONT|", "MAILCONT|")),
+                            direction='rx',
+                        )
+                    except Exception as exc:
+                        logging.debug(f"Failed to record received sync transmission: {exc}")
                     log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "sync", f"Accepted sync message ({sync_frame})")
                     process_message(sender_id, message_string, interface, is_sync_message=True, sender_node_id=sender_node_id)
                 else:

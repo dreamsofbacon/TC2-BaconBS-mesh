@@ -269,6 +269,37 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(payload["events"][1]["display_type"], "warn")
         self.assertEqual(payload["events"][1]["display_label"], "WARN")
 
+    def test_system_transmissions_page_counts_received_game_frames(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sync_transmissions (id INTEGER PRIMARY KEY AUTOINCREMENT, transmission_time TEXT NOT NULL, frame_type TEXT NOT NULL, destination_node_id TEXT, frame_size_bytes INTEGER, is_continuation INTEGER NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "INSERT INTO sync_transmissions (transmission_time, frame_type, destination_node_id, frame_size_bytes, is_continuation) VALUES (?, ?, ?, ?, ?)",
+            ("2099-03-30T10:00:00Z", "SCORESYNC", "!peer1", 120, 0),
+        )
+        conn.commit()
+        conn.close()
+
+        db_operations.log_sync_transmission(
+            "ZORKSAVE|save|user|game|2026-03-30T10:00:00Z|hash|0|1|chunk",
+            "!peer1",
+            180,
+            direction="rx",
+        )
+
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        page_response = client.get("/system/transmissions")
+        self.assertEqual(page_response.status_code, 200)
+        page = page_response.get_data(as_text=True)
+        self.assertIn("Received from peers", page)
+        self.assertIn("Game", page)
+        self.assertIn("2 frames", page)
+
     def test_settings_diagnostics_show_runtime_details(self):
         app = create_app(runtime_interface=FakeInterface())
         client = app.test_client()
