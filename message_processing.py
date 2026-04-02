@@ -90,7 +90,6 @@ _peer_hash_compressed_buffers = {}
 _SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "profiles", "game_scores", "zork_saves", "tombstones"]
 _HASH_BUFFER_MAX_AGE_SECONDS = 600
 _recent_hashmiss_requests = {}
-_HASHMISS_REQUEST_TTL_SECONDS = 900
 _recent_syncstate_repairs = {}
 _SYNCSTATE_REPAIR_TTL_SECONDS = 300
 # Track in-flight HASHREQ exchanges so we don't flood a peer with duplicate requests
@@ -124,20 +123,30 @@ def _hash_manifest_compression_enabled() -> bool:
 
 def _prune_recent_hashmiss_requests() -> None:
     now = time.time()
+    ttl_seconds = _get_hashmiss_request_ttl_seconds()
     stale_keys = [
         k for k, last_sent in _recent_hashmiss_requests.items()
-        if now - float(last_sent) > _HASHMISS_REQUEST_TTL_SECONDS
+        if now - float(last_sent) > ttl_seconds
     ]
     for key in stale_keys:
         _recent_hashmiss_requests.pop(key, None)
 
 
+def _get_hashmiss_request_ttl_seconds() -> float:
+    raw = str(os.getenv("BBS_HASHMISS_REQUEST_TTL_SECONDS", "60")).strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 60.0
+
+
 def _should_send_hashmiss(sender_node_id: str, scope: str, key: str, local_hash: str, remote_hash: str) -> bool:
     _prune_recent_hashmiss_requests()
     now = time.time()
+    ttl_seconds = _get_hashmiss_request_ttl_seconds()
     sig = (str(sender_node_id), str(scope), str(key), str(local_hash), str(remote_hash))
     last_sent = _recent_hashmiss_requests.get(sig)
-    if last_sent is not None and (now - float(last_sent)) < _HASHMISS_REQUEST_TTL_SECONDS:
+    if ttl_seconds > 0 and last_sent is not None and (now - float(last_sent)) < ttl_seconds:
         return False
     _recent_hashmiss_requests[sig] = now
     return True

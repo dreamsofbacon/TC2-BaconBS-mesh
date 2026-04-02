@@ -11,6 +11,7 @@ if "meshtastic" not in sys.modules:
 
 import db_operations
 import message_processing
+from utils import _send_sync_with_cont
 
 
 class _DummyInterface:
@@ -235,6 +236,79 @@ class HashRepairProtocolTests(unittest.TestCase):
 
         self.assertIn("HASHREQ|bulletins", iface.sent_texts)
         self.assertIn("HASHREQ|tombstones", iface.sent_texts)
+
+    def test_replayed_bulletin_continuations_can_heal_existing_partial_record(self):
+        content = "X" * 600
+        unique_id = "uid-repair-bulletin"
+        outbound = _DummyInterface()
+        _send_sync_with_cont(
+            "BULLETIN|General|CALL|Subject|",
+            f"|{unique_id}",
+            content,
+            unique_id,
+            cont_prefix=f"BULLETINCONT|{unique_id}|",
+            bbs_nodes=["!peer1"],
+            interface=outbound,
+            pause_seconds=0,
+        )
+
+        delivered = outbound.sent_texts
+        for msg in delivered[:2]:
+            message_processing.process_message(
+                sender_id=1,
+                message=msg,
+                interface=_DummyInterface(),
+                is_sync_message=True,
+                sender_node_id="!peer1",
+            )
+
+        for msg in delivered:
+            message_processing.process_message(
+                sender_id=1,
+                message=msg,
+                interface=_DummyInterface(),
+                is_sync_message=True,
+                sender_node_id="!peer1",
+            )
+
+        row = db_operations.get_bulletin_by_unique_id(unique_id)
+        self.assertIsNotNone(row)
+        self.assertEqual(row[3], content)
+
+    def test_hashmiss_ttl_can_be_disabled_for_repeated_repair_cycles(self):
+        iface = _DummyInterface()
+
+        with patch.dict("os.environ", {"BBS_HASHMISS_REQUEST_TTL_SECONDS": "0"}):
+            message_processing.process_message(
+                sender_id=1,
+                message="HASHREC|bulletins|uid-remote-only|abc123",
+                interface=iface,
+                is_sync_message=True,
+                sender_node_id="!peer1",
+            )
+            message_processing.process_message(
+                sender_id=1,
+                message="HASHEND|bulletins|1",
+                interface=iface,
+                is_sync_message=True,
+                sender_node_id="!peer1",
+            )
+            message_processing.process_message(
+                sender_id=1,
+                message="HASHREC|bulletins|uid-remote-only|abc123",
+                interface=iface,
+                is_sync_message=True,
+                sender_node_id="!peer1",
+            )
+            message_processing.process_message(
+                sender_id=1,
+                message="HASHEND|bulletins|1",
+                interface=iface,
+                is_sync_message=True,
+                sender_node_id="!peer1",
+            )
+
+        self.assertEqual(iface.sent_texts.count("HASHMISS|bulletins|uid-remote-only"), 2)
 
 
 if __name__ == "__main__":
