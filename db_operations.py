@@ -41,6 +41,10 @@ _sync_progress = {
 }
 _connection_log_handler_lock = threading.Lock()
 _connection_log_emit_state = threading.local()
+_pending_continuation_lock = threading.Lock()
+_pending_bulletin_continuations = {}
+_pending_mail_continuations = {}
+_PENDING_CONTINUATION_MAX_AGE_SECONDS = 1800
 
 
 class ConnectionEventsLogHandler(logging.Handler):
@@ -79,6 +83,108 @@ def _update_sync_progress(**kwargs) -> None:
 def get_sync_progress() -> dict:
     with _sync_progress_lock:
         return dict(_sync_progress)
+
+
+def _prune_pending_continuations(buffer_store: dict) -> None:
+    now = time.time()
+    stale_keys = [
+        unique_id for unique_id, payload in buffer_store.items()
+        if now - float(payload.get('updated_at', now)) > _PENDING_CONTINUATION_MAX_AGE_SECONDS
+    ]
+    for unique_id in stale_keys:
+        buffer_store.pop(unique_id, None)
+
+
+def _queue_pending_continuation(buffer_store: dict, unique_id: str, char_offset: int, chunk: str) -> None:
+    with _pending_continuation_lock:
+        _prune_pending_continuations(buffer_store)
+        payload = buffer_store.setdefault(str(unique_id), {'updated_at': time.time(), 'chunks': {}})
+        payload['updated_at'] = time.time()
+        payload['chunks'][int(char_offset)] = str(chunk)
+
+
+def _flush_pending_continuations(buffer_store: dict, unique_id: str, current_content: str) -> tuple[str, bool]:
+    changed = False
+    while True:
+        with _pending_continuation_lock:
+            _prune_pending_continuations(buffer_store)
+            payload = buffer_store.get(str(unique_id))
+            if not payload:
+                return current_content, changed
+            ready_offset = None
+            for offset in sorted(payload.get('chunks', {}).keys()):
+                if int(offset) <= len(current_content):
+                    ready_offset = int(offset)
+                    break
+            if ready_offset is None:
+                return current_content, changed
+            chunk = payload['chunks'].pop(ready_offset)
+            payload['updated_at'] = time.time()
+            if not payload['chunks']:
+                buffer_store.pop(str(unique_id), None)
+
+        new_content, status = _merge_continuation_content(current_content, ready_offset, chunk)
+        if status == 'applied':
+            current_content = new_content
+            changed = True
+
+
+def _merge_continuation_content(current_content: str, char_offset: Optional[int], additional_content: str) -> tuple[str, str]:
+    if char_offset is None:
+        new_content = current_content + additional_content
+        return new_content, 'applied' if new_content != current_content else 'duplicate'
+    if char_offset > len(current_content):
+        return current_content, 'gap'
+    overlap = current_content[char_offset:char_offset + len(additional_content)]
+    if overlap == additional_content and len(current_content) >= (char_offset + len(additional_content)):
+        return current_content, 'duplicate'
+    suffix = current_content[char_offset + len(additional_content):]
+    return current_content[:char_offset] + additional_content + suffix, 'applied'
+
+
+def _apply_continuation_update(table_name: str, unique_id: str, char_offset: Optional[int], additional_content: str,
+                               buffer_store: dict, label: str) -> None:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(f"SELECT content FROM {table_name} WHERE unique_id = ?", (unique_id,))
+    row = c.fetchone()
+    if row is None:
+        if char_offset is not None:
+            _queue_pending_continuation(buffer_store, unique_id, char_offset, additional_content)
+            logging.info(f"Buffered {label} continuation before base record unique_id={unique_id} offset={char_offset}")
+        else:
+            logging.warning(f"{label.upper()}CONT received for unknown unique_id={unique_id}; ignored")
+        return
+
+    current_content = str(row[0] or '')
+    new_content, status = _merge_continuation_content(current_content, char_offset, additional_content)
+    if status == 'gap' and char_offset is not None:
+        _queue_pending_continuation(buffer_store, unique_id, char_offset, additional_content)
+        logging.info(
+            f"Buffered out-of-order {label} continuation unique_id={unique_id}; offset {char_offset}, have {len(current_content)}"
+        )
+        return
+
+    current_content = new_content
+    current_content, flushed = _flush_pending_continuations(buffer_store, unique_id, current_content)
+    if status == 'duplicate' and not flushed:
+        logging.info(f"Duplicate {label} continuation ignored for unique_id={unique_id} offset={char_offset}")
+        return
+
+    c.execute(
+        f"UPDATE {table_name} SET content = ? WHERE unique_id = ?",
+        (current_content, unique_id),
+    )
+    conn.commit()
+    logging.info(f"Applied continuation content to {label} unique_id={unique_id}")
+
+
+def flush_pending_bulletin_continuations(unique_id: str) -> None:
+    _apply_continuation_update('bulletins', unique_id, None, '', _pending_bulletin_continuations, 'bulletin')
+
+
+def flush_pending_mail_continuations(unique_id: str) -> None:
+    _apply_continuation_update('mail', unique_id, None, '', _pending_mail_continuations, 'mail')
 
 
 def get_database_path() -> str:
@@ -237,6 +343,9 @@ def get_db_connection():
     return thread_local.connection
 
 def initialize_database():
+    with _pending_continuation_lock:
+        _pending_bulletin_continuations.clear()
+        _pending_mail_continuations.clear()
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS bulletins (
@@ -1016,39 +1125,7 @@ def append_bulletin_content(unique_id: str, char_offset: Optional[int], addition
     heal truncated records without deleting the row first. Pass None to skip
     the offset guard (legacy/test usage).
     """
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT content FROM bulletins WHERE unique_id = ?", (unique_id,))
-    row = c.fetchone()
-    if row is None:
-        logging.warning(f"BULLETINCONT received for unknown unique_id={unique_id}; ignored")
-        return
-
-    current_content = str(row[0] or '')
-    if char_offset is None:
-        new_content = current_content + additional_content
-    else:
-        if char_offset > len(current_content):
-            logging.warning(
-                f"BULLETINCONT gap for unique_id={unique_id}; expected offset {char_offset}, have {len(current_content)}"
-            )
-            return
-        overlap = current_content[char_offset:char_offset + len(additional_content)]
-        if overlap == additional_content and len(current_content) >= (char_offset + len(additional_content)):
-            logging.info(f"Duplicate bulletin continuation ignored for unique_id={unique_id} offset={char_offset}")
-            return
-        suffix = current_content[char_offset + len(additional_content):]
-        new_content = current_content[:char_offset] + additional_content + suffix
-
-    if new_content == current_content:
-        return
-
-    c.execute(
-        "UPDATE bulletins SET content = ? WHERE unique_id = ?",
-        (new_content, unique_id),
-    )
-    conn.commit()
-    logging.info(f"Applied continuation content to bulletin unique_id={unique_id}")
+    _apply_continuation_update('bulletins', unique_id, char_offset, additional_content, _pending_bulletin_continuations, 'bulletin')
 
 def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_nodes, interface, unique_id=None):
     conn = get_db_connection()
@@ -1108,39 +1185,7 @@ def append_mail_content(unique_id: str, char_offset: Optional[int], additional_c
 
     See append_bulletin_content for char_offset semantics.
     """
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT content FROM mail WHERE unique_id = ?", (unique_id,))
-    row = c.fetchone()
-    if row is None:
-        logging.warning(f"MAILCONT received for unknown unique_id={unique_id}; ignored")
-        return
-
-    current_content = str(row[0] or '')
-    if char_offset is None:
-        new_content = current_content + additional_content
-    else:
-        if char_offset > len(current_content):
-            logging.warning(
-                f"MAILCONT gap for unique_id={unique_id}; expected offset {char_offset}, have {len(current_content)}"
-            )
-            return
-        overlap = current_content[char_offset:char_offset + len(additional_content)]
-        if overlap == additional_content and len(current_content) >= (char_offset + len(additional_content)):
-            logging.info(f"Duplicate mail continuation ignored for unique_id={unique_id} offset={char_offset}")
-            return
-        suffix = current_content[char_offset + len(additional_content):]
-        new_content = current_content[:char_offset] + additional_content + suffix
-
-    if new_content == current_content:
-        return
-
-    c.execute(
-        "UPDATE mail SET content = ? WHERE unique_id = ?",
-        (new_content, unique_id),
-    )
-    conn.commit()
-    logging.info(f"Applied continuation content to mail unique_id={unique_id}")
+    _apply_continuation_update('mail', unique_id, char_offset, additional_content, _pending_mail_continuations, 'mail')
 
 
 def get_sender_id_by_mail_id(mail_id):

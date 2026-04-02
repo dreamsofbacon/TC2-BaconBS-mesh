@@ -23,6 +23,7 @@ from command_handlers import (
 from db_operations import (
     add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel,
     append_bulletin_content, append_mail_content,
+    flush_pending_bulletin_continuations, flush_pending_mail_continuations,
     auto_upsert_user_profile, log_connection_event, upsert_peer_sync_state,
     log_sync_transmission,
     upsert_synced_user_profile, upsert_synced_game_score,
@@ -361,6 +362,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 return
             board, sender_short_name, subject, content, unique_id = parts[1], parts[2], parts[3], parts[4], parts[5]
             add_bulletin(board, sender_short_name, subject, content, [], interface, unique_id=unique_id)
+            flush_pending_bulletin_continuations(unique_id)
 
             if board.lower() == "urgent":
                 notification_message = f"💥NEW URGENT BULLETIN💥\nFrom: {sender_short_name}\nTitle: {subject}\nDM 'CB,,Urgent' to view"
@@ -372,6 +374,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 return
             sync_sender_id, sender_short_name, recipient_id, subject, content, unique_id = parts[1], parts[2], parts[3], parts[4], parts[5], parts[6]
             add_mail(sync_sender_id, sender_short_name, recipient_id, subject, content, [], interface, unique_id=unique_id)
+            flush_pending_mail_continuations(unique_id)
         elif message.startswith("DELETE_BULLETIN|"):
             parts = message.split("|", 1)
             if len(parts) != 2 or not parts[1]:
