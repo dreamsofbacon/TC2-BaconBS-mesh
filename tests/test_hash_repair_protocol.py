@@ -310,6 +310,70 @@ class HashRepairProtocolTests(unittest.TestCase):
 
         self.assertEqual(iface.sent_texts.count("HASHMISS|bulletins|uid-remote-only"), 2)
 
+    def test_out_of_order_bulletin_continuations_are_buffered_until_gap_closes(self):
+        content = "0123456789" * 80
+        unique_id = "uid-out-of-order-bulletin"
+        outbound = _DummyInterface()
+        _send_sync_with_cont(
+            "BULLETIN|General|CALL|Subject|",
+            f"|{unique_id}",
+            content,
+            unique_id,
+            cont_prefix=f"BULLETINCONT|{unique_id}|",
+            bbs_nodes=["!peer1"],
+            interface=outbound,
+            pause_seconds=0,
+        )
+
+        delivered = outbound.sent_texts
+        self.assertGreaterEqual(len(delivered), 3)
+        reordered = [delivered[0], delivered[2], delivered[1], *delivered[3:]]
+
+        for msg in reordered:
+            message_processing.process_message(
+                sender_id=1,
+                message=msg,
+                interface=_DummyInterface(),
+                is_sync_message=True,
+                sender_node_id="!peer1",
+            )
+
+        row = db_operations.get_bulletin_by_unique_id(unique_id)
+        self.assertIsNotNone(row)
+        self.assertEqual(row[3], content)
+
+    def test_bulletin_continuation_before_base_record_is_buffered(self):
+        content = "ABCDEFGH" * 90
+        unique_id = "uid-early-cont-bulletin"
+        outbound = _DummyInterface()
+        _send_sync_with_cont(
+            "BULLETIN|General|CALL|Subject|",
+            f"|{unique_id}",
+            content,
+            unique_id,
+            cont_prefix=f"BULLETINCONT|{unique_id}|",
+            bbs_nodes=["!peer1"],
+            interface=outbound,
+            pause_seconds=0,
+        )
+
+        delivered = outbound.sent_texts
+        self.assertGreaterEqual(len(delivered), 2)
+        reordered = [delivered[1], delivered[0], *delivered[2:]]
+
+        for msg in reordered:
+            message_processing.process_message(
+                sender_id=1,
+                message=msg,
+                interface=_DummyInterface(),
+                is_sync_message=True,
+                sender_node_id="!peer1",
+            )
+
+        row = db_operations.get_bulletin_by_unique_id(unique_id)
+        self.assertIsNotNone(row)
+        self.assertEqual(row[3], content)
+
 
 if __name__ == "__main__":
     unittest.main()
