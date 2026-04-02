@@ -1011,27 +1011,44 @@ def append_bulletin_content(unique_id: str, char_offset: Optional[int], addition
     """Append a continuation chunk to an existing bulletin's content.
 
     char_offset is the expected current length of the stored content before
-    this chunk is applied.  Only appends when length(content) == char_offset,
-    making the call idempotent: duplicate or re-synced packets are silent no-ops.
-    Pass None to skip the offset guard (legacy/test usage).
+    this chunk is applied. When retransmissions overlap content already stored,
+    the overlapping slice is rewritten in place so a replayed repair pass can
+    heal truncated records without deleting the row first. Pass None to skip
+    the offset guard (legacy/test usage).
     """
     conn = get_db_connection()
     c = conn.cursor()
-    if char_offset is not None:
-        c.execute(
-            "UPDATE bulletins SET content = content || ? WHERE unique_id = ? AND length(content) = ?",
-            (additional_content, unique_id, char_offset),
-        )
-    else:
-        c.execute(
-            "UPDATE bulletins SET content = content || ? WHERE unique_id = ?",
-            (additional_content, unique_id),
-        )
-    if c.rowcount > 0:
-        conn.commit()
-        logging.info(f"Appended continuation content to bulletin unique_id={unique_id}")
-    else:
+    c.execute("SELECT content FROM bulletins WHERE unique_id = ?", (unique_id,))
+    row = c.fetchone()
+    if row is None:
         logging.warning(f"BULLETINCONT received for unknown unique_id={unique_id}; ignored")
+        return
+
+    current_content = str(row[0] or '')
+    if char_offset is None:
+        new_content = current_content + additional_content
+    else:
+        if char_offset > len(current_content):
+            logging.warning(
+                f"BULLETINCONT gap for unique_id={unique_id}; expected offset {char_offset}, have {len(current_content)}"
+            )
+            return
+        overlap = current_content[char_offset:char_offset + len(additional_content)]
+        if overlap == additional_content and len(current_content) >= (char_offset + len(additional_content)):
+            logging.info(f"Duplicate bulletin continuation ignored for unique_id={unique_id} offset={char_offset}")
+            return
+        suffix = current_content[char_offset + len(additional_content):]
+        new_content = current_content[:char_offset] + additional_content + suffix
+
+    if new_content == current_content:
+        return
+
+    c.execute(
+        "UPDATE bulletins SET content = ? WHERE unique_id = ?",
+        (new_content, unique_id),
+    )
+    conn.commit()
+    logging.info(f"Applied continuation content to bulletin unique_id={unique_id}")
 
 def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_nodes, interface, unique_id=None):
     conn = get_db_connection()
@@ -1093,21 +1110,37 @@ def append_mail_content(unique_id: str, char_offset: Optional[int], additional_c
     """
     conn = get_db_connection()
     c = conn.cursor()
-    if char_offset is not None:
-        c.execute(
-            "UPDATE mail SET content = content || ? WHERE unique_id = ? AND length(content) = ?",
-            (additional_content, unique_id, char_offset),
-        )
-    else:
-        c.execute(
-            "UPDATE mail SET content = content || ? WHERE unique_id = ?",
-            (additional_content, unique_id),
-        )
-    if c.rowcount > 0:
-        conn.commit()
-        logging.info(f"Appended continuation content to mail unique_id={unique_id}")
-    else:
+    c.execute("SELECT content FROM mail WHERE unique_id = ?", (unique_id,))
+    row = c.fetchone()
+    if row is None:
         logging.warning(f"MAILCONT received for unknown unique_id={unique_id}; ignored")
+        return
+
+    current_content = str(row[0] or '')
+    if char_offset is None:
+        new_content = current_content + additional_content
+    else:
+        if char_offset > len(current_content):
+            logging.warning(
+                f"MAILCONT gap for unique_id={unique_id}; expected offset {char_offset}, have {len(current_content)}"
+            )
+            return
+        overlap = current_content[char_offset:char_offset + len(additional_content)]
+        if overlap == additional_content and len(current_content) >= (char_offset + len(additional_content)):
+            logging.info(f"Duplicate mail continuation ignored for unique_id={unique_id} offset={char_offset}")
+            return
+        suffix = current_content[char_offset + len(additional_content):]
+        new_content = current_content[:char_offset] + additional_content + suffix
+
+    if new_content == current_content:
+        return
+
+    c.execute(
+        "UPDATE mail SET content = ? WHERE unique_id = ?",
+        (new_content, unique_id),
+    )
+    conn.commit()
+    logging.info(f"Applied continuation content to mail unique_id={unique_id}")
 
 
 def get_sender_id_by_mail_id(mail_id):
