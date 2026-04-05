@@ -6,6 +6,7 @@ import uuid
 import configparser
 from datetime import datetime
 from functools import wraps
+from typing import Optional
 
 from flask import Flask, flash, jsonify, redirect, render_template_string, request, session, url_for
 
@@ -99,7 +100,7 @@ def load_sync_settings(config_path: str) -> tuple[list[str], list[str], int]:
   return bbs_nodes, allowed_nodes, sync_interval_minutes
 
 
-def _parse_bool_setting(raw_value: str | None, default: bool = False) -> bool:
+def _parse_bool_setting(raw_value: Optional[str], default: bool = False) -> bool:
   if raw_value is None:
     return default
   normalized = str(raw_value).strip().lower()
