@@ -449,6 +449,7 @@ def initialize_database():
                 );''')
     _ensure_local_only_columns(c)
     _dedupe_channels_and_create_unique_index(c)
+    _dedupe_messages_and_create_unique_indexes(c)
     conn.commit()
     print(f"Database schema initialized at {get_database_path()}.")
 
@@ -941,6 +942,71 @@ def _dedupe_channels_and_create_unique_index(cursor) -> None:
     )
 
 
+def _dedupe_content_records_by_unique_id(cursor, table_name: str, extra_columns: tuple[str, ...] = ()) -> None:
+    """Deduplicate bulletin/mail rows keyed by unique_id.
+
+    Older databases can contain replay duplicates for the same synced record.
+    Hash manifests key by unique_id, so duplicates keep peers mismatched even if
+    the visible content looks similar. Keep the longest content row, prefer a
+    syncable bulletin row on ties, then fall back to the lowest id.
+    """
+    cursor.execute(
+        f"""
+        SELECT unique_id
+        FROM {table_name}
+        GROUP BY unique_id
+        HAVING COUNT(*) > 1
+        """
+    )
+    duplicate_keys = [row[0] for row in cursor.fetchall()]
+
+    for unique_id in duplicate_keys:
+        select_cols = ["id", *extra_columns, "content", "unique_id"]
+        cursor.execute(
+            f"SELECT {', '.join(select_cols)} FROM {table_name} WHERE unique_id = ?",
+            (unique_id,),
+        )
+        rows = cursor.fetchall()
+        if len(rows) < 2:
+            continue
+
+        def _sort_key(row: tuple) -> tuple:
+            row_id = int(row[0])
+            local_only = int(row[1]) if extra_columns == ('local_only',) else 0
+            content = str(row[-2] or '')
+            return (-len(content), local_only, row_id)
+
+        keeper = min(rows, key=_sort_key)
+        keeper_id = int(keeper[0])
+        keeper_content = str(keeper[-2] or '')
+        if table_name == 'bulletins':
+            keeper_local_only = min(int(row[1]) for row in rows)
+            cursor.execute(
+                "UPDATE bulletins SET content = ?, local_only = ? WHERE id = ?",
+                (keeper_content, keeper_local_only, keeper_id),
+            )
+        else:
+            cursor.execute(
+                f"UPDATE {table_name} SET content = ? WHERE id = ?",
+                (keeper_content, keeper_id),
+            )
+
+        duplicate_ids = [int(row[0]) for row in rows if int(row[0]) != keeper_id]
+        for dup_id in duplicate_ids:
+            cursor.execute(f"DELETE FROM {table_name} WHERE id = ?", (dup_id,))
+
+
+def _dedupe_messages_and_create_unique_indexes(cursor) -> None:
+    _dedupe_content_records_by_unique_id(cursor, 'bulletins', ('local_only',))
+    _dedupe_content_records_by_unique_id(cursor, 'mail')
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_bulletins_unique_id_unique ON bulletins(unique_id)"
+    )
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_unique_id_unique ON mail(unique_id)"
+    )
+
+
 def add_channel(name, url, bbs_nodes=None, interface=None, local_only: bool = False):
     conn = get_db_connection()
     c = conn.cursor()
@@ -1016,8 +1082,19 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
         unique_id = str(uuid.uuid4())
     else:
         # Idempotency for sync replays
-        c.execute("SELECT 1 FROM bulletins WHERE unique_id = ? LIMIT 1", (unique_id,))
-        if c.fetchone():
+        c.execute("SELECT id, content, local_only FROM bulletins WHERE unique_id = ? LIMIT 1", (unique_id,))
+        row = c.fetchone()
+        if row:
+            existing_id, existing_content, existing_local_only = int(row[0]), str(row[1] or ''), int(row[2] or 0)
+            merged_content, status = _merge_continuation_content(existing_content, 0, content)
+            merged_local_only = 1 if (local_only and existing_local_only) else 0
+            if status != 'duplicate' or merged_local_only != existing_local_only:
+                c.execute(
+                    "UPDATE bulletins SET board = ?, sender_short_name = ?, subject = ?, content = ?, local_only = ? WHERE id = ?",
+                    (board, sender_short_name, subject, merged_content, merged_local_only, existing_id),
+                )
+                conn.commit()
+            clear_sync_tombstone('bulletins', str(unique_id))
             return unique_id
     c.execute(
         "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -1135,8 +1212,18 @@ def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_n
         unique_id = str(uuid.uuid4())
     else:
         # Idempotency for sync replays
-        c.execute("SELECT 1 FROM mail WHERE unique_id = ? LIMIT 1", (unique_id,))
-        if c.fetchone():
+        c.execute("SELECT id, content FROM mail WHERE unique_id = ? LIMIT 1", (unique_id,))
+        row = c.fetchone()
+        if row:
+            existing_id, existing_content = int(row[0]), str(row[1] or '')
+            merged_content, status = _merge_continuation_content(existing_content, 0, content)
+            if status != 'duplicate':
+                c.execute(
+                    "UPDATE mail SET sender = ?, sender_short_name = ?, recipient = ?, subject = ?, content = ? WHERE id = ?",
+                    (sender_id, sender_short_name, recipient_id, subject, merged_content, existing_id),
+                )
+                conn.commit()
+            clear_sync_tombstone('mail', str(unique_id))
             return unique_id
     c.execute("INSERT INTO mail (sender, sender_short_name, recipient, date, subject, content, unique_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
               (sender_id, sender_short_name, recipient_id, date, subject, content, unique_id))
@@ -1457,7 +1544,7 @@ def get_bulletin_by_unique_id(unique_id: str):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT board, sender_short_name, subject, content, unique_id FROM bulletins WHERE unique_id = ?",
+        "SELECT board, sender_short_name, subject, content, unique_id FROM bulletins WHERE unique_id = ? ORDER BY LENGTH(content) DESC, id ASC",
         (unique_id,),
     )
     return c.fetchone()
@@ -1467,7 +1554,7 @@ def get_mail_by_unique_id(unique_id: str):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT sender, sender_short_name, recipient, subject, content, unique_id FROM mail WHERE unique_id = ?",
+        "SELECT sender, sender_short_name, recipient, subject, content, unique_id FROM mail WHERE unique_id = ? ORDER BY LENGTH(content) DESC, id ASC",
         (unique_id,),
     )
     return c.fetchone()

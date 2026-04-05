@@ -374,6 +374,40 @@ class HashRepairProtocolTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual(row[3], content)
 
+    def test_replayed_bulletin_base_packet_repairs_existing_short_prefix(self):
+        content = "REPAIR" * 120
+        unique_id = "uid-short-prefix-bulletin"
+        outbound = _DummyInterface()
+        _send_sync_with_cont(
+            "BULLETIN|General|CALL|Subject|",
+            f"|{unique_id}",
+            content,
+            unique_id,
+            cont_prefix=f"BULLETINCONT|{unique_id}|",
+            bbs_nodes=["!peer1"],
+            interface=outbound,
+            pause_seconds=0,
+        )
+
+        first_parts = outbound.sent_texts[0].split("|", 5)
+        truncated_prefix = first_parts[4][: max(1, len(first_parts[4]) // 3)]
+        db_operations.add_bulletin(
+            "General", "CALL", "Subject", truncated_prefix, [], None, unique_id=unique_id
+        )
+
+        for msg in outbound.sent_texts:
+            message_processing.process_message(
+                sender_id=1,
+                message=msg,
+                interface=_DummyInterface(),
+                is_sync_message=True,
+                sender_node_id="!peer1",
+            )
+
+        row = db_operations.get_bulletin_by_unique_id(unique_id)
+        self.assertIsNotNone(row)
+        self.assertEqual(row[3], content)
+
 
 if __name__ == "__main__":
     unittest.main()

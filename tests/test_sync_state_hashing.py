@@ -157,6 +157,51 @@ class SyncStateHashingTests(unittest.TestCase):
             mismatched = db_operations.get_mismatched_peer_nodes({"!peer1"})
             self.assertNotIn("!peer1", mismatched)
 
+    def test_initialize_database_dedupes_bulletin_duplicates_by_unique_id(self):
+        conn = db_operations.get_db_connection()
+        conn.execute("DROP INDEX IF EXISTS idx_bulletins_unique_id_unique")
+        conn.execute(
+            "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("General", "CALL", "2026-04-05 12:00", "Subject", "short", "dup-bulletin", 1),
+        )
+        conn.execute(
+            "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("General", "CALL", "2026-04-05 12:01", "Subject", "this is the longer canonical content", "dup-bulletin", 0),
+        )
+        conn.commit()
+
+        db_operations.initialize_database()
+
+        rows = conn.execute(
+            "SELECT content, local_only FROM bulletins WHERE unique_id = ? ORDER BY id ASC",
+            ("dup-bulletin",),
+        ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "this is the longer canonical content")
+        self.assertEqual(rows[0][1], 0)
+
+    def test_initialize_database_dedupes_mail_duplicates_by_unique_id(self):
+        conn = db_operations.get_db_connection()
+        conn.execute("DROP INDEX IF EXISTS idx_mail_unique_id_unique")
+        conn.execute(
+            "INSERT INTO mail (sender, sender_short_name, recipient, date, subject, content, unique_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("1", "CALL", "2", "2026-04-05 12:00", "Subject", "short", "dup-mail"),
+        )
+        conn.execute(
+            "INSERT INTO mail (sender, sender_short_name, recipient, date, subject, content, unique_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("1", "CALL", "2", "2026-04-05 12:01", "Subject", "this is the longer canonical content", "dup-mail"),
+        )
+        conn.commit()
+
+        db_operations.initialize_database()
+
+        rows = conn.execute(
+            "SELECT content FROM mail WHERE unique_id = ? ORDER BY id ASC",
+            ("dup-mail",),
+        ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "this is the longer canonical content")
+
 
 if __name__ == "__main__":
     unittest.main()
