@@ -231,6 +231,7 @@ def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, uniqu
     _send_sync_with_cont(
         header, footer, content, unique_id,
         cont_prefix=f"BULLETINCONT|{unique_id}|",
+        meta_prefix=f"BULLETINMETA|{unique_id}|",
         bbs_nodes=bbs_nodes, interface=interface,
     )
 
@@ -243,6 +244,7 @@ def send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, 
     _send_sync_with_cont(
         header, footer, content, unique_id,
         cont_prefix=f"MAILCONT|{unique_id}|",
+        meta_prefix=f"MAILMETA|{unique_id}|",
         bbs_nodes=bbs_nodes, interface=interface,
     )
 
@@ -365,7 +367,7 @@ def _send_one_sync(message, destination, interface, pause_seconds=None):
     time.sleep(pause_seconds)
 
 
-def _send_sync_with_cont(header, footer, content, unique_id, cont_prefix, bbs_nodes, interface, pause_seconds=0.75):
+def _send_sync_with_cont(header, footer, content, unique_id, cont_prefix, bbs_nodes, interface, pause_seconds=0.75, meta_prefix=None):
     """
     Send a sync message whose content may exceed one Meshtastic packet.
 
@@ -395,6 +397,11 @@ def _send_sync_with_cont(header, footer, content, unique_id, cont_prefix, bbs_no
 
     for node_id in bbs_nodes:
         _send_one_sync(first_msg, node_id, interface, pause_seconds)
+
+    if remaining_text and meta_prefix:
+        meta_msg = f"{meta_prefix}{len(content)}"
+        for node_id in bbs_nodes:
+            _send_one_sync(meta_msg, node_id, interface, pause_seconds)
 
     # Send continuation packets for any remaining content
     remaining = remaining_text

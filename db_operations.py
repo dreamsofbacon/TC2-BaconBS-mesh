@@ -44,6 +44,8 @@ _connection_log_emit_state = threading.local()
 _pending_continuation_lock = threading.Lock()
 _pending_bulletin_continuations = {}
 _pending_mail_continuations = {}
+_pending_bulletin_expected_lengths = {}
+_pending_mail_expected_lengths = {}
 _PENDING_CONTINUATION_MAX_AGE_SECONDS = 1800
 
 
@@ -103,6 +105,39 @@ def _queue_pending_continuation(buffer_store: dict, unique_id: str, char_offset:
         payload['chunks'][int(char_offset)] = str(chunk)
 
 
+def _queue_pending_expected_length(buffer_store: dict, unique_id: str, expected_length: int) -> None:
+    with _pending_continuation_lock:
+        _prune_pending_continuations(buffer_store)
+        buffer_store[str(unique_id)] = {
+            'updated_at': time.time(),
+            'expected_length': max(0, int(expected_length)),
+        }
+
+
+def _pop_pending_expected_length(buffer_store: dict, unique_id: str) -> Optional[int]:
+    with _pending_continuation_lock:
+        _prune_pending_continuations(buffer_store)
+        payload = buffer_store.pop(str(unique_id), None)
+        if not payload:
+            return None
+        try:
+            return max(0, int(payload.get('expected_length', 0)))
+        except Exception:
+            return None
+
+
+def _normalize_expected_content_length(content: str, expected_length: Optional[int]) -> int:
+    actual_length = len(str(content or ''))
+    if expected_length is None:
+        return actual_length
+    return max(actual_length, int(expected_length))
+
+
+def _content_complete_flag(content: str, expected_length: Optional[int]) -> int:
+    normalized_expected = _normalize_expected_content_length(content, expected_length)
+    return 1 if len(str(content or '')) >= normalized_expected else 0
+
+
 def _flush_pending_continuations(buffer_store: dict, unique_id: str, current_content: str) -> tuple[str, bool]:
     changed = False
     while True:
@@ -146,7 +181,7 @@ def _apply_continuation_update(table_name: str, unique_id: str, char_offset: Opt
                                buffer_store: dict, label: str) -> None:
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute(f"SELECT content FROM {table_name} WHERE unique_id = ?", (unique_id,))
+    c.execute(f"SELECT content, expected_content_length FROM {table_name} WHERE unique_id = ?", (unique_id,))
     row = c.fetchone()
     if row is None:
         if char_offset is not None:
@@ -157,6 +192,7 @@ def _apply_continuation_update(table_name: str, unique_id: str, char_offset: Opt
         return
 
     current_content = str(row[0] or '')
+    expected_length = row[1] if len(row) > 1 else None
     new_content, status = _merge_continuation_content(current_content, char_offset, additional_content)
     if status == 'gap' and char_offset is not None:
         _queue_pending_continuation(buffer_store, unique_id, char_offset, additional_content)
@@ -171,9 +207,15 @@ def _apply_continuation_update(table_name: str, unique_id: str, char_offset: Opt
         logging.info(f"Duplicate {label} continuation ignored for unique_id={unique_id} offset={char_offset}")
         return
 
+    normalized_expected_length = _normalize_expected_content_length(current_content, expected_length)
     c.execute(
-        f"UPDATE {table_name} SET content = ? WHERE unique_id = ?",
-        (current_content, unique_id),
+        f"UPDATE {table_name} SET content = ?, expected_content_length = ?, content_complete = ? WHERE unique_id = ?",
+        (
+            current_content,
+            normalized_expected_length,
+            _content_complete_flag(current_content, normalized_expected_length),
+            unique_id,
+        ),
     )
     conn.commit()
     logging.info(f"Applied continuation content to {label} unique_id={unique_id}")
@@ -185,6 +227,45 @@ def flush_pending_bulletin_continuations(unique_id: str) -> None:
 
 def flush_pending_mail_continuations(unique_id: str) -> None:
     _apply_continuation_update('mail', unique_id, None, '', _pending_mail_continuations, 'mail')
+
+
+def _apply_expected_content_length(table_name: str, unique_id: str, expected_length: int, pending_store: dict, label: str) -> None:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(f"SELECT content FROM {table_name} WHERE unique_id = ?", (unique_id,))
+    row = c.fetchone()
+    normalized_expected = max(0, int(expected_length))
+    if row is None:
+        _queue_pending_expected_length(pending_store, unique_id, normalized_expected)
+        logging.info(f"Buffered {label} content metadata before base record unique_id={unique_id} expected={normalized_expected}")
+        return
+
+    current_content = str(row[0] or '')
+    normalized_expected = _normalize_expected_content_length(current_content, normalized_expected)
+    c.execute(
+        f"UPDATE {table_name} SET expected_content_length = ?, content_complete = ? WHERE unique_id = ?",
+        (
+            normalized_expected,
+            _content_complete_flag(current_content, normalized_expected),
+            unique_id,
+        ),
+    )
+    conn.commit()
+
+
+def apply_bulletin_expected_content_length(unique_id: str, expected_length: int) -> None:
+    _apply_expected_content_length('bulletins', unique_id, expected_length, _pending_bulletin_expected_lengths, 'bulletin')
+
+
+def apply_mail_expected_content_length(unique_id: str, expected_length: int) -> None:
+    _apply_expected_content_length('mail', unique_id, expected_length, _pending_mail_expected_lengths, 'mail')
+
+
+def _flush_pending_expected_content_length(table_name: str, unique_id: str, pending_store: dict, label: str) -> None:
+    pending_expected = _pop_pending_expected_length(pending_store, unique_id)
+    if pending_expected is None:
+        return
+    _apply_expected_content_length(table_name, unique_id, pending_expected, pending_store, label)
 
 
 def get_database_path() -> str:
@@ -346,6 +427,8 @@ def initialize_database():
     with _pending_continuation_lock:
         _pending_bulletin_continuations.clear()
         _pending_mail_continuations.clear()
+        _pending_bulletin_expected_lengths.clear()
+        _pending_mail_expected_lengths.clear()
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS bulletins (
@@ -356,7 +439,9 @@ def initialize_database():
                     subject TEXT NOT NULL,
                     content TEXT NOT NULL,
                     unique_id TEXT NOT NULL,
-                    local_only INTEGER NOT NULL DEFAULT 0
+                    local_only INTEGER NOT NULL DEFAULT 0,
+                    expected_content_length INTEGER,
+                    content_complete INTEGER NOT NULL DEFAULT 1
                 )''')
     c.execute('''CREATE TABLE IF NOT EXISTS mail (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -366,7 +451,9 @@ def initialize_database():
                     date TEXT NOT NULL,
                     subject TEXT NOT NULL,
                     content TEXT NOT NULL,
-                    unique_id TEXT NOT NULL
+                    unique_id TEXT NOT NULL,
+                    expected_content_length INTEGER,
+                    content_complete INTEGER NOT NULL DEFAULT 1
                 );''')
     c.execute('''CREATE TABLE IF NOT EXISTS channels (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -447,11 +534,34 @@ def initialize_database():
                     frame_size_bytes INTEGER,
                     is_continuation INTEGER NOT NULL DEFAULT 0
                 );''')
+    _ensure_content_status_columns(c)
     _ensure_local_only_columns(c)
     _dedupe_channels_and_create_unique_index(c)
     _dedupe_messages_and_create_unique_indexes(c)
     conn.commit()
     print(f"Database schema initialized at {get_database_path()}.")
+
+
+def _ensure_content_status_columns(cursor) -> None:
+    cursor.execute("PRAGMA table_info(bulletins)")
+    bulletin_cols = {row[1] for row in cursor.fetchall()}
+    if 'expected_content_length' not in bulletin_cols:
+        cursor.execute("ALTER TABLE bulletins ADD COLUMN expected_content_length INTEGER")
+    if 'content_complete' not in bulletin_cols:
+        cursor.execute("ALTER TABLE bulletins ADD COLUMN content_complete INTEGER NOT NULL DEFAULT 1")
+    cursor.execute(
+        "UPDATE bulletins SET expected_content_length = COALESCE(expected_content_length, LENGTH(content)), content_complete = CASE WHEN LENGTH(content) >= COALESCE(expected_content_length, LENGTH(content)) THEN 1 ELSE 0 END"
+    )
+
+    cursor.execute("PRAGMA table_info(mail)")
+    mail_cols = {row[1] for row in cursor.fetchall()}
+    if 'expected_content_length' not in mail_cols:
+        cursor.execute("ALTER TABLE mail ADD COLUMN expected_content_length INTEGER")
+    if 'content_complete' not in mail_cols:
+        cursor.execute("ALTER TABLE mail ADD COLUMN content_complete INTEGER NOT NULL DEFAULT 1")
+    cursor.execute(
+        "UPDATE mail SET expected_content_length = COALESCE(expected_content_length, LENGTH(content)), content_complete = CASE WHEN LENGTH(content) >= COALESCE(expected_content_length, LENGTH(content)) THEN 1 ELSE 0 END"
+    )
 
 
 def _ensure_deleted_sync_tombstones_table() -> None:
@@ -1150,24 +1260,53 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
         unique_id = str(uuid.uuid4())
     else:
         # Idempotency for sync replays
-        c.execute("SELECT id, content, local_only FROM bulletins WHERE unique_id = ? LIMIT 1", (unique_id,))
+        c.execute(
+            "SELECT id, content, local_only, expected_content_length FROM bulletins WHERE unique_id = ? LIMIT 1",
+            (unique_id,),
+        )
         row = c.fetchone()
         if row:
-            existing_id, existing_content, existing_local_only = int(row[0]), str(row[1] or ''), int(row[2] or 0)
+            existing_id = int(row[0])
+            existing_content = str(row[1] or '')
+            existing_local_only = int(row[2] or 0)
+            existing_expected_length = row[3] if len(row) > 3 else None
             merged_content, status = _merge_continuation_content(existing_content, 0, content)
             merged_local_only = 1 if (local_only and existing_local_only) else 0
+            normalized_expected_length = _normalize_expected_content_length(merged_content, existing_expected_length)
             if status != 'duplicate' or merged_local_only != existing_local_only:
                 c.execute(
-                    "UPDATE bulletins SET board = ?, sender_short_name = ?, subject = ?, content = ?, local_only = ? WHERE id = ?",
-                    (board, sender_short_name, subject, merged_content, merged_local_only, existing_id),
+                    "UPDATE bulletins SET board = ?, sender_short_name = ?, subject = ?, content = ?, local_only = ?, expected_content_length = ?, content_complete = ? WHERE id = ?",
+                    (
+                        board,
+                        sender_short_name,
+                        subject,
+                        merged_content,
+                        merged_local_only,
+                        normalized_expected_length,
+                        _content_complete_flag(merged_content, normalized_expected_length),
+                        existing_id,
+                    ),
                 )
                 conn.commit()
+            _flush_pending_expected_content_length('bulletins', unique_id, _pending_bulletin_expected_lengths, 'bulletin')
             clear_sync_tombstone('bulletins', str(unique_id))
             return unique_id
     c.execute(
-        "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (board, sender_short_name, date, subject, content, unique_id, 1 if local_only else 0))
+        "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only, expected_content_length, content_complete) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            board,
+            sender_short_name,
+            date,
+            subject,
+            content,
+            unique_id,
+            1 if local_only else 0,
+            len(str(content or '')),
+            1,
+        ),
+    )
     conn.commit()
+    _flush_pending_expected_content_length('bulletins', unique_id, _pending_bulletin_expected_lengths, 'bulletin')
     clear_sync_tombstone('bulletins', str(unique_id))
     if (not local_only) and bbs_nodes and interface:
         send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface)
@@ -1242,13 +1381,19 @@ def upsert_synced_game_score(user_id: str, game_id: str, short_name: str,
 def get_bulletins(board):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id, subject, sender_short_name, date, unique_id FROM bulletins WHERE board = ? COLLATE NOCASE", (board,))
+    c.execute(
+        "SELECT id, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject || ' [incomplete]' ELSE subject END, sender_short_name, date, unique_id FROM bulletins WHERE board = ? COLLATE NOCASE",
+        (board,),
+    )
     return c.fetchall()
 
 def get_bulletin_content(bulletin_id):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT sender_short_name, date, subject, content, unique_id FROM bulletins WHERE id = ?", (bulletin_id,))
+    c.execute(
+        "SELECT sender_short_name, date, subject, content, unique_id, COALESCE(content_complete, 1), COALESCE(expected_content_length, LENGTH(content)) FROM bulletins WHERE id = ?",
+        (bulletin_id,),
+    )
     return c.fetchone()
 
 
@@ -1280,22 +1425,48 @@ def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_n
         unique_id = str(uuid.uuid4())
     else:
         # Idempotency for sync replays
-        c.execute("SELECT id, content FROM mail WHERE unique_id = ? LIMIT 1", (unique_id,))
+        c.execute("SELECT id, content, expected_content_length FROM mail WHERE unique_id = ? LIMIT 1", (unique_id,))
         row = c.fetchone()
         if row:
-            existing_id, existing_content = int(row[0]), str(row[1] or '')
+            existing_id = int(row[0])
+            existing_content = str(row[1] or '')
+            existing_expected_length = row[2] if len(row) > 2 else None
             merged_content, status = _merge_continuation_content(existing_content, 0, content)
+            normalized_expected_length = _normalize_expected_content_length(merged_content, existing_expected_length)
             if status != 'duplicate':
                 c.execute(
-                    "UPDATE mail SET sender = ?, sender_short_name = ?, recipient = ?, subject = ?, content = ? WHERE id = ?",
-                    (sender_id, sender_short_name, recipient_id, subject, merged_content, existing_id),
+                    "UPDATE mail SET sender = ?, sender_short_name = ?, recipient = ?, subject = ?, content = ?, expected_content_length = ?, content_complete = ? WHERE id = ?",
+                    (
+                        sender_id,
+                        sender_short_name,
+                        recipient_id,
+                        subject,
+                        merged_content,
+                        normalized_expected_length,
+                        _content_complete_flag(merged_content, normalized_expected_length),
+                        existing_id,
+                    ),
                 )
                 conn.commit()
+            _flush_pending_expected_content_length('mail', unique_id, _pending_mail_expected_lengths, 'mail')
             clear_sync_tombstone('mail', str(unique_id))
             return unique_id
-    c.execute("INSERT INTO mail (sender, sender_short_name, recipient, date, subject, content, unique_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-              (sender_id, sender_short_name, recipient_id, date, subject, content, unique_id))
+    c.execute(
+        "INSERT INTO mail (sender, sender_short_name, recipient, date, subject, content, unique_id, expected_content_length, content_complete) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            sender_id,
+            sender_short_name,
+            recipient_id,
+            date,
+            subject,
+            content,
+            unique_id,
+            len(str(content or '')),
+            1,
+        ),
+    )
     conn.commit()
+    _flush_pending_expected_content_length('mail', unique_id, _pending_mail_expected_lengths, 'mail')
     clear_sync_tombstone('mail', str(unique_id))
     if bbs_nodes and interface:
         send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, content, unique_id, bbs_nodes, interface)
@@ -1304,14 +1475,20 @@ def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_n
 def get_mail(recipient_id):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id, sender_short_name, subject, date, unique_id FROM mail WHERE recipient = ?", (recipient_id,))
+    c.execute(
+        "SELECT id, sender_short_name, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject || ' [incomplete]' ELSE subject END, date, unique_id FROM mail WHERE recipient = ?",
+        (recipient_id,),
+    )
     return c.fetchall()
 
 def get_mail_content(mail_id, recipient_id):
     # TODO: ensure only recipient can read mail
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT sender_short_name, date, subject, content, unique_id FROM mail WHERE id = ? and recipient = ?", (mail_id, recipient_id,))
+    c.execute(
+        "SELECT sender_short_name, date, subject, content, unique_id, COALESCE(content_complete, 1), COALESCE(expected_content_length, LENGTH(content)) FROM mail WHERE id = ? and recipient = ?",
+        (mail_id, recipient_id,),
+    )
     return c.fetchone()
 
 def delete_mail(unique_id, recipient_id, bbs_nodes, interface):

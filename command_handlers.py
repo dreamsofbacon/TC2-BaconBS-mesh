@@ -137,6 +137,14 @@ def handle_help_command(sender_id, interface, menu_name=None):
         response = build_menu(main_menu_items, f"💾Bacon BBS💾 (✉️:{len(mail)})")
     send_message(response, sender_id, interface)
 
+
+def _incomplete_notice(content_complete, expected_length, actual_content) -> str:
+    if bool(content_complete):
+        return ""
+    have_length = len(str(actual_content or ""))
+    target_length = max(have_length, int(expected_length or have_length))
+    return f"\n\n[This message may be incomplete. Synced {have_length}/{target_length} chars so far.]"
+
 def get_node_name(node_id, interface):
     node_info = interface.nodes.get(node_id)
     if node_info:
@@ -495,8 +503,9 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
         if bulletin is None:
             send_message("Bulletin not found. Please try again.", sender_id, interface)
             return
-        sender_short_name, date, subject, content, unique_id = bulletin
-        send_message(f"From: {sender_short_name}\nDate: {date}\nSubject: {subject}\n- - - - - - -\n{content}", sender_id, interface)
+        sender_short_name, date, subject, content, unique_id, content_complete, expected_length = bulletin
+        notice = _incomplete_notice(content_complete, expected_length, content)
+        send_message(f"From: {sender_short_name}\nDate: {date}\nSubject: {subject}\n- - - - - - -\n{content}{notice}", sender_id, interface)
         board_name = state['board']
         handle_bb_steps(sender_id, 'e', 1, state, interface, bbs_nodes)
 
@@ -560,8 +569,9 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             return
         try:
             sender_node_id = get_node_id_from_num(sender_id, interface)
-            sender, date, subject, content, unique_id = get_mail_content(mail_id, sender_node_id)
-            send_message(f"Date: {date}\nFrom: {sender}\nSubject: {subject}\n{content}", sender_id, interface)
+            sender, date, subject, content, unique_id, content_complete, expected_length = get_mail_content(mail_id, sender_node_id)
+            notice = _incomplete_notice(content_complete, expected_length, content)
+            send_message(f"Date: {date}\nFrom: {sender}\nSubject: {subject}\n{content}{notice}", sender_id, interface)
             send_message("What would you like to do with this message?\n[1]Keep [2]Delete [3]Reply", sender_id, interface)
             update_user_state(sender_id, {'command': 'MAIL', 'step': 4, 'mail_id': mail_id, 'unique_id': unique_id, 'sender': sender, 'subject': subject, 'content': content})
         except TypeError:
@@ -879,8 +889,8 @@ def handle_read_mail_command(sender_id, message, state, interface):
 
         mail_id = mail[message_number][0]
         sender_node_id = get_node_id_from_num(sender_id, interface)
-        sender, date, subject, content, unique_id = get_mail_content(mail_id, sender_node_id)
-        response = f"Date: {date}\nFrom: {sender}\nSubject: {subject}\n\n{content}"
+        sender, date, subject, content, unique_id, content_complete, expected_length = get_mail_content(mail_id, sender_node_id)
+        response = f"Date: {date}\nFrom: {sender}\nSubject: {subject}\n\n{content}{_incomplete_notice(content_complete, expected_length, content)}"
         send_message(response, sender_id, interface)
         send_message("What would you like to do with this message?\n[1]Keep [2]Delete [3]Reply", sender_id, interface)
         update_user_state(sender_id, {'command': 'CHECK_MAIL', 'step': 2, 'mail_id': mail_id, 'unique_id': unique_id, 'sender': sender, 'subject': subject, 'content': content})
@@ -982,8 +992,8 @@ def handle_read_bulletin_command(sender_id, message, state, interface):
             return
 
         bulletin_id = bulletins[message_number][0]
-        sender, date, subject, content, unique_id = get_bulletin_content(bulletin_id)
-        response = f"Date: {date}\nFrom: {sender}\nSubject: {subject}\n\n{content}"
+        sender, date, subject, content, unique_id, content_complete, expected_length = get_bulletin_content(bulletin_id)
+        response = f"Date: {date}\nFrom: {sender}\nSubject: {subject}\n\n{content}{_incomplete_notice(content_complete, expected_length, content)}"
         send_message(response, sender_id, interface)
 
         update_user_state(sender_id, None)

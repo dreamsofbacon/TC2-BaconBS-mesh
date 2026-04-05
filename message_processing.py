@@ -24,6 +24,7 @@ from db_operations import (
     add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel,
     append_bulletin_content, append_mail_content,
     flush_pending_bulletin_continuations, flush_pending_mail_continuations,
+    apply_bulletin_expected_content_length, apply_mail_expected_content_length,
     auto_upsert_user_profile, log_connection_event, upsert_peer_sync_state,
     log_sync_transmission,
     upsert_synced_user_profile, upsert_synced_game_score,
@@ -412,6 +413,17 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             else:
                 # Legacy format without offset — blind append
                 append_bulletin_content(parts[1], None, parts[2])
+        elif message.startswith("BULLETINMETA|"):
+            parts = message.split("|", 2)
+            if len(parts) != 3 or not parts[1]:
+                logging.warning(f"Malformed BULLETINMETA sync message ignored: {message}")
+                return
+            try:
+                expected_length = int(parts[2])
+            except ValueError:
+                logging.warning(f"Malformed BULLETINMETA length ignored: {message}")
+                return
+            apply_bulletin_expected_content_length(parts[1], expected_length)
         elif message.startswith("MAILCONT|"):
             parts = message.split("|", 3)
             if len(parts) < 3 or not parts[1]:
@@ -427,6 +439,17 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             else:
                 # Legacy format without offset — blind append
                 append_mail_content(parts[1], None, parts[2])
+        elif message.startswith("MAILMETA|"):
+            parts = message.split("|", 2)
+            if len(parts) != 3 or not parts[1]:
+                logging.warning(f"Malformed MAILMETA sync message ignored: {message}")
+                return
+            try:
+                expected_length = int(parts[2])
+            except ValueError:
+                logging.warning(f"Malformed MAILMETA length ignored: {message}")
+                return
+            apply_mail_expected_content_length(parts[1], expected_length)
         elif message.startswith("SYNCSTATE|"):
             parts = message.split("|")
             if len(parts) not in (5, 7, 13):
@@ -793,7 +816,7 @@ def on_receive(packet, interface):
             bbs_nodes = interface.bbs_nodes
             is_sync_message = any(message_string.startswith(prefix) for prefix in
                                   ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|",
-                                   "CHANNEL|", "BULLETINCONT|", "MAILCONT|", "SYNCSTATE|",
+                                   "CHANNEL|", "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
                                    "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|",
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|"])
 
