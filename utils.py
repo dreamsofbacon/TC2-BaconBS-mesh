@@ -4,6 +4,7 @@ import hashlib
 import os
 import re
 import time
+import configparser
 
 user_states = {}
 
@@ -13,8 +14,58 @@ user_states = {}
 _MESHTASTIC_MAX_BYTES = 220
 
 
+def _get_config_path() -> str:
+    return os.getenv("BBS_CONFIG_PATH", "config.ini")
+
+
+def _load_runtime_config() -> configparser.ConfigParser:
+    config = configparser.ConfigParser()
+    config.read(_get_config_path())
+    return config
+
+
+def _config_raw(section: str, option: str) -> str | None:
+    try:
+        config = _load_runtime_config()
+        if config.has_option(section, option):
+            return config.get(section, option).strip()
+    except Exception:
+        return None
+    return None
+
+
+def _config_bool(section: str, option: str, default: bool) -> bool:
+    raw = _config_raw(section, option)
+    if raw is None or raw == "":
+        return default
+    return raw.lower() in ("1", "true", "yes", "on")
+
+
+def _config_float(section: str, option: str, default: float) -> float:
+    raw = _config_raw(section, option)
+    if raw is None or raw == "":
+        return default
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return default
+
+
+def _config_int(section: str, option: str, default: int) -> int:
+    raw = _config_raw(section, option)
+    if raw is None or raw == "":
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return default
+
+
 def _is_sync_turbo_enabled() -> bool:
-    return str(os.getenv("BBS_SYNC_TURBO", "0")).strip().lower() in ("1", "true", "yes", "on")
+    env_value = os.getenv("BBS_SYNC_TURBO")
+    if env_value is not None:
+        return str(env_value).strip().lower() in ("1", "true", "yes", "on")
+    return _config_bool("sync", "sync_turbo", False)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -36,21 +87,42 @@ def _env_int(name: str, default: int) -> int:
 
 
 def get_sync_pause_seconds() -> float:
-    if _is_sync_turbo_enabled():
-        return _env_float("BBS_SYNC_PAUSE_SECONDS", 0.02)
-    return _env_float("BBS_SYNC_PAUSE_SECONDS", 0.75)
+    turbo = _is_sync_turbo_enabled()
+    default = 0.02 if turbo else 0.75
+    if os.getenv("BBS_SYNC_PAUSE_SECONDS") is not None:
+        return _env_float("BBS_SYNC_PAUSE_SECONDS", default)
+    return _config_float("sync", "sync_pause_seconds", default)
 
 
 def get_hash_repair_pause_seconds() -> float:
-    if _is_sync_turbo_enabled():
-        return _env_float("BBS_HASH_REPAIR_PAUSE_SECONDS", 0.0)
-    return _env_float("BBS_HASH_REPAIR_PAUSE_SECONDS", 0.1)
+    turbo = _is_sync_turbo_enabled()
+    default = 0.0 if turbo else 0.1
+    if os.getenv("BBS_HASH_REPAIR_PAUSE_SECONDS") is not None:
+        return _env_float("BBS_HASH_REPAIR_PAUSE_SECONDS", default)
+    return _config_float("sync", "hash_repair_pause_seconds", default)
 
 
 def get_full_sync_delay_ms() -> int:
-    if _is_sync_turbo_enabled():
-        return _env_int("BBS_FULL_SYNC_DELAY_MS", 0)
-    return _env_int("BBS_FULL_SYNC_DELAY_MS", 500)
+    turbo = _is_sync_turbo_enabled()
+    default = 0 if turbo else 500
+    if os.getenv("BBS_FULL_SYNC_DELAY_MS") is not None:
+        return _env_int("BBS_FULL_SYNC_DELAY_MS", default)
+    return _config_int("sync", "full_sync_delay_ms", default)
+
+
+def get_sync_runtime_settings() -> dict:
+    return {
+        "sync_turbo": _is_sync_turbo_enabled(),
+        "sync_pause_seconds": get_sync_pause_seconds(),
+        "hash_repair_pause_seconds": get_hash_repair_pause_seconds(),
+        "full_sync_delay_ms": get_full_sync_delay_ms(),
+        "env_overrides": {
+            "sync_turbo": os.getenv("BBS_SYNC_TURBO") is not None,
+            "sync_pause_seconds": os.getenv("BBS_SYNC_PAUSE_SECONDS") is not None,
+            "hash_repair_pause_seconds": os.getenv("BBS_HASH_REPAIR_PAUSE_SECONDS") is not None,
+            "full_sync_delay_ms": os.getenv("BBS_FULL_SYNC_DELAY_MS") is not None,
+        },
+    }
 
 
 def _take_prefix_within_bytes(text: str, max_bytes: int) -> tuple[str, str]:

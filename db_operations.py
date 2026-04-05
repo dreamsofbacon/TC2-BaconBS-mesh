@@ -474,12 +474,15 @@ def _ensure_sync_transmissions_table() -> None:
                     destination_node_id TEXT,
                     direction TEXT NOT NULL DEFAULT 'tx',
                     frame_size_bytes INTEGER,
-                    is_continuation INTEGER NOT NULL DEFAULT 0
+                    is_continuation INTEGER NOT NULL DEFAULT 0,
+                    frame_text TEXT NOT NULL DEFAULT ''
                 );''')
     c.execute("PRAGMA table_info(sync_transmissions)")
     sync_cols = {row[1] for row in c.fetchall()}
     if 'direction' not in sync_cols:
         c.execute("ALTER TABLE sync_transmissions ADD COLUMN direction TEXT NOT NULL DEFAULT 'tx'")
+    if 'frame_text' not in sync_cols:
+        c.execute("ALTER TABLE sync_transmissions ADD COLUMN frame_text TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
 
@@ -503,8 +506,8 @@ def log_sync_transmission(
         c = conn.cursor()
         c.execute(
             '''INSERT INTO sync_transmissions
-               (transmission_time, frame_type, destination_node_id, direction, frame_size_bytes, is_continuation)
-               VALUES (?, ?, ?, ?, ?, ?)''',
+               (transmission_time, frame_type, destination_node_id, direction, frame_size_bytes, is_continuation, frame_text)
+               VALUES (?, ?, ?, ?, ?, ?, ?)''',
             (
                 transmission_time,
                 frame_type,
@@ -512,11 +515,76 @@ def log_sync_transmission(
                 direction_value,
                 frame_size_bytes,
                 1 if is_continuation else 0,
+                str(message or ''),
             )
         )
         conn.commit()
     except Exception as e:
         logging.debug(f"Failed to log sync transmission: {e}")
+
+
+def get_sync_transmission_entries(
+    since_id: int = 0,
+    limit: int = 200,
+    direction: Optional[str] = None,
+    frame_type: Optional[str] = None,
+    peer_node_id: Optional[str] = None,
+    search_query: Optional[str] = None,
+) -> list[dict]:
+    """Return recent sync transmission rows for live diagnostics views."""
+    _ensure_sync_transmissions_table()
+    try:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        clauses = ["id > ?"]
+        params: list = [max(0, int(since_id))]
+
+        normalized_direction = str(direction or '').strip().lower()
+        if normalized_direction in ('tx', 'rx'):
+            clauses.append("direction = ?")
+            params.append(normalized_direction)
+
+        normalized_frame = str(frame_type or '').strip().upper()
+        if normalized_frame:
+            clauses.append("frame_type = ?")
+            params.append(normalized_frame)
+
+        normalized_peer = str(peer_node_id or '').strip()
+        if normalized_peer:
+            clauses.append("destination_node_id = ?")
+            params.append(normalized_peer)
+
+        normalized_search = str(search_query or '').strip()
+        if normalized_search:
+            clauses.append("(frame_text LIKE ? OR frame_type LIKE ? OR COALESCE(destination_node_id, '') LIKE ?)")
+            like_value = f"%{normalized_search}%"
+            params.extend([like_value, like_value, like_value])
+
+        where_clause = " AND ".join(clauses)
+        normalized_limit = max(1, int(limit))
+        order_clause = "ORDER BY id ASC"
+        if max(0, int(since_id)) == 0:
+            order_clause = "ORDER BY id DESC"
+        params.append(normalized_limit)
+        c.execute(
+            f"""
+            SELECT id, transmission_time, frame_type, destination_node_id, direction,
+                   frame_size_bytes, is_continuation, frame_text
+            FROM sync_transmissions
+            WHERE {where_clause}
+            {order_clause}
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+        rows = [dict(row) for row in c.fetchall()]
+        if max(0, int(since_id)) == 0:
+            rows.reverse()
+        return rows
+    except Exception as e:
+        logging.debug(f"Failed to get sync transmission entries: {e}")
+        return []
 
 
 def get_sync_transmission_stats(since_seconds: int = 3600) -> dict:

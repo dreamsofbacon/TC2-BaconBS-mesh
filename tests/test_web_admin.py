@@ -157,6 +157,36 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(config.get("sync", "sync_interval_minutes"), "5")
         self.assertEqual(config.get("allow_list", "allowed_nodes"), "!allow1,!allow2")
 
+    def test_sync_speed_settings_are_saved_from_gui(self):
+        app = create_app()
+        client = app.test_client()
+
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        save_response = client.post(
+            "/settings",
+            data={
+                "settings_section": "sync",
+                "bbs_nodes": "!node1",
+                "allowed_nodes": "!allow1",
+                "sync_interval_minutes": "7",
+                "sync_turbo": "1",
+                "sync_pause_seconds": "0.05",
+                "hash_repair_pause_seconds": "0.01",
+                "full_sync_delay_ms": "25",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(save_response.status_code, 200)
+
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertEqual(config.get("sync", "sync_turbo"), "true")
+        self.assertEqual(config.get("sync", "sync_pause_seconds"), "0.05")
+        self.assertEqual(config.get("sync", "hash_repair_pause_seconds"), "0.01")
+        self.assertEqual(config.get("sync", "full_sync_delay_ms"), "25")
+
     def test_manual_sync_api_creates_trigger_file(self):
         app = create_app()
         client = app.test_client()
@@ -322,6 +352,36 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("Received from peers", page)
         self.assertIn("Game", page)
         self.assertIn("2 frames", page)
+        self.assertIn("Live Transmission Log", page)
+        self.assertIn("Recent Channel Activity", page)
+
+    def test_sync_transmissions_api_returns_split_log_entries_with_filters(self):
+        db_operations.log_sync_transmission(
+            "HASHMISS|bulletins|uid-1",
+            "!peer1",
+            48,
+            direction="tx",
+        )
+        db_operations.log_sync_transmission(
+            "SYNCSTATE|peer|2|3|1|0|0|0|hash|hash|hash|hash|hash|hash",
+            "!peer2",
+            64,
+            direction="rx",
+        )
+
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        api_response = client.get("/api/sync/transmissions?frame_type=HASHMISS")
+        self.assertEqual(api_response.status_code, 200)
+        payload = api_response.get_json()
+        self.assertEqual(len(payload["entries"]), 1)
+        self.assertEqual(payload["entries"][0]["frame_type"], "HASHMISS")
+        self.assertEqual(payload["entries"][0]["direction"], "tx")
+        self.assertEqual(payload["entries"][0]["importance"], "important")
+        self.assertIn("uid-1", payload["entries"][0]["preview"])
 
     def test_system_transmissions_reset_clears_history(self):
         conn = sqlite3.connect(self.db_path)
