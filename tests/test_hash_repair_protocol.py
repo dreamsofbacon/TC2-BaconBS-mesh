@@ -253,7 +253,7 @@ class HashRepairProtocolTests(unittest.TestCase):
         )
 
         delivered = outbound.sent_texts
-        for msg in delivered[:2]:
+        for msg in delivered[:3]:
             message_processing.process_message(
                 sender_id=1,
                 message=msg,
@@ -274,6 +274,51 @@ class HashRepairProtocolTests(unittest.TestCase):
         row = db_operations.get_bulletin_by_unique_id(unique_id)
         self.assertIsNotNone(row)
         self.assertEqual(row[3], content)
+
+    def test_bulletin_is_marked_incomplete_until_all_chunks_arrive(self):
+        content = "Q" * 600
+        unique_id = "uid-incomplete-flag"
+        outbound = _DummyInterface()
+        _send_sync_with_cont(
+            "BULLETIN|General|CALL|Subject|",
+            f"|{unique_id}",
+            content,
+            unique_id,
+            cont_prefix=f"BULLETINCONT|{unique_id}|",
+            meta_prefix=f"BULLETINMETA|{unique_id}|",
+            bbs_nodes=["!peer1"],
+            interface=outbound,
+            pause_seconds=0,
+        )
+
+        delivered = outbound.sent_texts
+        self.assertGreaterEqual(len(delivered), 3)
+        for msg in delivered[:2]:
+            message_processing.process_message(
+                sender_id=1,
+                message=msg,
+                interface=_DummyInterface(),
+                is_sync_message=True,
+                sender_node_id="!peer1",
+            )
+
+        partial = db_operations.get_bulletin_content(1)
+        self.assertIsNotNone(partial)
+        self.assertEqual(partial[5], 0)
+        self.assertGreater(partial[6], len(partial[3]))
+
+        for msg in delivered[2:]:
+            message_processing.process_message(
+                sender_id=1,
+                message=msg,
+                interface=_DummyInterface(),
+                is_sync_message=True,
+                sender_node_id="!peer1",
+            )
+
+        completed = db_operations.get_bulletin_content(1)
+        self.assertEqual(completed[5], 1)
+        self.assertEqual(completed[3], content)
 
     def test_hashmiss_ttl_can_be_disabled_for_repeated_repair_cycles(self):
         iface = _DummyInterface()

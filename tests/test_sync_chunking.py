@@ -31,6 +31,7 @@ class LongContentSyncTests(unittest.TestCase):
         _send_sync_with_cont(
             header, footer, content, unique_id,
             cont_prefix=f"BULLETINCONT|{unique_id}|",
+            meta_prefix=f"BULLETINMETA|{unique_id}|",
             bbs_nodes=["!peer1"],
             interface=interface,
             pause_seconds=0,
@@ -67,7 +68,11 @@ class LongContentSyncTests(unittest.TestCase):
         # Reconstruct content from all packets
         first_parts = msgs[0].split("|", 5)
         reconstructed = first_parts[4]  # content field of first BULLETIN
-        for cont_msg in msgs[1:]:
+        cont_msgs = [msg for msg in msgs[1:] if msg.startswith(f"BULLETINCONT|{unique_id}|")]
+        meta_msgs = [msg for msg in msgs[1:] if msg.startswith(f"BULLETINMETA|{unique_id}|")]
+        self.assertEqual(len(meta_msgs), 1)
+        self.assertEqual(meta_msgs[0], f"BULLETINMETA|{unique_id}|{len(content)}")
+        for cont_msg in cont_msgs:
             self.assertTrue(cont_msg.startswith(f"BULLETINCONT|{unique_id}|"), cont_msg[:40])
             # New format: BULLETINCONT|uid|<offset>|<chunk>
             cont_parts = cont_msg.split("|", 3)
@@ -97,7 +102,7 @@ class LongContentSyncTests(unittest.TestCase):
         msgs = self._run_bulletin_sync("General", "CALL", "Long post", content, unique_id)
         first_parts = msgs[0].split("|", 5)
         expected_offset = len(first_parts[4])  # first_content length
-        for cont_msg in msgs[1:]:
+        for cont_msg in [msg for msg in msgs[1:] if msg.startswith(f"BULLETINCONT|{unique_id}|")]:
             cont_parts = cont_msg.split("|", 3)
             self.assertEqual(len(cont_parts), 4, cont_msg[:60])
             actual_offset = int(cont_parts[2])
