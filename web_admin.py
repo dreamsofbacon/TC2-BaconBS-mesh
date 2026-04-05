@@ -10,6 +10,7 @@ from functools import wraps
 from flask import Flask, flash, jsonify, redirect, render_template_string, request, session, url_for
 
 from db_operations import install_connection_log_handler
+from utils import get_sync_runtime_settings
 
 
 TABLE_CONFIG = {
@@ -96,6 +97,48 @@ def load_sync_settings(config_path: str) -> tuple[list[str], list[str], int]:
     sync_interval_minutes = 5
   sync_interval_minutes = max(1, sync_interval_minutes)
   return bbs_nodes, allowed_nodes, sync_interval_minutes
+
+
+def _parse_bool_setting(raw_value: str | None, default: bool = False) -> bool:
+  if raw_value is None:
+    return default
+  normalized = str(raw_value).strip().lower()
+  if normalized == "":
+    return default
+  return normalized in {"1", "true", "yes", "on"}
+
+
+def _parse_float_setting(raw_value: str, default: float) -> float:
+  try:
+    return max(0.0, float(str(raw_value or "").strip()))
+  except ValueError:
+    return default
+
+
+def _parse_int_setting(raw_value: str, default: int, minimum: int = 0) -> int:
+  try:
+    return max(minimum, int(str(raw_value or "").strip()))
+  except ValueError:
+    return default
+
+
+def load_sync_speed_settings(config_path: str) -> dict:
+  config = read_config_file(config_path)
+  return {
+    "sync_turbo": _parse_bool_setting(config.get("sync", "sync_turbo", fallback="false"), False),
+    "sync_pause_seconds": _parse_float_setting(config.get("sync", "sync_pause_seconds", fallback="0.75"), 0.75),
+    "hash_repair_pause_seconds": _parse_float_setting(config.get("sync", "hash_repair_pause_seconds", fallback="0.1"), 0.1),
+    "full_sync_delay_ms": _parse_int_setting(config.get("sync", "full_sync_delay_ms", fallback="500"), 500, minimum=0),
+  }
+
+
+def get_sync_env_override_flags() -> dict[str, bool]:
+  return {
+    "sync_turbo": os.getenv("BBS_SYNC_TURBO") is not None,
+    "sync_pause_seconds": os.getenv("BBS_SYNC_PAUSE_SECONDS") is not None,
+    "hash_repair_pause_seconds": os.getenv("BBS_HASH_REPAIR_PAUSE_SECONDS") is not None,
+    "full_sync_delay_ms": os.getenv("BBS_FULL_SYNC_DELAY_MS") is not None,
+  }
 
 
 def get_manual_sync_trigger_path() -> str:
@@ -191,6 +234,41 @@ def serialize_connection_event(row) -> dict:
     or raw.get("message_type")
     or "system"
   )
+  return raw
+
+
+_UNIMPORTANT_SYNC_FRAMES = {"BULLETINCONT", "MAILCONT", "HASHREC", "HASHZ"}
+
+
+def classify_sync_transmission_importance(frame_type: str, is_continuation: bool) -> bool:
+  normalized = str(frame_type or "").strip().upper()
+  if normalized in {"SYNCSTATE", "HASHREQ", "HASHMISS", "HASHEND", "DELETE_BULLETIN", "DELETE_MAIL", "BULLETIN", "MAIL", "CHANNEL", "PROFILESYNC", "SCORESYNC", "ZORKSAVE"}:
+    return True
+  if bool(is_continuation):
+    return False
+  return normalized not in _UNIMPORTANT_SYNC_FRAMES
+
+
+def build_sync_transmission_preview(frame_text: str, max_len: int = 150) -> str:
+  normalized = str(frame_text or "").replace("\r", " ").replace("\n", " ").strip()
+  if len(normalized) <= max_len:
+    return normalized
+  return f"{normalized[:max_len - 3]}..."
+
+
+def serialize_sync_transmission(row) -> dict:
+  raw = dict(row)
+  raw["direction"] = str(raw.get("direction") or "tx").lower()
+  raw["peer_node_id"] = raw.get("destination_node_id") or "broadcast"
+  raw["frame_type"] = str(raw.get("frame_type") or "")
+  raw["frame_size_bytes"] = int(raw.get("frame_size_bytes") or 0)
+  raw["is_continuation"] = bool(raw.get("is_continuation"))
+  raw["frame_text"] = str(raw.get("frame_text") or "")
+  raw["frame_preview"] = build_sync_transmission_preview(raw["frame_text"])
+  raw["direction_label"] = "OUT" if raw["direction"] == "tx" else "IN"
+  raw["is_important"] = classify_sync_transmission_importance(raw["frame_type"], raw["is_continuation"])
+  raw["preview"] = raw["frame_preview"]
+  raw["importance"] = "important" if raw["is_important"] else "normal"
   return raw
 
 
@@ -348,6 +426,64 @@ BASE_TEMPLATE = """
     .terminal-btn.btn-pause.active { background: #4a3b1a; border-color: #f4c95d; color: #f4c95d; }
     .terminal-btn.btn-clear { color: #ff7d7d; border-color: #4a2020; }
     .terminal-btn.btn-clear:hover { background: #3a1515; }
+    .filter-grid {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      margin-bottom: 12px;
+    }
+    .log-grid {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    }
+    .log-pane {
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      background: var(--card-bg);
+      padding: 12px;
+    }
+    .log-pane h4 { margin-top: 0; margin-bottom: 8px; }
+    .log-meta { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+    .log-window {
+      background: #070b10;
+      border: 1px solid #2b3645;
+      border-radius: 8px;
+      color: #d7dde5;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      line-height: 1.4;
+      height: 360px;
+      overflow-y: auto;
+      padding: 10px;
+      white-space: pre-wrap;
+    }
+    .log-line { border-bottom: 1px solid rgba(122, 178, 255, 0.08); padding: 6px 0; }
+    .log-line:last-child { border-bottom: 0; }
+    .log-time { color: #7ab2ff; }
+    .log-type { color: #f4c95d; font-weight: 700; }
+    .log-peer { color: #9fe870; }
+    .log-size { color: #9aa8ba; }
+    .log-preview { color: #d7dde5; }
+    .log-badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      font-size: 10px;
+      letter-spacing: 0.02em;
+      border: 1px solid #3b4a5f;
+      color: #d7dde5;
+      background: #1b2533;
+    }
+    .log-badge.important { border-color: #0f766e; color: #b8ffef; }
+    .channel-grid {
+      display: grid;
+      gap: 14px;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    }
+    .activity-list { margin: 0; padding-left: 18px; }
+    .activity-list li { margin-bottom: 8px; }
   </style>
 </head>
 <body data-theme="dark">
@@ -899,7 +1035,7 @@ SETTINGS_CONTENT = """
 
 <div class=\"card\" id=\"sync\" style=\"max-width: 800px;\">
   <h2>Sync Settings</h2>
-  <p class=\"muted\">Manage BBS peer sync targets and the node IDs allowed to post to the Urgent board.</p>
+  <p class=\"muted\">Manage BBS peer sync targets, sync pacing, and the node IDs allowed to post to the Urgent board.</p>
   <form method=\"post\" action=\"{{ url_for('settings_page') }}#sync\">
     <input type=\"hidden\" name=\"settings_section\" value=\"sync\">
     <label>Sync BBS Nodes</label><br>
@@ -913,6 +1049,30 @@ SETTINGS_CONTENT = """
     <label>Sync Interval (minutes)</label><br>
     <input type=\"text\" name=\"sync_interval_minutes\" value=\"{{ sync_interval_minutes }}\"><br>
     <p class=\"muted\">How often to re-run full peer sync. For testing, set to 5 minutes.</p>
+
+    <hr>
+    <h3 style=\"margin-top: 16px;\">Transmission Pacing</h3>
+    <p class=\"muted\">Raise speed for debugging, or slow it down if you need cleaner over-the-air pacing. Environment variables still override GUI settings while they are present.</p>
+
+    <label><input type=\"checkbox\" name=\"sync_turbo\" value=\"1\" {% if sync_speed_settings.sync_turbo %}checked{% endif %}> Enable turbo pacing</label><br>
+    <p class=\"muted\">Turbo uses the smallest normal delays and is useful when you want sync traffic to move as fast as possible.</p>
+
+    <label>Inter-frame Pause (seconds)</label><br>
+    <input type=\"text\" name=\"sync_pause_seconds\" value=\"{{ sync_speed_settings.sync_pause_seconds }}\"><br>
+    <p class=\"muted\">Delay after normal sync frames such as bulletins, mail, and channels.</p>
+
+    <label>Hash Repair Pause (seconds)</label><br>
+    <input type=\"text\" name=\"hash_repair_pause_seconds\" value=\"{{ sync_speed_settings.hash_repair_pause_seconds }}\"><br>
+    <p class=\"muted\">Delay between HASHREQ, HASHREC, HASHMISS, and related repair frames.</p>
+
+    <label>Full Sync Startup Delay (milliseconds)</label><br>
+    <input type=\"text\" name=\"full_sync_delay_ms\" value=\"{{ sync_speed_settings.full_sync_delay_ms }}\"><br>
+    <p class=\"muted\">Pause before a full outbound sync begins after a trigger or interval fires.</p>
+
+    <p class=\"muted\">Effective runtime pacing: turbo={{ sync_runtime_settings.sync_turbo }}, pause={{ sync_runtime_settings.sync_pause_seconds }}s, hash repair={{ sync_runtime_settings.hash_repair_pause_seconds }}s, full sync delay={{ sync_runtime_settings.full_sync_delay_ms }}ms.</p>
+    {% if sync_env_override_flags.sync_turbo or sync_env_override_flags.sync_pause_seconds or sync_env_override_flags.hash_repair_pause_seconds or sync_env_override_flags.full_sync_delay_ms %}
+    <p class=\"muted\">Environment overrides are active for: {% if sync_env_override_flags.sync_turbo %}sync_turbo {% endif %}{% if sync_env_override_flags.sync_pause_seconds %}sync_pause_seconds {% endif %}{% if sync_env_override_flags.hash_repair_pause_seconds %}hash_repair_pause_seconds {% endif %}{% if sync_env_override_flags.full_sync_delay_ms %}full_sync_delay_ms{% endif %}</p>
+    {% endif %}
 
     {% if runtime_updates_enabled %}
     <p class=\"muted\">Changes are also applied to the active interface immediately.</p>
@@ -1349,6 +1509,215 @@ CLIENTS_CONTENT = """
       }
     }
 
+    setInterval(poll, 2000);
+  })();
+</script>
+"""
+
+
+TRANSMISSION_DASHBOARD_CONTENT = """
+<div class=\"card\">
+  <h2>Sync Transmission Stats</h2>
+  <form method=\"post\" action=\"{{ url_for('system_transmissions_reset') }}\" onsubmit=\"return confirm('Reset transmission stats history now?');\" style=\"margin:8px 0 14px 0;\">
+    <button type=\"submit\" class=\"btn btn-danger\">Reset Stats</button>
+  </form>
+  <p class=\"muted\">Breakdown of sync frames sent and received by this node, with live inbound and outbound panes below for verification.</p>
+
+  <h3>Direction Summary</h3>
+  <p class=\"muted\">Rebuilding nodes often show most game traffic under received frames, because the primary node is pushing state toward them.</p>
+  <div style=\"display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:10px 0 24px 0;\">
+    <div class=\"card\"><h4 style=\"margin-top:0;\">Last Hour</h4>{{ stats_1h_direction_html|safe }}</div>
+    <div class=\"card\"><h4 style=\"margin-top:0;\">Last 24 Hours</h4>{{ stats_24h_direction_html|safe }}</div>
+  </div>
+
+  <h3>Category Summary</h3>
+  <p class=\"muted\">Game = SCORESYNC + ZORKSAVE, Content = BULLETIN/MAIL/CHANNEL/deletes, Profile = PROFILESYNC, Protocol = SYNCSTATE/HASH* frames.</p>
+  <div style=\"display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:10px 0 24px 0;\">
+    <div class=\"card\"><h4 style=\"margin-top:0;\">Last Hour</h4>{{ stats_1h_category_html|safe }}</div>
+    <div class=\"card\"><h4 style=\"margin-top:0;\">Last 24 Hours</h4>{{ stats_24h_category_html|safe }}</div>
+  </div>
+
+  <h3>Per-Frame-Type Detail</h3>
+  <div style=\"display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:20px 0;\">
+    <div class=\"card\"><h4 style=\"margin-top:0;\">Last Hour</h4>{{ stats_1h_breakdown_html|safe }}</div>
+    <div class=\"card\"><h4 style=\"margin-top:0;\">Last 24 Hours</h4>{{ stats_24h_breakdown_html|safe }}</div>
+  </div>
+</div>
+
+<div class=\"card\">
+  <h3>Live Transmission Log</h3>
+  <p class=\"muted\">Separate outbound and inbound panes, with shared filters for frame type, peer, free-text search, and an important-only verification view.</p>
+  <div class=\"filter-grid\">
+    <div>
+      <label for=\"sync-log-frame-filter\">Frame Type</label>
+      <select id=\"sync-log-frame-filter\"><option value=\"\">All frame types</option></select>
+    </div>
+    <div>
+      <label for=\"sync-log-peer-filter\">Peer Node</label>
+      <select id=\"sync-log-peer-filter\"><option value=\"\">All peers</option></select>
+    </div>
+    <div>
+      <label for=\"sync-log-search\">Search Payload</label>
+      <input type=\"text\" id=\"sync-log-search\" placeholder=\"HASHMISS, uid, node id, payload text\">
+    </div>
+    <div style=\"display:flex;align-items:end;gap:12px;flex-wrap:wrap;\">
+      <label><input type=\"checkbox\" id=\"sync-log-important-only\"> Important only</label>
+      <label><input type=\"checkbox\" id=\"sync-log-hide-continuations\"> Hide continuations</label>
+      <button class=\"btn btn-small\" type=\"button\" id=\"sync-log-clear\">Clear View</button>
+    </div>
+  </div>
+
+  <div class=\"log-grid\">
+    <div class=\"log-pane\">
+      <h4>Outbound Frames</h4>
+      <div class=\"log-meta\" id=\"sync-log-outbound-meta\">0 frame(s)</div>
+      <div id=\"sync-log-outbound\" class=\"log-window\"></div>
+    </div>
+    <div class=\"log-pane\">
+      <h4>Inbound Frames</h4>
+      <div class=\"log-meta\" id=\"sync-log-inbound-meta\">0 frame(s)</div>
+      <div id=\"sync-log-inbound\" class=\"log-window\"></div>
+    </div>
+  </div>
+</div>
+
+<div class=\"card\">
+  <h3>Recent Channel Activity</h3>
+  <p class=\"muted\">Nearby channel state for sync/debug sessions: recent channel directory entries plus recent comment traffic.</p>
+  <div class=\"channel-grid\">
+    <div>
+      <h4 style=\"margin-top:0;\">Recent Channels</h4>
+      <ul class=\"activity-list\">
+        {% for row in recent_channels %}
+        <li><strong>{{ row['name'] }}</strong> <span class=\"muted\">{{ row['url'] }}</span></li>
+        {% endfor %}
+        {% if not recent_channels %}
+        <li class=\"muted\">No channel entries recorded.</li>
+        {% endif %}
+      </ul>
+    </div>
+    <div>
+      <h4 style=\"margin-top:0;\">Recent Channel Comments</h4>
+      <ul class=\"activity-list\">
+        {% for row in recent_channel_comments %}
+        <li><strong>{{ row['channel_name'] }}</strong> <span class=\"muted\">{{ row['sender_short_name'] }} | {{ row['date'] }}</span><br>{{ row['content'] }}</li>
+        {% endfor %}
+        {% if not recent_channel_comments %}
+        <li class=\"muted\">No recent channel comment activity.</li>
+        {% endif %}
+      </ul>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const outboundRoot = document.getElementById('sync-log-outbound');
+    const inboundRoot = document.getElementById('sync-log-inbound');
+    if (!outboundRoot || !inboundRoot) return;
+
+    const frameFilter = document.getElementById('sync-log-frame-filter');
+    const peerFilter = document.getElementById('sync-log-peer-filter');
+    const searchInput = document.getElementById('sync-log-search');
+    const importantOnly = document.getElementById('sync-log-important-only');
+    const hideContinuations = document.getElementById('sync-log-hide-continuations');
+    const clearButton = document.getElementById('sync-log-clear');
+    const outboundMeta = document.getElementById('sync-log-outbound-meta');
+    const inboundMeta = document.getElementById('sync-log-inbound-meta');
+
+    let entries = {{ initial_transmissions|tojson }};
+    let lastId = {{ last_transmission_id }};
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function updateFilterOptions() {
+      const selectedFrame = frameFilter.value;
+      const selectedPeer = peerFilter.value;
+      const frameTypes = Array.from(new Set(entries.map((entry) => entry.frame_type).filter(Boolean))).sort();
+      const peers = Array.from(new Set(entries.map((entry) => entry.peer_node_id).filter(Boolean))).sort();
+      frameFilter.innerHTML = '<option value="">All frame types</option>' + frameTypes.map((value) => '<option value="' + escapeHtml(value) + '">' + escapeHtml(value) + '</option>').join('');
+      peerFilter.innerHTML = '<option value="">All peers</option>' + peers.map((value) => '<option value="' + escapeHtml(value) + '">' + escapeHtml(value) + '</option>').join('');
+      frameFilter.value = frameTypes.includes(selectedFrame) ? selectedFrame : '';
+      peerFilter.value = peers.includes(selectedPeer) ? selectedPeer : '';
+    }
+
+    function renderPane(target, metaTarget, direction) {
+      const frameType = frameFilter.value;
+      const peer = peerFilter.value;
+      const search = (searchInput.value || '').trim().toLowerCase();
+      const important = importantOnly.checked;
+      const hideChunks = hideContinuations.checked;
+      const filtered = entries.filter((entry) => {
+        if (entry.direction !== direction) return false;
+        if (frameType && entry.frame_type !== frameType) return false;
+        if (peer && entry.peer_node_id !== peer) return false;
+        if (important && !entry.is_important) return false;
+        if (hideChunks && entry.is_continuation) return false;
+        if (search) {
+          const haystack = [entry.frame_text, entry.frame_type, entry.peer_node_id].join(' ').toLowerCase();
+          if (!haystack.includes(search)) return false;
+        }
+        return true;
+      });
+
+      metaTarget.textContent = filtered.length + ' frame(s)';
+      target.innerHTML = filtered.map((entry) => {
+        const badges = [
+          entry.is_important ? '<span class="log-badge important">important</span>' : '',
+          entry.is_continuation ? '<span class="log-badge">chunk</span>' : ''
+        ].join('');
+        return '<div class="log-line">'
+          + '<span class="log-time">[' + escapeHtml(entry.transmission_time) + ']</span> '
+          + '<span class="log-type">' + escapeHtml(entry.frame_type) + '</span> '
+          + '<span class="log-peer">' + escapeHtml(entry.peer_node_id) + '</span> '
+          + '<span class="log-size">' + escapeHtml(entry.frame_size_bytes) + ' B</span>'
+          + badges
+          + '<div class="log-preview">' + escapeHtml(entry.frame_preview) + '</div>'
+          + '</div>';
+      }).join('');
+      target.scrollTop = target.scrollHeight;
+    }
+
+    function render() {
+      updateFilterOptions();
+      renderPane(outboundRoot, outboundMeta, 'tx');
+      renderPane(inboundRoot, inboundMeta, 'rx');
+    }
+
+    async function poll() {
+      try {
+        const resp = await fetch('/api/sync/transmissions?since_id=' + encodeURIComponent(lastId), { headers: { 'Accept': 'application/json' } });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (!data.events || !data.events.length) return;
+        data.events.forEach((entry) => {
+          entries.push(entry);
+          lastId = Math.max(lastId, Number(entry.id || 0));
+        });
+        if (entries.length > 600) entries = entries.slice(entries.length - 600);
+        render();
+      } catch (err) {
+        // Ignore transient polling failures.
+      }
+    }
+
+    [frameFilter, peerFilter, searchInput, importantOnly, hideContinuations].forEach((element) => {
+      element.addEventListener('input', render);
+      element.addEventListener('change', render);
+    });
+    clearButton.addEventListener('click', function () {
+      entries = [];
+      render();
+    });
+
+    render();
     setInterval(poll, 2000);
   })();
 </script>
@@ -2077,7 +2446,12 @@ def create_app(runtime_interface=None) -> Flask:
         config.set("admin", "password", password)
       write_config_file(config, app.config["CONFIG_PATH"])
 
-    def save_sync_lists(bbs_nodes: list[str], allowed_nodes: list[str], sync_interval_minutes: int) -> None:
+    def save_sync_lists(
+      bbs_nodes: list[str],
+      allowed_nodes: list[str],
+      sync_interval_minutes: int,
+      sync_speed_settings: dict[str, object],
+    ) -> None:
       config = read_config_file(app.config["CONFIG_PATH"])
       if not config.has_section("sync"):
         config.add_section("sync")
@@ -2085,6 +2459,10 @@ def create_app(runtime_interface=None) -> Flask:
         config.add_section("allow_list")
       config.set("sync", "bbs_nodes", ",".join(bbs_nodes))
       config.set("sync", "sync_interval_minutes", str(sync_interval_minutes))
+      config.set("sync", "sync_turbo", "true" if bool(sync_speed_settings.get("sync_turbo", False)) else "false")
+      config.set("sync", "sync_pause_seconds", str(sync_speed_settings.get("sync_pause_seconds", 0.75)))
+      config.set("sync", "hash_repair_pause_seconds", str(sync_speed_settings.get("hash_repair_pause_seconds", 0.1)))
+      config.set("sync", "full_sync_delay_ms", str(sync_speed_settings.get("full_sync_delay_ms", 500)))
       config.set("allow_list", "allowed_nodes", ",".join(allowed_nodes))
       write_config_file(config, app.config["CONFIG_PATH"])
 
@@ -2107,7 +2485,15 @@ def create_app(runtime_interface=None) -> Flask:
       flash("Board list saved.", "success")
       return True
 
-    def update_sync_settings(raw_bbs_nodes: str, raw_allowed_nodes: str, raw_sync_interval_minutes: str) -> bool:
+    def update_sync_settings(
+      raw_bbs_nodes: str,
+      raw_allowed_nodes: str,
+      raw_sync_interval_minutes: str,
+      raw_sync_turbo: str,
+      raw_sync_pause_seconds: str,
+      raw_hash_repair_pause_seconds: str,
+      raw_full_sync_delay_ms: str,
+    ) -> bool:
       bbs_nodes = parse_list_input(raw_bbs_nodes)
       allowed_nodes = parse_list_input(raw_allowed_nodes)
       try:
@@ -2120,7 +2506,46 @@ def create_app(runtime_interface=None) -> Flask:
         flash("Sync interval must be at least 1 minute.", "error")
         return False
 
-      save_sync_lists(bbs_nodes, allowed_nodes, sync_interval_minutes)
+      existing_speed_settings = load_sync_speed_settings(app.config["CONFIG_PATH"])
+
+      sync_pause_input = str(raw_sync_pause_seconds or "").strip()
+      if sync_pause_input == "":
+        sync_pause_seconds = float(existing_speed_settings["sync_pause_seconds"])
+      else:
+        try:
+          sync_pause_seconds = max(0.0, float(sync_pause_input))
+        except ValueError:
+          flash("Inter-frame pause must be a non-negative number of seconds.", "error")
+          return False
+
+      hash_repair_input = str(raw_hash_repair_pause_seconds or "").strip()
+      if hash_repair_input == "":
+        hash_repair_pause_seconds = float(existing_speed_settings["hash_repair_pause_seconds"])
+      else:
+        try:
+          hash_repair_pause_seconds = max(0.0, float(hash_repair_input))
+        except ValueError:
+          flash("Hash repair pause must be a non-negative number of seconds.", "error")
+          return False
+
+      full_sync_delay_input = str(raw_full_sync_delay_ms or "").strip()
+      if full_sync_delay_input == "":
+        full_sync_delay_ms = int(existing_speed_settings["full_sync_delay_ms"])
+      else:
+        try:
+          full_sync_delay_ms = max(0, int(full_sync_delay_input))
+        except ValueError:
+          flash("Full sync startup delay must be a non-negative whole number of milliseconds.", "error")
+          return False
+
+      sync_speed_settings = {
+        "sync_turbo": _parse_bool_setting(raw_sync_turbo, bool(existing_speed_settings["sync_turbo"])),
+        "sync_pause_seconds": sync_pause_seconds,
+        "hash_repair_pause_seconds": hash_repair_pause_seconds,
+        "full_sync_delay_ms": full_sync_delay_ms,
+      }
+
+      save_sync_lists(bbs_nodes, allowed_nodes, sync_interval_minutes, sync_speed_settings)
       apply_runtime_sync_settings(bbs_nodes, allowed_nodes)
       flash("Sync settings updated.", "success")
       return True
@@ -2428,6 +2853,8 @@ def create_app(runtime_interface=None) -> Flask:
 
     def render_settings_page():
       bbs_nodes, allowed_nodes, sync_interval_minutes = load_sync_settings(app.config["CONFIG_PATH"])
+      sync_speed_settings = load_sync_speed_settings(app.config["CONFIG_PATH"])
+      sync_runtime_settings = get_sync_runtime_settings()
       diagnostics = build_settings_diagnostics()
       content = render_template_string(
         SETTINGS_CONTENT,
@@ -2436,6 +2863,9 @@ def create_app(runtime_interface=None) -> Flask:
         bbs_nodes_text="\n".join(bbs_nodes),
         allowed_nodes_text="\n".join(allowed_nodes),
         sync_interval_minutes=str(sync_interval_minutes),
+        sync_speed_settings=sync_speed_settings,
+        sync_runtime_settings=sync_runtime_settings,
+        sync_env_override_flags=get_sync_env_override_flags(),
         runtime_updates_enabled=app.config["RUNTIME_UPDATES_ENABLED"],
         current_username=app.config["ADMIN_USER"],
         username_env_override=app.config["ADMIN_USER_ENV_OVERRIDE"],
@@ -2505,6 +2935,10 @@ def create_app(runtime_interface=None) -> Flask:
             request.form.get("bbs_nodes", ""),
             request.form.get("allowed_nodes", ""),
             request.form.get("sync_interval_minutes", "5"),
+            request.form.get("sync_turbo", ""),
+            request.form.get("sync_pause_seconds", ""),
+            request.form.get("hash_repair_pause_seconds", ""),
+            request.form.get("full_sync_delay_ms", ""),
           )
           return redirect(url_for("settings_page") + "#sync")
 
@@ -2567,6 +3001,10 @@ def create_app(runtime_interface=None) -> Flask:
           request.form.get("bbs_nodes", ""),
           request.form.get("allowed_nodes", ""),
           request.form.get("sync_interval_minutes", "5"),
+          request.form.get("sync_turbo", ""),
+          request.form.get("sync_pause_seconds", ""),
+          request.form.get("hash_repair_pause_seconds", ""),
+          request.form.get("full_sync_delay_ms", ""),
         )
       return redirect(url_for("settings_page") + "#sync")
 
@@ -2677,6 +3115,37 @@ def create_app(runtime_interface=None) -> Flask:
         return jsonify({"ok": False, "error": "peer_node_id required"}), 400
       request_peer_resync_trigger(peer_node_id)
       return jsonify({"ok": True, "message": f"Full resync queued for peer {peer_node_id}"})
+
+    @app.get("/api/sync/transmissions")
+    @login_required
+    def api_sync_transmissions():
+      from db_operations import get_sync_transmission_entries, prune_old_sync_transmissions
+
+      prune_old_sync_transmissions(max_rows=10000)
+
+      try:
+        since_id = max(0, int(request.args.get("since_id", "0")))
+      except ValueError:
+        since_id = 0
+
+      try:
+        limit = max(1, min(500, int(request.args.get("limit", "200"))))
+      except ValueError:
+        limit = 200
+
+      entries = get_sync_transmission_entries(
+        since_id=since_id,
+        limit=limit,
+        direction=request.args.get("direction", ""),
+        frame_type=request.args.get("frame_type", ""),
+        peer_node_id=request.args.get("peer_node_id", ""),
+        search_query=request.args.get("search", ""),
+      )
+      serialized = [serialize_sync_transmission(entry) for entry in entries]
+      return jsonify({
+        "entries": serialized,
+        "last_id": max((entry["id"] for entry in serialized), default=since_id),
+      })
 
     @app.post("/api/reorder/<table>")
     @login_required
@@ -2970,277 +3439,250 @@ def create_app(runtime_interface=None) -> Flask:
     @app.route("/system/transmissions")
     @login_required
     def system_transmissions():
-        from db_operations import get_sync_transmission_stats, prune_old_sync_transmissions
+      from db_operations import get_sync_transmission_entries, get_sync_transmission_stats, prune_old_sync_transmissions
 
-        prune_old_sync_transmissions(max_rows=10000)
+      prune_old_sync_transmissions(max_rows=10000)
 
-        stats_1h  = get_sync_transmission_stats(since_seconds=3600)
-        stats_24h = get_sync_transmission_stats(since_seconds=86400)
+      stats_1h  = get_sync_transmission_stats(since_seconds=3600)
+      stats_24h = get_sync_transmission_stats(since_seconds=86400)
 
-        # ------------------------------------------------------------------
-        # Frame-type → category mapping
-        # ------------------------------------------------------------------
-        _FRAME_CATEGORIES = {
-            # Game data — potentially heavy (ZORKSAVE is chunked binary save files)
-            'SCORESYNC':       'Game',
-            'ZORKSAVE':        'Game',
-            # Content records
-            'BULLETIN':        'Content',
-            'BULLETINCONT':    'Content',
-            'MAIL':            'Content',
-            'MAILCONT':        'Content',
-            'CHANNEL':         'Content',
-            'DELETE_BULLETIN': 'Content',
-            'DELETE_MAIL':     'Content',
-            # User profiles
-            'PROFILESYNC':     'Profile',
-            # Sync protocol overhead
-            'SYNCSTATE':       'Protocol',
-            'HASHREQ':         'Protocol',
-            'HASHREC':         'Protocol',
-            'HASHZ':           'Protocol',
-            'HASHEND':         'Protocol',
-            'HASHMISS':        'Protocol',
-            'HASHMISS_TOMB':   'Protocol',
-        }
-        _CATEGORY_COLORS = {
-            'Game':     '#e63946',
-            'Content':  '#2a9d8f',
-            'Profile':  '#e9c46a',
-            'Protocol': '#457b9d',
-        }
-        _CATEGORY_ORDER = ['Game', 'Content', 'Profile', 'Protocol', 'Other']
+      # ------------------------------------------------------------------
+      # Frame-type → category mapping
+      # ------------------------------------------------------------------
+      _FRAME_CATEGORIES = {
+        # Game data — potentially heavy (ZORKSAVE is chunked binary save files)
+        'SCORESYNC':       'Game',
+        'ZORKSAVE':        'Game',
+        # Content records
+        'BULLETIN':        'Content',
+        'BULLETINCONT':    'Content',
+        'MAIL':            'Content',
+        'MAILCONT':        'Content',
+        'CHANNEL':         'Content',
+        'DELETE_BULLETIN': 'Content',
+        'DELETE_MAIL':     'Content',
+        # User profiles
+        'PROFILESYNC':     'Profile',
+        # Sync protocol overhead
+        'SYNCSTATE':       'Protocol',
+        'HASHREQ':         'Protocol',
+        'HASHREC':         'Protocol',
+        'HASHZ':           'Protocol',
+        'HASHEND':         'Protocol',
+        'HASHMISS':        'Protocol',
+        'HASHMISS_TOMB':   'Protocol',
+      }
+      _CATEGORY_COLORS = {
+        'Game':     '#e63946',
+        'Content':  '#2a9d8f',
+        'Profile':  '#e9c46a',
+        'Protocol': '#457b9d',
+      }
+      _CATEGORY_ORDER = ['Game', 'Content', 'Profile', 'Protocol', 'Other']
 
-        def _direction_html(stats):
-            total_tx = stats.get('total_transmissions', 0)
-            total_bytes = stats.get('total_bytes', 0)
-            direction_counts = stats.get('direction_breakdown', {})
-            direction_bytes = stats.get('direction_bytes', {})
-            tx_count = int(direction_counts.get('tx', 0) or 0)
-            rx_count = int(direction_counts.get('rx', 0) or 0)
-            tx_bytes = int(direction_bytes.get('tx', 0) or 0)
-            rx_bytes = int(direction_bytes.get('rx', 0) or 0)
+      def _direction_html(stats):
+        total_tx = stats.get('total_transmissions', 0)
+        total_bytes = stats.get('total_bytes', 0)
+        direction_counts = stats.get('direction_breakdown', {})
+        direction_bytes = stats.get('direction_bytes', {})
+        tx_count = int(direction_counts.get('tx', 0) or 0)
+        rx_count = int(direction_counts.get('rx', 0) or 0)
+        tx_bytes = int(direction_bytes.get('tx', 0) or 0)
+        rx_bytes = int(direction_bytes.get('rx', 0) or 0)
 
-            return f"""
-            <div style=\"display:flex;gap:10px;flex-wrap:wrap;margin:8px 0 16px 0;\">
-              <div style=\"border:1px solid var(--card-border);border-radius:6px;padding:10px 12px;background:var(--card-bg);min-width:170px;\">
-                <div style=\"font-size:0.8em;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;\">Sent to peers</div>
-                <div style=\"font-size:1.2em;font-weight:700;\">{tx_count:,} frames</div>
-                <div style=\"font-size:0.9em;color:var(--muted);\">{tx_bytes:,} bytes</div>
-              </div>
-              <div style=\"border:1px solid var(--card-border);border-radius:6px;padding:10px 12px;background:var(--card-bg);min-width:170px;\">
-                <div style=\"font-size:0.8em;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;\">Received from peers</div>
-                <div style=\"font-size:1.2em;font-weight:700;\">{rx_count:,} frames</div>
-                <div style=\"font-size:0.9em;color:var(--muted);\">{rx_bytes:,} bytes</div>
-              </div>
-              <div style=\"border:1px solid var(--card-border);border-radius:6px;padding:10px 12px;background:var(--card-bg);min-width:170px;\">
-                <div style=\"font-size:0.8em;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;\">Combined total</div>
-                <div style=\"font-size:1.2em;font-weight:700;\">{total_tx:,} frames</div>
-                <div style=\"font-size:0.9em;color:var(--muted);\">{total_bytes:,} bytes</div>
-              </div>
-            </div>"""
-
-        # ------------------------------------------------------------------
-        # Helper: category summary bar chart (game vs everything else)
-        # ------------------------------------------------------------------
-        def _category_html(stats):
-            total_bytes = stats.get('total_bytes', 0)
-            total_tx    = stats.get('total_transmissions', 0)
-            fb          = stats.get('frame_breakdown', {})
-            fby         = stats.get('frame_bytes', {})
-
-            if not total_tx:
-                return "<p><em>No transmissions recorded in this period.</em></p>"
-
-            # Aggregate by category
-            cat_bytes  = {}
-            cat_counts = {}
-            for ft, cnt in fb.items():
-                cat = _FRAME_CATEGORIES.get(ft, 'Other')
-                cat_bytes[cat]  = cat_bytes.get(cat, 0)  + fby.get(ft, 0)
-                cat_counts[cat] = cat_counts.get(cat, 0) + cnt
-
-            rows = ""
-            for cat in _CATEGORY_ORDER:
-                if cat not in cat_bytes:
-                    continue
-                byt      = cat_bytes[cat]
-                cnt      = cat_counts[cat]
-                b_pct    = round(byt / total_bytes * 100, 1) if total_bytes else 0
-                c_pct    = round(cnt / total_tx    * 100, 1) if total_tx    else 0
-                color    = _CATEGORY_COLORS.get(cat, '#aaa')
-                rows += f"""
-                <tr style="border-bottom:1px solid var(--table-border);">
-                  <td style="padding:8px 4px;">
-                    <span style="display:inline-block;width:12px;height:12px;background:{color};border-radius:2px;margin-right:6px;vertical-align:middle;"></span>
-                    <strong>{cat}</strong>
-                  </td>
-                  <td style="padding:8px 4px;text-align:right;">{cnt:,}</td>
-                  <td style="padding:8px 4px;text-align:right;">{c_pct}%</td>
-                  <td style="padding:8px 4px;text-align:right;">{byt:,}</td>
-                  <td style="padding:8px 4px;text-align:right;font-weight:bold;">{b_pct}%</td>
-                  <td style="padding:8px 4px;min-width:150px;">
-                    <div style="background:{color};height:14px;width:{b_pct}%;border-radius:3px;display:inline-block;vertical-align:middle;"></div>
-                  </td>
-                </tr>"""
-
-            return f"""
-            <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
-              <thead>
-                <tr style="background:var(--table-header-bg);border-bottom:2px solid var(--table-border);">
-                  <th style="padding:8px 4px;text-align:left;">Category</th>
-                  <th style="padding:8px 4px;text-align:right;"># Frames</th>
-                  <th style="padding:8px 4px;text-align:right;">% Count</th>
-                  <th style="padding:8px 4px;text-align:right;">Bytes</th>
-                  <th style="padding:8px 4px;text-align:right;">% Bytes</th>
-                  <th style="padding:8px 4px;">Bytes share</th>
-                </tr>
-              </thead>
-              <tbody>{rows}</tbody>
-              <tfoot>
-                <tr style="border-top:2px solid var(--table-border);font-weight:bold;">
-                  <td style="padding:8px 4px;">TOTAL</td>
-                  <td style="padding:8px 4px;text-align:right;">{total_tx:,}</td>
-                  <td style="padding:8px 4px;text-align:right;">100%</td>
-                  <td style="padding:8px 4px;text-align:right;">{total_bytes:,}</td>
-                  <td style="padding:8px 4px;text-align:right;">100%</td>
-                  <td></td>
-                </tr>
-              </tfoot>
-            </table>"""
-
-        # ------------------------------------------------------------------
-        # Helper: per-frame-type breakdown table with percentage bars
-        # ------------------------------------------------------------------
-        def _breakdown_html(stats):
-            total_tx    = stats.get('total_transmissions', 0)
-            total_bytes = stats.get('total_bytes', 0)
-            fb          = stats.get('frame_breakdown', {})
-            fby         = stats.get('frame_bytes', {})
-            node_bd     = stats.get('node_breakdown', {})
-
-            if not total_tx:
-                return "<p><em>No transmissions recorded in this period.</em></p>"
-
-            # Sort by bytes desc
-            types_sorted = sorted(fb.keys(), key=lambda t: fby.get(t, 0), reverse=True)
-
-            rows_html = ""
-            for ft in types_sorted:
-                cnt       = fb[ft]
-                byt       = fby.get(ft, 0)
-                cnt_pct   = round(cnt  / total_tx    * 100, 1) if total_tx    else 0
-                byte_pct  = round(byt  / total_bytes * 100, 1) if total_bytes else 0
-                cat       = _FRAME_CATEGORIES.get(ft, 'Other')
-                color     = _CATEGORY_COLORS.get(cat, '#aaa')
-                rows_html += f"""
-                <tr style="border-bottom:1px solid var(--table-border);">
-                  <td style="padding:8px 4px;font-weight:bold;white-space:nowrap;">
-                    <span style="display:inline-block;width:8px;height:8px;background:{color};border-radius:50%;margin-right:5px;vertical-align:middle;"></span>
-                    {ft}
-                  </td>
-                  <td style="padding:8px 4px;text-align:right;">{cnt:,}</td>
-                  <td style="padding:8px 4px;text-align:right;">{cnt_pct}%</td>
-                  <td style="padding:8px 4px;text-align:right;">{byt:,}</td>
-                  <td style="padding:8px 4px;text-align:right;">{byte_pct}%</td>
-                  <td style="padding:8px 4px;min-width:120px;">
-                    <div style="background:{color};height:10px;width:{byte_pct}%;border-radius:3px;display:inline-block;vertical-align:middle;"></div>
-                  </td>
-                </tr>"""
-
-            node_rows = ""
-            for nid, cnt in sorted(node_bd.items(), key=lambda x: -x[1])[:8]:
-                n_pct = round(cnt / total_tx * 100, 1) if total_tx else 0
-                node_rows += f"<li><strong>{nid or 'broadcast'}:</strong> {cnt:,} frames ({n_pct}%)</li>"
-
-            return f"""
-            <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
-              <thead>
-                <tr style="background:var(--table-header-bg);border-bottom:2px solid var(--table-border);">
-                  <th style="padding:8px 4px;text-align:left;">Frame Type</th>
-                  <th style="padding:8px 4px;text-align:right;"># Frames</th>
-                  <th style="padding:8px 4px;text-align:right;">% Count</th>
-                  <th style="padding:8px 4px;text-align:right;">Bytes</th>
-                  <th style="padding:8px 4px;text-align:right;">% Bytes</th>
-                  <th style="padding:8px 4px;">Bytes share</th>
-                </tr>
-              </thead>
-              <tbody>{rows_html}</tbody>
-              <tfoot>
-                <tr style="border-top:2px solid var(--table-border);font-weight:bold;">
-                  <td style="padding:8px 4px;">TOTAL</td>
-                  <td style="padding:8px 4px;text-align:right;">{total_tx:,}</td>
-                  <td style="padding:8px 4px;text-align:right;">100%</td>
-                  <td style="padding:8px 4px;text-align:right;">{total_bytes:,}</td>
-                  <td style="padding:8px 4px;text-align:right;">100%</td>
-                  <td></td>
-                </tr>
-              </tfoot>
-            </table>
-            <h4 style="margin-top:14px;">By Peer Node:</h4>
-            <ul style="margin:6px 0;">{node_rows}</ul>"""
-
-        html = f"""
-        <h2>Sync Transmission Stats</h2>
-          <form method="post" action="{url_for('system_transmissions_reset')}" onsubmit="return confirm('Reset transmission stats history now?');" style="margin:8px 0 14px 0;">
-            <button type="submit" class="danger-btn">Reset Stats</button>
-          </form>
-          <p>Breakdown of sync frames sent and received by this node — by type, count percentage, and byte percentage.
-             Sorted by bytes (heaviest types first).</p>
-
-          <h3>Direction Summary</h3>
-          <p style="font-size:0.85em;color:var(--muted);">Rebuilding nodes often show most game traffic under received frames, because the primary node is pushing state toward them.</p>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:10px 0 24px 0;">
-            <div style="border:1px solid var(--card-border);padding:15px;border-radius:5px;background:var(--card-bg);">
-              <h4 style="margin-top:0;">Last Hour</h4>
-              {_direction_html(stats_1h)}
-            </div>
-            <div style="border:1px solid var(--card-border);padding:15px;border-radius:5px;background:var(--card-bg);">
-              <h4 style="margin-top:0;">Last 24 Hours</h4>
-              {_direction_html(stats_24h)}
-            </div>
+        return f"""
+        <div style=\"display:flex;gap:10px;flex-wrap:wrap;margin:8px 0 16px 0;\">
+          <div style=\"border:1px solid var(--card-border);border-radius:6px;padding:10px 12px;background:var(--card-bg);min-width:170px;\">
+            <div style=\"font-size:0.8em;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;\">Sent to peers</div>
+            <div style=\"font-size:1.2em;font-weight:700;\">{tx_count:,} frames</div>
+            <div style=\"font-size:0.9em;color:var(--muted);\">{tx_bytes:,} bytes</div>
           </div>
+          <div style=\"border:1px solid var(--card-border);border-radius:6px;padding:10px 12px;background:var(--card-bg);min-width:170px;\">
+            <div style=\"font-size:0.8em;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;\">Received from peers</div>
+            <div style=\"font-size:1.2em;font-weight:700;\">{rx_count:,} frames</div>
+            <div style=\"font-size:0.9em;color:var(--muted);\">{rx_bytes:,} bytes</div>
+          </div>
+          <div style=\"border:1px solid var(--card-border);border-radius:6px;padding:10px 12px;background:var(--card-bg);min-width:170px;\">
+            <div style=\"font-size:0.8em;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;\">Combined total</div>
+            <div style=\"font-size:1.2em;font-weight:700;\">{total_tx:,} frames</div>
+            <div style=\"font-size:0.9em;color:var(--muted);\">{total_bytes:,} bytes</div>
+          </div>
+        </div>"""
 
-        <h3>Category Summary (Game vs Everything Else)</h3>
-        <p style="font-size:0.85em;color:var(--muted);">
-          <span style="background:#e63946;color:#fff;padding:2px 6px;border-radius:3px;">Game</span> = SCORESYNC + ZORKSAVE &nbsp;
-          <span style="background:#2a9d8f;color:#fff;padding:2px 6px;border-radius:3px;">Content</span> = BULLETIN/MAIL/CHANNEL/deletes &nbsp;
-          <span style="background:#e9c46a;color:#333;padding:2px 6px;border-radius:3px;">Profile</span> = PROFILESYNC &nbsp;
-          <span style="background:#457b9d;color:#fff;padding:2px 6px;border-radius:3px;">Protocol</span> = SYNCSTATE/HASH* frames
-        </p>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:10px 0 24px 0;">
-            <div style="border:1px solid var(--card-border);padding:15px;border-radius:5px;background:var(--card-bg);">
-                <h4 style="margin-top:0;">Last Hour</h4>
-                {_category_html(stats_1h)}
-            </div>
-            <div style="border:1px solid var(--card-border);padding:15px;border-radius:5px;background:var(--card-bg);">
-                <h4 style="margin-top:0;">Last 24 Hours</h4>
-                {_category_html(stats_24h)}
-            </div>
-        </div>
+      def _category_html(stats):
+        total_bytes = stats.get('total_bytes', 0)
+        total_tx = stats.get('total_transmissions', 0)
+        fb = stats.get('frame_breakdown', {})
+        fby = stats.get('frame_bytes', {})
 
-        <h3>Per-Frame-Type Detail</h3>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:20px 0;">
-            <div style="border:1px solid var(--card-border);padding:15px;border-radius:5px;background:var(--card-bg);">
-                <h4 style="margin-top:0;">Last Hour</h4>
-                {_breakdown_html(stats_1h)}
-            </div>
-            <div style="border:1px solid var(--card-border);padding:15px;border-radius:5px;background:var(--card-bg);">
-                <h4 style="margin-top:0;">Last 24 Hours</h4>
-                {_breakdown_html(stats_24h)}
-            </div>
-        </div>
+        if not total_tx:
+          return "<p><em>No transmissions recorded in this period.</em></p>"
 
-        <h3>Tips</h3>
-        <ul>
-          <li>High <strong>HASHREQ / HASHREC / HASHMISS</strong> share means peers keep diverging — check mismatch diagnostics.</li>
-          <li>High <strong>HASHZ</strong> share is normal and efficient (compressed manifest).</li>
-          <li><strong>SYNCSTATE</strong> frames are periodic heartbeats — one per peer per sync cycle.</li>
-          <li>On rebuilding nodes, inbound <strong>SCORESYNC</strong> and <strong>ZORKSAVE</strong> frames are the main signal that game data is arriving.</li>
-          <li>Enable turbo mode with <code>BBS_SYNC_TURBO=1</code> to reduce inter-frame pauses.</li>
-          <li>Use <a href="/api/sync/mismatches">/api/sync/mismatches</a> to see which scopes are currently diverging.</li>
-        </ul>
-        """
+        cat_bytes = {}
+        cat_counts = {}
+        for ft, cnt in fb.items():
+          cat = _FRAME_CATEGORIES.get(ft, 'Other')
+          cat_bytes[cat] = cat_bytes.get(cat, 0) + fby.get(ft, 0)
+          cat_counts[cat] = cat_counts.get(cat, 0) + cnt
+
+        rows = ""
+        for cat in _CATEGORY_ORDER:
+          if cat not in cat_bytes:
+            continue
+          byt = cat_bytes[cat]
+          cnt = cat_counts[cat]
+          b_pct = round(byt / total_bytes * 100, 1) if total_bytes else 0
+          c_pct = round(cnt / total_tx * 100, 1) if total_tx else 0
+          color = _CATEGORY_COLORS.get(cat, '#aaa')
+          rows += f"""
+          <tr style="border-bottom:1px solid var(--table-border);">
+            <td style="padding:8px 4px;">
+              <span style="display:inline-block;width:12px;height:12px;background:{color};border-radius:2px;margin-right:6px;vertical-align:middle;"></span>
+              <strong>{cat}</strong>
+            </td>
+            <td style="padding:8px 4px;text-align:right;">{cnt:,}</td>
+            <td style="padding:8px 4px;text-align:right;">{c_pct}%</td>
+            <td style="padding:8px 4px;text-align:right;">{byt:,}</td>
+            <td style="padding:8px 4px;text-align:right;font-weight:bold;">{b_pct}%</td>
+            <td style="padding:8px 4px;min-width:150px;">
+              <div style="background:{color};height:14px;width:{b_pct}%;border-radius:3px;display:inline-block;vertical-align:middle;"></div>
+            </td>
+          </tr>"""
+
+        return f"""
+        <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
+          <thead>
+            <tr style="background:var(--table-header-bg);border-bottom:2px solid var(--table-border);">
+              <th style="padding:8px 4px;text-align:left;">Category</th>
+              <th style="padding:8px 4px;text-align:right;"># Frames</th>
+              <th style="padding:8px 4px;text-align:right;">% Count</th>
+              <th style="padding:8px 4px;text-align:right;">Bytes</th>
+              <th style="padding:8px 4px;text-align:right;">% Bytes</th>
+              <th style="padding:8px 4px;">Bytes share</th>
+            </tr>
+          </thead>
+          <tbody>{rows}</tbody>
+          <tfoot>
+            <tr style="border-top:2px solid var(--table-border);font-weight:bold;">
+              <td style="padding:8px 4px;">TOTAL</td>
+              <td style="padding:8px 4px;text-align:right;">{total_tx:,}</td>
+              <td style="padding:8px 4px;text-align:right;">100%</td>
+              <td style="padding:8px 4px;text-align:right;">{total_bytes:,}</td>
+              <td style="padding:8px 4px;text-align:right;">100%</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>"""
+
+      def _breakdown_html(stats):
+        total_tx = stats.get('total_transmissions', 0)
+        total_bytes = stats.get('total_bytes', 0)
+        fb = stats.get('frame_breakdown', {})
+        fby = stats.get('frame_bytes', {})
+        node_bd = stats.get('node_breakdown', {})
+
+        if not total_tx:
+          return "<p><em>No transmissions recorded in this period.</em></p>"
+
+        types_sorted = sorted(fb.keys(), key=lambda t: fby.get(t, 0), reverse=True)
+
+        rows_html = ""
+        for ft in types_sorted:
+          cnt = fb[ft]
+          byt = fby.get(ft, 0)
+          cnt_pct = round(cnt / total_tx * 100, 1) if total_tx else 0
+          byte_pct = round(byt / total_bytes * 100, 1) if total_bytes else 0
+          cat = _FRAME_CATEGORIES.get(ft, 'Other')
+          color = _CATEGORY_COLORS.get(cat, '#aaa')
+          rows_html += f"""
+          <tr style="border-bottom:1px solid var(--table-border);">
+            <td style="padding:8px 4px;font-weight:bold;white-space:nowrap;">
+              <span style="display:inline-block;width:8px;height:8px;background:{color};border-radius:50%;margin-right:5px;vertical-align:middle;"></span>
+              {ft}
+            </td>
+            <td style="padding:8px 4px;text-align:right;">{cnt:,}</td>
+            <td style="padding:8px 4px;text-align:right;">{cnt_pct}%</td>
+            <td style="padding:8px 4px;text-align:right;">{byt:,}</td>
+            <td style="padding:8px 4px;text-align:right;">{byte_pct}%</td>
+            <td style="padding:8px 4px;min-width:120px;">
+              <div style="background:{color};height:10px;width:{byte_pct}%;border-radius:3px;display:inline-block;vertical-align:middle;"></div>
+            </td>
+          </tr>"""
+
+        node_rows = ""
+        for nid, cnt in sorted(node_bd.items(), key=lambda x: -x[1])[:8]:
+          n_pct = round(cnt / total_tx * 100, 1) if total_tx else 0
+          node_rows += f"<li><strong>{nid or 'broadcast'}:</strong> {cnt:,} frames ({n_pct}%)</li>"
+
+        return f"""
+        <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
+          <thead>
+            <tr style="background:var(--table-header-bg);border-bottom:2px solid var(--table-border);">
+              <th style="padding:8px 4px;text-align:left;">Frame Type</th>
+              <th style="padding:8px 4px;text-align:right;"># Frames</th>
+              <th style="padding:8px 4px;text-align:right;">% Count</th>
+              <th style="padding:8px 4px;text-align:right;">Bytes</th>
+              <th style="padding:8px 4px;text-align:right;">% Bytes</th>
+              <th style="padding:8px 4px;">Bytes share</th>
+            </tr>
+          </thead>
+          <tbody>{rows_html}</tbody>
+          <tfoot>
+            <tr style="border-top:2px solid var(--table-border);font-weight:bold;">
+              <td style="padding:8px 4px;">TOTAL</td>
+              <td style="padding:8px 4px;text-align:right;">{total_tx:,}</td>
+              <td style="padding:8px 4px;text-align:right;">100%</td>
+              <td style="padding:8px 4px;text-align:right;">{total_bytes:,}</td>
+              <td style="padding:8px 4px;text-align:right;">100%</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+        <h4 style="margin-top:14px;">By Peer Node:</h4>
+        <ul style="margin:6px 0;">{node_rows}</ul>"""
+
+      initial_transmissions = [
+        serialize_sync_transmission(row)
+        for row in get_sync_transmission_entries(limit=200)
+      ]
+      last_transmission_id = max((row["id"] for row in initial_transmissions), default=0)
+
+      recent_channels = []
+      recent_channel_comments = []
+      with get_db_connection() as conn:
+        cursor = conn.cursor()
+        try:
+          cursor.execute("SELECT id, name, url FROM channels ORDER BY id DESC LIMIT 8")
+          recent_channels = cursor.fetchall()
+        except sqlite3.OperationalError:
+          recent_channels = []
+        try:
+          cursor.execute(
+            """
+            SELECT ch.name AS channel_name, cc.sender_short_name, cc.date, cc.content
+            FROM channel_comments cc
+            JOIN channels ch ON ch.id = cc.channel_id
+            ORDER BY cc.id DESC
+            LIMIT 8
+            """
+          )
+          recent_channel_comments = cursor.fetchall()
+        except sqlite3.OperationalError:
+          recent_channel_comments = []
+
+        html = render_template_string(
+            TRANSMISSION_DASHBOARD_CONTENT,
+            stats_1h_direction_html=_direction_html(stats_1h),
+            stats_24h_direction_html=_direction_html(stats_24h),
+            stats_1h_category_html=_category_html(stats_1h),
+            stats_24h_category_html=_category_html(stats_24h),
+            stats_1h_breakdown_html=_breakdown_html(stats_1h),
+            stats_24h_breakdown_html=_breakdown_html(stats_24h),
+            initial_transmissions=initial_transmissions,
+            last_transmission_id=last_transmission_id,
+            recent_channels=recent_channels,
+            recent_channel_comments=recent_channel_comments,
+        )
 
         return render_template_string(BASE_TEMPLATE, title="Transmission Stats", content=html, show_nav=True)
 
