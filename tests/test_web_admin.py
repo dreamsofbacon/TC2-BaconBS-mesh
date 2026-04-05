@@ -66,6 +66,7 @@ class WebAdminSettingsTests(unittest.TestCase):
                 "BBS_MANUAL_SYNC_TRIGGER_PATH": str(self.manual_trigger_path),
                 "BBS_FORCE_CHECK_TRIGGER_PATH": str(self.force_check_trigger_path),
                 "BBS_WEBGUI_SECRET": "test-secret",
+                "BBS_VERSION_DISPLAY": "test-version",
             },
             clear=False,
         )
@@ -101,6 +102,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("Sync Settings", page)
         self.assertIn("Admin Credentials", page)
         self.assertIn("Diagnostics", page)
+        self.assertIn("test-version", page)
 
     def test_admin_password_change_persists_across_app_restart(self):
         app = create_app()
@@ -420,6 +422,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         settings_response = client.get("/settings")
         self.assertEqual(settings_response.status_code, 200)
         page = settings_response.get_data(as_text=True)
+        self.assertIn("App version:</strong> test-version", page)
         self.assertIn("Interface attached:</strong> Yes", page)
         self.assertIn("Local short name:</strong> BBS", page)
         self.assertIn("Local long name:</strong> Bacon BBS", page)
