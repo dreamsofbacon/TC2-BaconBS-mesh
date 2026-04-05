@@ -5,6 +5,7 @@ import os
 import re
 import time
 import configparser
+from typing import Optional
 
 user_states = {}
 
@@ -24,7 +25,7 @@ def _load_runtime_config() -> configparser.ConfigParser:
     return config
 
 
-def _config_raw(section: str, option: str) -> str | None:
+def _config_raw(section: str, option: str) -> Optional[str]:
     try:
         config = _load_runtime_config()
         if config.has_option(section, option):
