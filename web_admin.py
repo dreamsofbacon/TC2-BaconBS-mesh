@@ -12,6 +12,7 @@ from flask import Flask, flash, jsonify, redirect, render_template_string, reque
 
 from db_operations import install_connection_log_handler
 from utils import get_sync_runtime_settings
+from version_info import get_display_version
 
 
 TABLE_CONFIG = {
@@ -344,6 +345,15 @@ BASE_TEMPLATE = """
     .btn-danger { border-color: #b91c1c; color: #fff; background: #b91c1c; }
     .btn-small { padding: 4px 6px; font-size: 12px; }
     .nav-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+    .version-chip {
+      border: 1px solid var(--btn-border);
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 11px;
+      color: var(--muted);
+      background: var(--btn-bg);
+      white-space: nowrap;
+    }
     .theme-toggle { margin-left: 0; }
     .sync-pill {
       border: 1px solid var(--btn-border);
@@ -499,6 +509,7 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('system_transmissions') }}\">Transmission Stats</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
       <div class="nav-right">
+        <div class="version-chip" title="Running version">{{ app_version_display }}</div>
         <div id="sync-status-pill" class="sync-pill" title="Hold for 1.2 seconds to force manual sync">Sync 0% | --:--</div>
         <button id="theme-toggle" class="btn btn-small theme-toggle" type="button">Switch to Light</button>
       </div>
@@ -1185,6 +1196,7 @@ SETTINGS_CONTENT = """
   {% endif %}
 
   <h3>Database</h3>
+  <p><strong>App version:</strong> {{ diagnostics.app_version }}</p>
   <p><strong>Path:</strong> <code>{{ diagnostics.db_path }}</code></p>
   <p><strong>Bulletins:</strong> {{ diagnostics.bulletins_count }}</p>
   <p><strong>Mail:</strong> {{ diagnostics.mail_count }}</p>
@@ -2300,6 +2312,13 @@ def create_app(runtime_interface=None) -> Flask:
     app.config["ADMIN_PASSWORD_ENV_OVERRIDE"] = password_env_override
     app.config["BULLETIN_BOARDS"] = load_bulletin_boards(app.config["CONFIG_PATH"])
     app.config["RUNTIME_UPDATES_ENABLED"] = runtime_interface is not None
+    app.config["DISPLAY_VERSION"] = get_display_version()
+
+    @app.context_processor
+    def inject_global_template_values():
+      return {
+        "app_version_display": app.config.get("DISPLAY_VERSION", "unknown"),
+      }
 
     def get_runtime_interface():
         return runtime_interface
@@ -2659,6 +2678,7 @@ def create_app(runtime_interface=None) -> Flask:
     def build_settings_diagnostics() -> dict[str, str]:
       bbs_nodes, allowed_nodes, sync_interval_minutes = load_sync_settings(app.config["CONFIG_PATH"])
       diagnostics = {
+        "app_version": app.config.get("DISPLAY_VERSION", "unknown"),
         "interface_attached": "No",
         "interface_type": "Unavailable",
         "runtime_source": "None",
