@@ -233,6 +233,24 @@ class HashRepairProtocolTests(unittest.TestCase):
 
         self.assertIn("CHANNEL|Tech|mesh://tech", iface.sent_texts)
 
+    def test_hashmiss_channels_resends_requested_channel_comment(self):
+        channel_id = db_operations.add_channel("Tech", "mesh://tech")
+        comment_unique_id = db_operations.add_channel_comment(channel_id, "CALL", "Mesh comment body")
+        manifest = db_operations.get_record_hash_manifest("channels")
+        comment_key = f"comment:{comment_unique_id}"
+        self.assertIn(comment_key, manifest)
+        iface = _DummyInterface()
+
+        message_processing.process_message(
+            sender_id=1,
+            message=f"HASHMISS|channels|{comment_key}",
+            interface=iface,
+            is_sync_message=True,
+            sender_node_id="!peer1",
+        )
+
+        self.assertTrue(any(m.startswith("CHANNELCOMMENT|") for m in iface.sent_texts))
+
     def test_hashreq_tombstones_emits_manifest_and_end(self):
         db_operations.add_bulletin("General", "CALL", "Subject", "Body", [], None, unique_id="uid-del-a")
         db_operations.delete_bulletin("uid-del-a", [], None)

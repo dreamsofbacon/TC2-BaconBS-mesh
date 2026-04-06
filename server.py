@@ -84,6 +84,10 @@ def get_zork_save_resolve_trigger_path() -> str:
     return os.getenv('BBS_ZORK_SAVE_RESOLVE_TRIGGER_PATH', 'resolve_zork_save.trigger')
 
 
+def get_record_resolve_trigger_path() -> str:
+    return os.getenv('BBS_RECORD_RESOLVE_TRIGGER_PATH', 'resolve_record.trigger')
+
+
 def read_sync_interval_minutes(config_path: str, default_minutes: int = 5) -> int:
     cfg = configparser.ConfigParser()
     cfg.read(config_path)
@@ -207,6 +211,7 @@ def main():
     force_check_trigger_path = get_force_check_trigger_path()
     peer_resync_trigger_path = get_peer_resync_trigger_path()
     zork_save_resolve_trigger_path = get_zork_save_resolve_trigger_path()
+    record_resolve_trigger_path = get_record_resolve_trigger_path()
     write_runtime_diagnostics_snapshot(interface, system_config)
 
     logging.info(f"TC²-BBS is running on {system_config['interface_type']} interface...")
@@ -243,6 +248,7 @@ def main():
         last_force_check_trigger_mtime = 0.0
         last_peer_resync_trigger_mtime = 0.0
         last_zork_save_resolve_trigger_mtime = 0.0
+        last_record_resolve_trigger_mtime = 0.0
         mismatch_resync_cooldown_seconds = 300
         last_mismatch_resync_at = {}
         mismatch_attempt_counts = {}
@@ -337,6 +343,7 @@ def main():
                 force_check_triggered = False
                 peer_resync_triggered_node = None
                 resolve_zork_save_request = None
+                resolve_record_request = None
                 try:
                     if os.path.exists(trigger_path):
                         trigger_mtime = os.path.getmtime(trigger_path)
@@ -381,6 +388,17 @@ def main():
                 except Exception as exc:
                     logging.debug(f"Unable to process zork save resolver trigger: {exc}")
 
+                try:
+                    if os.path.exists(record_resolve_trigger_path):
+                        trigger_mtime = os.path.getmtime(record_resolve_trigger_path)
+                        if trigger_mtime > last_record_resolve_trigger_mtime:
+                            last_record_resolve_trigger_mtime = trigger_mtime
+                            with open(record_resolve_trigger_path, 'r', encoding='utf-8') as _f:
+                                resolve_record_request = _f.read().strip()
+                            os.remove(record_resolve_trigger_path)
+                except Exception as exc:
+                    logging.debug(f"Unable to process record resolve trigger: {exc}")
+
                 sync_due = (last_schedule_epoch == 0) or (now >= (last_schedule_epoch + (sync_interval_minutes * 60)))
 
                 if force_check_triggered:
@@ -413,6 +431,21 @@ def main():
                             logging.info(f"Started zork save best-candidate resolver request {request_id} for {user_id}:{game_id}")
                     except Exception as exc:
                         logging.warning(f"Unable to start zork save resolver request: {exc}")
+
+                if resolve_record_request:
+                    try:
+                        payload = json.loads(resolve_record_request)
+                        scope = str(payload.get('scope', '')).strip().lower()
+                        key = str(payload.get('key', '')).strip()
+                        if scope and key:
+                            from utils import _send_one_sync, get_hash_repair_pause_seconds
+                            for peer_id in sorted(current_bbs_nodes):
+                                send_hash_request_to_bbs_nodes([peer_id], interface, scope=scope)
+                                _send_one_sync(f"HASHMISS|{scope}|{key}", peer_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+                            system_config['sync_last_trigger_reason'] = 'record_resolver'
+                            logging.info(f"Queued per-record repair for {scope}:{key} to peers: {sorted(current_bbs_nodes)}")
+                    except Exception as exc:
+                        logging.warning(f"Unable to start record resolver request: {exc}")
 
                 if (manual_triggered or sync_due) and not pending_sync_nodes:
                     last_schedule_epoch = now

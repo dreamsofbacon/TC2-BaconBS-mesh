@@ -39,6 +39,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.manual_trigger_path = self.root / "manual_sync.trigger"
         self.force_check_trigger_path = self.root / "force_check.trigger"
         self.resolve_zork_save_trigger_path = self.root / "resolve_zork_save.trigger"
+        self.resolve_record_trigger_path = self.root / "resolve_record.trigger"
 
         config = configparser.ConfigParser()
         config["admin"] = {
@@ -67,6 +68,7 @@ class WebAdminSettingsTests(unittest.TestCase):
                 "BBS_MANUAL_SYNC_TRIGGER_PATH": str(self.manual_trigger_path),
                 "BBS_FORCE_CHECK_TRIGGER_PATH": str(self.force_check_trigger_path),
                 "BBS_ZORK_SAVE_RESOLVE_TRIGGER_PATH": str(self.resolve_zork_save_trigger_path),
+                "BBS_RECORD_RESOLVE_TRIGGER_PATH": str(self.resolve_record_trigger_path),
                 "BBS_WEBGUI_SECRET": "test-secret",
                 "BBS_VERSION_DISPLAY": "test-version",
             },
@@ -225,6 +227,37 @@ class WebAdminSettingsTests(unittest.TestCase):
         api_response = client.post("/api/sync/resolve-zork-save", json={"user_id": "1234", "game_id": "zork1"})
         self.assertEqual(api_response.status_code, 200)
         self.assertTrue(self.resolve_zork_save_trigger_path.exists())
+
+    def test_resolve_record_api_creates_trigger_file(self):
+        app = create_app()
+        client = app.test_client()
+
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        api_response = client.post("/api/sync/resolve-record", json={"scope": "bulletins", "key": "uid-b"})
+        self.assertEqual(api_response.status_code, 200)
+        self.assertTrue(self.resolve_record_trigger_path.exists())
+
+    def test_bulletins_list_shows_incomplete_marker_and_resolve_action(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("CREATE TABLE IF NOT EXISTS bulletins (id INTEGER PRIMARY KEY AUTOINCREMENT, board TEXT, sender_short_name TEXT, date TEXT, subject TEXT, content TEXT, unique_id TEXT, local_only INTEGER NOT NULL DEFAULT 0, expected_content_length INTEGER, content_complete INTEGER NOT NULL DEFAULT 1)")
+        conn.execute(
+            "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only, expected_content_length, content_complete) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("General", "CALL", "2026-04-06 12:00", "Short", "partial", "uid-incomplete", 0, 20, 0),
+        )
+        conn.commit()
+        conn.close()
+
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        page = client.get("/bulletins").get_data(as_text=True)
+        self.assertIn("Incomplete", page)
+        self.assertIn("Resolve", page)
+        self.assertIn("uid-incomple", page)
 
     def test_resolve_zork_save_settings_action_creates_trigger_file(self):
         app = create_app()
@@ -528,9 +561,9 @@ class WebAdminSettingsTests(unittest.TestCase):
         flowchart_response = client.get("/system/flowchart")
         self.assertEqual(flowchart_response.status_code, 200)
         page = flowchart_response.get_data(as_text=True)
-        self.assertIn("Sync + Hash Repair Pipeline", page)
-        self.assertIn("Phase 5", page)
-        self.assertIn("game scores + zork saves", page)
+        self.assertIn("Five-Phase Mesh Sync", page)
+        self.assertIn("DELETE_ZORKSAVE", page)
+        self.assertIn("CANDREQ / CANDRSP", page)
 
     def test_settings_diagnostics_snapshot_fallback(self):
         with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:

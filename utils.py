@@ -275,6 +275,23 @@ def send_channel_to_bbs_nodes(name, url, bbs_nodes, interface):
         _send_one_sync(message, node_id, interface)
 
 
+def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_date, content, unique_id, bbs_nodes, interface):
+    header = f"CHANNELCOMMENT|{channel_key}|{_b64(sender_short_name)}|{comment_date}|"
+    footer = f"|{unique_id}"
+    _send_sync_with_cont(
+        header, footer, content, unique_id,
+        cont_prefix=f"CHANNELCOMMENTCONT|{unique_id}|",
+        meta_prefix=f"CHANNELCOMMENTMETA|{unique_id}|",
+        bbs_nodes=bbs_nodes, interface=interface,
+    )
+
+
+def send_delete_channel_comment_to_bbs_nodes(unique_id, bbs_nodes, interface):
+    message = f"DELETE_CHANNELCOMMENT|{unique_id}"
+    for node_id in bbs_nodes:
+        _send_one_sync(message, node_id, interface)
+
+
 def send_sync_state_to_bbs_nodes(counts, bbs_nodes, interface):
     """Send compact local record counts and hashes to peers for mismatch detection."""
     message = (

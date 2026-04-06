@@ -54,6 +54,15 @@ class SyncStateHashingTests(unittest.TestCase):
         mismatched = db_operations.get_mismatched_peer_nodes({"!peer1"})
         self.assertIn("!peer1", mismatched)
 
+    def test_channel_comments_are_counted_in_channels_scope(self):
+        channel_id = db_operations.add_channel("Tech", "mesh://tech")
+        baseline = db_operations.get_local_record_counts()
+        db_operations.add_channel_comment(channel_id, "CALL", "First synced comment")
+        updated = db_operations.get_local_record_counts()
+
+        self.assertEqual(updated["channels"], baseline["channels"] + 1)
+        self.assertNotEqual(updated["channels_hash"], baseline["channels_hash"])
+
     def test_mismatch_scopes_reports_only_affected_scope(self):
         counts = db_operations.get_local_record_counts()
         db_operations.upsert_peer_sync_state(
