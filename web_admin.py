@@ -7,6 +7,7 @@ import configparser
 from datetime import datetime
 from functools import wraps
 from typing import Optional
+from app_paths import resolve_app_path
 
 from flask import Flask, flash, jsonify, redirect, render_template_string, request, session, url_for
 
@@ -217,7 +218,7 @@ def get_sync_env_override_flags() -> dict[str, bool]:
 
 
 def get_manual_sync_trigger_path() -> str:
-  return os.getenv("BBS_MANUAL_SYNC_TRIGGER_PATH", "manual_sync.trigger")
+  return resolve_app_path(os.getenv("BBS_MANUAL_SYNC_TRIGGER_PATH"), "manual_sync.trigger")
 
 
 def request_manual_sync_trigger() -> None:
@@ -229,7 +230,7 @@ def request_manual_sync_trigger() -> None:
 
 
 def get_force_check_trigger_path() -> str:
-  return os.getenv("BBS_FORCE_CHECK_TRIGGER_PATH", "force_check.trigger")
+  return resolve_app_path(os.getenv("BBS_FORCE_CHECK_TRIGGER_PATH"), "force_check.trigger")
 
 
 def request_force_check_trigger() -> None:
@@ -241,7 +242,7 @@ def request_force_check_trigger() -> None:
 
 
 def get_peer_resync_trigger_path() -> str:
-  return os.getenv("BBS_PEER_RESYNC_TRIGGER_PATH", "resync_peer.trigger")
+  return resolve_app_path(os.getenv("BBS_PEER_RESYNC_TRIGGER_PATH"), "resync_peer.trigger")
 
 
 def request_peer_resync_trigger(peer_node_id: str) -> None:
@@ -255,7 +256,7 @@ def request_peer_resync_trigger(peer_node_id: str) -> None:
 
 
 def get_zork_save_resolve_trigger_path() -> str:
-  return os.getenv("BBS_ZORK_SAVE_RESOLVE_TRIGGER_PATH", "resolve_zork_save.trigger")
+  return resolve_app_path(os.getenv("BBS_ZORK_SAVE_RESOLVE_TRIGGER_PATH"), "resolve_zork_save.trigger")
 
 
 def request_zork_save_resolve_trigger(user_id: str, game_id: str) -> None:
@@ -271,7 +272,7 @@ def request_zork_save_resolve_trigger(user_id: str, game_id: str) -> None:
 
 
 def get_record_resolve_trigger_path() -> str:
-  return os.getenv("BBS_RECORD_RESOLVE_TRIGGER_PATH", "resolve_record.trigger")
+  return resolve_app_path(os.getenv("BBS_RECORD_RESOLVE_TRIGGER_PATH"), "resolve_record.trigger")
 
 
 def request_record_resolve_trigger(scope: str, key: str) -> None:
@@ -2125,8 +2126,8 @@ FLOWCHART_CONTENT = UPDATED_FLOWCHART_CONTENT
 def create_app(runtime_interface=None) -> Flask:
     app = Flask(__name__)
     app.secret_key = os.getenv("BBS_WEBGUI_SECRET", "change-this-secret")
-    app.config["DB_PATH"] = os.getenv("BBS_DB_PATH", "bulletins.db")
-    app.config["CONFIG_PATH"] = os.getenv("BBS_CONFIG_PATH", "config.ini")
+    app.config["DB_PATH"] = resolve_app_path(os.getenv("BBS_DB_PATH"), "bulletins.db")
+    app.config["CONFIG_PATH"] = resolve_app_path(os.getenv("BBS_CONFIG_PATH"), "config.ini")
     install_connection_log_handler(app.config["DB_PATH"])
     admin_user, admin_password, username_env_override, password_env_override = load_admin_credentials(app.config["CONFIG_PATH"])
     app.config["ADMIN_USER"] = admin_user
@@ -2604,7 +2605,7 @@ def create_app(runtime_interface=None) -> Flask:
         except Exception as exc:
           diagnostics["error"] = f"Runtime diagnostics unavailable: {exc}"
       else:
-        snapshot_path = os.getenv("BBS_RUNTIME_DIAG_PATH", "runtime_diagnostics.json")
+        snapshot_path = resolve_app_path(os.getenv("BBS_RUNTIME_DIAG_PATH"), "runtime_diagnostics.json")
         snapshot = load_runtime_snapshot(snapshot_path)
         if snapshot:
           diagnostics["runtime_source"] = "Snapshot file"
