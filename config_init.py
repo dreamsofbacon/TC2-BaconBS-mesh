@@ -2,6 +2,7 @@ import configparser
 import os
 import time
 from typing import Any
+from app_paths import resolve_app_path
 import meshtastic.stream_interface
 import meshtastic.serial_interface
 import meshtastic.tcp_interface
@@ -105,7 +106,7 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
     config = configparser.ConfigParser()
 
     if config_file is None:
-        config_file = os.getenv("BBS_CONFIG_PATH", "config.ini")
+        config_file = resolve_app_path(os.getenv("BBS_CONFIG_PATH"), "config.ini")
     config.read(config_file)
 
     interface_type = config['interface']['type']

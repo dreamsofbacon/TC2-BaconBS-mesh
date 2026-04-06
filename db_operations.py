@@ -9,6 +9,7 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
+from app_paths import resolve_app_path
 
 from meshtastic import BROADCAST_NUM
 
@@ -282,7 +283,7 @@ def _flush_pending_expected_content_length(table_name: str, unique_id: str, pend
 
 
 def get_database_path() -> str:
-    return os.getenv('BBS_DB_PATH', 'bulletins.db')
+    return resolve_app_path(os.getenv('BBS_DB_PATH'), 'bulletins.db')
 
 
 def make_channel_manifest_key(name: str, url: str) -> str:

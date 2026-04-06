@@ -19,6 +19,7 @@ import configparser
 import threading
 import time
 from datetime import datetime, timezone
+from app_paths import resolve_app_path
 
 from config_init import initialize_config, get_interface, init_cli_parser, merge_config
 from db_operations import (
@@ -65,27 +66,27 @@ js8call_logger.addHandler(js8call_handler)
 
 
 def get_runtime_diagnostics_path() -> str:
-    return os.getenv('BBS_RUNTIME_DIAG_PATH', 'runtime_diagnostics.json')
+    return resolve_app_path(os.getenv('BBS_RUNTIME_DIAG_PATH'), 'runtime_diagnostics.json')
 
 
 def get_manual_sync_trigger_path() -> str:
-    return os.getenv('BBS_MANUAL_SYNC_TRIGGER_PATH', 'manual_sync.trigger')
+    return resolve_app_path(os.getenv('BBS_MANUAL_SYNC_TRIGGER_PATH'), 'manual_sync.trigger')
 
 
 def get_force_check_trigger_path() -> str:
-    return os.getenv('BBS_FORCE_CHECK_TRIGGER_PATH', 'force_check.trigger')
+    return resolve_app_path(os.getenv('BBS_FORCE_CHECK_TRIGGER_PATH'), 'force_check.trigger')
 
 
 def get_peer_resync_trigger_path() -> str:
-    return os.getenv('BBS_PEER_RESYNC_TRIGGER_PATH', 'resync_peer.trigger')
+    return resolve_app_path(os.getenv('BBS_PEER_RESYNC_TRIGGER_PATH'), 'resync_peer.trigger')
 
 
 def get_zork_save_resolve_trigger_path() -> str:
-    return os.getenv('BBS_ZORK_SAVE_RESOLVE_TRIGGER_PATH', 'resolve_zork_save.trigger')
+    return resolve_app_path(os.getenv('BBS_ZORK_SAVE_RESOLVE_TRIGGER_PATH'), 'resolve_zork_save.trigger')
 
 
 def get_record_resolve_trigger_path() -> str:
-    return os.getenv('BBS_RECORD_RESOLVE_TRIGGER_PATH', 'resolve_record.trigger')
+    return resolve_app_path(os.getenv('BBS_RECORD_RESOLVE_TRIGGER_PATH'), 'resolve_record.trigger')
 
 
 def read_sync_interval_minutes(config_path: str, default_minutes: int = 5) -> int:
