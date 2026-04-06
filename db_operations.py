@@ -844,6 +844,24 @@ def get_sync_tombstone_deleted_at(scope: str, record_key: str) -> Optional[str]:
     return str(row[0] or '') or None
 
 
+def get_recent_sync_tombstones(scope_prefix: str = '', limit: int = 20) -> list:
+    _ensure_deleted_sync_tombstones_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    normalized_limit = max(1, int(limit))
+    if scope_prefix:
+        c.execute(
+            "SELECT tombstone_key, deleted_at FROM deleted_sync_tombstones WHERE tombstone_key LIKE ? ORDER BY deleted_at DESC, tombstone_key ASC LIMIT ?",
+            (f"{scope_prefix}:%", normalized_limit),
+        )
+    else:
+        c.execute(
+            "SELECT tombstone_key, deleted_at FROM deleted_sync_tombstones ORDER BY deleted_at DESC, tombstone_key ASC LIMIT ?",
+            (normalized_limit,),
+        )
+    return c.fetchall()
+
+
 def get_local_record_counts() -> dict:
     """Return local record counts and compact hashes used by SYNCSTATE comparisons."""
     conn = get_db_connection()

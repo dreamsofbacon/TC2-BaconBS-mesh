@@ -5,6 +5,7 @@ import json
 import os
 import time
 import zlib
+import uuid
 
 from meshtastic import BROADCAST_NUM
 
@@ -40,6 +41,7 @@ from db_operations import (
     get_game_score_by_user_and_game,
     get_zork_save_row_by_user_and_game,
     get_sync_tombstone_deleted_at,
+    get_recent_sync_tombstones,
     has_sync_tombstone,
 )
 from js8call_integration import handle_js8call_command, handle_js8call_steps, handle_group_message_selection
@@ -97,6 +99,9 @@ _HASH_BUFFER_MAX_AGE_SECONDS = 600
 _recent_hashmiss_requests = {}
 _recent_syncstate_repairs = {}
 _SYNCSTATE_REPAIR_TTL_SECONDS = 300
+_candidate_resolution_requests = {}
+_recent_candidate_resolution_results = []
+_CANDIDATE_REQUEST_TIMEOUT_SECONDS = 15.0
 # Track in-flight HASHREQ exchanges so we don't flood a peer with duplicate requests
 # while their manifest response is still being assembled.
 _pending_hashreq = {}  # (peer_id, scope) -> float timestamp
@@ -119,6 +124,190 @@ def _prune_old_hash_manifest_chunks() -> None:
     ]
     for key in stale_keys:
         _peer_hash_compressed_buffers.pop(key, None)
+
+
+def _candidate_payload_hash(payload: bytes) -> str:
+    return base64.urlsafe_b64encode(hashlib.blake2b(payload or b'', digest_size=8).digest()).decode('ascii').rstrip('=')
+
+
+def _candidate_request_key(user_id: str, game_id: str) -> str:
+    return f"{user_id}:{game_id}"
+
+
+def _build_local_zork_save_candidate(user_id: str, game_id: str, source_peer: str = 'local') -> dict:
+    row = get_zork_save_row_by_user_and_game(user_id, game_id)
+    tombstone_deleted_at = get_sync_tombstone_deleted_at('zork_saves', _candidate_request_key(user_id, game_id))
+    if row:
+        payload = row[2] or b''
+        save_candidate = {
+            'kind': 'save',
+            'updated_at': str(row[3] or ''),
+            'size': len(payload),
+            'payload_hash': _candidate_payload_hash(payload),
+            'source_peer': str(source_peer),
+        }
+        if tombstone_deleted_at and tombstone_deleted_at >= save_candidate['updated_at']:
+            return {
+                'kind': 'tombstone',
+                'updated_at': str(tombstone_deleted_at),
+                'size': 0,
+                'payload_hash': '',
+                'source_peer': str(source_peer),
+            }
+        return save_candidate
+    if tombstone_deleted_at:
+        return {
+            'kind': 'tombstone',
+            'updated_at': str(tombstone_deleted_at),
+            'size': 0,
+            'payload_hash': '',
+            'source_peer': str(source_peer),
+        }
+    return {
+        'kind': 'missing',
+        'updated_at': '',
+        'size': 0,
+        'payload_hash': '',
+        'source_peer': str(source_peer),
+    }
+
+
+def _candidate_rank(candidate: dict) -> tuple:
+    kind = str(candidate.get('kind', 'missing'))
+    updated_at = str(candidate.get('updated_at', '') or '')
+    if kind == 'tombstone':
+        return (3, updated_at, 0, str(candidate.get('payload_hash', '') or ''), str(candidate.get('source_peer', '') or ''))
+    if kind == 'save':
+        return (2, updated_at, int(candidate.get('size', 0) or 0), str(candidate.get('payload_hash', '') or ''), str(candidate.get('source_peer', '') or ''))
+    return (1, updated_at, 0, '', str(candidate.get('source_peer', '') or ''))
+
+
+def _select_best_candidate(candidates: list[dict]):
+    valid = [candidate for candidate in candidates if isinstance(candidate, dict)]
+    if not valid:
+        return None
+    return max(valid, key=_candidate_rank)
+
+
+def _record_candidate_resolution_result(result: dict) -> None:
+    _recent_candidate_resolution_results.append(dict(result))
+    if len(_recent_candidate_resolution_results) > 12:
+        del _recent_candidate_resolution_results[:-12]
+
+
+def get_candidate_resolution_snapshot() -> dict:
+    active = []
+    for req_id, state in sorted(_candidate_resolution_requests.items(), key=lambda item: item[1].get('started_at', 0.0), reverse=True):
+        active.append({
+            'request_id': str(req_id),
+            'key': str(state.get('key', '')),
+            'status': str(state.get('status', 'collecting')),
+            'requested_at': str(state.get('requested_at', '')),
+            'responses': len(state.get('responses', {})),
+            'expected': len(state.get('expected_peers', set())),
+        })
+    return {
+        'active': active,
+        'recent': list(_recent_candidate_resolution_results),
+    }
+
+
+def _send_candidate_response(scope: str, request_id: str, user_id: str, game_id: str, candidate: dict, destination_node_id: str, interface) -> None:
+    user_b64 = base64.b64encode(str(user_id).encode('utf-8')).decode('ascii')
+    game_b64 = base64.b64encode(str(game_id).encode('utf-8')).decode('ascii')
+    kind = str(candidate.get('kind', 'missing'))
+    updated_at = str(candidate.get('updated_at', '') or '')
+    size = int(candidate.get('size', 0) or 0)
+    payload_hash = str(candidate.get('payload_hash', '') or '')
+    message = f"CANDRSP|{scope}|{request_id}|{user_b64}|{game_b64}|{kind}|{updated_at}|{size}|{payload_hash}"
+    _send_one_sync(message, destination_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+
+
+def start_zork_save_best_candidate_resolution(user_id: str, game_id: str, peer_node_ids: list[str], interface) -> str:
+    normalized_user = str(user_id).strip()
+    normalized_game = str(game_id).strip()
+    key = _candidate_request_key(normalized_user, normalized_game)
+    peers = {str(peer).strip() for peer in (peer_node_ids or []) if str(peer).strip()}
+    request_id = uuid.uuid4().hex[:12]
+    now = time.time()
+    _candidate_resolution_requests[request_id] = {
+        'scope': 'zork_saves',
+        'request_id': request_id,
+        'key': key,
+        'user_id': normalized_user,
+        'game_id': normalized_game,
+        'expected_peers': peers,
+        'responses': {'local': _build_local_zork_save_candidate(normalized_user, normalized_game, source_peer='local')},
+        'status': 'collecting',
+        'requested_at': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now)),
+        'started_at': now,
+        'result': '',
+    }
+    user_b64 = base64.b64encode(normalized_user.encode('utf-8')).decode('ascii')
+    game_b64 = base64.b64encode(normalized_game.encode('utf-8')).decode('ascii')
+    message = f"CANDREQ|zork_saves|{request_id}|{user_b64}|{game_b64}"
+    for peer_id in sorted(peers):
+        _send_one_sync(message, peer_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+    if not peers:
+        _finalize_candidate_resolution_request(request_id, interface, timed_out=False)
+    return request_id
+
+
+def _finalize_candidate_resolution_request(request_id: str, interface, timed_out: bool) -> None:
+    state = _candidate_resolution_requests.pop(request_id, None)
+    if not state:
+        return
+    candidates = list(state.get('responses', {}).values())
+    best = _select_best_candidate(candidates)
+    key = str(state.get('key', ''))
+    result_text = 'no candidates received'
+    action = 'none'
+    if best:
+        kind = str(best.get('kind', 'missing'))
+        source_peer = str(best.get('source_peer', 'local') or 'local')
+        if source_peer != 'local' and kind == 'save':
+            _send_one_sync(f"HASHMISS|zork_saves|{key}", source_peer, interface, pause_seconds=get_hash_repair_pause_seconds())
+            action = f"pull-save:{source_peer}"
+            result_text = f"Best candidate save requested from {source_peer} @ {best.get('updated_at', '')} ({best.get('size', 0)} bytes)"
+        elif source_peer != 'local' and kind == 'tombstone':
+            _send_one_sync(f"HASHMISS|tombstones|zork_saves:{key}", source_peer, interface, pause_seconds=get_hash_repair_pause_seconds())
+            action = f"pull-tombstone:{source_peer}"
+            result_text = f"Best candidate tombstone requested from {source_peer} @ {best.get('updated_at', '')}"
+        elif source_peer == 'local' and kind == 'save':
+            action = 'local-save-best'
+            result_text = f"Local save already best candidate @ {best.get('updated_at', '')} ({best.get('size', 0)} bytes)"
+        elif source_peer == 'local' and kind == 'tombstone':
+            action = 'local-tombstone-best'
+            result_text = f"Local tombstone already best candidate @ {best.get('updated_at', '')}"
+        else:
+            action = 'no-record'
+            result_text = 'No peer reported a usable save candidate'
+    result = {
+        'request_id': str(request_id),
+        'key': key,
+        'status': 'timed_out' if timed_out else 'completed',
+        'action': action,
+        'result': result_text,
+        'requested_at': str(state.get('requested_at', '')),
+        'completed_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'responses': len(state.get('responses', {})),
+        'expected': len(state.get('expected_peers', set())),
+    }
+    _record_candidate_resolution_result(result)
+
+
+def process_pending_candidate_resolutions(interface) -> None:
+    now = time.time()
+    ready = []
+    for request_id, state in list(_candidate_resolution_requests.items()):
+        expected_peers = set(state.get('expected_peers', set()))
+        responded = {peer for peer in state.get('responses', {}).keys() if peer != 'local'}
+        if expected_peers and responded >= expected_peers:
+            ready.append((request_id, False))
+        elif (now - float(state.get('started_at', now))) >= _CANDIDATE_REQUEST_TIMEOUT_SECONDS:
+            ready.append((request_id, True))
+    for request_id, timed_out in ready:
+        _finalize_candidate_resolution_request(request_id, interface, timed_out=timed_out)
 
 
 def _hash_manifest_compression_enabled() -> bool:
@@ -610,6 +799,57 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             if scope not in _SUPPORTED_HASH_SCOPES:
                 return
             _send_requested_record(scope, key, sender_node_id, interface)
+        elif message.startswith("CANDREQ|"):
+            if not sender_node_id:
+                return
+            parts = message.split("|", 4)
+            if len(parts) != 5:
+                logging.warning(f"Malformed CANDREQ ignored: {message}")
+                return
+            scope, request_id = parts[1], parts[2]
+            if scope != 'zork_saves':
+                return
+            try:
+                user_id = base64.b64decode(parts[3].encode('ascii')).decode('utf-8')
+                game_id = base64.b64decode(parts[4].encode('ascii')).decode('utf-8')
+            except Exception:
+                logging.warning(f"Malformed CANDREQ payload ignored: {message}")
+                return
+            candidate = _build_local_zork_save_candidate(user_id, game_id, source_peer='local')
+            _send_candidate_response(scope, request_id, user_id, game_id, candidate, sender_node_id, interface)
+        elif message.startswith("CANDRSP|"):
+            if not sender_node_id:
+                return
+            parts = message.split("|", 8)
+            if len(parts) != 9:
+                logging.warning(f"Malformed CANDRSP ignored: {message}")
+                return
+            scope, request_id = parts[1], parts[2]
+            if scope != 'zork_saves':
+                return
+            try:
+                user_id = base64.b64decode(parts[3].encode('ascii')).decode('utf-8')
+                game_id = base64.b64decode(parts[4].encode('ascii')).decode('utf-8')
+            except Exception:
+                logging.warning(f"Malformed CANDRSP payload ignored: {message}")
+                return
+            state = _candidate_resolution_requests.get(request_id)
+            if not state:
+                return
+            if str(state.get('key', '')) != _candidate_request_key(user_id, game_id):
+                return
+            try:
+                size = int(parts[7] or 0)
+            except ValueError:
+                size = 0
+            state.setdefault('responses', {})[str(sender_node_id)] = {
+                'kind': str(parts[5] or 'missing'),
+                'updated_at': str(parts[6] or ''),
+                'size': size,
+                'payload_hash': str(parts[8] or ''),
+                'source_peer': str(sender_node_id),
+            }
+            process_pending_candidate_resolutions(interface)
         elif message.startswith("PROFILESYNC|"):
             parts = message.split("|", 7)
             if len(parts) != 8:
@@ -842,7 +1082,7 @@ def on_receive(packet, interface):
             is_sync_message = any(message_string.startswith(prefix) for prefix in
                                   ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|", "DELETE_ZORKSAVE|",
                                    "CHANNEL|", "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
-                                   "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|",
+                                                                     "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|", "CANDREQ|", "CANDRSP|",
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|"])
 
             msg_type = "sync" if is_sync_message else "user"
