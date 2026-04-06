@@ -78,6 +78,29 @@ class SyncStateHashingTests(unittest.TestCase):
         self.assertIn("tombstones", by_peer["!peer1"])
         self.assertNotIn("channels", by_peer["!peer1"])
 
+    def test_zork_save_mismatch_also_requests_tombstones(self):
+        counts = db_operations.get_local_record_counts()
+        db_operations.upsert_peer_sync_state(
+            peer_node_id="!peer1",
+            bulletins=counts["bulletins"],
+            mail=counts["mail"],
+            channels=counts["channels"],
+            zork_saves=counts["zork_saves"],
+            profiles=counts["profiles"],
+            game_scores=counts["game_scores"],
+            bulletins_hash=counts["bulletins_hash"],
+            mail_hash=counts["mail_hash"],
+            channels_hash=counts["channels_hash"],
+            zork_saves_hash="bad-zork-hash",
+            profiles_hash=counts["profiles_hash"],
+            game_scores_hash=counts["game_scores_hash"],
+        )
+
+        by_peer = db_operations.get_mismatched_peer_scopes({"!peer1"})
+        self.assertIn("!peer1", by_peer)
+        self.assertIn("zork_saves", by_peer["!peer1"])
+        self.assertIn("tombstones", by_peer["!peer1"])
+
     def test_get_db_connection_uses_bbs_db_path_env(self):
         conn = getattr(db_operations.thread_local, "connection", None)
         if conn is not None:

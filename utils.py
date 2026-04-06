@@ -262,6 +262,13 @@ def send_delete_mail_to_bbs_nodes(unique_id, bbs_nodes, interface):
         _send_one_sync(message, node_id, interface)
 
 
+def send_delete_zork_save_to_bbs_nodes(user_id, game_id, deleted_at, bbs_nodes, interface):
+    message = f"DELETE_ZORKSAVE|{_b64(str(user_id))}|{_b64(str(game_id))}|{deleted_at}"
+    logging.info(f"SERVER SYNC: Sending delete zork save sync for user_id={user_id} game_id={game_id}")
+    for node_id in bbs_nodes:
+        _send_one_sync(message, node_id, interface)
+
+
 def send_channel_to_bbs_nodes(name, url, bbs_nodes, interface):
     message = f"CHANNEL|{name}|{url}"
     for node_id in bbs_nodes:

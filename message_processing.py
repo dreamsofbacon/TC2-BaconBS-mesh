@@ -29,6 +29,7 @@ from db_operations import (
     log_sync_transmission,
     upsert_synced_user_profile, upsert_synced_game_score,
     upsert_synced_zork_save,
+    apply_synced_zork_save_delete,
     get_mismatched_peer_scopes,
     get_record_hash_manifest,
     get_sync_progress,
@@ -38,6 +39,7 @@ from db_operations import (
     get_profile_by_user_id,
     get_game_score_by_user_and_game,
     get_zork_save_row_by_user_and_game,
+    get_sync_tombstone_deleted_at,
     has_sync_tombstone,
 )
 from js8call_integration import handle_js8call_command, handle_js8call_steps, handle_group_message_selection
@@ -46,6 +48,7 @@ from utils import (
     send_bulletin_to_bbs_nodes, send_mail_to_bbs_nodes, send_channel_to_bbs_nodes,
     send_profile_to_bbs_nodes, send_game_score_to_bbs_nodes, send_zork_save_to_bbs_nodes,
     send_delete_bulletin_to_bbs_nodes, send_delete_mail_to_bbs_nodes,
+    send_delete_zork_save_to_bbs_nodes,
     send_hash_request_to_bbs_nodes,
     get_hash_repair_pause_seconds,
     _send_one_sync, _MESHTASTIC_MAX_BYTES,
@@ -235,7 +238,7 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
         remote_hash = str(remote.get(key, ""))
         if not _should_send_hashmiss(sender_node_id, scope, key, local_hash, remote_hash):
             continue
-        if scope in ('bulletins', 'mail') and key not in local and has_sync_tombstone(scope, key):
+        if scope in ('bulletins', 'mail', 'zork_saves') and key not in local and has_sync_tombstone(scope, key):
             logging.info(f"Requesting tombstone replay from {sender_node_id} for {scope}:{key}")
             _send_one_sync(f"HASHMISS|tombstones|{scope}:{key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
         else:
@@ -328,6 +331,16 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
             unique_id = key.split(':', 1)[1]
             logging.info(f"Replaying mail delete to {destination_node_id} key={key}")
             send_delete_mail_to_bbs_nodes(unique_id, [destination_node_id], interface)
+        elif key.startswith('zork_saves:'):
+            remainder = key.split(':', 1)[1]
+            if ':' not in remainder:
+                return
+            user_id, game_id = remainder.split(':', 1)
+            deleted_at = get_sync_tombstone_deleted_at('zork_saves', f"{user_id}:{game_id}")
+            if not deleted_at:
+                return
+            logging.info(f"Replaying zork save delete to {destination_node_id} key={key}")
+            send_delete_zork_save_to_bbs_nodes(user_id, game_id, deleted_at, [destination_node_id], interface)
 
 
 def _auto_update_profile(sender_id, interface):
@@ -391,6 +404,18 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             unique_id = parts[1]
             logging.info(f"Processing delete mail with unique_id: {unique_id}")
             delete_mail(unique_id, None, [], interface)
+        elif message.startswith("DELETE_ZORKSAVE|"):
+            parts = message.split("|", 3)
+            if len(parts) != 4 or not parts[1] or not parts[2] or not parts[3]:
+                logging.warning(f"Malformed DELETE_ZORKSAVE sync message ignored: {message}")
+                return
+            try:
+                user_id = base64.b64decode(parts[1].encode('ascii')).decode('utf-8')
+                game_id = base64.b64decode(parts[2].encode('ascii')).decode('utf-8')
+            except Exception:
+                logging.warning(f"Malformed DELETE_ZORKSAVE payload ignored: {message}")
+                return
+            apply_synced_zork_save_delete(user_id, game_id, parts[3])
         elif message.startswith("CHANNEL|"):
             parts = message.split("|", 2)
             if len(parts) != 3:
@@ -815,7 +840,7 @@ def on_receive(packet, interface):
 
             bbs_nodes = interface.bbs_nodes
             is_sync_message = any(message_string.startswith(prefix) for prefix in
-                                  ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|",
+                                  ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|", "DELETE_ZORKSAVE|",
                                    "CHANNEL|", "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
                                    "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|",
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|"])

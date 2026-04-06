@@ -2,6 +2,7 @@ import sqlite3
 import sys
 import types
 import unittest
+import base64
 from unittest.mock import patch
 
 if "meshtastic" not in sys.modules:
@@ -28,6 +29,12 @@ class HashRepairProtocolTests(unittest.TestCase):
         conn = sqlite3.connect(":memory:")
         db_operations.thread_local.connection = conn
         db_operations.initialize_database()
+        message_processing._zork_save_chunk_buffers.clear()
+        message_processing._peer_hash_manifest_buffers.clear()
+        message_processing._peer_hash_compressed_buffers.clear()
+        message_processing._recent_hashmiss_requests.clear()
+        message_processing._recent_syncstate_repairs.clear()
+        message_processing._pending_hashreq.clear()
 
     def tearDown(self):
         conn = getattr(db_operations.thread_local, "connection", None)
@@ -67,6 +74,20 @@ class HashRepairProtocolTests(unittest.TestCase):
 
         self.assertTrue(any(m.startswith("BULLETIN|General|CALL|Subject|Body|") for m in iface.sent_texts))
 
+    def test_hashmiss_resends_requested_zork_save_record(self):
+        db_operations.upsert_synced_zork_save("1234", "zork1", b"save-payload", "2026-03-30 12:00:00")
+        iface = _DummyInterface()
+
+        message_processing.process_message(
+            sender_id=1,
+            message="HASHMISS|zork_saves|1234:zork1",
+            interface=iface,
+            is_sync_message=True,
+            sender_node_id="!peer1",
+        )
+
+        self.assertTrue(any(m.startswith("ZORKSAVE|") for m in iface.sent_texts))
+
     def test_hashend_requests_missing_records(self):
         iface = _DummyInterface()
 
@@ -86,6 +107,26 @@ class HashRepairProtocolTests(unittest.TestCase):
         )
 
         self.assertIn("HASHMISS|bulletins|uid-remote-only", iface.sent_texts)
+
+    def test_hashend_requests_missing_zork_save_records(self):
+        iface = _DummyInterface()
+
+        message_processing.process_message(
+            sender_id=1,
+            message="HASHREC|zork_saves|1234:zork1|abc123",
+            interface=iface,
+            is_sync_message=True,
+            sender_node_id="!peer1",
+        )
+        message_processing.process_message(
+            sender_id=1,
+            message="HASHEND|zork_saves|1",
+            interface=iface,
+            is_sync_message=True,
+            sender_node_id="!peer1",
+        )
+
+        self.assertIn("HASHMISS|zork_saves|1234:zork1", iface.sent_texts)
 
     def test_hashend_pushes_local_only_records_to_peer(self):
         db_operations.add_bulletin(
@@ -166,6 +207,21 @@ class HashRepairProtocolTests(unittest.TestCase):
 
         self.assertIn("DELETE_MAIL|uid-del-mail", iface.sent_texts)
 
+    def test_hashmiss_tombstone_replays_zork_save_delete(self):
+        db_operations.record_sync_tombstone_at("zork_saves", "1234:zork1", "2026-03-30 12:05:00")
+        iface = _DummyInterface()
+
+        message_processing.process_message(
+            sender_id=1,
+            message="HASHMISS|tombstones|zork_saves:1234:zork1",
+            interface=iface,
+            is_sync_message=True,
+            sender_node_id="!peer1",
+        )
+
+        expected_prefix = "DELETE_ZORKSAVE|" + base64.b64encode(b"1234").decode("ascii") + "|" + base64.b64encode(b"zork1").decode("ascii") + "|"
+        self.assertTrue(any(m.startswith(expected_prefix) for m in iface.sent_texts))
+
     def test_hashend_prefers_tombstone_for_deleted_local_record(self):
         db_operations.record_sync_tombstone("bulletins", "uid-del-b")
         iface = _DummyInterface()
@@ -186,6 +242,27 @@ class HashRepairProtocolTests(unittest.TestCase):
         )
 
         self.assertIn("HASHMISS|tombstones|bulletins:uid-del-b", iface.sent_texts)
+
+    def test_hashend_prefers_tombstone_for_deleted_local_zork_save(self):
+        db_operations.record_sync_tombstone_at("zork_saves", "1234:zork1", "2026-03-30 12:05:00")
+        iface = _DummyInterface()
+
+        message_processing.process_message(
+            sender_id=1,
+            message="HASHREC|zork_saves|1234:zork1|abc123",
+            interface=iface,
+            is_sync_message=True,
+            sender_node_id="!peer1",
+        )
+        message_processing.process_message(
+            sender_id=1,
+            message="HASHEND|zork_saves|1",
+            interface=iface,
+            is_sync_message=True,
+            sender_node_id="!peer1",
+        )
+
+        self.assertIn("HASHMISS|tombstones|zork_saves:1234:zork1", iface.sent_texts)
 
     def test_hashreq_falls_back_to_hashrec_when_compression_disabled(self):
         db_operations.add_bulletin("General", "CALL", "Subject", "Body", [], None, unique_id="uid-z-1")

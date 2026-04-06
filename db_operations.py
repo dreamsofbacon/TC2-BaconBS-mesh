@@ -16,6 +16,7 @@ from utils import (
     send_bulletin_to_bbs_nodes,
     send_delete_bulletin_to_bbs_nodes,
     send_delete_mail_to_bbs_nodes,
+    send_delete_zork_save_to_bbs_nodes,
     send_mail_to_bbs_nodes, send_message, send_channel_to_bbs_nodes,
     send_sync_state_to_bbs_nodes,
     send_profile_to_bbs_nodes,
@@ -792,15 +793,23 @@ def _build_tombstone_key(scope: str, record_key: str) -> str:
 
 
 def record_sync_tombstone(scope: str, record_key: str) -> None:
+    record_sync_tombstone_at(scope, record_key, None)
+
+
+def record_sync_tombstone_at(scope: str, record_key: str, deleted_at: Optional[str]) -> None:
     _ensure_deleted_sync_tombstones_table()
     conn = get_db_connection()
     c = conn.cursor()
+    normalized_deleted_at = str(deleted_at or datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
     c.execute(
         '''INSERT INTO deleted_sync_tombstones (tombstone_key, deleted_at)
            VALUES (?, ?)
            ON CONFLICT(tombstone_key) DO UPDATE SET
-             deleted_at = excluded.deleted_at''',
-        (_build_tombstone_key(scope, record_key), datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+                         deleted_at = CASE
+                             WHEN excluded.deleted_at > deleted_sync_tombstones.deleted_at THEN excluded.deleted_at
+                             ELSE deleted_sync_tombstones.deleted_at
+                         END''',
+                (_build_tombstone_key(scope, record_key), normalized_deleted_at),
     )
     conn.commit()
 
@@ -819,6 +828,20 @@ def has_sync_tombstone(scope: str, record_key: str) -> bool:
     c = conn.cursor()
     c.execute("SELECT 1 FROM deleted_sync_tombstones WHERE tombstone_key = ? LIMIT 1", (_build_tombstone_key(scope, record_key),))
     return c.fetchone() is not None
+
+
+def get_sync_tombstone_deleted_at(scope: str, record_key: str) -> Optional[str]:
+    _ensure_deleted_sync_tombstones_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT deleted_at FROM deleted_sync_tombstones WHERE tombstone_key = ? LIMIT 1",
+        (_build_tombstone_key(scope, record_key),),
+    )
+    row = c.fetchone()
+    if not row:
+        return None
+    return str(row[0] or '') or None
 
 
 def get_local_record_counts() -> dict:
@@ -1046,7 +1069,7 @@ def get_mismatched_peer_scopes(expected_peer_nodes=None) -> dict:
 
         if scopes:
             # Tombstones are only relevant for content scopes where deletion drift exists.
-            if 'bulletins' in scopes or 'mail' in scopes:
+            if 'bulletins' in scopes or 'mail' in scopes or 'zork_saves' in scopes:
                 scopes.append('tombstones')
             by_peer[peer] = scopes
 
@@ -1544,6 +1567,25 @@ def upsert_zork_save(user_id: int, save_data: bytes, game_id: str = 'zork1') -> 
         (str(user_id), game_id, save_data, updated_at)
     )
     conn.commit()
+    clear_sync_tombstone('zork_saves', f"{user_id}:{game_id}")
+
+
+def _should_replace_zork_save(existing_updated_at: str, existing_save_data: bytes, incoming_updated_at: str, incoming_save_data: bytes) -> bool:
+    existing_ts = str(existing_updated_at or '')
+    incoming_ts = str(incoming_updated_at or '')
+    if incoming_ts > existing_ts:
+        return True
+    if incoming_ts < existing_ts:
+        return False
+
+    existing_payload = existing_save_data or b''
+    incoming_payload = incoming_save_data or b''
+    if len(incoming_payload) != len(existing_payload):
+        return len(incoming_payload) > len(existing_payload)
+
+    incoming_hash = _compact_row_hash((incoming_payload,))
+    existing_hash = _compact_row_hash((existing_payload,))
+    return incoming_hash > existing_hash
 
 
 def upsert_synced_zork_save(user_id: str, game_id: str, save_data: bytes, updated_at: str) -> None:
@@ -1552,14 +1594,19 @@ def upsert_synced_zork_save(user_id: str, game_id: str, save_data: bytes, update
     Only replaces local save when incoming updated_at is newer.
     """
     _ensure_zork_saves_table()
+    key = f"{user_id}:{game_id}"
+    tombstone_deleted_at = get_sync_tombstone_deleted_at('zork_saves', key)
+    if tombstone_deleted_at and tombstone_deleted_at >= str(updated_at or ''):
+        return
+
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT updated_at FROM zork_saves WHERE user_id = ? AND game_id = ?",
+        "SELECT save_data, updated_at FROM zork_saves WHERE user_id = ? AND game_id = ?",
         (str(user_id), str(game_id)),
     )
     row = c.fetchone()
-    if row and row[0] and row[0] >= updated_at:
+    if row and not _should_replace_zork_save(str(row[1] or ''), row[0], str(updated_at or ''), save_data):
         return
 
     c.execute(
@@ -1571,6 +1618,7 @@ def upsert_synced_zork_save(user_id: str, game_id: str, save_data: bytes, update
         (str(user_id), str(game_id), save_data, updated_at),
     )
     conn.commit()
+    clear_sync_tombstone('zork_saves', key)
 
 
 def get_zork_save(user_id: int, game_id: str = 'zork1') -> Optional[bytes]:
@@ -1584,12 +1632,33 @@ def get_zork_save(user_id: int, game_id: str = 'zork1') -> Optional[bytes]:
     return row[0]
 
 
-def delete_zork_save(user_id: int, game_id: str = 'zork1') -> None:
+def apply_synced_zork_save_delete(user_id: str, game_id: str, deleted_at: str) -> bool:
     _ensure_zork_saves_table()
+    key = f"{user_id}:{game_id}"
+    normalized_deleted_at = str(deleted_at or datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    record_sync_tombstone_at('zork_saves', key, normalized_deleted_at)
+
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("DELETE FROM zork_saves WHERE user_id = ? AND game_id = ?", (str(user_id), game_id))
+    c.execute(
+        "SELECT updated_at FROM zork_saves WHERE user_id = ? AND game_id = ?",
+        (str(user_id), str(game_id)),
+    )
+    row = c.fetchone()
+    if row and str(row[0] or '') > normalized_deleted_at:
+        return False
+
+    c.execute("DELETE FROM zork_saves WHERE user_id = ? AND game_id = ?", (str(user_id), str(game_id)))
     conn.commit()
+    return True
+
+
+def delete_zork_save(user_id: int, game_id: str = 'zork1', bbs_nodes=None, interface=None, deleted_at: Optional[str] = None) -> None:
+    _ensure_zork_saves_table()
+    normalized_deleted_at = str(deleted_at or datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    apply_synced_zork_save_delete(str(user_id), str(game_id), normalized_deleted_at)
+    if bbs_nodes and interface:
+        send_delete_zork_save_to_bbs_nodes(user_id, game_id, normalized_deleted_at, bbs_nodes, interface)
 
 
 # ---------------------------------------------------------------------------
