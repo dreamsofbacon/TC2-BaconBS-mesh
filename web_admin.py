@@ -244,7 +244,7 @@ _UNIMPORTANT_SYNC_FRAMES = {"BULLETINCONT", "MAILCONT", "HASHREC", "HASHZ"}
 
 def classify_sync_transmission_importance(frame_type: str, is_continuation: bool) -> bool:
   normalized = str(frame_type or "").strip().upper()
-  if normalized in {"SYNCSTATE", "HASHREQ", "HASHMISS", "HASHEND", "DELETE_BULLETIN", "DELETE_MAIL", "BULLETIN", "MAIL", "CHANNEL", "PROFILESYNC", "SCORESYNC", "ZORKSAVE"}:
+  if normalized in {"SYNCSTATE", "HASHREQ", "HASHMISS", "HASHEND", "DELETE_BULLETIN", "DELETE_MAIL", "DELETE_ZORKSAVE", "BULLETIN", "MAIL", "CHANNEL", "PROFILESYNC", "SCORESYNC", "ZORKSAVE"}:
     return True
   if bool(is_continuation):
     return False
