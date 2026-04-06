@@ -181,6 +181,22 @@ def request_peer_resync_trigger(peer_node_id: str) -> None:
   os.replace(tmp_path, trigger_path)
 
 
+def get_zork_save_resolve_trigger_path() -> str:
+  return os.getenv("BBS_ZORK_SAVE_RESOLVE_TRIGGER_PATH", "resolve_zork_save.trigger")
+
+
+def request_zork_save_resolve_trigger(user_id: str, game_id: str) -> None:
+  normalized_user = str(user_id).strip()
+  normalized_game = str(game_id).strip()
+  if not normalized_user or not normalized_game:
+    raise ValueError("user_id and game_id required")
+  trigger_path = get_zork_save_resolve_trigger_path()
+  tmp_path = f"{trigger_path}.tmp"
+  with open(tmp_path, "w", encoding="utf-8") as trigger_file:
+    json.dump({"user_id": normalized_user, "game_id": normalized_game}, trigger_file)
+  os.replace(tmp_path, trigger_path)
+
+
 def load_runtime_snapshot(snapshot_path: str) -> dict:
   if not os.path.exists(snapshot_path):
     return {}
@@ -244,7 +260,7 @@ _UNIMPORTANT_SYNC_FRAMES = {"BULLETINCONT", "MAILCONT", "HASHREC", "HASHZ"}
 
 def classify_sync_transmission_importance(frame_type: str, is_continuation: bool) -> bool:
   normalized = str(frame_type or "").strip().upper()
-  if normalized in {"SYNCSTATE", "HASHREQ", "HASHMISS", "HASHEND", "DELETE_BULLETIN", "DELETE_MAIL", "DELETE_ZORKSAVE", "BULLETIN", "MAIL", "CHANNEL", "PROFILESYNC", "SCORESYNC", "ZORKSAVE"}:
+  if normalized in {"SYNCSTATE", "HASHREQ", "HASHMISS", "HASHEND", "DELETE_BULLETIN", "DELETE_MAIL", "DELETE_ZORKSAVE", "BULLETIN", "MAIL", "CHANNEL", "PROFILESYNC", "SCORESYNC", "ZORKSAVE", "CANDREQ", "CANDRSP"}:
     return True
   if bool(is_continuation):
     return False
@@ -1165,6 +1181,22 @@ SETTINGS_CONTENT = """
   </form>
 
   <hr>
+  <h3 style=\"margin-top: 16px;\">Resolve Save by Best Candidate</h3>
+  <p class=\"muted\">Ask every configured peer for a specific Zork save candidate, then choose the best result by newest timestamp, then larger payload size, then stable hash tie-break.</p>
+  <form method=\"post\" action=\"{{ url_for('settings_page') }}#sync\" style=\"margin-top: 8px; display: flex; gap: 8px; align-items: end; flex-wrap: wrap;\">
+    <input type=\"hidden\" name=\"settings_section\" value=\"resolve_zork_save\">
+    <div>
+      <label>User ID</label><br>
+      <input type=\"text\" name=\"resolve_user_id\" placeholder=\"e.g. 1234\" style=\"width:220px;\" required>
+    </div>
+    <div>
+      <label>Game ID</label><br>
+      <input type=\"text\" name=\"resolve_game_id\" placeholder=\"e.g. zork1\" value=\"zork1\" style=\"width:220px;\" required>
+    </div>
+    <button class=\"btn\" type=\"submit\">Resolve Save</button>
+  </form>
+
+  <hr>
   <h3 style=\"margin-top: 16px;\">Force Full Resync to Peer</h3>
   <p class=\"muted\">Use this when a peer node was wiped and rebuilt and its game data or other content is not converging via normal hash repair. This clears the in-memory sync cache for that peer and triggers a complete database push to it.</p>
   <form method=\"post\" action=\"{{ url_for('settings_page') }}#sync\" style=\"margin-top: 8px;\">
@@ -1249,6 +1281,12 @@ SETTINGS_CONTENT = """
   <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.peer_sync_counts }}</pre>
   <p><strong>Per-scope mismatch reasons:</strong></p>
   <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.peer_scope_mismatches }}</pre>
+  <h3>Zork Save Mismatch Focus</h3>
+  <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.zork_save_peer_mismatches }}</pre>
+  <h3>Zork Save Tombstones</h3>
+  <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.zork_save_tombstones }}</pre>
+  <h3>Best-Candidate Resolver</h3>
+  <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.zork_save_candidate_resolution }}</pre>
   <h3>Peer Hash Graph</h3>
   {% if diagnostics.peer_hash_graph %}
   <div class="peer-graph-grid">
@@ -2465,6 +2503,10 @@ def create_app(runtime_interface=None) -> Flask:
               message_type TEXT NOT NULL,
               event_text TEXT NOT NULL
             )''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS deleted_sync_tombstones (
+              tombstone_key TEXT PRIMARY KEY,
+              deleted_at TEXT NOT NULL
+            )''')
             try:
               conn.execute("ALTER TABLE bulletins ADD COLUMN local_only INTEGER NOT NULL DEFAULT 0")
             except Exception:
@@ -2827,6 +2869,9 @@ def create_app(runtime_interface=None) -> Flask:
         "peer_sync_status": "Unknown",
         "peer_sync_counts": "No peer status received yet",
         "peer_scope_mismatches": "No peer status received yet",
+        "zork_save_peer_mismatches": "No zork save peer mismatches reported",
+        "zork_save_tombstones": "No zork save tombstones recorded",
+        "zork_save_candidate_resolution": "No resolver activity yet",
         "peer_hash_graph": [],
         "mismatch_retry_summary": "None",
         "mismatch_retry_details": "",
@@ -2842,6 +2887,7 @@ def create_app(runtime_interface=None) -> Flask:
       }
 
       interface = get_runtime_interface()
+      snapshot = {}
       if interface is not None:
         diagnostics["interface_attached"] = "Yes"
         diagnostics["interface_type"] = interface.__class__.__name__
@@ -2935,6 +2981,14 @@ def create_app(runtime_interface=None) -> Flask:
           diagnostics["game_scores_count"] = str(cursor.fetchone()[0])
           cursor.execute("SELECT COUNT(*) FROM connection_events")
           diagnostics["connection_events_count"] = str(cursor.fetchone()[0])
+          cursor.execute(
+            "SELECT tombstone_key, deleted_at FROM deleted_sync_tombstones WHERE tombstone_key LIKE 'zork_saves:%' ORDER BY deleted_at DESC, tombstone_key ASC LIMIT 10"
+          )
+          tombstone_rows = cursor.fetchall()
+          if tombstone_rows:
+            diagnostics["zork_save_tombstones"] = "\n".join(
+              f"{row[0]} @ {row[1]}" for row in tombstone_rows
+            )
           cursor.execute("SELECT event_time, message_type, event_text FROM connection_events ORDER BY id DESC LIMIT 1")
           row = cursor.fetchone()
           if row:
@@ -3022,15 +3076,48 @@ def create_app(runtime_interface=None) -> Flask:
             diagnostics["peer_sync_counts"] = "\n".join(lines)
             mismatch_snapshot = get_peer_mismatch_snapshot(set(bbs_nodes))
             diagnostics["peer_scope_mismatches"] = "\n".join(mismatch_snapshot.get("scope_lines", []))
+            save_mismatch_lines = []
+            for graph_row in graph_rows:
+              for scope_row in graph_row.get("scopes", []):
+                if scope_row.get("key") != "zork_saves":
+                  continue
+                if scope_row.get("count_match") and scope_row.get("hash_match"):
+                  continue
+                save_mismatch_lines.append(
+                  f"{graph_row['peer_node_id']} -> local={scope_row['local_count']} peer={scope_row['peer_count']} | count={'ok' if scope_row['count_match'] else 'diff'} | hash={'ok' if scope_row['hash_match'] else 'diff'}"
+                )
+            if save_mismatch_lines:
+              diagnostics["zork_save_peer_mismatches"] = "\n".join(save_mismatch_lines)
             diagnostics["peer_hash_graph"] = graph_rows
           else:
             diagnostics["peer_sync_status"] = "No peer reports yet"
             diagnostics["peer_sync_counts"] = "No peer status received yet"
             diagnostics["peer_scope_mismatches"] = "No peer status received yet"
+            diagnostics["zork_save_peer_mismatches"] = "No zork save peer mismatches reported"
         finally:
           conn.close()
       except Exception as exc:
         diagnostics["error"] = f"Database diagnostics unavailable: {exc}"
+
+      candidate_resolution = snapshot.get("candidate_resolution") if snapshot else None
+      if isinstance(candidate_resolution, dict):
+        active = candidate_resolution.get("active", [])
+        recent = candidate_resolution.get("recent", [])
+        candidate_lines = []
+        if isinstance(active, list) and active:
+          candidate_lines.append("Active:")
+          candidate_lines.extend(
+            f"{item.get('key', '')} [{item.get('status', '')}] {item.get('responses', 0)}/{item.get('expected', 0)} peer(s)" for item in active
+          )
+        if isinstance(recent, list) and recent:
+          if candidate_lines:
+            candidate_lines.append("")
+          candidate_lines.append("Recent:")
+          candidate_lines.extend(
+            f"{item.get('key', '')} -> {item.get('result', '')}" for item in recent[-5:]
+          )
+        if candidate_lines:
+          diagnostics["zork_save_candidate_resolution"] = "\n".join(candidate_lines)
 
       return diagnostics
 
@@ -3133,6 +3220,16 @@ def create_app(runtime_interface=None) -> Flask:
         if section == "force_check":
           request_force_check_trigger()
           flash("Mismatch check requested. The server will run targeted hash checks shortly.", "success")
+          return redirect(url_for("settings_page") + "#sync")
+
+        if section == "resolve_zork_save":
+          user_id = request.form.get("resolve_user_id", "").strip()
+          game_id = request.form.get("resolve_game_id", "").strip() or "zork1"
+          if not user_id:
+            flash("User ID is required for save resolution.", "error")
+            return redirect(url_for("settings_page") + "#sync")
+          request_zork_save_resolve_trigger(user_id, game_id)
+          flash(f"Best-candidate save resolution queued for {user_id}:{game_id}.", "success")
           return redirect(url_for("settings_page") + "#sync")
 
         if section == "peer_resync":
@@ -3298,6 +3395,17 @@ def create_app(runtime_interface=None) -> Flask:
         return jsonify({"ok": False, "error": "peer_node_id required"}), 400
       request_peer_resync_trigger(peer_node_id)
       return jsonify({"ok": True, "message": f"Full resync queued for peer {peer_node_id}"})
+
+    @app.post("/api/sync/resolve-zork-save")
+    @login_required
+    def api_sync_resolve_zork_save():
+      data = request.get_json(silent=True) or {}
+      user_id = str(data.get("user_id", "")).strip()
+      game_id = str(data.get("game_id", "")).strip() or "zork1"
+      if not user_id:
+        return jsonify({"ok": False, "error": "user_id required"}), 400
+      request_zork_save_resolve_trigger(user_id, game_id)
+      return jsonify({"ok": True, "message": f"Best-candidate resolution queued for {user_id}:{game_id}"})
 
     @app.get("/api/sync/transmissions")
     @login_required

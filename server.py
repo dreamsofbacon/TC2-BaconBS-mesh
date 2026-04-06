@@ -37,7 +37,13 @@ from db_operations import (
     get_local_record_counts,
 )
 from js8call_integration import JS8CallClient
-from message_processing import on_receive, is_hashreq_pending_for_peer_scope
+from message_processing import (
+    on_receive,
+    is_hashreq_pending_for_peer_scope,
+    start_zork_save_best_candidate_resolution,
+    process_pending_candidate_resolutions,
+    get_candidate_resolution_snapshot,
+)
 from pubsub import pub
 from utils import send_hash_request_to_bbs_nodes, send_sync_state_to_bbs_nodes
 
@@ -72,6 +78,10 @@ def get_force_check_trigger_path() -> str:
 
 def get_peer_resync_trigger_path() -> str:
     return os.getenv('BBS_PEER_RESYNC_TRIGGER_PATH', 'resync_peer.trigger')
+
+
+def get_zork_save_resolve_trigger_path() -> str:
+    return os.getenv('BBS_ZORK_SAVE_RESOLVE_TRIGGER_PATH', 'resolve_zork_save.trigger')
 
 
 def read_sync_interval_minutes(config_path: str, default_minutes: int = 5) -> int:
@@ -130,6 +140,7 @@ def write_runtime_diagnostics_snapshot(interface, system_config: dict) -> None:
         'sync_next_run_epoch': int(system_config.get('sync_next_run_epoch', 0)),
         'sync_last_trigger_reason': str(system_config.get('sync_last_trigger_reason', 'scheduled')),
         'sync_mismatch_retry_at': dict(mismatch_retry_at),
+        'candidate_resolution': get_candidate_resolution_snapshot(),
         'error': '',
     }
 
@@ -195,6 +206,7 @@ def main():
     trigger_path = get_manual_sync_trigger_path()
     force_check_trigger_path = get_force_check_trigger_path()
     peer_resync_trigger_path = get_peer_resync_trigger_path()
+    zork_save_resolve_trigger_path = get_zork_save_resolve_trigger_path()
     write_runtime_diagnostics_snapshot(interface, system_config)
 
     logging.info(f"TC²-BBS is running on {system_config['interface_type']} interface...")
@@ -230,6 +242,7 @@ def main():
         last_manual_trigger_mtime = 0.0
         last_force_check_trigger_mtime = 0.0
         last_peer_resync_trigger_mtime = 0.0
+        last_zork_save_resolve_trigger_mtime = 0.0
         mismatch_resync_cooldown_seconds = 300
         last_mismatch_resync_at = {}
         mismatch_attempt_counts = {}
@@ -305,6 +318,7 @@ def main():
         while True:
             now = time.time()
             force_mismatch_check = False
+            process_pending_candidate_resolutions(interface)
 
             # Refresh diagnostics snapshot (5 s while syncing, 30 s otherwise)
             if now >= next_diagnostics_write:
@@ -322,6 +336,7 @@ def main():
                 manual_triggered = False
                 force_check_triggered = False
                 peer_resync_triggered_node = None
+                resolve_zork_save_request = None
                 try:
                     if os.path.exists(trigger_path):
                         trigger_mtime = os.path.getmtime(trigger_path)
@@ -355,6 +370,17 @@ def main():
                 except Exception as exc:
                     logging.debug(f"Unable to process peer resync trigger: {exc}")
 
+                try:
+                    if os.path.exists(zork_save_resolve_trigger_path):
+                        trigger_mtime = os.path.getmtime(zork_save_resolve_trigger_path)
+                        if trigger_mtime > last_zork_save_resolve_trigger_mtime:
+                            last_zork_save_resolve_trigger_mtime = trigger_mtime
+                            with open(zork_save_resolve_trigger_path, 'r', encoding='utf-8') as _f:
+                                resolve_zork_save_request = _f.read().strip()
+                            os.remove(zork_save_resolve_trigger_path)
+                except Exception as exc:
+                    logging.debug(f"Unable to process zork save resolver trigger: {exc}")
+
                 sync_due = (last_schedule_epoch == 0) or (now >= (last_schedule_epoch + (sync_interval_minutes * 60)))
 
                 if force_check_triggered:
@@ -375,6 +401,18 @@ def main():
                     force_mismatch_check = True
                     system_config['sync_last_trigger_reason'] = 'peer_resync'
                     logging.info(f"Peer full-resync requested for {peer_resync_triggered_node}; cleared from synced/game sets")
+
+                if resolve_zork_save_request:
+                    try:
+                        payload = json.loads(resolve_zork_save_request)
+                        user_id = str(payload.get('user_id', '')).strip()
+                        game_id = str(payload.get('game_id', '')).strip()
+                        if user_id and game_id:
+                            request_id = start_zork_save_best_candidate_resolution(user_id, game_id, list(current_bbs_nodes), interface)
+                            system_config['sync_last_trigger_reason'] = 'candidate_resolver'
+                            logging.info(f"Started zork save best-candidate resolver request {request_id} for {user_id}:{game_id}")
+                    except Exception as exc:
+                        logging.warning(f"Unable to start zork save resolver request: {exc}")
 
                 if (manual_triggered or sync_due) and not pending_sync_nodes:
                     last_schedule_epoch = now

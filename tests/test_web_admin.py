@@ -38,6 +38,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.runtime_diag_path = self.root / "runtime_diagnostics.json"
         self.manual_trigger_path = self.root / "manual_sync.trigger"
         self.force_check_trigger_path = self.root / "force_check.trigger"
+        self.resolve_zork_save_trigger_path = self.root / "resolve_zork_save.trigger"
 
         config = configparser.ConfigParser()
         config["admin"] = {
@@ -65,6 +66,7 @@ class WebAdminSettingsTests(unittest.TestCase):
                 "BBS_RUNTIME_DIAG_PATH": str(self.runtime_diag_path),
                 "BBS_MANUAL_SYNC_TRIGGER_PATH": str(self.manual_trigger_path),
                 "BBS_FORCE_CHECK_TRIGGER_PATH": str(self.force_check_trigger_path),
+                "BBS_ZORK_SAVE_RESOLVE_TRIGGER_PATH": str(self.resolve_zork_save_trigger_path),
                 "BBS_WEBGUI_SECRET": "test-secret",
                 "BBS_VERSION_DISPLAY": "test-version",
             },
@@ -104,6 +106,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("Diagnostics", page)
         self.assertIn("test-version", page)
         self.assertIn("Peer Hash Graph", page)
+        self.assertIn("Resolve Save by Best Candidate", page)
 
     def test_admin_password_change_persists_across_app_restart(self):
         app = create_app()
@@ -211,6 +214,32 @@ class WebAdminSettingsTests(unittest.TestCase):
         api_response = client.post("/api/sync/force-check")
         self.assertEqual(api_response.status_code, 200)
         self.assertTrue(self.force_check_trigger_path.exists())
+
+    def test_resolve_zork_save_api_creates_trigger_file(self):
+        app = create_app()
+        client = app.test_client()
+
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        api_response = client.post("/api/sync/resolve-zork-save", json={"user_id": "1234", "game_id": "zork1"})
+        self.assertEqual(api_response.status_code, 200)
+        self.assertTrue(self.resolve_zork_save_trigger_path.exists())
+
+    def test_resolve_zork_save_settings_action_creates_trigger_file(self):
+        app = create_app()
+        client = app.test_client()
+
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        post_response = client.post(
+            "/settings",
+            data={"settings_section": "resolve_zork_save", "resolve_user_id": "1234", "resolve_game_id": "zork1"},
+            follow_redirects=False,
+        )
+        self.assertEqual(post_response.status_code, 302)
+        self.assertTrue(self.resolve_zork_save_trigger_path.exists())
 
     def test_force_check_settings_action_creates_trigger_file(self):
         app = create_app()
@@ -453,6 +482,42 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("Peer Hash Graph", page)
         self.assertIn("!oldpeer", page)
         self.assertIn("hash differs", page)
+
+    def test_settings_page_renders_zork_save_tombstones_and_resolver_status(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("CREATE TABLE IF NOT EXISTS bulletins (id INTEGER PRIMARY KEY AUTOINCREMENT, board TEXT, sender_short_name TEXT, date TEXT, subject TEXT, content TEXT, unique_id TEXT, local_only INTEGER NOT NULL DEFAULT 0)")
+        conn.execute("CREATE TABLE IF NOT EXISTS mail (id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, sender_short_name TEXT, recipient TEXT, date TEXT, subject TEXT, content TEXT, unique_id TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS channels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, url TEXT, local_only INTEGER NOT NULL DEFAULT 0)")
+        conn.execute("CREATE TABLE IF NOT EXISTS zork_saves (user_id TEXT NOT NULL, game_id TEXT NOT NULL DEFAULT 'zork1', save_data BLOB NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (user_id, game_id))")
+        conn.execute("CREATE TABLE IF NOT EXISTS game_scores (user_id TEXT NOT NULL, game_id TEXT NOT NULL, short_name TEXT NOT NULL DEFAULT '', score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 0, moves INTEGER NOT NULL DEFAULT 0, achieved_at TEXT NOT NULL, PRIMARY KEY (user_id, game_id))")
+        conn.execute("CREATE TABLE IF NOT EXISTS connection_events (id INTEGER PRIMARY KEY AUTOINCREMENT, event_time TEXT NOT NULL, sender_num TEXT, sender_node_id TEXT, sender_short_name TEXT, to_id TEXT, message_type TEXT NOT NULL, event_text TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS deleted_sync_tombstones (tombstone_key TEXT PRIMARY KEY, deleted_at TEXT NOT NULL)")
+        conn.execute("INSERT INTO deleted_sync_tombstones (tombstone_key, deleted_at) VALUES ('zork_saves:1234:zork1', '2026-03-30 12:05:00')")
+        conn.commit()
+        conn.close()
+
+        with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:
+            json.dump(
+                {
+                    "candidate_resolution": {
+                        "active": [{"key": "1234:zork1", "status": "collecting", "responses": 1, "expected": 2}],
+                        "recent": [{"key": "1234:zork1", "result": "Best candidate save requested from !peer2 @ 2026-03-30 12:05:00 (12 bytes)"}],
+                    }
+                },
+                snapshot_file,
+            )
+
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        settings_response = client.get("/settings")
+        self.assertEqual(settings_response.status_code, 200)
+        page = settings_response.get_data(as_text=True)
+        self.assertIn("zork_saves:1234:zork1", page)
+        self.assertIn("Best-Candidate Resolver", page)
+        self.assertIn("1234:zork1", page)
 
     def test_flowchart_page_includes_sync_pipeline_summary(self):
         app = create_app()

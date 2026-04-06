@@ -88,6 +88,22 @@ class HashRepairProtocolTests(unittest.TestCase):
 
         self.assertTrue(any(m.startswith("ZORKSAVE|") for m in iface.sent_texts))
 
+    def test_candidate_request_responds_with_local_zork_save_metadata(self):
+        db_operations.upsert_synced_zork_save("1234", "zork1", b"save-payload", "2026-03-30 12:00:00")
+        iface = _DummyInterface()
+        user_b64 = base64.b64encode(b"1234").decode("ascii")
+        game_b64 = base64.b64encode(b"zork1").decode("ascii")
+
+        message_processing.process_message(
+            sender_id=1,
+            message=f"CANDREQ|zork_saves|req123|{user_b64}|{game_b64}",
+            interface=iface,
+            is_sync_message=True,
+            sender_node_id="!peer1",
+        )
+
+        self.assertTrue(any(m.startswith(f"CANDRSP|zork_saves|req123|{user_b64}|{game_b64}|save|") for m in iface.sent_texts))
+
     def test_hashend_requests_missing_records(self):
         iface = _DummyInterface()
 
@@ -127,6 +143,46 @@ class HashRepairProtocolTests(unittest.TestCase):
         )
 
         self.assertIn("HASHMISS|zork_saves|1234:zork1", iface.sent_texts)
+
+    def test_best_candidate_resolution_requests_newest_peer_save(self):
+        iface = _DummyInterface()
+        request_id = message_processing.start_zork_save_best_candidate_resolution("1234", "zork1", ["!peer1", "!peer2"], iface)
+        user_b64 = base64.b64encode(b"1234").decode("ascii")
+        game_b64 = base64.b64encode(b"zork1").decode("ascii")
+
+        message_processing.process_message(
+            sender_id=1,
+            message=f"CANDRSP|zork_saves|{request_id}|{user_b64}|{game_b64}|save|2026-03-30 12:00:00|10|hash-old",
+            interface=iface,
+            is_sync_message=True,
+            sender_node_id="!peer1",
+        )
+        message_processing.process_message(
+            sender_id=1,
+            message=f"CANDRSP|zork_saves|{request_id}|{user_b64}|{game_b64}|save|2026-03-30 12:05:00|12|hash-new",
+            interface=iface,
+            is_sync_message=True,
+            sender_node_id="!peer2",
+        )
+
+        self.assertIn("HASHMISS|zork_saves|1234:zork1", iface.sent_texts)
+        self.assertEqual(iface.sent_texts[-1], "HASHMISS|zork_saves|1234:zork1")
+
+    def test_best_candidate_resolution_requests_tombstone_when_newest(self):
+        iface = _DummyInterface()
+        request_id = message_processing.start_zork_save_best_candidate_resolution("1234", "zork1", ["!peer1"], iface)
+        user_b64 = base64.b64encode(b"1234").decode("ascii")
+        game_b64 = base64.b64encode(b"zork1").decode("ascii")
+
+        message_processing.process_message(
+            sender_id=1,
+            message=f"CANDRSP|zork_saves|{request_id}|{user_b64}|{game_b64}|tombstone|2026-03-30 12:05:00|0|",
+            interface=iface,
+            is_sync_message=True,
+            sender_node_id="!peer1",
+        )
+
+        self.assertIn("HASHMISS|tombstones|zork_saves:1234:zork1", iface.sent_texts)
 
     def test_hashend_pushes_local_only_records_to_peer(self):
         db_operations.add_bulletin(
