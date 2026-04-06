@@ -23,9 +23,13 @@ from command_handlers import (
 )
 from db_operations import (
     add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel,
+    add_channel_comment_by_manifest_key, delete_channel_comment,
     append_bulletin_content, append_mail_content,
+    append_channel_comment_content,
     flush_pending_bulletin_continuations, flush_pending_mail_continuations,
+    flush_pending_channel_comment_continuations,
     apply_bulletin_expected_content_length, apply_mail_expected_content_length,
+    apply_channel_comment_expected_content_length,
     auto_upsert_user_profile, log_connection_event, upsert_peer_sync_state,
     log_sync_transmission,
     upsert_synced_user_profile, upsert_synced_game_score,
@@ -37,6 +41,8 @@ from db_operations import (
     get_bulletin_by_unique_id,
     get_mail_by_unique_id,
     get_channel_by_manifest_key,
+    get_channel_comment_by_unique_id,
+    make_channel_manifest_key,
     get_profile_by_user_id,
     get_game_score_by_user_and_game,
     get_zork_save_row_by_user_and_game,
@@ -48,8 +54,10 @@ from js8call_integration import handle_js8call_command, handle_js8call_steps, ha
 from utils import (
     get_user_state, get_node_short_name, get_node_id_from_num, send_message,
     send_bulletin_to_bbs_nodes, send_mail_to_bbs_nodes, send_channel_to_bbs_nodes,
+    send_channel_comment_to_bbs_nodes,
     send_profile_to_bbs_nodes, send_game_score_to_bbs_nodes, send_zork_save_to_bbs_nodes,
     send_delete_bulletin_to_bbs_nodes, send_delete_mail_to_bbs_nodes,
+    send_delete_channel_comment_to_bbs_nodes,
     send_delete_zork_save_to_bbs_nodes,
     send_hash_request_to_bbs_nodes,
     get_hash_repair_pause_seconds,
@@ -427,7 +435,7 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
         remote_hash = str(remote.get(key, ""))
         if not _should_send_hashmiss(sender_node_id, scope, key, local_hash, remote_hash):
             continue
-        if scope in ('bulletins', 'mail', 'zork_saves') and key not in local and has_sync_tombstone(scope, key):
+        if scope in ('bulletins', 'mail', 'zork_saves', 'channels') and key not in local and has_sync_tombstone(scope, key):
             logging.info(f"Requesting tombstone replay from {sender_node_id} for {scope}:{key}")
             _send_one_sync(f"HASHMISS|tombstones|{scope}:{key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
         else:
@@ -484,12 +492,24 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
         else:
             logging.warning(f"Requested mail missing locally for resend key={key}")
     elif scope == 'channels':
-        row = get_channel_by_manifest_key(key)
-        if row:
-            logging.info(f"Sending requested channel to {destination_node_id} key={key}")
-            send_channel_to_bbs_nodes(row[0], row[1], [destination_node_id], interface)
+        if str(key).startswith('comment:'):
+            unique_id = str(key).split(':', 1)[1]
+            row = get_channel_comment_by_unique_id(unique_id)
+            if row:
+                logging.info(f"Sending requested channel comment to {destination_node_id} key={key}")
+                send_channel_comment_to_bbs_nodes(
+                    make_channel_manifest_key(row[0], row[1]),
+                    row[2], row[3], row[4], row[5], [destination_node_id], interface,
+                )
+            else:
+                logging.warning(f"Requested channel comment missing locally for resend key={key}")
         else:
-            logging.warning(f"Requested channel missing locally for resend key={key}")
+            row = get_channel_by_manifest_key(key)
+            if row:
+                logging.info(f"Sending requested channel to {destination_node_id} key={key}")
+                send_channel_to_bbs_nodes(row[0], row[1], [destination_node_id], interface)
+            else:
+                logging.warning(f"Requested channel missing locally for resend key={key}")
     elif scope == 'profiles':
         row = get_profile_by_user_id(key)
         if row:
@@ -520,6 +540,10 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
             unique_id = key.split(':', 1)[1]
             logging.info(f"Replaying mail delete to {destination_node_id} key={key}")
             send_delete_mail_to_bbs_nodes(unique_id, [destination_node_id], interface)
+        elif key.startswith('channels:comment:'):
+            unique_id = key.split(':', 2)[2]
+            logging.info(f"Replaying channel comment delete to {destination_node_id} key={key}")
+            send_delete_channel_comment_to_bbs_nodes(unique_id, [destination_node_id], interface)
         elif key.startswith('zork_saves:'):
             remainder = key.split(':', 1)[1]
             if ':' not in remainder:
@@ -593,6 +617,12 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             unique_id = parts[1]
             logging.info(f"Processing delete mail with unique_id: {unique_id}")
             delete_mail(unique_id, None, [], interface)
+        elif message.startswith("DELETE_CHANNELCOMMENT|"):
+            parts = message.split("|", 1)
+            if len(parts) != 2 or not parts[1]:
+                logging.warning(f"Malformed DELETE_CHANNELCOMMENT sync message ignored: {message}")
+                return
+            delete_channel_comment(parts[1], [], interface)
         elif message.startswith("DELETE_ZORKSAVE|"):
             parts = message.split("|", 3)
             if len(parts) != 4 or not parts[1] or not parts[2] or not parts[3]:
@@ -612,6 +642,18 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 return
             channel_name, channel_url = parts[1], parts[2]
             add_channel(channel_name, channel_url)
+        elif message.startswith("CHANNELCOMMENT|"):
+            parts = message.split("|", 5)
+            if len(parts) != 6:
+                logging.warning(f"Malformed CHANNELCOMMENT sync message ignored: {message}")
+                return
+            try:
+                sender_short_name = base64.b64decode(parts[2].encode('ascii')).decode('utf-8')
+            except Exception:
+                logging.warning(f"Malformed CHANNELCOMMENT sender ignored: {message}")
+                return
+            add_channel_comment_by_manifest_key(parts[1], sender_short_name, parts[3], parts[4], parts[5])
+            flush_pending_channel_comment_continuations(parts[5])
         elif message.startswith("BULLETINCONT|"):
             parts = message.split("|", 3)
             if len(parts) < 3 or not parts[1]:
@@ -664,6 +706,31 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed MAILMETA length ignored: {message}")
                 return
             apply_mail_expected_content_length(parts[1], expected_length)
+        elif message.startswith("CHANNELCOMMENTCONT|"):
+            parts = message.split("|", 3)
+            if len(parts) < 3 or not parts[1]:
+                logging.warning(f"Malformed CHANNELCOMMENTCONT sync message ignored: {message}")
+                return
+            if len(parts) == 4:
+                try:
+                    offset = int(parts[2])
+                except ValueError:
+                    logging.warning(f"Malformed CHANNELCOMMENTCONT offset ignored: {message}")
+                    return
+                append_channel_comment_content(parts[1], offset, parts[3])
+            else:
+                append_channel_comment_content(parts[1], None, parts[2])
+        elif message.startswith("CHANNELCOMMENTMETA|"):
+            parts = message.split("|", 2)
+            if len(parts) != 3 or not parts[1]:
+                logging.warning(f"Malformed CHANNELCOMMENTMETA sync message ignored: {message}")
+                return
+            try:
+                expected_length = int(parts[2])
+            except ValueError:
+                logging.warning(f"Malformed CHANNELCOMMENTMETA length ignored: {message}")
+                return
+            apply_channel_comment_expected_content_length(parts[1], expected_length)
         elif message.startswith("SYNCSTATE|"):
             parts = message.split("|")
             if len(parts) not in (5, 7, 13):

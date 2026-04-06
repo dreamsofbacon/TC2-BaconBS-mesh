@@ -37,6 +37,79 @@ TABLE_CONFIG = {
 }
 
 
+TABLE_LIST_CONTENT = """
+<div class=\"card\">
+  <h2>{{ table_title }}</h2>
+  <form class=\"search-bar\" method=\"get\">
+    <input type=\"text\" name=\"q\" value=\"{{ search_query }}\" placeholder=\"Search {{ table_title }}\">
+    <button class=\"btn\" type=\"submit\">Search</button>
+    {% if search_query %}
+    <a class=\"btn\" href=\"{{ url_for('table_list', table=table_name) }}\">Clear</a>
+    {% endif %}
+    {% if create_url %}
+    <a class=\"btn btn-primary\" href=\"{{ create_url }}\">{{ create_label }}</a>
+    {% endif %}
+  </form>
+  <table data-draggable=\"true\" data-table-name=\"{{ table_name }}\">
+    <thead>
+      <tr>
+        <th></th>
+        {% for column in display_columns %}
+        <th>{{ column }}</th>
+        {% endfor %}
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr data-row-id=\"{{ row['id'] }}\">
+        <td class=\"reorder-handle\">⋮⋮</td>
+        {% for column in display_columns %}
+        <td>
+          {% if column == 'sync_status' %}
+            {% if row.get('_sync_incomplete') %}
+            <strong style=\"color:#b91c1c;\">Incomplete</strong><br>
+            <span class=\"muted\">{{ row.get('_sync_status_text', '') }}</span>
+            {% else %}
+            <span class=\"muted\">{{ row.get('_sync_status_text', 'OK') }}</span>
+            {% endif %}
+          {% else %}
+            {{ row.get(column, '') }}
+          {% endif %}
+        </td>
+        {% endfor %}
+        <td>
+          <div class=\"row-actions\">
+            <a class=\"btn btn-small\" href=\"{{ url_for('table_edit', table=table_name, row_id=row['id']) }}\">{{ edit_label }}</a>
+            {% if comments_enabled %}
+            <a class=\"btn btn-small\" href=\"{{ url_for('channel_comments', channel_id=row['id']) }}\">Comments</a>
+            {% endif %}
+            {% if row.get('_resolve_scope') and row.get('_resolve_key') %}
+            <form method=\"post\" action=\"{{ url_for('resolve_record') }}\" class=\"inline\">
+              <input type=\"hidden\" name=\"scope\" value=\"{{ row['_resolve_scope'] }}\">
+              <input type=\"hidden\" name=\"key\" value=\"{{ row['_resolve_key'] }}\">
+              <input type=\"hidden\" name=\"redirect_to\" value=\"{{ request.full_path if request.query_string else request.path }}\">
+              <button type=\"submit\" class=\"btn btn-small\">Resolve</button>
+            </form>
+            {% endif %}
+            <form method=\"post\" action=\"{{ url_for('table_delete', table=table_name, row_id=row['id']) }}\" class=\"inline\" onsubmit=\"return confirm('Delete this row?');\">
+              <button type=\"submit\" class=\"btn btn-danger btn-small\">Delete</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not rows %}
+      <tr>
+        <td colspan=\"{{ display_columns|length + 2 }}\" class=\"muted\">No rows found.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+"""
+
+
 
 def read_config_file(config_path: str) -> configparser.ConfigParser:
   config = configparser.ConfigParser()
@@ -197,6 +270,22 @@ def request_zork_save_resolve_trigger(user_id: str, game_id: str) -> None:
   os.replace(tmp_path, trigger_path)
 
 
+def get_record_resolve_trigger_path() -> str:
+  return os.getenv("BBS_RECORD_RESOLVE_TRIGGER_PATH", "resolve_record.trigger")
+
+
+def request_record_resolve_trigger(scope: str, key: str) -> None:
+  normalized_scope = str(scope or "").strip().lower()
+  normalized_key = str(key or "").strip()
+  if not normalized_scope or not normalized_key:
+    raise ValueError("scope and key required")
+  trigger_path = get_record_resolve_trigger_path()
+  tmp_path = f"{trigger_path}.tmp"
+  with open(tmp_path, "w", encoding="utf-8") as trigger_file:
+    json.dump({"scope": normalized_scope, "key": normalized_key}, trigger_file)
+  os.replace(tmp_path, trigger_path)
+
+
 def load_runtime_snapshot(snapshot_path: str) -> dict:
   if not os.path.exists(snapshot_path):
     return {}
@@ -260,7 +349,7 @@ _UNIMPORTANT_SYNC_FRAMES = {"BULLETINCONT", "MAILCONT", "HASHREC", "HASHZ"}
 
 def classify_sync_transmission_importance(frame_type: str, is_continuation: bool) -> bool:
   normalized = str(frame_type or "").strip().upper()
-  if normalized in {"SYNCSTATE", "HASHREQ", "HASHMISS", "HASHEND", "DELETE_BULLETIN", "DELETE_MAIL", "DELETE_ZORKSAVE", "BULLETIN", "MAIL", "CHANNEL", "PROFILESYNC", "SCORESYNC", "ZORKSAVE", "CANDREQ", "CANDRSP"}:
+  if normalized in {"SYNCSTATE", "HASHREQ", "HASHMISS", "HASHEND", "DELETE_BULLETIN", "DELETE_MAIL", "DELETE_CHANNELCOMMENT", "DELETE_ZORKSAVE", "BULLETIN", "MAIL", "CHANNEL", "CHANNELCOMMENT", "PROFILESYNC", "SCORESYNC", "ZORKSAVE", "CANDREQ", "CANDRSP"}:
     return True
   if bool(is_continuation):
     return False
@@ -398,7 +487,7 @@ BASE_TEMPLATE = """
     .search-bar { display: flex; gap: 8px; margin-bottom: 12px; }
     .inline { display: inline; }
     code { background: var(--code-bg); padding: 2px 6px; border-radius: 4px; }
-    .flowchart-controls { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
+    .flowchart-controls { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; flex-wrap: wrap; }
     .flowchart-controls .zoom-label { color: var(--muted); font-size: 12px; }
     .flowchart-viewport {
       overflow: hidden;
@@ -407,11 +496,17 @@ BASE_TEMPLATE = """
       background: var(--bg);
       cursor: grab;
       touch-action: none;
+      min-height: 540px;
+      height: min(78vh, 980px);
+      background-image:
+        linear-gradient(rgba(148, 163, 184, 0.12) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(148, 163, 184, 0.12) 1px, transparent 1px);
+      background-size: 28px 28px;
     }
     .flowchart-viewport.dragging { cursor: grabbing; }
     .flowchart-svg {
       width: 100%;
-      min-height: 2400px;
+      height: 100%;
       display: block;
     }
     .terminal-window {
@@ -701,8 +796,9 @@ BASE_TEMPLATE = """
 
     function initializeFlowchartNavigation() {
       const viewport = document.getElementById('flowchart-viewport');
+      const svg = document.getElementById('flowchart-svg');
       const contentGroup = document.getElementById('flowchart-content-group');
-      if (!viewport || !contentGroup) {
+      if (!viewport || !svg || !contentGroup) {
         return;
       }
 
@@ -714,75 +810,144 @@ BASE_TEMPLATE = """
       let scale = 1;
       let panX = 0;
       let panY = 0;
-      let isDragging = false;
+      let activePointerId = null;
       let lastX = 0;
       let lastY = 0;
 
       function updateTransform() {
-        contentGroup.setAttribute('transform', `translate(${panX} ${panY}) scale(${scale})`);
+        contentGroup.setAttribute('transform', `matrix(${scale} 0 0 ${scale} ${panX} ${panY})`);
         if (zoomLabel) {
           zoomLabel.textContent = `${Math.round(scale * 100)}%`;
         }
       }
 
       function clampScale(value) {
-        return Math.min(3.5, Math.max(0.4, value));
+        return Math.min(4.5, Math.max(0.65, value));
+      }
+
+      function getViewBox() {
+        return svg.viewBox.baseVal;
+      }
+
+      function getViewportCenter() {
+        const rect = svg.getBoundingClientRect();
+        return {
+          x: rect.left + (rect.width / 2),
+          y: rect.top + (rect.height / 2),
+        };
+      }
+
+      function screenToSvg(clientX, clientY) {
+        const rect = svg.getBoundingClientRect();
+        const viewBox = getViewBox();
+        return {
+          x: viewBox.x + ((clientX - rect.left) / rect.width) * viewBox.width,
+          y: viewBox.y + ((clientY - rect.top) / rect.height) * viewBox.height,
+        };
+      }
+
+      function zoomAt(nextScale, anchorClientX, anchorClientY) {
+        const clampedScale = clampScale(nextScale);
+        if (clampedScale === scale) {
+          return;
+        }
+        const anchor = screenToSvg(anchorClientX, anchorClientY);
+        panX += (scale - clampedScale) * anchor.x;
+        panY += (scale - clampedScale) * anchor.y;
+        scale = clampedScale;
+        updateTransform();
+      }
+
+      function fitToViewport() {
+        const bbox = contentGroup.getBBox();
+        const padding = 80;
+        svg.setAttribute(
+          'viewBox',
+          `${bbox.x - padding} ${bbox.y - padding} ${bbox.width + (padding * 2)} ${bbox.height + (padding * 2)}`,
+        );
+        scale = 1;
+        panX = 0;
+        panY = 0;
+        updateTransform();
       }
 
       viewport.addEventListener('wheel', (event) => {
         event.preventDefault();
-        const factor = event.deltaY < 0 ? 1.1 : 0.9;
-        scale = clampScale(scale * factor);
-        updateTransform();
+        const factor = event.deltaY < 0 ? 1.12 : 0.88;
+        zoomAt(scale * factor, event.clientX, event.clientY);
       }, { passive: false });
 
-      viewport.addEventListener('mousedown', (event) => {
-        isDragging = true;
+      viewport.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) {
+          return;
+        }
+        activePointerId = event.pointerId;
         lastX = event.clientX;
         lastY = event.clientY;
         viewport.classList.add('dragging');
+        viewport.setPointerCapture(event.pointerId);
       });
 
-      window.addEventListener('mousemove', (event) => {
-        if (!isDragging) {
+      viewport.addEventListener('pointermove', (event) => {
+        if (activePointerId !== event.pointerId) {
           return;
         }
-        panX += event.clientX - lastX;
-        panY += event.clientY - lastY;
+        const rect = svg.getBoundingClientRect();
+        const viewBox = getViewBox();
+        const deltaX = (event.clientX - lastX) * (viewBox.width / rect.width);
+        const deltaY = (event.clientY - lastY) * (viewBox.height / rect.height);
+        panX += deltaX;
+        panY += deltaY;
         lastX = event.clientX;
         lastY = event.clientY;
         updateTransform();
       });
 
-      window.addEventListener('mouseup', () => {
-        isDragging = false;
+      function endDrag(event) {
+        if (activePointerId === null) {
+          return;
+        }
+        if (event && event.pointerId !== undefined && event.pointerId !== activePointerId) {
+          return;
+        }
+        try {
+          viewport.releasePointerCapture(activePointerId);
+        } catch (err) {
+          // Ignore capture cleanup errors.
+        }
+        activePointerId = null;
         viewport.classList.remove('dragging');
+      }
+
+      viewport.addEventListener('pointerup', endDrag);
+      viewport.addEventListener('pointercancel', endDrag);
+      viewport.addEventListener('pointerleave', (event) => {
+        if ((event.buttons & 1) === 0) {
+          endDrag(event);
+        }
       });
 
       if (zoomIn) {
         zoomIn.addEventListener('click', () => {
-          scale = clampScale(scale * 1.15);
-          updateTransform();
+          const center = getViewportCenter();
+          zoomAt(scale * 1.15, center.x, center.y);
         });
       }
 
       if (zoomOut) {
         zoomOut.addEventListener('click', () => {
-          scale = clampScale(scale * 0.87);
-          updateTransform();
+          const center = getViewportCenter();
+          zoomAt(scale * 0.87, center.x, center.y);
         });
       }
 
       if (reset) {
         reset.addEventListener('click', () => {
-          scale = 1;
-          panX = 0;
-          panY = 0;
-          updateTransform();
+          fitToViewport();
         });
       }
 
-      updateTransform();
+      fitToViewport();
     }
 
     function formatCountdown(seconds) {
@@ -907,89 +1072,23 @@ LOGIN_CONTENT = """
 """
 
 
-LIST_CONTENT = """
-<div class=\"card\">
-  <h2>{{ table_title }}</h2>
-  <p class=\"muted\">Drag and drop rows to reorder them. New posts appear at the top after refresh.</p>
-  {% if create_url %}
-  <div style=\"margin-bottom: 12px;\">
-    <a class=\"btn btn-primary\" href=\"{{ create_url }}\">{{ create_label }}</a>
-  </div>
-  {% endif %}
-  <form method=\"get\" class=\"search-bar\">
-    <input type=\"text\" name=\"q\" placeholder=\"Search {{ table_name }}\" value=\"{{ search_query }}\">
-    <button class=\"btn\" type=\"submit\">Search</button>
-    <a class=\"btn\" href=\"{{ url_for('table_list', table=table_name) }}\">Clear</a>
-  </form>
-  <p class=\"muted\">Rows: {{ rows|length }} | DB: <code>{{ db_path }}</code></p>
-  <table draggable=\"true\" data-draggable=\"true\" data-table-name=\"{{ table_name }}\">
-    <thead>
-      <tr>
-        <th></th>
-        {% for col in columns %}
-          <th>{{ col }}</th>
-        {% endfor %}
-        <th>Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in rows %}
-        <tr draggable=\"true\" data-row-id=\"{{ row['id'] }}\">
-          <td class=\"reorder-handle\">⋮⋮</td>
-          {% for col in columns %}
-            <td>{{ row[col] }}</td>
-          {% endfor %}
-          <td>
-            <div class=\"row-actions\">
-              <a class=\"btn\" href=\"{{ url_for('table_edit', table=table_name, row_id=row['id']) }}\">{{ edit_label }}</a>
-              {% if comments_enabled %}
-              <a class="btn" href="{{ url_for('channel_comments', channel_id=row['id']) }}">Comments</a>
-              {% endif %}
-              <form method=\"post\" action=\"{{ url_for('table_delete', table=table_name, row_id=row['id']) }}\" class=\"inline\" onsubmit=\"return confirm('Delete this row?');\">
-                <button type=\"submit\" class=\"btn btn-danger\">Delete</button>
-              </form>
-            </div>
-          </td>
-        </tr>
-      {% endfor %}
-      {% if not rows %}
-        <tr>
-          <td colspan=\"{{ columns|length + 2 }}\" class=\"muted\">No rows found.</td>
-        </tr>
-      {% endif %}
-    </tbody>
-  </table>
-</div>
-"""
-
-
 NEW_BULLETIN_CONTENT = """
-<div class=\"card\">
+<div class=\"card\" style=\"max-width: 760px;\">
   <h2>New Bulletin Post</h2>
-  <p class=\"muted\">Creates a new row in <code>bulletins</code> with generated date and unique_id.</p>
   <form method=\"post\">
     <label>Board</label><br>
-    <select name="board" required>
+    <select name=\"board\" required>
       {% for board in bulletin_boards %}
-      <option value="{{ board }}" {% if selected_board == board %}selected{% endif %}>{{ board }}</option>
+      <option value=\"{{ board }}\" {% if board == selected_board %}selected{% endif %}>{{ board }}</option>
       {% endfor %}
     </select><br><br>
-
     <label>Sender Short Name</label><br>
-    <input type=\"text\" name=\"sender_short_name\" placeholder=\"BBS\" required><br><br>
-
+    <input type=\"text\" name=\"sender_short_name\" required><br><br>
     <label>Subject</label><br>
     <input type=\"text\" name=\"subject\" required><br><br>
-
     <label>Content</label><br>
     <textarea name=\"content\" required></textarea><br><br>
-
-    <label>local_only</label><br>
-    <select name=\"local_only\" required>
-      <option value=\"0\" {% if row['local_only']|int == 0 %}selected{% endif %}>0 (sync)</option>
-      <option value=\"1\" {% if row['local_only']|int == 1 %}selected{% endif %}>1 (local only)</option>
-    </select><br><br>
-
+    <label><input type=\"checkbox\" name=\"local_only\" value=\"1\"> Local only</label><br><br>
     <button class=\"btn btn-primary\" type=\"submit\">Create Post</button>
     <a class=\"btn\" href=\"{{ url_for('table_list', table='bulletins') }}\">Back</a>
   </form>
@@ -998,22 +1097,14 @@ NEW_BULLETIN_CONTENT = """
 
 
 NEW_CHANNEL_CONTENT = """
-<div class=\"card\">
+<div class=\"card\" style=\"max-width: 760px;\">
   <h2>New Channel Entry</h2>
-  <p class=\"muted\">Creates a new row in <code>channels</code>.</p>
   <form method=\"post\">
-    <label>Channel Name</label><br>
+    <label>Name</label><br>
     <input type=\"text\" name=\"name\" required><br><br>
-
-    <label>Channel URL / PSK</label><br>
-    <textarea name=\"url\" required></textarea><br><br>
-
-    <label>Local only</label><br>
-    <select name=\"local_only\">
-      <option value=\"0\" selected>No (sync to peers)</option>
-      <option value=\"1\">Yes (keep local)</option>
-    </select><br><br>
-
+    <label>URL / PSK</label><br>
+    <input type=\"text\" name=\"url\" required><br><br>
+    <label><input type=\"checkbox\" name=\"local_only\" value=\"1\"> Local only</label><br><br>
     <button class=\"btn btn-primary\" type=\"submit\">Create Channel</button>
     <a class=\"btn\" href=\"{{ url_for('table_list', table='channels') }}\">Back</a>
   </form>
@@ -1022,24 +1113,18 @@ NEW_CHANNEL_CONTENT = """
 
 
 EDIT_CONTENT = """
-<div class=\"card\">
-  <h2>Edit {{ table_title }} #{{ row['id'] }}</h2>
-  <p class=\"muted\">Primary key and sync IDs are read-only for safety.</p>
+<div class=\"card\" style=\"max-width: 760px;\">
+  <h2>Edit {{ table_title }}</h2>
   <form method=\"post\">
     {% for field in editable_fields %}
-      <label>{{ field }}</label><br>
-      {% if field == 'content' %}
-        <textarea name=\"{{ field }}\" required>{{ row[field] }}</textarea><br><br>
-      {% elif field == 'local_only' %}
-        <select name=\"{{ field }}\" required>
-          <option value=\"0\" {% if row[field]|int == 0 %}selected{% endif %}>0 (sync)</option>
-          <option value=\"1\" {% if row[field]|int == 1 %}selected{% endif %}>1 (local only)</option>
-        </select><br><br>
-      {% else %}
-        <input type=\"text\" name=\"{{ field }}\" value=\"{{ row[field] }}\" required><br><br>
-      {% endif %}
+    <label>{{ field }}</label><br>
+    {% if field == 'content' %}
+    <textarea name=\"{{ field }}\" required>{{ row[field] }}</textarea><br><br>
+    {% else %}
+    <input type=\"text\" name=\"{{ field }}\" value=\"{{ row[field] }}\" required><br><br>
+    {% endif %}
     {% endfor %}
-    <button class=\"btn btn-primary\" type=\"submit\">Save</button>
+    <button class=\"btn btn-primary\" type=\"submit\">Save Changes</button>
     <a class=\"btn\" href=\"{{ url_for('table_list', table=table_name) }}\">Back</a>
   </form>
 </div>
@@ -1047,9 +1132,8 @@ EDIT_CONTENT = """
 
 
 EDIT_BULLETIN_CONTENT = """
-<div class=\"card\">
-  <h2>Edit {{ table_title }} #{{ row['id'] }}</h2>
-  <p class=\"muted\">Primary key and sync IDs are read-only for safety.</p>
+<div class=\"card\" style=\"max-width: 760px;\">
+  <h2>Edit {{ table_title }}</h2>
   <form method=\"post\">
     <label>board</label><br>
     <select name=\"board\" required>
@@ -1057,45 +1141,231 @@ EDIT_BULLETIN_CONTENT = """
       <option value=\"{{ board }}\" {% if row['board'] == board %}selected{% endif %}>{{ board }}</option>
       {% endfor %}
     </select><br><br>
-
     <label>sender_short_name</label><br>
     <input type=\"text\" name=\"sender_short_name\" value=\"{{ row['sender_short_name'] }}\" required><br><br>
-
     <label>date</label><br>
     <input type=\"text\" name=\"date\" value=\"{{ row['date'] }}\" required><br><br>
-
     <label>subject</label><br>
     <input type=\"text\" name=\"subject\" value=\"{{ row['subject'] }}\" required><br><br>
-
     <label>content</label><br>
     <textarea name=\"content\" required>{{ row['content'] }}</textarea><br><br>
-
-    <label>Local only</label><br>
-    <select name="local_only">
-      <option value="0" selected>No (sync to peers)</option>
-      <option value="1">Yes (keep local)</option>
-    </select><br><br>
-
-    <button class=\"btn btn-primary\" type=\"submit\">Save</button>
+    <label>local_only</label><br>
+    <input type=\"text\" name=\"local_only\" value=\"{{ row['local_only'] }}\" required><br><br>
+    <button class=\"btn btn-primary\" type=\"submit\">Save Changes</button>
     <a class=\"btn\" href=\"{{ url_for('table_list', table=table_name) }}\">Back</a>
   </form>
 </div>
 """
 
 
-BOARD_SETTINGS_CONTENT = """
+UPDATED_FLOWCHART_CONTENT = """
 <div class=\"card\">
-  <h2>Board Settings</h2>
-  <p class=\"muted\">Manage bulletin board categories used by create/edit dropdowns.</p>
-  {% if env_override %}
-  <p class=\"muted\">`BBS_BULLETIN_BOARDS` is set in environment and overrides config file at startup.</p>
-  {% endif %}
-  <form method=\"post\">
-    <label>Boards (comma separated)</label><br>
-    <textarea name=\"bulletin_boards\" required>{{ boards_text }}</textarea><br><br>
-    <button class=\"btn btn-primary\" type=\"submit\">Save Boards</button>
-    <a class=\"btn\" href=\"{{ url_for('table_list', table='bulletins') }}\">Back</a>
-  </form>
+  <h2>System Flowchart</h2>
+  <p class=\"muted\">Updated to match the current mesh runtime: five sync phases, selective hash repair, tombstone replay, and the manual zork save best-candidate resolver.</p>
+</div>
+
+<div class=\"card\">
+  <h3>Five-Phase Mesh Sync</h3>
+  <p class=\"muted\">The scheduler now pushes user-visible content first, then profile metadata, and only then game data. Repair stays record-scoped instead of forcing a full replay.</p>
+  <div class=\"pipeline-flow\">
+    <div class=\"pipeline-node\"><strong>Triggers</strong><br><span class=\"muted\">scheduled sync, manual sync, peer resync, force mismatch check, resolve save key</span></div>
+    <div class=\"pipeline-arrow\">→</div>
+    <div class=\"pipeline-node\"><strong>Phase 1</strong><br><span class=\"muted\">mail</span></div>
+    <div class=\"pipeline-arrow\">→</div>
+    <div class=\"pipeline-node\"><strong>Phase 2</strong><br><span class=\"muted\">bulletins</span></div>
+    <div class=\"pipeline-arrow\">→</div>
+    <div class=\"pipeline-node\"><strong>Phase 3</strong><br><span class=\"muted\">channels</span></div>
+    <div class=\"pipeline-arrow\">→</div>
+    <div class=\"pipeline-node\"><strong>Phase 4</strong><br><span class=\"muted\">profiles</span></div>
+    <div class=\"pipeline-arrow\">→</div>
+    <div class=\"pipeline-node\"><strong>Phase 5</strong><br><span class=\"muted\">game scores + zork saves</span></div>
+  </div>
+  <div class=\"pipeline-flow\">
+    <div class=\"pipeline-node\"><strong>Selective hash repair</strong><br><span class=\"muted\">SYNCSTATE → HASHREQ → HASHREC/HASHEND → HASHMISS replay</span></div>
+    <div class=\"pipeline-node\"><strong>Chunk healing</strong><br><span class=\"muted\">MAILMETA/BULLMETA + CONT frames with incomplete markers until repaired</span></div>
+    <div class=\"pipeline-node\"><strong>Tombstones</strong><br><span class=\"muted\">DELETE_BULLETIN, DELETE_MAIL, DELETE_ZORKSAVE and deleted_sync_tombstones</span></div>
+    <div class=\"pipeline-node\"><strong>Zork conflict assist</strong><br><span class=\"muted\">CANDREQ / CANDRSP chooses the best peer candidate before replay</span></div>
+  </div>
+</div>
+
+<div class=\"card\" style=\"background: transparent;\">
+  <div class=\"flowchart-controls\">
+    <button id=\"flowchart-zoom-in\" class=\"btn btn-small\" type=\"button\">Zoom In</button>
+    <button id=\"flowchart-zoom-out\" class=\"btn btn-small\" type=\"button\">Zoom Out</button>
+    <button id=\"flowchart-reset\" class=\"btn btn-small\" type=\"button\">Reset View</button>
+    <span id=\"flowchart-zoom-label\" class=\"zoom-label\">100%</span>
+    <span class=\"zoom-label\">Wheel to zoom and drag to pan.</span>
+  </div>
+  <div id=\"flowchart-viewport\" class=\"flowchart-viewport\">
+    <svg id=\"flowchart-svg\" class=\"flowchart-svg\" viewBox=\"0 0 1600 1500\" preserveAspectRatio=\"xMidYMid meet\">
+      <g id=\"flowchart-content-group\">
+        <text x=\"800\" y=\"42\" font-size=\"28\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#1f2937\">Current Mesh Sync, Repair, and Save Resolution Flow</text>
+        <text x=\"800\" y=\"68\" font-size=\"13\" text-anchor=\"middle\" fill=\"#475569\">This view reflects the current runtime instead of the earlier command-tree sketch.</text>
+
+        <rect x=\"70\" y=\"110\" width=\"1460\" height=\"150\" rx=\"16\" fill=\"#e0f2fe\" stroke=\"#0284c7\" stroke-width=\"2\"/>
+        <text x=\"120\" y=\"145\" font-size=\"18\" font-weight=\"bold\" fill=\"#0f172a\">1. Triggers</text>
+        <rect x=\"120\" y=\"170\" width=\"240\" height=\"58\" rx=\"12\" fill=\"#ffffff\" stroke=\"#38bdf8\" stroke-width=\"1.5\"/>
+        <text x=\"240\" y=\"194\" font-size=\"13\" text-anchor=\"middle\" font-weight=\"bold\">Scheduled Loop</text>
+        <text x=\"240\" y=\"213\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">normal peer sync cadence</text>
+        <rect x=\"400\" y=\"170\" width=\"240\" height=\"58\" rx=\"12\" fill=\"#ffffff\" stroke=\"#38bdf8\" stroke-width=\"1.5\"/>
+        <text x=\"520\" y=\"194\" font-size=\"13\" text-anchor=\"middle\" font-weight=\"bold\">Manual Actions</text>
+        <text x=\"520\" y=\"213\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">sync now, peer full resync</text>
+        <rect x=\"680\" y=\"170\" width=\"240\" height=\"58\" rx=\"12\" fill=\"#ffffff\" stroke=\"#38bdf8\" stroke-width=\"1.5\"/>
+        <text x=\"800\" y=\"194\" font-size=\"13\" text-anchor=\"middle\" font-weight=\"bold\">Force Mismatch Check</text>
+        <text x=\"800\" y=\"213\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">deliberately re-compare hashes</text>
+        <rect x=\"960\" y=\"170\" width=\"240\" height=\"58\" rx=\"12\" fill=\"#ffffff\" stroke=\"#38bdf8\" stroke-width=\"1.5\"/>
+        <text x=\"1080\" y=\"194\" font-size=\"13\" text-anchor=\"middle\" font-weight=\"bold\">Resolve Zork Save</text>
+        <text x=\"1080\" y=\"213\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">manual key-specific resolver</text>
+        <rect x=\"1240\" y=\"170\" width=\"240\" height=\"58\" rx=\"12\" fill=\"#ffffff\" stroke=\"#38bdf8\" stroke-width=\"1.5\"/>
+        <text x=\"1360\" y=\"194\" font-size=\"13\" text-anchor=\"middle\" font-weight=\"bold\">Inbound Peer Traffic</text>
+        <text x=\"1360\" y=\"213\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">received sync, repair, tombstones</text>
+
+        <line x1=\"800\" y1=\"260\" x2=\"800\" y2=\"315\" stroke=\"#0f172a\" stroke-width=\"2.5\"/>
+        <polygon points=\"790,305 810,305 800,320\" fill=\"#0f172a\"/>
+
+        <rect x=\"120\" y=\"320\" width=\"1360\" height=\"184\" rx=\"16\" fill=\"#ecfccb\" stroke=\"#65a30d\" stroke-width=\"2\"/>
+        <text x=\"170\" y=\"355\" font-size=\"18\" font-weight=\"bold\" fill=\"#365314\">2. Five-phase outbound sync order</text>
+        <text x=\"170\" y=\"378\" font-size=\"12\" fill=\"#4d7c0f\">Each peer pass sends scope hashes in a stable order so user-visible content settles before game data.</text>
+
+        <rect x=\"150\" y=\"410\" width=\"175\" height=\"58\" rx=\"12\" fill=\"#ffffff\" stroke=\"#84cc16\" stroke-width=\"1.5\"/>
+        <text x=\"237\" y=\"434\" font-size=\"13\" text-anchor=\"middle\" font-weight=\"bold\">Phase 1</text>
+        <text x=\"237\" y=\"453\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">mail</text>
+        <rect x=\"365\" y=\"410\" width=\"175\" height=\"58\" rx=\"12\" fill=\"#ffffff\" stroke=\"#84cc16\" stroke-width=\"1.5\"/>
+        <text x=\"452\" y=\"434\" font-size=\"13\" text-anchor=\"middle\" font-weight=\"bold\">Phase 2</text>
+        <text x=\"452\" y=\"453\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">bulletins</text>
+        <rect x=\"580\" y=\"410\" width=\"175\" height=\"58\" rx=\"12\" fill=\"#ffffff\" stroke=\"#84cc16\" stroke-width=\"1.5\"/>
+        <text x=\"667\" y=\"434\" font-size=\"13\" text-anchor=\"middle\" font-weight=\"bold\">Phase 3</text>
+        <text x=\"667\" y=\"453\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">channels</text>
+        <rect x=\"795\" y=\"410\" width=\"175\" height=\"58\" rx=\"12\" fill=\"#ffffff\" stroke=\"#84cc16\" stroke-width=\"1.5\"/>
+        <text x=\"882\" y=\"434\" font-size=\"13\" text-anchor=\"middle\" font-weight=\"bold\">Phase 4</text>
+        <text x=\"882\" y=\"453\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">profiles</text>
+        <rect x=\"1010\" y=\"410\" width=\"300\" height=\"58\" rx=\"12\" fill=\"#ffffff\" stroke=\"#84cc16\" stroke-width=\"1.5\"/>
+        <text x=\"1160\" y=\"434\" font-size=\"13\" text-anchor=\"middle\" font-weight=\"bold\">Phase 5</text>
+        <text x=\"1160\" y=\"453\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">game scores + zork saves</text>
+        <line x1=\"325\" y1=\"439\" x2=\"365\" y2=\"439\" stroke=\"#65a30d\" stroke-width=\"2\"/>
+        <line x1=\"540\" y1=\"439\" x2=\"580\" y2=\"439\" stroke=\"#65a30d\" stroke-width=\"2\"/>
+        <line x1=\"755\" y1=\"439\" x2=\"795\" y2=\"439\" stroke=\"#65a30d\" stroke-width=\"2\"/>
+        <line x1=\"970\" y1=\"439\" x2=\"1010\" y2=\"439\" stroke=\"#65a30d\" stroke-width=\"2\"/>
+
+        <line x1=\"800\" y1=\"504\" x2=\"800\" y2=\"560\" stroke=\"#0f172a\" stroke-width=\"2.5\"/>
+        <polygon points=\"790,550 810,550 800,565\" fill=\"#0f172a\"/>
+
+        <rect x=\"80\" y=\"565\" width=\"1440\" height=\"300\" rx=\"16\" fill=\"#ede9fe\" stroke=\"#7c3aed\" stroke-width=\"2\"/>
+        <text x=\"130\" y=\"600\" font-size=\"18\" font-weight=\"bold\" fill=\"#4c1d95\">3. Selective hash repair</text>
+        <text x=\"130\" y=\"623\" font-size=\"12\" fill=\"#6d28d9\">Repairs now stay scoped: the peer declares hashes, the receiver asks only for mismatched records, and replay uses the native frame type.</text>
+
+        <rect x=\"130\" y=\"660\" width=\"250\" height=\"72\" rx=\"12\" fill=\"#ffffff\" stroke=\"#8b5cf6\" stroke-width=\"1.5\"/>
+        <text x=\"255\" y=\"690\" font-size=\"14\" text-anchor=\"middle\" font-weight=\"bold\">SYNCSTATE</text>
+        <text x=\"255\" y=\"711\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">peer advertises counts + hashes</text>
+
+        <polygon points=\"520,695 610,640 700,695 610,750\" fill=\"#ffffff\" stroke=\"#8b5cf6\" stroke-width=\"1.5\"/>
+        <text x=\"610\" y=\"690\" font-size=\"13\" text-anchor=\"middle\" font-weight=\"bold\">Hashes</text>
+        <text x=\"610\" y=\"708\" font-size=\"13\" text-anchor=\"middle\" font-weight=\"bold\">match?</text>
+
+        <rect x=\"820\" y=\"640\" width=\"260\" height=\"72\" rx=\"12\" fill=\"#ffffff\" stroke=\"#8b5cf6\" stroke-width=\"1.5\"/>
+        <text x=\"950\" y=\"670\" font-size=\"14\" text-anchor=\"middle\" font-weight=\"bold\">HASHREQ</text>
+        <text x=\"950\" y=\"691\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">request per-scope record hashes</text>
+
+        <rect x=\"1160\" y=\"640\" width=\"300\" height=\"72\" rx=\"12\" fill=\"#ffffff\" stroke=\"#8b5cf6\" stroke-width=\"1.5\"/>
+        <text x=\"1310\" y=\"670\" font-size=\"14\" text-anchor=\"middle\" font-weight=\"bold\">HASHREC / HASHEND</text>
+        <text x=\"1310\" y=\"691\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">peer streams hashes, then closes scope</text>
+
+        <rect x=\"820\" y=\"760\" width=\"300\" height=\"72\" rx=\"12\" fill=\"#ffffff\" stroke=\"#8b5cf6\" stroke-width=\"1.5\"/>
+        <text x=\"970\" y=\"790\" font-size=\"14\" text-anchor=\"middle\" font-weight=\"bold\">HASHMISS</text>
+        <text x=\"970\" y=\"811\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">request only missing records or tombstones</text>
+
+        <rect x=\"1160\" y=\"760\" width=\"300\" height=\"72\" rx=\"12\" fill=\"#ffffff\" stroke=\"#8b5cf6\" stroke-width=\"1.5\"/>
+        <text x=\"1310\" y=\"790\" font-size=\"14\" text-anchor=\"middle\" font-weight=\"bold\">Replay Native Frame</text>
+        <text x=\"1310\" y=\"811\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">BULLETIN, MAIL, CHANNEL, PROFILESYNC, SCORESYNC, ZORKSAVE</text>
+
+        <rect x=\"130\" y=\"760\" width=\"250\" height=\"72\" rx=\"12\" fill=\"#f0fdf4\" stroke=\"#16a34a\" stroke-width=\"1.5\"/>
+        <text x=\"255\" y=\"790\" font-size=\"14\" text-anchor=\"middle\" font-weight=\"bold\">Hashes Match</text>
+        <text x=\"255\" y=\"811\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">scope is clean, continue forward</text>
+
+        <line x1=\"380\" y1=\"696\" x2=\"520\" y2=\"696\" stroke=\"#7c3aed\" stroke-width=\"2\"/>
+        <line x1=\"700\" y1=\"676\" x2=\"820\" y2=\"676\" stroke=\"#7c3aed\" stroke-width=\"2\"/>
+        <line x1=\"1080\" y1=\"676\" x2=\"1160\" y2=\"676\" stroke=\"#7c3aed\" stroke-width=\"2\"/>
+        <line x1=\"1310\" y1=\"712\" x2=\"1310\" y2=\"760\" stroke=\"#7c3aed\" stroke-width=\"2\"/>
+        <line x1=\"1120\" y1=\"796\" x2=\"1160\" y2=\"796\" stroke=\"#7c3aed\" stroke-width=\"2\"/>
+        <line x1=\"610\" y1=\"750\" x2=\"610\" y2=\"796\" stroke=\"#7c3aed\" stroke-width=\"2\"/>
+        <line x1=\"610\" y1=\"796\" x2=\"820\" y2=\"796\" stroke=\"#7c3aed\" stroke-width=\"2\"/>
+        <line x1=\"520\" y1=\"715\" x2=\"380\" y2=\"796\" stroke=\"#16a34a\" stroke-width=\"2\"/>
+        <text x=\"440\" y=\"764\" font-size=\"11\" fill=\"#166534\">yes</text>
+        <text x=\"716\" y=\"657\" font-size=\"11\" fill=\"#6d28d9\">no</text>
+
+        <rect x=\"80\" y=\"915\" width=\"1440\" height=\"250\" rx=\"16\" fill=\"#fff7ed\" stroke=\"#ea580c\" stroke-width=\"2\"/>
+        <text x=\"130\" y=\"950\" font-size=\"18\" font-weight=\"bold\" fill=\"#9a3412\">4. Special cases that changed recently</text>
+        <rect x=\"130\" y=\"985\" width=\"400\" height=\"135\" rx=\"12\" fill=\"#ffffff\" stroke=\"#fb923c\" stroke-width=\"1.5\"/>
+        <text x=\"165\" y=\"1015\" font-size=\"15\" font-weight=\"bold\" fill=\"#7c2d12\">Long bulletin and mail payloads</text>
+        <text x=\"165\" y=\"1040\" font-size=\"12\" fill=\"#475569\">MAILMETA / BULLMETA declare chunk counts.</text>
+        <text x=\"165\" y=\"1060\" font-size=\"12\" fill=\"#475569\">CONT frames fill missing chunks later.</text>
+        <text x=\"165\" y=\"1080\" font-size=\"12\" fill=\"#475569\">Incomplete markers remain visible until healed.</text>
+
+        <rect x=\"600\" y=\"985\" width=\"400\" height=\"135\" rx=\"12\" fill=\"#ffffff\" stroke=\"#fb923c\" stroke-width=\"1.5\"/>
+        <text x=\"635\" y=\"1015\" font-size=\"15\" font-weight=\"bold\" fill=\"#7c2d12\">Delete replay uses tombstones</text>
+        <text x=\"635\" y=\"1040\" font-size=\"12\" fill=\"#475569\">DELETE_BULLETIN, DELETE_MAIL, DELETE_ZORKSAVE</text>
+        <text x=\"635\" y=\"1060\" font-size=\"12\" fill=\"#475569\">flow through deleted_sync_tombstones.</text>
+        <text x=\"635\" y=\"1080\" font-size=\"12\" fill=\"#475569\">Older deletes cannot wipe newer zork saves.</text>
+
+        <rect x=\"1070\" y=\"985\" width=\"400\" height=\"135\" rx=\"12\" fill=\"#ffffff\" stroke=\"#fb923c\" stroke-width=\"1.5\"/>
+        <text x=\"1105\" y=\"1015\" font-size=\"15\" font-weight=\"bold\" fill=\"#7c2d12\">Manual zork save best-candidate resolver</text>
+        <text x=\"1105\" y=\"1040\" font-size=\"12\" fill=\"#475569\">CANDREQ asks every peer for one save key.</text>
+        <text x=\"1105\" y=\"1060\" font-size=\"12\" fill=\"#475569\">CANDRSP ranks save vs tombstone metadata.</text>
+        <text x=\"1105\" y=\"1080\" font-size=\"12\" fill=\"#475569\">Winner is replayed through HASHMISS/native delete.</text>
+
+        <line x1=\"800\" y1=\"1165\" x2=\"800\" y2=\"1220\" stroke=\"#0f172a\" stroke-width=\"2.5\"/>
+        <polygon points=\"790,1210 810,1210 800,1225\" fill=\"#0f172a\"/>
+
+        <rect x=\"180\" y=\"1225\" width=\"1240\" height=\"170\" rx=\"16\" fill=\"#dcfce7\" stroke=\"#16a34a\" stroke-width=\"2\"/>
+        <text x=\"230\" y=\"1260\" font-size=\"18\" font-weight=\"bold\" fill=\"#166534\">5. Admin visibility</text>
+        <rect x=\"230\" y=\"1288\" width=\"280\" height=\"68\" rx=\"12\" fill=\"#ffffff\" stroke=\"#4ade80\" stroke-width=\"1.5\"/>
+        <text x=\"370\" y=\"1316\" font-size=\"13\" text-anchor=\"middle\" font-weight=\"bold\">Peer Hash Graph</text>
+        <text x=\"370\" y=\"1336\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">scope-level mismatch visibility</text>
+        <rect x=\"560\" y=\"1288\" width=\"280\" height=\"68\" rx=\"12\" fill=\"#ffffff\" stroke=\"#4ade80\" stroke-width=\"1.5\"/>
+        <text x=\"700\" y=\"1316\" font-size=\"13\" text-anchor=\"middle\" font-weight=\"bold\">Zork Save Tombstones</text>
+        <text x=\"700\" y=\"1336\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">recent DELETE_ZORKSAVE history</text>
+        <rect x=\"890\" y=\"1288\" width=\"280\" height=\"68\" rx=\"12\" fill=\"#ffffff\" stroke=\"#4ade80\" stroke-width=\"1.5\"/>
+        <text x=\"1030\" y=\"1316\" font-size=\"13\" text-anchor=\"middle\" font-weight=\"bold\">Best-Candidate Resolver</text>
+        <text x=\"1030\" y=\"1336\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">active and recent candidate requests</text>
+        <rect x=\"1220\" y=\"1288\" width=\"150\" height=\"68\" rx=\"12\" fill=\"#ffffff\" stroke=\"#4ade80\" stroke-width=\"1.5\"/>
+        <text x=\"1295\" y=\"1316\" font-size=\"13\" text-anchor=\"middle\" font-weight=\"bold\">Sync API</text>
+        <text x=\"1295\" y=\"1336\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">manual repair triggers</text>
+      </g>
+    </svg>
+  </div>
+</div>
+
+<div class=\"card\">
+  <h3>Live Snapshot</h3>
+  <p class=\"muted\">This lightweight summary keeps the page tied to real data without trying to render every post inside the SVG.</p>
+  <div class=\"pipeline-flow\">
+    <div class=\"pipeline-node\">
+      <strong>Boards</strong><br>
+      {% if topic_branches %}
+        {% for branch in topic_branches[:4] %}
+          <span class=\"muted\">{{ branch.board }}: {{ branch.posts|length }} recent posts</span><br>
+        {% endfor %}
+      {% else %}
+        <span class=\"muted\">No bulletin branches yet.</span>
+      {% endif %}
+    </div>
+    <div class=\"pipeline-node\">
+      <strong>Channels</strong><br>
+      {% if comment_branches %}
+        {% for branch in comment_branches[:4] %}
+          <span class=\"muted\">{{ branch.channel }}: {{ branch.comments|length }} recent comments</span><br>
+        {% endfor %}
+      {% else %}
+        <span class=\"muted\">No channel comments yet.</span>
+      {% endif %}
+    </div>
+    <div class=\"pipeline-node\">
+      <strong>Recent Records</strong><br>
+      <span class=\"muted\">Bulletins: {{ recent_bulletins|length }}</span><br>
+      <span class=\"muted\">Mail: {{ recent_mail|length }}</span><br>
+      <span class=\"muted\">Channels: {{ recent_channels|length }}</span>
+    </div>
+  </div>
 </div>
 """
 
@@ -1263,7 +1533,7 @@ SETTINGS_CONTENT = """
   <p><strong>Bulletin boards:</strong> {{ diagnostics.board_count }} ({{ diagnostics.board_list }})</p>
   <p><strong>Outbound peer sync:</strong>
   {% if diagnostics.sync_in_progress == "Yes" %}
-    Sending — {{ diagnostics.sync_progress_percent }}% ({{ diagnostics.sync_completed_items }}/{{ diagnostics.sync_total_items }} items) to {{ diagnostics.sync_target_nodes_text }}
+    Sending &mdash; {{ diagnostics.sync_progress_percent }}% ({{ diagnostics.sync_completed_items }}/{{ diagnostics.sync_total_items }} items) to {{ diagnostics.sync_target_nodes_text }}
   {% elif diagnostics.sync_current_phase == "never_run" %}
     Not yet run since startup
   {% else %}
@@ -1273,38 +1543,38 @@ SETTINGS_CONTENT = """
   <p><strong>Sync phase:</strong> {{ diagnostics.sync_current_phase }} &nbsp;|&nbsp; <strong>Last update:</strong> {{ diagnostics.sync_last_updated_at }}</p>
   <p><strong>Last sync result:</strong> {{ diagnostics.sync_last_result }}</p>
   {% if diagnostics.sync_in_progress == "Yes" %}
-  <p class="muted"><strong>Notice:</strong> Outbound sync is running. Some historical posts may not be available on peers yet.</p>
+  <p class=\"muted\"><strong>Notice:</strong> Outbound sync is running. Some historical posts may not be available on peers yet.</p>
   {% endif %}
   <p><strong>Peer consistency:</strong> {{ diagnostics.peer_sync_status }}</p>
   <p><strong>Mismatch re-sync attempts:</strong> {{ diagnostics.mismatch_retry_summary }}</p>
   <p><strong>Peer-advertised record counts:</strong></p>
-  <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.peer_sync_counts }}</pre>
+  <pre style=\"white-space: pre-wrap; margin-top: 4px;\">{{ diagnostics.peer_sync_counts }}</pre>
   <p><strong>Per-scope mismatch reasons:</strong></p>
-  <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.peer_scope_mismatches }}</pre>
+  <pre style=\"white-space: pre-wrap; margin-top: 4px;\">{{ diagnostics.peer_scope_mismatches }}</pre>
   <h3>Zork Save Mismatch Focus</h3>
-  <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.zork_save_peer_mismatches }}</pre>
+  <pre style=\"white-space: pre-wrap; margin-top: 4px;\">{{ diagnostics.zork_save_peer_mismatches }}</pre>
   <h3>Zork Save Tombstones</h3>
-  <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.zork_save_tombstones }}</pre>
+  <pre style=\"white-space: pre-wrap; margin-top: 4px;\">{{ diagnostics.zork_save_tombstones }}</pre>
   <h3>Best-Candidate Resolver</h3>
-  <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.zork_save_candidate_resolution }}</pre>
+  <pre style=\"white-space: pre-wrap; margin-top: 4px;\">{{ diagnostics.zork_save_candidate_resolution }}</pre>
   <h3>Peer Hash Graph</h3>
   {% if diagnostics.peer_hash_graph %}
-  <div class="peer-graph-grid">
+  <div class=\"peer-graph-grid\">
     {% for peer in diagnostics.peer_hash_graph %}
-    <div class="peer-graph-card">
+    <div class=\"peer-graph-card\">
       <h4>{{ peer.peer_node_id }}</h4>
-      <div class="muted">Reported at {{ peer.reported_at }}</div>
+      <div class=\"muted\">Reported at {{ peer.reported_at }}</div>
       {% for scope in peer.scopes %}
-      <div class="scope-bar-row">
-        <div class="scope-bar-header">
+      <div class=\"scope-bar-row\">
+        <div class=\"scope-bar-header\">
           <span><strong>{{ scope.label }}</strong></span>
-          <span class="{% if scope.hash_match and scope.count_match %}scope-status-ok{% else %}scope-status-bad{% endif %}">{% if scope.hash_match and scope.count_match %}aligned{% else %}mismatch{% endif %}</span>
+          <span class=\"{% if scope.hash_match and scope.count_match %}scope-status-ok{% else %}scope-status-bad{% endif %}\">{% if scope.hash_match and scope.count_match %}aligned{% else %}mismatch{% endif %}</span>
         </div>
-        <div class="scope-bar-track">
-          <div class="scope-bar-local" style="width: {{ scope.local_width }}%" title="Local {{ scope.local_count }}"></div>
-          <div class="scope-bar-peer" style="width: {{ scope.peer_width }}%" title="Peer {{ scope.peer_count }}"></div>
+        <div class=\"scope-bar-track\">
+          <div class=\"scope-bar-local\" style=\"width: {{ scope.local_width }}%\" title=\"Local {{ scope.local_count }}\"></div>
+          <div class=\"scope-bar-peer\" style=\"width: {{ scope.peer_width }}%\" title=\"Peer {{ scope.peer_count }}\"></div>
         </div>
-        <div class="scope-bar-meta">
+        <div class=\"scope-bar-meta\">
           <span>Local {{ scope.local_count }}</span>
           <span>Peer {{ scope.peer_count }}</span>
           <span>{% if scope.hash_match %}hash ok{% else %}hash differs{% endif %}</span>
@@ -1314,13 +1584,13 @@ SETTINGS_CONTENT = """
     </div>
     {% endfor %}
   </div>
-  <p class="muted">Blue bars are local counts. Amber bars are peer-reported counts. A scope can keep the same count and still have a hash mismatch.</p>
+  <p class=\"muted\">Blue bars are local counts. Amber bars are peer-reported counts. A scope can keep the same count and still have a hash mismatch.</p>
   {% else %}
-  <p class="muted">No peer hash data available yet.</p>
+  <p class=\"muted\">No peer hash data available yet.</p>
   {% endif %}
-  <p class="muted">Outbound progress can be 100% while peer consistency is mismatched. Peer counts above indicate missing records between nodes.</p>
+  <p class=\"muted\">Outbound progress can be 100% while peer consistency is mismatched. Peer counts above indicate missing records between nodes.</p>
   {% if diagnostics.mismatch_retry_details %}
-  <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.mismatch_retry_details }}</pre>
+  <pre style=\"white-space: pre-wrap; margin-top: 4px;\">{{ diagnostics.mismatch_retry_details }}</pre>
   {% endif %}
 
   <h3>Database</h3>
@@ -1340,32 +1610,6 @@ SETTINGS_CONTENT = """
 """
 
 
-SYNC_SETTINGS_CONTENT = """
-<div class=\"card\" style=\"max-width: 800px;\">
-  <h2>Sync Settings</h2>
-  <p class=\"muted\">Manage BBS peer sync targets and the node IDs allowed to post to the Urgent board.</p>
-  <form method=\"post\">
-    <label>Sync BBS Nodes</label><br>
-    <textarea name=\"bbs_nodes\" placeholder=\"One per line or comma separated\">{{ bbs_nodes_text }}</textarea><br>
-    <p class=\"muted\">These nodes receive bulletin, mail, delete, and channel sync traffic.</p>
-
-    <label>Allowed Urgent Board Nodes</label><br>
-    <textarea name=\"allowed_nodes\" placeholder=\"Leave blank to allow all nodes\">{{ allowed_nodes_text }}</textarea><br>
-    <p class=\"muted\">If left blank, any node can post to the Urgent board.</p>
-
-    {% if runtime_updates_enabled %}
-    <p class=\"muted\">Changes are also applied to the active interface immediately.</p>
-    {% else %}
-    <p class=\"muted\">Changes are saved to config.ini. Restart server.py if the BBS process is running separately from this web GUI.</p>
-    {% endif %}
-
-    <button class=\"btn btn-primary\" type=\"submit\">Save Sync Settings</button>
-    <a class=\"btn\" href=\"{{ url_for('table_list', table='bulletins') }}\">Back</a>
-  </form>
-</div>
-"""
-
-
 ADMIN_SETTINGS_CONTENT = """
 <div class=\"card\" style=\"max-width: 600px;\">
   <h2>Admin Credentials</h2>
@@ -1376,16 +1620,16 @@ ADMIN_SETTINGS_CONTENT = """
   <form method=\"post\">
     <label>Current Password (required)</label><br>
     <input type=\"password\" name=\"current_password\" required><br><br>
-    
+
     <label>New Username (leave blank to keep current)</label><br>
     <input type=\"text\" name=\"new_username\" placeholder=\"Current: {{ current_username }}\"><br><br>
-    
+
     <label>New Password (leave blank to keep current)</label><br>
     <input type=\"password\" name=\"new_password\" placeholder=\"Leave blank to keep current\"><br><br>
-    
+
     <label>Confirm New Password</label><br>
     <input type=\"password\" name=\"confirm_password\" placeholder=\"Confirm new password\"><br><br>
-    
+
     <button class=\"btn btn-primary\" type=\"submit\">Update Credentials</button>
     <a class=\"btn\" href=\"{{ url_for('table_list', table='bulletins') }}\">Back</a>
   </form>
@@ -1405,8 +1649,10 @@ CHANNEL_COMMENTS_CONTENT = """
     <label>Sender Short Name</label><br>
     <input type=\"text\" name=\"sender_short_name\" required><br><br>
 
+        <th>mesh_id</th>
     <label>Comment</label><br>
     <textarea name=\"content\" required></textarea><br><br>
+        <th>sync_status</th>
 
     <button class=\"btn btn-primary\" type=\"submit\">Add Comment</button>
     <a class=\"btn\" href=\"{{ url_for('table_list', table='channels') }}\">Back to Channels</a>
@@ -1415,10 +1661,18 @@ CHANNEL_COMMENTS_CONTENT = """
 
 <div class=\"card\">
   <h3>Existing Comments</h3>
+        <td>{{ comment['mesh_id'] }}</td>
   <table>
     <thead>
+        <td>{% if comment['content_complete'] == 0 %}<strong style="color:#b91c1c;">{{ comment['sync_status'] }}</strong>{% else %}<span class="muted">{{ comment['sync_status'] }}</span>{% endif %}</td>
       <tr>
         <th>id</th>
+          <form method="post" action="{{ url_for('resolve_record') }}" class="inline">
+            <input type="hidden" name="scope" value="channels">
+            <input type="hidden" name="key" value="comment:{{ comment['unique_id'] }}">
+            <input type="hidden" name="redirect_to" value="{{ request.path }}">
+            <button type="submit" class="btn btn-small">Resolve</button>
+          </form>
         <th>sender_short_name</th>
         <th>date</th>
         <th>content</th>
@@ -1427,7 +1681,7 @@ CHANNEL_COMMENTS_CONTENT = """
     </thead>
     <tbody>
       {% for comment in comments %}
-      <tr>
+        <td colspan="7" class="muted">No comments yet.</td>
         <td>{{ comment['id'] }}</td>
         <td>{{ comment['sender_short_name'] }}</td>
         <td>{{ comment['date'] }}</td>
@@ -1865,588 +2119,7 @@ TRANSMISSION_DASHBOARD_CONTENT = """
 """
 
 
-FLOWCHART_CONTENT = """
-<div class=\"card\">
-  <h2>Command, Sync, and Repair Flowchart</h2>
-  <p class=\"muted\">Tree view showing command routing plus the current multi-phase sync and hash repair pipeline.</p>
-</div>
-
-<div class=\"card\">
-  <h3>Sync + Hash Repair Pipeline</h3>
-  <p class=\"muted\">Current peer sync order favors user-facing content first and defers game data until the end.</p>
-  <div class=\"pipeline-flow\">
-    <div class=\"pipeline-node\"><strong>Trigger</strong><br><span class=\"muted\">scheduled sync, manual sync, peer resync</span></div>
-    <div class=\"pipeline-arrow\">→</div>
-    <div class=\"pipeline-node\"><strong>Phase 1</strong><br><span class=\"muted\">mail</span></div>
-    <div class=\"pipeline-arrow\">→</div>
-    <div class=\"pipeline-node\"><strong>Phase 2</strong><br><span class=\"muted\">bulletins</span></div>
-    <div class=\"pipeline-arrow\">→</div>
-    <div class=\"pipeline-node\"><strong>Phase 3</strong><br><span class=\"muted\">channels</span></div>
-    <div class=\"pipeline-arrow\">→</div>
-    <div class=\"pipeline-node\"><strong>Phase 4</strong><br><span class=\"muted\">profiles</span></div>
-    <div class=\"pipeline-arrow\">→</div>
-    <div class=\"pipeline-node\"><strong>Phase 5</strong><br><span class=\"muted\">game scores + zork saves</span></div>
-  </div>
-  <div class=\"pipeline-flow\">
-    <div class=\"pipeline-node\"><strong>Repair loop</strong><br><span class=\"muted\">SYNCSTATE → HASHREQ → HASHREC/HASHEND → HASHMISS replay</span></div>
-    <div class=\"pipeline-node\"><strong>Long content</strong><br><span class=\"muted\">BULLETIN/MAIL + META + CONT frames, with incomplete markers until healed</span></div>
-  </div>
-</div>
-
-<div class=\"card\" style=\"background: transparent;\">
-  <div class=\"flowchart-controls\">
-    <button id=\"flowchart-zoom-in\" class=\"btn btn-small\" type=\"button\">Zoom In</button>
-    <button id=\"flowchart-zoom-out\" class=\"btn btn-small\" type=\"button\">Zoom Out</button>
-    <button id=\"flowchart-reset\" class=\"btn btn-small\" type=\"button\">Reset View</button>
-    <span id=\"flowchart-zoom-label\" class=\"zoom-label\">100%</span>
-  </div>
-  <div id=\"flowchart-viewport\" class=\"flowchart-viewport\">
-  <svg id=\"flowchart-svg\" class=\"flowchart-svg\" viewBox=\"0 0 1600 2500\">
-    <g id=\"flowchart-content-group\">
-    <!-- Title -->
-    <text x=\"800\" y=\"30\" font-size=\"24\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#222\">TC²-BBS Command Handler Tree & Message Flow</text>
-    
-    <!-- Input -->
-    <g id=\"input\">
-      <rect x=\"650\" y=\"50\" width=\"300\" height=\"50\" fill=\"#e8f0ff\" stroke=\"#0056d6\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"800\" y=\"80\" font-size=\"12\" text-anchor=\"middle\" font-weight=\"bold\">User Input Message</text>
-      <line x1=\"800\" y1=\"100\" x2=\"800\" y2=\"140\" stroke=\"#0056d6\" stroke-width=\"2\"/>
-    </g>
-    
-    <!-- Parser -->
-    <g id=\"parser\">
-      <rect x=\"650\" y=\"140\" width=\"300\" height=\"60\" fill=\"#fff3cd\" stroke=\"#ff9800\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"800\" y=\"160\" font-size=\"11\" text-anchor=\"middle\" font-weight=\"bold\">process_message()</text>
-      <text x=\"800\" y=\"177\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">Parse command, get user state</text>
-      <line x1=\"800\" y1=\"200\" x2=\"800\" y2=\"240\" stroke=\"#ff9800\" stroke-width=\"2\"/>
-    </g>
-    
-    <!-- Main Branching -->
-    <g id=\"main-branch\">
-      <polygon points=\"800,240 900,270 800,300 700,270\" fill=\"#ffe0b2\" stroke=\"#ff9800\" stroke-width=\"2\"/>
-      <text x=\"800\" y=\"273\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Command?</text>
-    </g>
-    
-    <!-- QUICK HELP BRANCH -->
-    <g id=\"quick-help\">
-      <line x1=\"700\" y1=\"270\" x2=\"150\" y2=\"320\" stroke=\"#666\" stroke-width=\"1\" stroke-dasharray=\"5,5\"/>
-      <text x=\"420\" y=\"290\" font-size=\"9\" fill=\"#666\">Q</text>
-      
-      <rect x=\"50\" y=\"320\" width=\"200\" height=\"60\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"150\" y=\"340\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Quick Commands [Q]</text>
-      <text x=\"150\" y=\"355\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">handle_quick_help_command()</text>
-      <line x1=\"150\" y1=\"380\" x2=\"150\" y2=\"430\" stroke=\"#4caf50\" stroke-width=\"1\"/>
-      
-      <rect x=\"50\" y=\"430\" width=\"200\" height=\"50\" fill=\"#c8e6c9\" stroke=\"#4caf50\" stroke-width=\"1\" rx=\"3\"/>
-      <text x=\"150\" y=\"448\" font-size=\"8\" text-anchor=\"middle\" fill=\"#333\">📤 Send Menu:</text>
-      <text x=\"150\" y=\"460\" font-size=\"8\" text-anchor=\"middle\" fill=\"#333\">Q,B,U,X options</text>
-    </g>
-    
-    <!-- BULLETINS BRANCH -->
-    <g id=\"bulletins\">
-      <line x1=\"750\" y1=\"300\" x2=\"400\" y2=\"360\" stroke=\"#666\" stroke-width=\"1\" stroke-dasharray=\"5,5\"/>
-      <text x=\"580\" y=\"320\" font-size=\"9\" fill=\"#666\">B</text>
-      
-      <rect x=\"300\" y=\"360\" width=\"200\" height=\"60\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"400\" y=\"380\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Bulletins [B]</text>
-      <text x=\"400\" y=\"395\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">handle_bulletin_command()</text>
-      <line x1=\"400\" y1=\"420\" x2=\"400\" y2=\"460\" stroke=\"#4caf50\" stroke-width=\"1\"/>
-      
-      <!-- Bulletin sub-options -->
-      <g id=\"bulletin-suboptions\">
-        <!-- Read -->
-        <rect x=\"250\" y=\"460\" width=\"120\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
-        <text x=\"310\" y=\"475\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[R] Read</text>
-        <text x=\"310\" y=\"488\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">get_bulletins()</text>
-        <line x1=\"310\" y1=\"510\" x2=\"310\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"250\" y=\"540\" width=\"120\" height=\"40\" fill=\"#ffebee\" stroke=\"#b91c1c\" stroke-width=\"1\" rx=\"2\"/>
-        <text x=\"310\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">📤 List bulletins</text>
-        <text x=\"310\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">or bulletin content</text>
-        
-        <!-- Post -->
-        <rect x=\"390\" y=\"460\" width=\"120\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
-        <text x=\"450\" y=\"475\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[P] Post</text>
-        <text x=\"450\" y=\"488\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">add_bulletin()</text>
-        <line x1=\"450\" y1=\"510\" x2=\"450\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"390\" y=\"540\" width=\"120\" height=\"50\" fill=\"#ffccbc\" stroke=\"#ff5722\" stroke-width=\"2\" rx=\"2\"/>
-        <text x=\"450\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">💾 Save bulletin</text>
-        <text x=\"450\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">📤 Sync to BBS nodes</text>
-        <text x=\"450\" y=\"577\" font-size=\"7\" text-anchor=\"middle\" fill=\"#b91c1c\">(MULTI-MSG)</text>
-      </g>
-    </g>
-    
-    <!-- MAIL BRANCH -->
-    <g id=\"mail\">
-      <line x1=\"800\" y1=\"300\" x2=\"800\" y2=\"360\" stroke=\"#666\" stroke-width=\"1\" stroke-dasharray=\"5,5\"/>
-      <text x=\"820\" y=\"320\" font-size=\"9\" fill=\"#666\">M</text>
-      
-      <rect x=\"700\" y=\"360\" width=\"200\" height=\"60\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"800\" y=\"380\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Mail [M]</text>
-      <text x=\"800\" y=\"395\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">handle_mail_command()</text>
-      <line x1=\"800\" y1=\"420\" x2=\"800\" y2=\"460\" stroke=\"#4caf50\" stroke-width=\"1\"/>
-      
-      <!-- Mail sub-options -->
-      <g id=\"mail-suboptions\">
-        <!-- Check -->
-        <rect x=\"650\" y=\"460\" width=\"110\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
-        <text x=\"705\" y=\"475\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[C] Check</text>
-        <text x=\"705\" y=\"488\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">get_mail()</text>
-        <line x1=\"705\" y1=\"510\" x2=\"705\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"650\" y=\"540\" width=\"110\" height=\"40\" fill=\"#ffebee\" stroke=\"#b91c1c\" stroke-width=\"1\" rx=\"2\"/>
-        <text x=\"705\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">📤 Send mail</text>
-        <text x=\"705\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">list/count</text>
-        
-        <!-- Read -->
-        <rect x=\"770\" y=\"460\" width=\"110\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
-        <text x=\"825\" y=\"475\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[R] Read</text>
-        <text x=\"825\" y=\"488\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">get_mail_content()</text>
-        <line x1=\"825\" y1=\"510\" x2=\"825\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"770\" y=\"540\" width=\"110\" height=\"40\" fill=\"#ffebee\" stroke=\"#b91c1c\" stroke-width=\"1\" rx=\"2\"/>
-        <text x=\"825\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">📤 Send mail</text>
-        <text x=\"825\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">content</text>
-        
-        <!-- Send -->
-        <rect x=\"890\" y=\"460\" width=\"110\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
-        <text x=\"945\" y=\"475\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[S] Send</text>
-        <text x=\"945\" y=\"488\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">add_mail()</text>
-        <line x1=\"945\" y1=\"510\" x2=\"945\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"890\" y=\"540\" width=\"110\" height=\"50\" fill=\"#ffccbc\" stroke=\"#ff5722\" stroke-width=\"2\" rx=\"2\"/>
-        <text x=\"945\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">💾 Save mail</text>
-        <text x=\"945\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">📤 Sync to nodes</text>
-        <text x=\"945\" y=\"577\" font-size=\"7\" text-anchor=\"middle\" fill=\"#b91c1c\">(MULTI-MSG)</text>
-      </g>
-    </g>
-    
-    <!-- CHANNELS BRANCH -->
-    <g id=\"channels\">
-      <line x1=\"850\" y1=\"300\" x2=\"1200\" y2=\"360\" stroke=\"#666\" stroke-width=\"1\" stroke-dasharray=\"5,5\"/>
-      <text x=\"1020\" y=\"320\" font-size=\"9\" fill=\"#666\">C</text>
-      
-      <rect x=\"1100\" y=\"360\" width=\"200\" height=\"60\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"1200\" y=\"380\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Channels [C]</text>
-      <text x=\"1200\" y=\"395\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">handle_channel_directory_command()</text>
-      <line x1=\"1200\" y1=\"420\" x2=\"1200\" y2=\"460\" stroke=\"#4caf50\" stroke-width=\"1\"/>
-      
-      <!-- Channel sub-options -->
-      <g id=\"channel-suboptions\">
-        <!-- List -->
-        <rect x=\"1050\" y=\"460\" width=\"110\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
-        <text x=\"1105\" y=\"475\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[L] List</text>
-        <text x=\"1105\" y=\"488\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">get_channels()</text>
-        <line x1=\"1105\" y1=\"510\" x2=\"1105\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"1050\" y=\"540\" width=\"110\" height=\"40\" fill=\"#ffebee\" stroke=\"#b91c1c\" stroke-width=\"1\" rx=\"2\"/>
-        <text x=\"1105\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">📤 Send channel</text>
-        <text x=\"1105\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">directory</text>
-        
-        <!-- Read -->
-        <rect x=\"1170\" y=\"460\" width=\"110\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
-        <text x=\"1225\" y=\"475\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[R] Read</text>
-        <text x=\"1225\" y=\"488\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">get_channel_by_id()</text>
-        <line x1=\"1225\" y1=\"510\" x2=\"1225\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"1170\" y=\"540\" width=\"110\" height=\"40\" fill=\"#ffebee\" stroke=\"#b91c1c\" stroke-width=\"1\" rx=\"2\"/>
-        <text x=\"1225\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">📤 Send channel</text>
-        <text x=\"1225\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">details</text>
-      </g>
-    </g>
-    
-    <!-- UTILITIES BRANCH -->
-    <g id=\"utilities\">
-      <line x1=\"750\" y1=\"300\" x2=\"1400\" y2=\"360\" stroke=\"#666\" stroke-width=\"1\" stroke-dasharray=\"5,5\"/>
-      <text x=\"1070\" y=\"320\" font-size=\"9\" fill=\"#666\">U</text>
-      
-      <rect x=\"1240\" y=\"360\" width=\"310\" height=\"60\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"1400\" y=\"380\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Utilities [U]</text>
-      <text x=\"1400\" y=\"395\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">Various utilities</text>
-      <line x1=\"1400\" y1=\"420\" x2=\"1400\" y2=\"460\" stroke=\"#4caf50\" stroke-width=\"1\"/>
-      
-      <!-- Utility sub-options: S, F, W, Z -->
-      <line x1=\"1400\" y1=\"420\" x2=\"1400\" y2=\"450\" stroke=\"#4caf50\" stroke-width=\"1\"/>
-      <line x1=\"1277\" y1=\"450\" x2=\"1533\" y2=\"450\" stroke=\"#4caf50\" stroke-width=\"1\"/>
-      <g id=\"utility-suboptions\">
-        <!-- Stats -->
-        <line x1=\"1277\" y1=\"450\" x2=\"1277\" y2=\"470\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"1237\" y=\"470\" width=\"80\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
-        <text x=\"1277\" y=\"485\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[S] Stats</text>
-        <text x=\"1277\" y=\"498\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">Count messages</text>
-        <line x1=\"1277\" y1=\"520\" x2=\"1277\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"1237\" y=\"540\" width=\"80\" height=\"40\" fill=\"#ffebee\" stroke=\"#b91c1c\" stroke-width=\"1\" rx=\"2\"/>
-        <text x=\"1277\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">📤 Send</text>
-        <text x=\"1277\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">statistics</text>
-
-        <!-- Fortune -->
-        <line x1=\"1362\" y1=\"450\" x2=\"1362\" y2=\"470\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"1322\" y=\"470\" width=\"80\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
-        <text x=\"1362\" y=\"485\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[F] Fortune</text>
-        <text x=\"1362\" y=\"498\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">Random quote</text>
-        <line x1=\"1362\" y1=\"520\" x2=\"1362\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"1322\" y=\"540\" width=\"80\" height=\"40\" fill=\"#ffebee\" stroke=\"#b91c1c\" stroke-width=\"1\" rx=\"2\"/>
-        <text x=\"1362\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">📤 Send</text>
-        <text x=\"1362\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">fortune</text>
-
-        <!-- Wall of Shame -->
-        <line x1=\"1447\" y1=\"450\" x2=\"1447\" y2=\"470\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"1407\" y=\"470\" width=\"80\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
-        <text x=\"1447\" y=\"485\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[W] Shame</text>
-        <text x=\"1447\" y=\"498\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">Wall of Shame</text>
-        <line x1=\"1447\" y1=\"520\" x2=\"1447\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"1407\" y=\"540\" width=\"80\" height=\"40\" fill=\"#ffebee\" stroke=\"#b91c1c\" stroke-width=\"1\" rx=\"2\"/>
-        <text x=\"1447\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">📤 Send</text>
-        <text x=\"1447\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">shame list</text>
-
-        <!-- Zork -->
-        <line x1=\"1532\" y1=\"450\" x2=\"1532\" y2=\"470\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"1492\" y=\"470\" width=\"80\" height=\"50\" fill=\"#fff0f5\" stroke=\"#9c27b0\" stroke-width=\"1\" rx=\"3\"/>
-        <text x=\"1532\" y=\"485\" font-size=\"8\" text-anchor=\"middle\" font-weight=\"bold\">[Z] Zork</text>
-        <text x=\"1532\" y=\"498\" font-size=\"7\" text-anchor=\"middle\" fill=\"#666\">Z-machine game</text>
-        <line x1=\"1532\" y1=\"520\" x2=\"1532\" y2=\"540\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-        <rect x=\"1492\" y=\"540\" width=\"80\" height=\"40\" fill=\"#ffebee\" stroke=\"#b91c1c\" stroke-width=\"1\" rx=\"2\"/>
-        <text x=\"1532\" y=\"553\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">▶️ Play</text>
-        <text x=\"1532\" y=\"565\" font-size=\"7\" text-anchor=\"middle\" fill=\"#333\">interactive</text>
-      </g>
-    </g>
-    
-    <!-- DATABASE LAYER -->
-    <g id=\"database\">
-      <text x=\"800\" y=\"660\" font-size=\"14\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#0056d6\">DATABASE OPERATIONS</text>
-      
-      <rect x=\"50\" y=\"680\" width=\"180\" height=\"80\" fill=\"#f3e5f5\" stroke=\"#9c27b0\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"140\" y=\"700\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Bulletins Table</text>
-      <text x=\"140\" y=\"716\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">id, board, sender,</text>
-      <text x=\"140\" y=\"728\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">date, subject,</text>
-      <text x=\"140\" y=\"740\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">content, unique_id</text>
-      
-      <rect x=\"280\" y=\"680\" width=\"180\" height=\"80\" fill=\"#f3e5f5\" stroke=\"#9c27b0\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"370\" y=\"700\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Mail Table</text>
-      <text x=\"370\" y=\"716\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">id, sender, recipient,</text>
-      <text x=\"370\" y=\"728\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">date, subject,</text>
-      <text x=\"370\" y=\"740\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">content, unique_id</text>
-      
-      <rect x=\"510\" y=\"680\" width=\"180\" height=\"80\" fill=\"#f3e5f5\" stroke=\"#9c27b0\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"600\" y=\"700\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Channels Table</text>
-      <text x=\"600\" y=\"716\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">id, name, url/PSK,</text>
-      <text x=\"600\" y=\"728\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">channel_comments</text>
-      <text x=\"600\" y=\"740\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">(id, channel_id,</text>
-      
-      <rect x=\"740\" y=\"680\" width=\"180\" height=\"80\" fill=\"#f3e5f5\" stroke=\"#9c27b0\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"830\" y=\"700\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">User State Cache</text>
-      <text x=\"830\" y=\"716\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">Tracks user progress</text>
-      <text x=\"830\" y=\"728\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">through menus</text>
-      <text x=\"830\" y=\"740\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">user_states {}</text>
-    </g>
-    
-    <!-- SYNC MESSAGES SECTION -->
-    <g id=\"sync-messages\">
-      <text x=\"800\" y=\"820\" font-size=\"14\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#0056d6\">SYNC MESSAGE FORMATS (sent to BBS nodes)</text>
-      
-      <!-- Bulletin Sync -->
-      <rect x=\"50\" y=\"840\" width=\"350\" height=\"100\" fill=\"#fff9e6\" stroke=\"#ff9800\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"225\" y=\"860\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Bulletin Sync Message</text>
-      <text x=\"60\" y=\"877\" font-size=\"8\" fill=\"#333\" font-family=\"monospace\">Format:</text>
-      <text x=\"60\" y=\"891\" font-size=\"8\" fill=\"#333\" font-family=\"monospace\">BULLETIN|board|sender|subject</text>
-      <text x=\"60\" y=\"903\" font-size=\"8\" fill=\"#333\" font-family=\"monospace\">|content|unique_id</text>
-      <text x=\"60\" y=\"920\" font-size=\"8\" fill=\"#666\">📊 Sent once per sync node</text>
-      <text x=\"60\" y=\"932\" font-size=\"8\" fill=\"#b91c1c\">⚠️ Multiple sends = flood</text>
-      
-      <!-- Mail Sync -->
-      <rect x=\"425\" y=\"840\" width=\"350\" height=\"100\" fill=\"#fff9e6\" stroke=\"#ff9800\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"600\" y=\"860\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Mail Sync Message</text>
-      <text x=\"435\" y=\"877\" font-size=\"8\" fill=\"#333\" font-family=\"monospace\">Format:</text>
-      <text x=\"435\" y=\"891\" font-size=\"8\" fill=\"#333\" font-family=\"monospace\">MAIL|sender_id|sender|recipient</text>
-      <text x=\"435\" y=\"903\" font-size=\"8\" fill=\"#333\" font-family=\"monospace\">|subject|content|unique_id</text>
-      <text x=\"435\" y=\"920\" font-size=\"8\" fill=\"#666\">📊 Sent once per sync node</text>
-      <text x=\"435\" y=\"932\" font-size=\"8\" fill=\"#b91c1c\">⚠️ Multiple sends = flood</text>
-      
-      <!-- Delete Sync -->
-      <rect x=\"800\" y=\"840\" width=\"350\" height=\"100\" fill=\"#fff9e6\" stroke=\"#ff9800\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"975\" y=\"860\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Delete Sync Messages</text>
-      <text x=\"810\" y=\"877\" font-size=\"8\" fill=\"#333\" font-family=\"monospace\">Delete Bulletin:</text>
-      <text x=\"810\" y=\"891\" font-size=\"8\" fill=\"#333\" font-family=\"monospace\">DELETE_BULLETIN|unique_id</text>
-      <text x=\"810\" y=\"905\" font-size=\"8\" fill=\"#333\" font-family=\"monospace\">Delete Mail:</text>
-      <text x=\"810\" y=\"919\" font-size=\"8\" fill=\"#333\" font-family=\"monospace\">DELETE_MAIL|unique_id</text>
-      <text x=\"810\" y=\"932\" font-size=\"8\" fill=\"#b91c1c\">⚠️ Also multiplied by sync nodes</text>
-      
-      <!-- Channel Sync -->
-      <rect x=\"1175\" y=\"840\" width=\"350\" height=\"100\" fill=\"#fff9e6\" stroke=\"#ff9800\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"1350\" y=\"860\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Channel Sync Message</text>
-      <text x=\"1185\" y=\"877\" font-size=\"8\" fill=\"#333\" font-family=\"monospace\">Format:</text>
-      <text x=\"1185\" y=\"891\" font-size=\"8\" fill=\"#333\" font-family=\"monospace\">CHANNEL|channel_name</text>
-      <text x=\"1185\" y=\"903\" font-size=\"8\" fill=\"#333\" font-family=\"monospace\">|channel_url_or_psk</text>
-      <text x=\"1185\" y=\"920\" font-size=\"8\" fill=\"#666\">📊 Sent once per sync node</text>
-      <text x=\"1185\" y=\"932\" font-size=\"8\" fill=\"#b91c1c\">⚠️ Multiple sends = flood</text>
-    </g>
-    
-    <!-- MESSAGE MULTIPLICATION EXAMPLE -->
-    <g id=\"multiplication-example\">
-      <text x=\"800\" y=\"1000\" font-size=\"14\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#0056d6\">MESSAGE MULTIPLICATION PROBLEM</text>
-      
-      <rect x=\"50\" y=\"1020\" width=\"1500\" height=\"200\" fill=\"#ffe0e0\" stroke=\"#b91c1c\" stroke-width=\"2\" rx=\"5\"/>
-      
-      <text x=\"800\" y=\"1045\" font-size=\"11\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#000\">Scenario: User posts 1 bulletin with 3 sync nodes configured</text>
-      
-      <!-- Original message -->
-      <circle cx=\"100\" cy=\"1085\" r=\"20\" fill=\"#4caf50\" stroke=\"#2e7d32\" stroke-width=\"2\"/>
-      <text x=\"100\" y=\"1092\" font-size=\"10\" text-anchor=\"middle\" fill=\"white\" font-weight=\"bold\">1</text>
-      <text x=\"135\" y=\"1095\" font-size=\"10\" fill=\"#000\">User posts bulletin</text>
-      
-      <!-- Arrow -->
-      <polygon points=\"160,1085 190,1085 180,1095 200,1085 190,1075\" fill=\"#ff9800\"/>
-      
-      <!-- Database save -->
-      <circle cx=\"220\" cy=\"1085\" r=\"20\" fill=\"#9c27b0\" stroke=\"#6a1b9a\" stroke-width=\"2\"/>
-      <text x=\"220\" y=\"1092\" font-size=\"10\" text-anchor=\"middle\" fill=\"white\" font-weight=\"bold\">1</text>
-      <text x=\"255\" y=\"1095\" font-size=\"10\" fill=\"#000\">Saved to database</text>
-      
-      <!-- Arrow -->
-      <polygon points=\"280,1085 310,1085 300,1095 320,1085 310,1075\" fill=\"#ff9800\"/>
-      
-      <!-- Sync check -->
-      <circle cx=\"330\" cy=\"1085\" r=\"20\" fill=\"#2196f3\" stroke=\"#1565c0\" stroke-width=\"2\"/>
-      <text x=\"330\" y=\"1092\" font-size=\"9\" text-anchor=\"middle\" fill=\"white\" font-weight=\"bold\">3✓</text>
-      <text x=\"365\" y=\"1095\" font-size=\"10\" fill=\"#000\">Sync nodes = 3</text>
-      
-      <!-- Arrow splits -->
-      <line x1=\"360\" y1=\"1085\" x2=\"80\" y2=\"1160\" stroke=\"#ff5722\" stroke-width=\"2\"/>
-      <line x1=\"360\" y1=\"1085\" x2=\"400\" y2=\"1160\" stroke=\"#ff5722\" stroke-width=\"2\"/>
-      <line x1=\"360\" y1=\"1085\" x2=\"720\" y2=\"1160\" stroke=\"#ff5722\" stroke-width=\"2\"/>
-      
-      <!-- Messages sent to each node -->
-      <rect x=\"30\" y=\"1160\" width=\"100\" height=\"40\" fill=\"#ffccbc\" stroke=\"#ff5722\" stroke-width=\"2\" rx=\"3\"/>
-      <text x=\"80\" y=\"1178\" font-size=\"9\" text-anchor=\"middle\" fill=\"#333\" font-weight=\"bold\">Node 1</text>
-      <text x=\"80\" y=\"1192\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">📤 Message sent</text>
-      
-      <rect x=\"350\" y=\"1160\" width=\"100\" height=\"40\" fill=\"#ffccbc\" stroke=\"#ff5722\" stroke-width=\"2\" rx=\"3\"/>
-      <text x=\"400\" y=\"1178\" font-size=\"9\" text-anchor=\"middle\" fill=\"#333\" font-weight=\"bold\">Node 2</text>
-      <text x=\"400\" y=\"1192\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">📤 Message sent</text>
-      
-      <rect x=\"670\" y=\"1160\" width=\"100\" height=\"40\" fill=\"#ffccbc\" stroke=\"#ff5722\" stroke-width=\"2\" rx=\"3\"/>
-      <text x=\"720\" y=\"1178\" font-size=\"9\" text-anchor=\"middle\" fill=\"#333\" font-weight=\"bold\">Node 3</text>
-      <text x=\"720\" y=\"1192\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">📤 Message sent</text>
-      
-      <!-- Result -->
-      <text x=\"800\" y=\"1240\" font-size=\"11\" text-anchor=\"middle\" fill=\"#b91c1c\" font-weight=\"bold\">RESULT: 1 user action = 1 database write + 3 mesh messages</text>
-      <text x=\"800\" y=\"1260\" font-size=\"10\" text-anchor=\"middle\" fill=\"#333\">With 10 users posting daily and 5 sync nodes: 10 × 5 = 50 unwanted sync messages</text>
-    </g>
-    
-    <!-- RECOMMENDATIONS -->
-    <g id=\"recommendations\">
-      <text x=\"800\" y=\"1300\" font-size=\"14\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#0056d6\">OPTIMIZATION STRATEGIES</text>
-      
-      <rect x=\"50\" y=\"1320\" width=\"700\" height=\"200\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"400\" y=\"1345\" font-size=\"11\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#1b5e20\">Strategy 1: Disable Sync Selectively</text>
-      <text x=\"60\" y=\"1365\" font-size=\"9\" fill=\"#333\">• Make sync configurable per operation type</text>
-      <text x=\"60\" y=\"1380\" font-size=\"9\" fill=\"#333\">• Example: sync bulletins but not commands</text>
-      <text x=\"60\" y=\"1395\" font-size=\"9\" fill=\"#333\">• Example: disable delete message sync</text>
-      <text x=\"60\" y=\"1410\" font-size=\"9\" fill=\"#333\">• Add config: sync_operations = bulletin,mail,channel</text>
-      <text x=\"60\" y=\"1425\" font-size=\"9\" fill=\"#333\">• Result: Reduce by 30-50% depending on usage</text>
-      <text x=\"60\" y=\"1445\" font-size=\"8\" font-weight=\"bold\" fill=\"#0056d6\">Code location: command_handlers.py + db_operations.py</text>
-      
-      <rect x=\"800\" y=\"1320\" width=\"700\" height=\"200\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"1150\" y=\"1345\" font-size=\"11\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#1b5e20\">Strategy 2: Batch Sync Messages</text>
-      <text x=\"810\" y=\"1365\" font-size=\"9\" fill=\"#333\">• Instead of 1 message per node per action</text>
-      <text x=\"810\" y=\"1380\" font-size=\"9\" fill=\"#333\">• Collect sync messages and send in batches</text>
-      <text x=\"810\" y=\"1395\" font-size=\"9\" fill=\"#333\">• Send every 5 minutes or on buffer fill</text>
-      <text x=\"810\" y=\"1410\" font-size=\"9\" fill=\"#333\">• Use pipe-delimited format: MSG1|MSG2|MSG3</text>
-      <text x=\"810\" y=\"1425\" font-size=\"9\" fill=\"#333\">• Result: Reduce by 80-90% in high-volume scenarios</text>
-      <text x=\"810\" y=\"1445\" font-size=\"8\" font-weight=\"bold\" fill=\"#0056d6\">Code location: utils.py send_message functions</text>
-    </g>
-    
-    <!-- LEGEND -->
-    <g id=\"legend\">
-      <text x=\"50\" y=\"1580\" font-size=\"12\" font-weight=\"bold\" fill=\"#222\">Legend:</text>
-      
-      <rect x=\"50\" y=\"1600\" width=\"15\" height=\"15\" fill=\"#e8f0ff\" stroke=\"#0056d6\" stroke-width=\"1\"/>
-      <text x=\"75\" y=\"1612\" font-size=\"9\" fill=\"#333\">Input/Output</text>
-      
-      <rect x=\"250\" y=\"1600\" width=\"15\" height=\"15\" fill=\"#fff3cd\" stroke=\"#ff9800\" stroke-width=\"1\"/>
-      <text x=\"275\" y=\"1612\" font-size=\"9\" fill=\"#333\">Processing</text>
-      
-      <rect x=\"500\" y=\"1600\" width=\"15\" height=\"15\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"1\"/>
-      <text x=\"525\" y=\"1612\" font-size=\"9\" fill=\"#333\">Handlers/Queries</text>
-      
-      <rect x=\"800\" y=\"1600\" width=\"15\" height=\"15\" fill=\"#f3e5f5\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-      <text x=\"825\" y=\"1612\" font-size=\"9\" fill=\"#333\">Database</text>
-      
-      <rect x=\"1050\" y=\"1600\" width=\"15\" height=\"15\" fill=\"#ffccbc\" stroke=\"#ff5722\" stroke-width=\"1\"/>
-      <text x=\"1075\" y=\"1612\" font-size=\"9\" fill=\"#333\">⚠️ Bottleneck</text>
-      
-      <rect x=\"1350\" y=\"1600\" width=\"15\" height=\"15\" fill=\"#ffe0e0\" stroke=\"#b91c1c\" stroke-width=\"1\"/>
-      <text x=\"1375\" y=\"1612\" font-size=\"9\" fill=\"#333\">Problem Area</text>
-    </g>
-
-    <!-- LIVE BBS BRANCHING TREE -->
-    <g id=\"live-bbs-tree\">
-      <text x=\"800\" y=\"1685\" font-size=\"14\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#0056d6\">Live Bulletin Topic Tree</text>
-      <text x=\"800\" y=\"1702\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">Actual posts grouped by board/topic directly inside the flowchart.</text>
-
-      <rect x=\"700\" y=\"1720\" width=\"200\" height=\"38\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"800\" y=\"1743\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">BBS Boards</text>
-
-      {% set branch_count = topic_branches|length %}
-      {% if branch_count > 0 %}
-        {% set step = 1400 // (branch_count + 1) %}
-        {% for branch in topic_branches %}
-          {% set branch_x = 100 + (step * loop.index) %}
-
-          <line x1=\"800\" y1=\"1758\" x2=\"{{ branch_x }}\" y2=\"1804\" stroke=\"#4caf50\" stroke-width=\"1.5\"/>
-          <rect x=\"{{ branch_x - 90 }}\" y=\"1804\" width=\"180\" height=\"42\" fill=\"#f3e5f5\" stroke=\"#9c27b0\" stroke-width=\"1.2\" rx=\"4\"/>
-          <text x=\"{{ branch_x }}\" y=\"1821\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\" fill=\"#333\">{{ branch.board }}</text>
-          <text x=\"{{ branch_x }}\" y=\"1835\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">{{ branch.posts|length }} latest posts</text>
-
-          {% for post in branch.posts %}
-            {% set post_y = 1860 + (loop.index0 * 58) %}
-            <line x1=\"{{ branch_x }}\" y1=\"1846\" x2=\"{{ branch_x }}\" y2=\"{{ post_y }}\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-            <rect x=\"{{ branch_x - 120 }}\" y=\"{{ post_y }}\" width=\"240\" height=\"46\" fill=\"#ffffff\" stroke=\"#cfd8dc\" stroke-width=\"1\" rx=\"4\"/>
-            <text x=\"{{ branch_x - 112 }}\" y=\"{{ post_y + 16 }}\" font-size=\"8\" fill=\"#222\">#{{ post.id }} {{ post.preview }}</text>
-            <text x=\"{{ branch_x - 112 }}\" y=\"{{ post_y + 31 }}\" font-size=\"7\" fill=\"#666\">{{ post.sender }} | {{ post.date }}</text>
-          {% endfor %}
-        {% endfor %}
-      {% else %}
-        <rect x=\"590\" y=\"1808\" width=\"420\" height=\"40\" fill=\"#f7f7f7\" stroke=\"#bbb\" stroke-width=\"1\" rx=\"4\"/>
-        <text x=\"800\" y=\"1832\" font-size=\"10\" text-anchor=\"middle\" fill=\"#666\">No bulletin posts yet. Create a bulletin and refresh to see branches.</text>
-      {% endif %}
-    </g>
-
-    <!-- LIVE CHANNEL COMMENTS TREE -->
-    <g id=\"live-channel-comments-tree\">
-      <text x=\"800\" y=\"2140\" font-size=\"14\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#0056d6\">Live Channel Comments Tree</text>
-      <text x=\"800\" y=\"2157\" font-size=\"9\" text-anchor=\"middle\" fill=\"#666\">Comments grouped by channel topic.</text>
-
-      <rect x=\"700\" y=\"2175\" width=\"200\" height=\"38\" fill=\"#e8f5e9\" stroke=\"#4caf50\" stroke-width=\"2\" rx=\"5\"/>
-      <text x=\"800\" y=\"2198\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\">Channels</text>
-
-      {% set comment_branch_count = comment_branches|length %}
-      {% if comment_branch_count > 0 %}
-        {% set cstep = 1400 // (comment_branch_count + 1) %}
-        {% for branch in comment_branches %}
-          {% set branch_x = 100 + (cstep * loop.index) %}
-          <line x1=\"800\" y1=\"2213\" x2=\"{{ branch_x }}\" y2=\"2255\" stroke=\"#4caf50\" stroke-width=\"1.5\"/>
-          <rect x=\"{{ branch_x - 90 }}\" y=\"2255\" width=\"180\" height=\"42\" fill=\"#f3e5f5\" stroke=\"#9c27b0\" stroke-width=\"1.2\" rx=\"4\"/>
-          <text x=\"{{ branch_x }}\" y=\"2272\" font-size=\"10\" text-anchor=\"middle\" font-weight=\"bold\" fill=\"#333\">{{ branch.channel }}</text>
-          <text x=\"{{ branch_x }}\" y=\"2286\" font-size=\"8\" text-anchor=\"middle\" fill=\"#666\">{{ branch.comments|length }} latest comments</text>
-
-          {% for item in branch.comments %}
-            {% set comment_y = 2310 + (loop.index0 * 52) %}
-            <line x1=\"{{ branch_x }}\" y1=\"2298\" x2=\"{{ branch_x }}\" y2=\"{{ comment_y }}\" stroke=\"#9c27b0\" stroke-width=\"1\"/>
-            <rect x=\"{{ branch_x - 120 }}\" y=\"{{ comment_y }}\" width=\"240\" height=\"42\" fill=\"#ffffff\" stroke=\"#cfd8dc\" stroke-width=\"1\" rx=\"4\"/>
-            <text x=\"{{ branch_x - 112 }}\" y=\"{{ comment_y + 15 }}\" font-size=\"7\" fill=\"#222\">#{{ item.id }} {{ item.preview }}</text>
-            <text x=\"{{ branch_x - 112 }}\" y=\"{{ comment_y + 29 }}\" font-size=\"7\" fill=\"#666\">{{ item.sender }} | {{ item.date }}</text>
-          {% endfor %}
-        {% endfor %}
-      {% else %}
-        <rect x=\"560\" y=\"2258\" width=\"480\" height=\"40\" fill=\"#f7f7f7\" stroke=\"#bbb\" stroke-width=\"1\" rx=\"4\"/>
-        <text x=\"800\" y=\"2283\" font-size=\"10\" text-anchor=\"middle\" fill=\"#666\">No channel comments yet. Add comments on a channel post to populate this branch.</text>
-      {% endif %}
-    </g>
-    </g>
-  </svg>
-  </div>
-</div>
-
-<div class=\"card\">
-  <h3>Understanding the Flow</h3>
-  <ul style=\"margin: 0; padding-left: 20px;\">
-    <li><strong>User Input</strong> → Command parser extracts command letter (Q/B/M/C/U)</li>
-    <li><strong>Command Handlers</strong> → Specific code block runs (Bulletins, Mail, Channels, etc.)</li>
-    <li><strong>Sub-options</strong> → Further refine what action to take (Check, Read, Post, Send)</li>
-    <li><strong>Database Operations</strong> → Data is stored/retrieved from SQLite</li>
-    <li><strong>Sync Messages</strong> → If sync enabled, formatted message sent to each BBS node</li>
-    <li><strong>Message Multiplication</strong> → 1 action × N sync nodes = N messages to mesh</li>
-    <li><strong>Response</strong> → User gets answer back (chunked if >200 bytes)</li>
-  </ul>
-</div>
-
-<div class=\"card\">
-  <h3>Live Messages From Database</h3>
-  <p class=\"muted\">Latest posted messages currently stored in your database.</p>
-
-  <h4>Recent Bulletins</h4>
-  <table>
-    <thead>
-      <tr>
-        <th>id</th>
-        <th>board</th>
-        <th>sender</th>
-        <th>date</th>
-        <th>subject</th>
-        <th>content</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in recent_bulletins %}
-      <tr>
-        <td>{{ row['id'] }}</td>
-        <td>{{ row['board'] }}</td>
-        <td>{{ row['sender_short_name'] }}</td>
-        <td>{{ row['date'] }}</td>
-        <td>{{ row['subject'] }}</td>
-        <td>{{ row['content'] }}</td>
-      </tr>
-      {% endfor %}
-      {% if not recent_bulletins %}
-      <tr>
-        <td colspan=\"6\" class=\"muted\">No bulletin messages found.</td>
-      </tr>
-      {% endif %}
-    </tbody>
-  </table>
-
-  <h4 style=\"margin-top: 20px;\">Recent Mail</h4>
-  <table>
-    <thead>
-      <tr>
-        <th>id</th>
-        <th>from</th>
-        <th>to</th>
-        <th>date</th>
-        <th>subject</th>
-        <th>content</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in recent_mail %}
-      <tr>
-        <td>{{ row['id'] }}</td>
-        <td>{{ row['sender_short_name'] }}</td>
-        <td>{{ row['recipient'] }}</td>
-        <td>{{ row['date'] }}</td>
-        <td>{{ row['subject'] }}</td>
-        <td>{{ row['content'] }}</td>
-      </tr>
-      {% endfor %}
-      {% if not recent_mail %}
-      <tr>
-        <td colspan=\"6\" class=\"muted\">No mail messages found.</td>
-      </tr>
-      {% endif %}
-    </tbody>
-  </table>
-
-  <h4 style=\"margin-top: 20px;\">Recent Channels</h4>
-  <table>
-    <thead>
-      <tr>
-        <th>id</th>
-        <th>name</th>
-        <th>url / psk</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in recent_channels %}
-      <tr>
-        <td>{{ row['id'] }}</td>
-        <td>{{ row['name'] }}</td>
-        <td>{{ row['url'] }}</td>
-      </tr>
-      {% endfor %}
-      {% if not recent_channels %}
-      <tr>
-        <td colspan=\"3\" class=\"muted\">No channels found.</td>
-      </tr>
-      {% endif %}
-    </tbody>
-  </table>
-</div>
-"""
+FLOWCHART_CONTENT = UPDATED_FLOWCHART_CONTENT
 
 
 def create_app(runtime_interface=None) -> Flask:
@@ -2491,8 +2164,23 @@ def create_app(runtime_interface=None) -> Flask:
               sender_short_name TEXT NOT NULL,
               date TEXT NOT NULL,
               content TEXT NOT NULL,
+              unique_id TEXT NOT NULL DEFAULT '',
+              expected_content_length INTEGER,
+              content_complete INTEGER NOT NULL DEFAULT 1,
               FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
             )''')
+            try:
+              conn.execute("ALTER TABLE channel_comments ADD COLUMN unique_id TEXT NOT NULL DEFAULT ''")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE channel_comments ADD COLUMN expected_content_length INTEGER")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE channel_comments ADD COLUMN content_complete INTEGER NOT NULL DEFAULT 1")
+            except Exception:
+              pass
             conn.execute('''CREATE TABLE IF NOT EXISTS connection_events (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               event_time TEXT NOT NULL,
@@ -3407,6 +3095,32 @@ def create_app(runtime_interface=None) -> Flask:
       request_zork_save_resolve_trigger(user_id, game_id)
       return jsonify({"ok": True, "message": f"Best-candidate resolution queued for {user_id}:{game_id}"})
 
+    @app.post("/api/sync/resolve-record")
+    @login_required
+    def api_sync_resolve_record():
+      data = request.get_json(silent=True) or {}
+      scope = str(data.get("scope", "")).strip().lower()
+      key = str(data.get("key", "")).strip()
+      if not scope or not key:
+        return jsonify({"ok": False, "error": "scope and key required"}), 400
+      request_record_resolve_trigger(scope, key)
+      return jsonify({"ok": True, "message": f"Repair queued for {scope}:{key}"})
+
+    @app.post("/sync/resolve-record")
+    @login_required
+    def resolve_record():
+      scope = request.form.get("scope", "").strip().lower()
+      key = request.form.get("key", "").strip()
+      redirect_to = request.form.get("redirect_to", "").strip()
+      if not scope or not key:
+        flash("Scope and key are required to resolve a record.", "error")
+      else:
+        request_record_resolve_trigger(scope, key)
+        flash(f"Repair queued for {scope}:{key}.", "success")
+      if redirect_to:
+        return redirect(redirect_to)
+      return redirect(url_for("settings_page") + "#sync")
+
     @app.get("/api/sync/transmissions")
     @login_required
     def api_sync_transmissions():
@@ -3762,8 +3476,11 @@ def create_app(runtime_interface=None) -> Flask:
         'MAIL':            'Content',
         'MAILCONT':        'Content',
         'CHANNEL':         'Content',
+        'CHANNELCOMMENT':  'Content',
+        'CHANNELCOMMENTCONT': 'Content',
         'DELETE_BULLETIN': 'Content',
         'DELETE_MAIL':     'Content',
+        'DELETE_CHANNELCOMMENT': 'Content',
         # User profiles
         'PROFILESYNC':     'Profile',
         # Sync protocol overhead
@@ -4010,29 +3727,57 @@ def create_app(runtime_interface=None) -> Flask:
         search_query = request.args.get("q", "").strip()
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            if search_query:
-                where_clause = " OR ".join([f"{col} LIKE ?" for col in cfg["searchable"]])
-                params = [f"%{search_query}%" for _ in cfg["searchable"]]
-                cursor.execute(
-                    f"SELECT {', '.join(cfg['columns'])} FROM {table} WHERE {where_clause} ORDER BY id DESC",
-                    params,
+            if table == "bulletins":
+                select_sql = (
+                    "SELECT id, board, sender_short_name, date, subject, content, local_only, unique_id, "
+                    "COALESCE(content_complete, 1) AS _content_complete, "
+                    "COALESCE(expected_content_length, LENGTH(content)) AS _expected_content_length "
+                    "FROM bulletins"
                 )
+                if search_query:
+                    where_clause = " OR ".join([f"{col} LIKE ?" for col in cfg["searchable"]])
+                    params = [f"%{search_query}%" for _ in cfg["searchable"]]
+                    cursor.execute(f"{select_sql} WHERE {where_clause} ORDER BY id DESC", params)
+                else:
+                    cursor.execute(f"{select_sql} ORDER BY id DESC")
             else:
-                cursor.execute(f"SELECT {', '.join(cfg['columns'])} FROM {table} ORDER BY id DESC")
-            rows = cursor.fetchall()
+                if search_query:
+                    where_clause = " OR ".join([f"{col} LIKE ?" for col in cfg["searchable"]])
+                    params = [f"%{search_query}%" for _ in cfg["searchable"]]
+                    cursor.execute(
+                        f"SELECT {', '.join(cfg['columns'])} FROM {table} WHERE {where_clause} ORDER BY id DESC",
+                        params,
+                    )
+                else:
+                    cursor.execute(f"SELECT {', '.join(cfg['columns'])} FROM {table} ORDER BY id DESC")
+            rows = [dict(row) for row in cursor.fetchall()]
+
+        display_columns = list(cfg["columns"])
+        if table == "bulletins":
+            display_columns = ["id", "mesh_id", "board", "sender_short_name", "date", "subject", "sync_status", "content", "local_only", "unique_id"]
+            for row in rows:
+                expected = int(row.get("_expected_content_length") or len(str(row.get("content") or "")))
+                actual = len(str(row.get("content") or ""))
+                incomplete = int(row.get("_content_complete") or 0) == 0
+                row["mesh_id"] = str(row.get("unique_id") or "")[:12]
+                row["sync_status"] = "Incomplete" if incomplete else "OK"
+                row["_sync_incomplete"] = incomplete
+                row["_sync_status_text"] = f"{actual}/{expected} chars" if incomplete else "Mesh ID is the cross-peer stable record key"
+                row["_resolve_scope"] = "bulletins"
+                row["_resolve_key"] = str(row.get("unique_id") or "")
 
         content = render_template_string(
-            LIST_CONTENT,
+            TABLE_LIST_CONTENT,
             table_title=cfg["title"],
             table_name=table,
-            columns=cfg["columns"],
+            display_columns=display_columns,
             rows=rows,
             search_query=search_query,
             db_path=app.config["DB_PATH"],
-          create_url=(url_for("bulletin_new") if table == "bulletins" else url_for("channel_new") if table == "channels" else None),
-          create_label=("New Bulletin Post" if table == "bulletins" else "New Channel Entry" if table == "channels" else ""),
-          edit_label=("Post/Edit" if table == "channels" else "Edit"),
-          comments_enabled=(table == "channels"),
+            create_url=(url_for("bulletin_new") if table == "bulletins" else url_for("channel_new") if table == "channels" else None),
+            create_label=("New Bulletin Post" if table == "bulletins" else "New Channel Entry" if table == "channels" else ""),
+            edit_label=("Post/Edit" if table == "channels" else "Edit"),
+            comments_enabled=(table == "channels"),
         )
         return render_template_string(BASE_TEMPLATE, title=cfg["title"], content=content, show_nav=True)
 
@@ -4055,12 +3800,10 @@ def create_app(runtime_interface=None) -> Flask:
         elif board not in bulletin_boards:
           flash("Invalid board selected.", "error")
         else:
-          post_date = datetime.now().strftime("%Y-%m-%d %H:%M")
-          unique_id = str(uuid.uuid4())
-          execute_write(
-            "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (board, sender_short_name, post_date, subject, content, unique_id, local_only),
-          )
+          from db_operations import add_bulletin
+          current_interface = get_runtime_interface()
+          bbs_nodes = list(getattr(current_interface, "bbs_nodes", []) or []) if current_interface else []
+          add_bulletin(board, sender_short_name, subject, content, bbs_nodes, current_interface, local_only=bool(local_only))
           flash("Bulletin post created.", "success")
           return redirect(url_for("table_list", table="bulletins"))
 
@@ -4082,10 +3825,10 @@ def create_app(runtime_interface=None) -> Flask:
         if not all([name, url]):
           flash("All fields are required.", "error")
         else:
-          execute_write(
-            "INSERT INTO channels (name, url, local_only) VALUES (?, ?, ?)",
-            (name, url, local_only),
-          )
+          from db_operations import add_channel
+          current_interface = get_runtime_interface()
+          bbs_nodes = list(getattr(current_interface, "bbs_nodes", []) or []) if current_interface else []
+          add_channel(name, url, bbs_nodes, current_interface, local_only=bool(local_only))
           flash("Channel entry created.", "success")
           return redirect(url_for("table_list", table="channels"))
 
@@ -4110,21 +3853,20 @@ def create_app(runtime_interface=None) -> Flask:
           if not sender_short_name or not content:
             flash("Sender and comment are required.", "error")
           else:
-            comment_date = datetime.now().strftime("%Y-%m-%d %H:%M")
-            cursor.execute("BEGIN IMMEDIATE")
-            cursor.execute(
-              "INSERT INTO channel_comments (channel_id, sender_short_name, date, content) VALUES (?, ?, ?, ?)",
-              (channel_id, sender_short_name, comment_date, content)
-            )
-            conn.commit()
+            from db_operations import add_channel_comment
+            current_interface = get_runtime_interface()
+            bbs_nodes = list(getattr(current_interface, "bbs_nodes", []) or []) if current_interface else []
+            add_channel_comment(channel_id, sender_short_name, content, bbs_nodes=bbs_nodes, interface=current_interface)
             flash("Comment added.", "success")
             return redirect(url_for("channel_comments", channel_id=channel_id))
 
-        cursor.execute(
-          "SELECT id, sender_short_name, date, content FROM channel_comments WHERE channel_id = ? ORDER BY id DESC",
-          (channel_id,)
-        )
-        comments = cursor.fetchall()
+        from db_operations import get_channel_comments
+        comments = [dict(row) for row in get_channel_comments(channel_id)]
+        for comment in comments:
+          expected = int(comment.get("expected_content_length") or len(str(comment.get("content") or "")))
+          actual = len(str(comment.get("content") or ""))
+          comment["mesh_id"] = str(comment.get("unique_id") or "")[:12]
+          comment["sync_status"] = f"Incomplete ({actual}/{expected})" if int(comment.get("content_complete") or 0) == 0 else "OK"
 
       content = render_template_string(
         CHANNEL_COMMENTS_CONTENT,
@@ -4138,10 +3880,20 @@ def create_app(runtime_interface=None) -> Flask:
     @app.post("/channels/<int:channel_id>/comments/<int:comment_id>/delete")
     @login_required
     def channel_comment_delete(channel_id: int, comment_id: int):
-      execute_write(
-        "DELETE FROM channel_comments WHERE id = ? AND channel_id = ?",
-        (comment_id, channel_id)
-      )
+      with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT unique_id FROM channel_comments WHERE id = ? AND channel_id = ?", (comment_id, channel_id))
+        row = cursor.fetchone()
+      if row and row["unique_id"]:
+        from db_operations import delete_channel_comment
+        current_interface = get_runtime_interface()
+        bbs_nodes = list(getattr(current_interface, "bbs_nodes", []) or []) if current_interface else []
+        delete_channel_comment(str(row["unique_id"]), bbs_nodes, current_interface)
+      else:
+        execute_write(
+          "DELETE FROM channel_comments WHERE id = ? AND channel_id = ?",
+          (comment_id, channel_id)
+        )
       flash("Comment deleted.", "success")
       return redirect(url_for("channel_comments", channel_id=channel_id))
 
