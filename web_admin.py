@@ -495,6 +495,65 @@ BASE_TEMPLATE = """
     }
     .activity-list { margin: 0; padding-left: 18px; }
     .activity-list li { margin-bottom: 8px; }
+    .peer-graph-grid {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    }
+    .peer-graph-card {
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      background: var(--card-bg);
+      padding: 12px;
+    }
+    .peer-graph-card h4 { margin: 0 0 6px 0; }
+    .scope-bar-row { margin-top: 10px; }
+    .scope-bar-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .scope-status-ok { color: #0f766e; }
+    .scope-status-bad { color: #b91c1c; }
+    .scope-bar-track {
+      height: 10px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: var(--table-header-bg);
+      display: flex;
+    }
+    .scope-bar-local { background: #2563eb; }
+    .scope-bar-peer { background: #f59e0b; }
+    .scope-bar-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 4px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .pipeline-flow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-top: 10px;
+    }
+    .pipeline-node {
+      flex: 1 1 150px;
+      min-width: 140px;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      background: var(--card-bg);
+      padding: 10px;
+    }
+    .pipeline-arrow {
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1;
+    }
   </style>
 </head>
 <body data-theme="dark">
@@ -1190,6 +1249,37 @@ SETTINGS_CONTENT = """
   <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.peer_sync_counts }}</pre>
   <p><strong>Per-scope mismatch reasons:</strong></p>
   <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.peer_scope_mismatches }}</pre>
+  <h3>Peer Hash Graph</h3>
+  {% if diagnostics.peer_hash_graph %}
+  <div class="peer-graph-grid">
+    {% for peer in diagnostics.peer_hash_graph %}
+    <div class="peer-graph-card">
+      <h4>{{ peer.peer_node_id }}</h4>
+      <div class="muted">Reported at {{ peer.reported_at }}</div>
+      {% for scope in peer.scopes %}
+      <div class="scope-bar-row">
+        <div class="scope-bar-header">
+          <span><strong>{{ scope.label }}</strong></span>
+          <span class="{% if scope.hash_match and scope.count_match %}scope-status-ok{% else %}scope-status-bad{% endif %}">{% if scope.hash_match and scope.count_match %}aligned{% else %}mismatch{% endif %}</span>
+        </div>
+        <div class="scope-bar-track">
+          <div class="scope-bar-local" style="width: {{ scope.local_width }}%" title="Local {{ scope.local_count }}"></div>
+          <div class="scope-bar-peer" style="width: {{ scope.peer_width }}%" title="Peer {{ scope.peer_count }}"></div>
+        </div>
+        <div class="scope-bar-meta">
+          <span>Local {{ scope.local_count }}</span>
+          <span>Peer {{ scope.peer_count }}</span>
+          <span>{% if scope.hash_match %}hash ok{% else %}hash differs{% endif %}</span>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+  <p class="muted">Blue bars are local counts. Amber bars are peer-reported counts. A scope can keep the same count and still have a hash mismatch.</p>
+  {% else %}
+  <p class="muted">No peer hash data available yet.</p>
+  {% endif %}
   <p class="muted">Outbound progress can be 100% while peer consistency is mismatched. Peer counts above indicate missing records between nodes.</p>
   {% if diagnostics.mismatch_retry_details %}
   <pre style="white-space: pre-wrap; margin-top: 4px;">{{ diagnostics.mismatch_retry_details }}</pre>
@@ -1739,8 +1829,30 @@ TRANSMISSION_DASHBOARD_CONTENT = """
 
 FLOWCHART_CONTENT = """
 <div class=\"card\">
-  <h2>Message System Flowchart - Detailed Command Handlers</h2>
-  <p class=\"muted\">Tree view showing command routing and communication messages between system components.</p>
+  <h2>Command, Sync, and Repair Flowchart</h2>
+  <p class=\"muted\">Tree view showing command routing plus the current multi-phase sync and hash repair pipeline.</p>
+</div>
+
+<div class=\"card\">
+  <h3>Sync + Hash Repair Pipeline</h3>
+  <p class=\"muted\">Current peer sync order favors user-facing content first and defers game data until the end.</p>
+  <div class=\"pipeline-flow\">
+    <div class=\"pipeline-node\"><strong>Trigger</strong><br><span class=\"muted\">scheduled sync, manual sync, peer resync</span></div>
+    <div class=\"pipeline-arrow\">→</div>
+    <div class=\"pipeline-node\"><strong>Phase 1</strong><br><span class=\"muted\">mail</span></div>
+    <div class=\"pipeline-arrow\">→</div>
+    <div class=\"pipeline-node\"><strong>Phase 2</strong><br><span class=\"muted\">bulletins</span></div>
+    <div class=\"pipeline-arrow\">→</div>
+    <div class=\"pipeline-node\"><strong>Phase 3</strong><br><span class=\"muted\">channels</span></div>
+    <div class=\"pipeline-arrow\">→</div>
+    <div class=\"pipeline-node\"><strong>Phase 4</strong><br><span class=\"muted\">profiles</span></div>
+    <div class=\"pipeline-arrow\">→</div>
+    <div class=\"pipeline-node\"><strong>Phase 5</strong><br><span class=\"muted\">game scores + zork saves</span></div>
+  </div>
+  <div class=\"pipeline-flow\">
+    <div class=\"pipeline-node\"><strong>Repair loop</strong><br><span class=\"muted\">SYNCSTATE → HASHREQ → HASHREC/HASHEND → HASHMISS replay</span></div>
+    <div class=\"pipeline-node\"><strong>Long content</strong><br><span class=\"muted\">BULLETIN/MAIL + META + CONT frames, with incomplete markers until healed</span></div>
+  </div>
 </div>
 
 <div class=\"card\" style=\"background: transparent;\">
@@ -2677,6 +2789,14 @@ def create_app(runtime_interface=None) -> Flask:
 
     def build_settings_diagnostics() -> dict[str, str]:
       bbs_nodes, allowed_nodes, sync_interval_minutes = load_sync_settings(app.config["CONFIG_PATH"])
+      scope_labels = [
+        ("mail", "Mail"),
+        ("bulletins", "Bulletins"),
+        ("channels", "Channels"),
+        ("profiles", "Profiles"),
+        ("game_scores", "Game Scores"),
+        ("zork_saves", "Zork Saves"),
+      ]
       diagnostics = {
         "app_version": app.config.get("DISPLAY_VERSION", "unknown"),
         "interface_attached": "No",
@@ -2707,6 +2827,7 @@ def create_app(runtime_interface=None) -> Flask:
         "peer_sync_status": "Unknown",
         "peer_sync_counts": "No peer status received yet",
         "peer_scope_mismatches": "No peer status received yet",
+        "peer_hash_graph": [],
         "mismatch_retry_summary": "None",
         "mismatch_retry_details": "",
         "db_path": app.config["DB_PATH"],
@@ -2824,8 +2945,10 @@ def create_app(runtime_interface=None) -> Flask:
             from db_operations import get_local_record_counts
             local_hashes = get_local_record_counts()
             lines = []
+            graph_rows = []
             mismatch = False
             for peer in peer_rows:
+              peer_id = str(peer[0])
               pb = int(peer[1])
               pm = int(peer[2])
               pc = int(peer[3])
@@ -2838,6 +2961,22 @@ def create_app(runtime_interface=None) -> Flask:
               phz = str(peer[10] or "")
               php = str(peer[11] or "")
               phs = str(peer[12] or "")
+              peer_scope_counts = {
+                "bulletins": pb,
+                "mail": pm,
+                "channels": pc,
+                "zork_saves": pz,
+                "profiles": pp,
+                "game_scores": ps,
+              }
+              peer_scope_hashes = {
+                "bulletins": phb,
+                "mail": phm,
+                "channels": phc,
+                "zork_saves": phz,
+                "profiles": php,
+                "game_scores": phs,
+              }
               peer_mismatch = (
                 (pb != int(local_hashes.get("bulletins", 0)))
                 or (pm != int(local_hashes.get("mail", 0)))
@@ -2855,12 +2994,35 @@ def create_app(runtime_interface=None) -> Flask:
               mismatch = mismatch or peer_mismatch
               status = "MISMATCH" if peer_mismatch else "OK"
               lines.append(
-                f"{peer[0]} -> B:{pb} M:{pm} C:{pc} Z:{pz} P:{pp} S:{ps} @ {peer[13]} [{status}]"
+                f"{peer_id} -> B:{pb} M:{pm} C:{pc} Z:{pz} P:{pp} S:{ps} @ {peer[13]} [{status}]"
               )
+              scope_rows = []
+              for scope_key, scope_label in scope_labels:
+                local_count = int(local_hashes.get(scope_key, 0) or 0)
+                peer_count = int(peer_scope_counts.get(scope_key, 0) or 0)
+                local_hash = str(local_hashes.get(f"{scope_key}_hash", "") or "")
+                peer_hash = str(peer_scope_hashes.get(scope_key, "") or "")
+                max_count = max(local_count, peer_count, 1)
+                scope_rows.append({
+                  "key": scope_key,
+                  "label": scope_label,
+                  "local_count": local_count,
+                  "peer_count": peer_count,
+                  "local_width": max(8, round((local_count / max_count) * 100)) if local_count > 0 else 0,
+                  "peer_width": max(8, round((peer_count / max_count) * 100)) if peer_count > 0 else 0,
+                  "count_match": local_count == peer_count,
+                  "hash_match": bool(local_hash) and bool(peer_hash) and local_hash == peer_hash,
+                })
+              graph_rows.append({
+                "peer_node_id": peer_id,
+                "reported_at": str(peer[13]),
+                "scopes": scope_rows,
+              })
             diagnostics["peer_sync_status"] = "Mismatch detected" if mismatch else "Counts aligned"
             diagnostics["peer_sync_counts"] = "\n".join(lines)
             mismatch_snapshot = get_peer_mismatch_snapshot(set(bbs_nodes))
             diagnostics["peer_scope_mismatches"] = "\n".join(mismatch_snapshot.get("scope_lines", []))
+            diagnostics["peer_hash_graph"] = graph_rows
           else:
             diagnostics["peer_sync_status"] = "No peer reports yet"
             diagnostics["peer_sync_counts"] = "No peer status received yet"
@@ -3349,46 +3511,58 @@ def create_app(runtime_interface=None) -> Flask:
     def system_flowchart():
       with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute(
-          """
-          SELECT id, board, sender_short_name, date, subject, content
-          FROM bulletins
-          ORDER BY id DESC
-          LIMIT 60
-          """
-        )
-        recent_bulletins = cursor.fetchall()
+        try:
+          cursor.execute(
+            """
+            SELECT id, board, sender_short_name, date, subject, content
+            FROM bulletins
+            ORDER BY id DESC
+            LIMIT 60
+            """
+          )
+          recent_bulletins = cursor.fetchall()
+        except Exception:
+          recent_bulletins = []
 
-        cursor.execute(
-          """
-          SELECT id, sender_short_name, recipient, date, subject, content
-          FROM mail
-          ORDER BY id DESC
-          LIMIT 15
-          """
-        )
-        recent_mail = cursor.fetchall()
+        try:
+          cursor.execute(
+            """
+            SELECT id, sender_short_name, recipient, date, subject, content
+            FROM mail
+            ORDER BY id DESC
+            LIMIT 15
+            """
+          )
+          recent_mail = cursor.fetchall()
+        except Exception:
+          recent_mail = []
 
-        cursor.execute(
-          """
-          SELECT id, name, url
-          FROM channels
-          ORDER BY id DESC
-          LIMIT 15
-          """
-        )
-        recent_channels = cursor.fetchall()
+        try:
+          cursor.execute(
+            """
+            SELECT id, name, url
+            FROM channels
+            ORDER BY id DESC
+            LIMIT 15
+            """
+          )
+          recent_channels = cursor.fetchall()
+        except Exception:
+          recent_channels = []
 
-        cursor.execute(
-          """
-          SELECT cc.id, c.name AS channel_name, cc.sender_short_name, cc.date, cc.content
-          FROM channel_comments cc
-          JOIN channels c ON c.id = cc.channel_id
-          ORDER BY cc.id DESC
-          LIMIT 60
-          """
-        )
-        recent_channel_comments = cursor.fetchall()
+        try:
+          cursor.execute(
+            """
+            SELECT cc.id, c.name AS channel_name, cc.sender_short_name, cc.date, cc.content
+            FROM channel_comments cc
+            JOIN channels c ON c.id = cc.channel_id
+            ORDER BY cc.id DESC
+            LIMIT 60
+            """
+          )
+          recent_channel_comments = cursor.fetchall()
+        except Exception:
+          recent_channel_comments = []
 
       board_posts = {}
       for row in recent_bulletins:

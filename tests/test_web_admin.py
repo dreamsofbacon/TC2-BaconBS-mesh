@@ -103,6 +103,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("Admin Credentials", page)
         self.assertIn("Diagnostics", page)
         self.assertIn("test-version", page)
+        self.assertIn("Peer Hash Graph", page)
 
     def test_admin_password_change_persists_across_app_restart(self):
         app = create_app()
@@ -426,6 +427,45 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("Interface attached:</strong> Yes", page)
         self.assertIn("Local short name:</strong> BBS", page)
         self.assertIn("Local long name:</strong> Bacon BBS", page)
+
+    def test_settings_page_renders_peer_hash_graph(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("CREATE TABLE IF NOT EXISTS bulletins (id INTEGER PRIMARY KEY AUTOINCREMENT, board TEXT, sender_short_name TEXT, date TEXT, subject TEXT, content TEXT, unique_id TEXT, local_only INTEGER NOT NULL DEFAULT 0)")
+        conn.execute("CREATE TABLE IF NOT EXISTS mail (id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, sender_short_name TEXT, recipient TEXT, date TEXT, subject TEXT, content TEXT, unique_id TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS channels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, url TEXT, local_only INTEGER NOT NULL DEFAULT 0)")
+        conn.execute("CREATE TABLE IF NOT EXISTS zork_saves (user_id TEXT NOT NULL, game_id TEXT NOT NULL DEFAULT 'zork1', save_data BLOB NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (user_id, game_id))")
+        conn.execute("CREATE TABLE IF NOT EXISTS user_profiles (user_id TEXT PRIMARY KEY, short_name TEXT NOT NULL DEFAULT '', long_name TEXT NOT NULL DEFAULT '', first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, messages_sent INTEGER NOT NULL DEFAULT 0, bio TEXT NOT NULL DEFAULT '')")
+        conn.execute("CREATE TABLE IF NOT EXISTS game_scores (user_id TEXT NOT NULL, game_id TEXT NOT NULL, short_name TEXT NOT NULL DEFAULT '', score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 0, moves INTEGER NOT NULL DEFAULT 0, achieved_at TEXT NOT NULL, PRIMARY KEY (user_id, game_id))")
+        conn.execute("CREATE TABLE IF NOT EXISTS peer_sync_state (peer_node_id TEXT PRIMARY KEY, bulletins INTEGER NOT NULL DEFAULT 0, mail INTEGER NOT NULL DEFAULT 0, channels INTEGER NOT NULL DEFAULT 0, zork_saves INTEGER NOT NULL DEFAULT 0, profiles INTEGER NOT NULL DEFAULT 0, game_scores INTEGER NOT NULL DEFAULT 0, bulletins_hash TEXT NOT NULL DEFAULT '', mail_hash TEXT NOT NULL DEFAULT '', channels_hash TEXT NOT NULL DEFAULT '', zork_saves_hash TEXT NOT NULL DEFAULT '', profiles_hash TEXT NOT NULL DEFAULT '', game_scores_hash TEXT NOT NULL DEFAULT '', reported_at TEXT NOT NULL)")
+        conn.execute("INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only) VALUES ('General', 'CALL', '2026-03-30', 'Subj', 'Body', 'uid-b', 0)")
+        conn.execute("INSERT INTO peer_sync_state (peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores, bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, game_scores_hash, reported_at) VALUES ('!oldpeer', 3, 0, 0, 0, 0, 0, 'bad', '', '', '', '', '', '2026-03-30')")
+        conn.commit()
+        conn.close()
+
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        settings_response = client.get("/settings")
+        self.assertEqual(settings_response.status_code, 200)
+        page = settings_response.get_data(as_text=True)
+        self.assertIn("Peer Hash Graph", page)
+        self.assertIn("!oldpeer", page)
+        self.assertIn("hash differs", page)
+
+    def test_flowchart_page_includes_sync_pipeline_summary(self):
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        flowchart_response = client.get("/system/flowchart")
+        self.assertEqual(flowchart_response.status_code, 200)
+        page = flowchart_response.get_data(as_text=True)
+        self.assertIn("Sync + Hash Repair Pipeline", page)
+        self.assertIn("Phase 5", page)
+        self.assertIn("game scores + zork saves", page)
 
     def test_settings_diagnostics_snapshot_fallback(self):
         with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:
