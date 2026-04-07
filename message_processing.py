@@ -61,6 +61,7 @@ from utils import (
     send_delete_zork_save_to_bbs_nodes,
     send_hash_request_to_bbs_nodes,
     get_hash_repair_pause_seconds,
+    is_zork_save_sync_enabled,
     _send_one_sync, _MESHTASTIC_MAX_BYTES,
 )
 
@@ -417,6 +418,9 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
 
 
 def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> None:
+    if scope == 'zork_saves' and not is_zork_save_sync_enabled():
+        _peer_hash_manifest_buffers.pop((sender_node_id, scope), None)
+        return
     remote = _peer_hash_manifest_buffers.pop((sender_node_id, scope), {})
     local = get_record_hash_manifest(scope)
     remote_keys = set(remote.keys())
@@ -624,6 +628,9 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 return
             delete_channel_comment(parts[1], [], interface)
         elif message.startswith("DELETE_ZORKSAVE|"):
+            if not is_zork_save_sync_enabled():
+                logging.info("Ignoring DELETE_ZORKSAVE because zork save sync is disabled locally")
+                return
             parts = message.split("|", 3)
             if len(parts) != 4 or not parts[1] or not parts[2] or not parts[3]:
                 logging.warning(f"Malformed DELETE_ZORKSAVE sync message ignored: {message}")
@@ -867,6 +874,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 return
             _send_requested_record(scope, key, sender_node_id, interface)
         elif message.startswith("CANDREQ|"):
+            if not is_zork_save_sync_enabled():
+                return
             if not sender_node_id:
                 return
             parts = message.split("|", 4)
@@ -885,6 +894,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             candidate = _build_local_zork_save_candidate(user_id, game_id, source_peer='local')
             _send_candidate_response(scope, request_id, user_id, game_id, candidate, sender_node_id, interface)
         elif message.startswith("CANDRSP|"):
+            if not is_zork_save_sync_enabled():
+                return
             if not sender_node_id:
                 return
             parts = message.split("|", 8)
@@ -946,6 +957,9 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 return
             upsert_synced_game_score(parts[1], parts[2], short_name, score, max_score, moves, parts[7])
         elif message.startswith("ZORKSAVE|"):
+            if not is_zork_save_sync_enabled():
+                logging.info("Ignoring ZORKSAVE because zork save sync is disabled locally")
+                return
             # Legacy: ZORKSAVE|save_id|user_b64|game_b64|updated_at|chunk_idx|total_chunks|chunk_b64
             # New:    ZORKSAVE|save_id|user_b64|game_b64|updated_at|payload_hash|chunk_idx|total_chunks|chunk_b64
             parts = message.split("|", 8)

@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 import db_operations
+import utils
 
 
 class SyncStateHashingTests(unittest.TestCase):
@@ -233,6 +234,24 @@ class SyncStateHashingTests(unittest.TestCase):
         ).fetchall()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][0], "this is the longer canonical content")
+
+    def test_syncstate_peer_selection_skips_unchanged_until_heartbeat(self):
+        counts = db_operations.get_local_record_counts()
+        cache = {}
+
+        first = utils.select_syncstate_peers_to_notify(["!peer1"], counts, cache, now=100.0, heartbeat_seconds=1800)
+        second = utils.select_syncstate_peers_to_notify(["!peer1"], counts, cache, now=200.0, heartbeat_seconds=1800)
+
+        changed_counts = dict(counts)
+        changed_counts["mail"] = counts["mail"] + 1
+        changed_counts["mail_hash"] = "new-mail-hash"
+        third = utils.select_syncstate_peers_to_notify(["!peer1"], changed_counts, cache, now=300.0, heartbeat_seconds=1800)
+        fourth = utils.select_syncstate_peers_to_notify(["!peer1"], changed_counts, cache, now=2200.0, heartbeat_seconds=1800)
+
+        self.assertEqual(first, ["!peer1"])
+        self.assertEqual(second, [])
+        self.assertEqual(third, ["!peer1"])
+        self.assertEqual(fourth, ["!peer1"])
 
 
 if __name__ == "__main__":

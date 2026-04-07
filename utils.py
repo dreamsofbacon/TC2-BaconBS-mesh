@@ -126,6 +126,64 @@ def get_sync_runtime_settings() -> dict:
     }
 
 
+def get_syncstate_heartbeat_seconds() -> int:
+    if os.getenv("BBS_SYNCSTATE_HEARTBEAT_SECONDS") is not None:
+        return _env_int("BBS_SYNCSTATE_HEARTBEAT_SECONDS", 1800)
+    return _config_int("sync", "syncstate_heartbeat_seconds", 1800)
+
+
+def is_zork_save_sync_enabled() -> bool:
+    env_value = os.getenv("BBS_SYNC_ZORK_SAVES")
+    if env_value is not None:
+        return str(env_value).strip().lower() in ("1", "true", "yes", "on")
+    return _config_bool("sync", "sync_zork_saves", True)
+
+
+def get_zork_save_sync_notice() -> str:
+    if is_zork_save_sync_enabled():
+        return ""
+    return (
+        "Warning: this node does not sync game saves. Progress is saved only on this node "
+        "and will not follow you to other BBS nodes."
+    )
+
+
+def select_syncstate_peers_to_notify(peer_node_ids, counts, sent_cache, now=None, force=False, heartbeat_seconds=None):
+    """Return peers that should receive a SYNCSTATE broadcast and update the cache.
+
+    Peers are notified when forced, when local counts/hashes changed, or when the
+    heartbeat interval expires so remote nodes still get an occasional refresh.
+    """
+    if now is None:
+        now = time.time()
+    if heartbeat_seconds is None:
+        heartbeat_seconds = get_syncstate_heartbeat_seconds()
+
+    normalized_peers = sorted({str(peer).strip() for peer in (peer_node_ids or []) if str(peer).strip()})
+    live_peers = set(normalized_peers)
+    for peer_id in list(sent_cache.keys()):
+        if peer_id not in live_peers:
+            sent_cache.pop(peer_id, None)
+
+    signature = tuple(
+        str(counts.get(key, ""))
+        for key in (
+            "bulletins", "mail", "channels", "zork_saves", "profiles", "game_scores",
+            "bulletins_hash", "mail_hash", "channels_hash", "zork_saves_hash", "profiles_hash", "game_scores_hash",
+        )
+    )
+    destinations = []
+    for peer_id in normalized_peers:
+        last_state = sent_cache.get(peer_id, {})
+        last_signature = last_state.get("signature")
+        last_sent_at = float(last_state.get("sent_at", 0.0) or 0.0)
+        heartbeat_due = heartbeat_seconds <= 0 or (now - last_sent_at) >= float(heartbeat_seconds)
+        if force or last_signature != signature or not last_state or heartbeat_due:
+            sent_cache[peer_id] = {"signature": signature, "sent_at": now}
+            destinations.append(peer_id)
+    return destinations
+
+
 def _take_prefix_within_bytes(text: str, max_bytes: int) -> tuple[str, str]:
     """Return the largest UTF-8-safe prefix that fits max_bytes and the remainder."""
     if max_bytes <= 0 or not text:
@@ -263,6 +321,8 @@ def send_delete_mail_to_bbs_nodes(unique_id, bbs_nodes, interface):
 
 
 def send_delete_zork_save_to_bbs_nodes(user_id, game_id, deleted_at, bbs_nodes, interface):
+    if not is_zork_save_sync_enabled():
+        return
     message = f"DELETE_ZORKSAVE|{_b64(str(user_id))}|{_b64(str(game_id))}|{deleted_at}"
     logging.info(f"SERVER SYNC: Sending delete zork save sync for user_id={user_id} game_id={game_id}")
     for node_id in bbs_nodes:
@@ -337,6 +397,8 @@ def send_game_score_to_bbs_nodes(user_id, game_id, short_name, score, max_score,
 
 def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nodes, interface, pause_seconds=None):
     """Send binary zork save payload as chunked base64 sync frames."""
+    if not is_zork_save_sync_enabled():
+        return
     payload_b64 = base64.b64encode(save_data or b"").decode("ascii")
     payload_hash = base64.urlsafe_b64encode(hashlib.blake2b(save_data or b"", digest_size=8).digest()).decode("ascii").rstrip("=")
     user_b64 = _b64(str(user_id))

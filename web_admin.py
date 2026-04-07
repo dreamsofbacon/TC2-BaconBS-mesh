@@ -162,7 +162,7 @@ def load_admin_credentials(config_path: str) -> tuple[str, str, bool, bool]:
 
   return username, password, bool(env_user), bool(env_password)
 
-def load_sync_settings(config_path: str) -> tuple[list[str], list[str], int]:
+def load_sync_settings(config_path: str) -> tuple[list[str], list[str], int, bool]:
   config = read_config_file(config_path)
   bbs_nodes = parse_list_input(config.get("sync", "bbs_nodes", fallback=""))
   allowed_nodes = parse_list_input(config.get("allow_list", "allowed_nodes", fallback=""))
@@ -172,7 +172,8 @@ def load_sync_settings(config_path: str) -> tuple[list[str], list[str], int]:
   except ValueError:
     sync_interval_minutes = 5
   sync_interval_minutes = max(1, sync_interval_minutes)
-  return bbs_nodes, allowed_nodes, sync_interval_minutes
+  sync_zork_saves = _parse_bool_setting(config.get("sync", "sync_zork_saves", fallback="true"), True)
+  return bbs_nodes, allowed_nodes, sync_interval_minutes, sync_zork_saves
 
 
 def _parse_bool_setting(raw_value: Optional[str], default: bool = False) -> bool:
@@ -1408,6 +1409,9 @@ SETTINGS_CONTENT = """
     <input type=\"text\" name=\"sync_interval_minutes\" value=\"{{ sync_interval_minutes }}\"><br>
     <p class=\"muted\">How often to re-run full peer sync. For testing, set to 5 minutes.</p>
 
+    <label><input type=\"checkbox\" name=\"sync_zork_saves\" value=\"1\" {% if sync_zork_saves %}checked{% endif %}> Sync game saves across nodes</label><br>
+    <p class=\"muted\">When disabled, players can still save locally on this node, but that progress will not appear on other BBS nodes.</p>
+
     <hr>
     <h3 style=\"margin-top: 16px;\">Transmission Pacing</h3>
     <p class=\"muted\">Raise speed for debugging, or slow it down if you need cleaner over-the-air pacing. Environment variables still override GUI settings while they are present.</p>
@@ -2313,6 +2317,7 @@ def create_app(runtime_interface=None) -> Flask:
       bbs_nodes: list[str],
       allowed_nodes: list[str],
       sync_interval_minutes: int,
+      sync_zork_saves: bool,
       sync_speed_settings: dict[str, object],
     ) -> None:
       config = read_config_file(app.config["CONFIG_PATH"])
@@ -2322,6 +2327,7 @@ def create_app(runtime_interface=None) -> Flask:
         config.add_section("allow_list")
       config.set("sync", "bbs_nodes", ",".join(bbs_nodes))
       config.set("sync", "sync_interval_minutes", str(sync_interval_minutes))
+      config.set("sync", "sync_zork_saves", "true" if sync_zork_saves else "false")
       config.set("sync", "sync_turbo", "true" if bool(sync_speed_settings.get("sync_turbo", False)) else "false")
       config.set("sync", "sync_pause_seconds", str(sync_speed_settings.get("sync_pause_seconds", 0.75)))
       config.set("sync", "hash_repair_pause_seconds", str(sync_speed_settings.get("hash_repair_pause_seconds", 0.1)))
@@ -2329,12 +2335,13 @@ def create_app(runtime_interface=None) -> Flask:
       config.set("allow_list", "allowed_nodes", ",".join(allowed_nodes))
       write_config_file(config, app.config["CONFIG_PATH"])
 
-    def apply_runtime_sync_settings(bbs_nodes: list[str], allowed_nodes: list[str]) -> None:
+    def apply_runtime_sync_settings(bbs_nodes: list[str], allowed_nodes: list[str], sync_zork_saves: bool) -> None:
       interface = get_runtime_interface()
       if interface is None:
         return
       interface.bbs_nodes = list(bbs_nodes)
       interface.allowed_nodes = list(allowed_nodes)
+      interface.sync_zork_saves = bool(sync_zork_saves)
 
     def update_board_settings(raw_boards: str) -> bool:
       updated_boards = parse_list_input(raw_boards)
@@ -2352,6 +2359,7 @@ def create_app(runtime_interface=None) -> Flask:
       raw_bbs_nodes: str,
       raw_allowed_nodes: str,
       raw_sync_interval_minutes: str,
+      raw_sync_zork_saves: str,
       raw_sync_turbo: str,
       raw_sync_pause_seconds: str,
       raw_hash_repair_pause_seconds: str,
@@ -2407,9 +2415,10 @@ def create_app(runtime_interface=None) -> Flask:
         "hash_repair_pause_seconds": hash_repair_pause_seconds,
         "full_sync_delay_ms": full_sync_delay_ms,
       }
+      sync_zork_saves = _parse_bool_setting(raw_sync_zork_saves, False)
 
-      save_sync_lists(bbs_nodes, allowed_nodes, sync_interval_minutes, sync_speed_settings)
-      apply_runtime_sync_settings(bbs_nodes, allowed_nodes)
+      save_sync_lists(bbs_nodes, allowed_nodes, sync_interval_minutes, sync_zork_saves, sync_speed_settings)
+      apply_runtime_sync_settings(bbs_nodes, allowed_nodes, sync_zork_saves)
       flash("Sync settings updated.", "success")
       return True
 
@@ -2519,7 +2528,7 @@ def create_app(runtime_interface=None) -> Flask:
         return snapshot
 
     def build_settings_diagnostics() -> dict[str, str]:
-      bbs_nodes, allowed_nodes, sync_interval_minutes = load_sync_settings(app.config["CONFIG_PATH"])
+      bbs_nodes, allowed_nodes, sync_interval_minutes, sync_zork_saves = load_sync_settings(app.config["CONFIG_PATH"])
       scope_labels = [
         ("mail", "Mail"),
         ("bulletins", "Bulletins"),
@@ -2541,6 +2550,7 @@ def create_app(runtime_interface=None) -> Flask:
         "bbs_nodes_count": str(len(bbs_nodes)),
         "allowed_nodes_count": str(len(allowed_nodes)),
         "sync_interval_minutes": str(sync_interval_minutes),
+        "sync_zork_saves": "Yes" if sync_zork_saves else "No",
         "bbs_nodes_text": ", ".join(bbs_nodes),
         "allowed_nodes_text": ", ".join(allowed_nodes),
         "board_count": str(len(app.config["BULLETIN_BOARDS"])),
@@ -2811,7 +2821,7 @@ def create_app(runtime_interface=None) -> Flask:
       return diagnostics
 
     def render_settings_page():
-      bbs_nodes, allowed_nodes, sync_interval_minutes = load_sync_settings(app.config["CONFIG_PATH"])
+      bbs_nodes, allowed_nodes, sync_interval_minutes, sync_zork_saves = load_sync_settings(app.config["CONFIG_PATH"])
       sync_speed_settings = load_sync_speed_settings(app.config["CONFIG_PATH"])
       sync_runtime_settings = get_sync_runtime_settings()
       diagnostics = build_settings_diagnostics()
@@ -2822,6 +2832,7 @@ def create_app(runtime_interface=None) -> Flask:
         bbs_nodes_text="\n".join(bbs_nodes),
         allowed_nodes_text="\n".join(allowed_nodes),
         sync_interval_minutes=str(sync_interval_minutes),
+        sync_zork_saves=sync_zork_saves,
         sync_speed_settings=sync_speed_settings,
         sync_runtime_settings=sync_runtime_settings,
         sync_env_override_flags=get_sync_env_override_flags(),
@@ -2894,6 +2905,7 @@ def create_app(runtime_interface=None) -> Flask:
             request.form.get("bbs_nodes", ""),
             request.form.get("allowed_nodes", ""),
             request.form.get("sync_interval_minutes", "5"),
+            request.form.get("sync_zork_saves", ""),
             request.form.get("sync_turbo", ""),
             request.form.get("sync_pause_seconds", ""),
             request.form.get("hash_repair_pause_seconds", ""),
@@ -2970,6 +2982,7 @@ def create_app(runtime_interface=None) -> Flask:
           request.form.get("bbs_nodes", ""),
           request.form.get("allowed_nodes", ""),
           request.form.get("sync_interval_minutes", "5"),
+          request.form.get("sync_zork_saves", ""),
           request.form.get("sync_turbo", ""),
           request.form.get("sync_pause_seconds", ""),
           request.form.get("hash_repair_pause_seconds", ""),
@@ -2997,7 +3010,7 @@ def create_app(runtime_interface=None) -> Flask:
       snapshot_path = os.getenv("BBS_RUNTIME_DIAG_PATH", "runtime_diagnostics.json")
       snapshot = load_runtime_snapshot(snapshot_path)
 
-      _, _, config_interval_minutes = load_sync_settings(app.config["CONFIG_PATH"])
+      _, _, config_interval_minutes, _ = load_sync_settings(app.config["CONFIG_PATH"])
       progress_percent = int(snapshot.get("sync_progress_percent", 0)) if snapshot else 0
       in_progress = bool(snapshot.get("sync_in_progress", False)) if snapshot else False
       phase = str(snapshot.get("sync_current_phase", "never_run")) if snapshot else "never_run"
@@ -3028,7 +3041,7 @@ def create_app(runtime_interface=None) -> Flask:
     @app.get("/api/sync/mismatches")
     @login_required
     def api_sync_mismatches():
-      expected_nodes, _, _ = load_sync_settings(app.config["CONFIG_PATH"])
+      expected_nodes, _, _, _ = load_sync_settings(app.config["CONFIG_PATH"])
       snapshot = get_peer_mismatch_snapshot(set(expected_nodes))
       peers_payload = []
       scope_map = {}

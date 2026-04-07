@@ -18,7 +18,7 @@ from db_operations import (
 )
 from utils import (
     get_node_id_from_num, get_node_info,
-    get_node_short_name, get_user_state, send_message,
+    get_node_short_name, get_user_state, get_zork_save_sync_notice, send_message,
     update_user_state
 )
 from zork_port import (
@@ -200,6 +200,9 @@ def handle_games_command(sender_id, interface):
     for i, (game_id, info) in enumerate(GAME_LIST, start=1):
         menu += f"[{i}] {info['name']}\n"
     menu += "[S]cores [H]all of Fame [0]Exit"
+    sync_notice = get_zork_save_sync_notice()
+    if sync_notice:
+        menu += f"\n\n{sync_notice}"
     send_message(menu, sender_id, interface)
     update_user_state(sender_id, {'command': 'GAMES_MENU', 'step': 1})
 
@@ -234,17 +237,24 @@ def handle_games_steps(sender_id, message, interface):
 
 
 def _launch_game(sender_id, interface, game_id, game_name):
+    sync_notice = get_zork_save_sync_notice()
     if has_zork_session(sender_id, game_id):
         intro = resume_zork_session(sender_id, game_id)
         send_message(intro, sender_id, interface)
+        if sync_notice:
+            send_message(sync_notice, sender_id, interface)
         send_message(f"{game_name} resumed. Send X to exit.", sender_id, interface)
     elif has_zork_save(sender_id, game_id):
         intro = start_zork_session(sender_id, game_id)
         send_message(intro, sender_id, interface)
+        if sync_notice:
+            send_message(sync_notice, sender_id, interface)
         send_message(f"Saved game restored. Send X to exit.", sender_id, interface)
     else:
         intro = start_zork_session(sender_id, game_id)
         send_message(intro, sender_id, interface)
+        if sync_notice:
+            send_message(sync_notice, sender_id, interface)
         send_message(
             f"{game_name} started. Send commands (LOOK, NORTH, TAKE LAMP). Send X to exit.",
             sender_id, interface

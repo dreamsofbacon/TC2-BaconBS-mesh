@@ -52,6 +52,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         config["sync"] = {
             "bbs_nodes": "!oldpeer",
             "sync_interval_minutes": "5",
+            "sync_zork_saves": "true",
         }
         config["allow_list"] = {
             "allowed_nodes": "!oldurgent",
@@ -152,6 +153,7 @@ class WebAdminSettingsTests(unittest.TestCase):
                 "bbs_nodes": "!node1\n!node2\n!node1",
                 "allowed_nodes": "!allow1, !allow2",
                 "sync_interval_minutes": "5",
+                "sync_zork_saves": "1",
             },
             follow_redirects=True,
         )
@@ -163,6 +165,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         config.read(self.config_path)
         self.assertEqual(config.get("sync", "bbs_nodes"), "!node1,!node2")
         self.assertEqual(config.get("sync", "sync_interval_minutes"), "5")
+        self.assertEqual(config.get("sync", "sync_zork_saves"), "true")
         self.assertEqual(config.get("allow_list", "allowed_nodes"), "!allow1,!allow2")
 
     def test_sync_speed_settings_are_saved_from_gui(self):
@@ -179,6 +182,7 @@ class WebAdminSettingsTests(unittest.TestCase):
                 "bbs_nodes": "!node1",
                 "allowed_nodes": "!allow1",
                 "sync_interval_minutes": "7",
+                "sync_zork_saves": "1",
                 "sync_turbo": "1",
                 "sync_pause_seconds": "0.05",
                 "hash_repair_pause_seconds": "0.01",

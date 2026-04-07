@@ -141,7 +141,10 @@ If you prefer manual setup, follow these steps:
    
    [sync]  
    bbs_nodes = !f53f4abc,!f3abc123  
+   # sync_zork_saves = true  
    ```
+
+   `sync_zork_saves = false` keeps game saves local to that node. Players can still resume on the same node, but their progress will not appear on other synced nodes.
 
 ### Sync Model (Current)
 
