@@ -16,6 +16,7 @@ if "meshtastic" not in sys.modules:
 import command_handlers
 import db_operations
 import message_processing
+import utils
 from utils import send_zork_save_to_bbs_nodes, _MESHTASTIC_MAX_BYTES
 
 
@@ -261,6 +262,23 @@ class SyncPacingTests(unittest.TestCase):
         self.assertEqual(send_mock.call_count, 2)
         self.assertEqual(sleep_mock.call_count, 1)
         self.assertEqual(sleep_mock.call_args_list[0].args[0], 0.25)
+
+
+class MainMenuNumberAliasTests(unittest.TestCase):
+    def tearDown(self):
+        utils.user_states.clear()
+
+    def test_initial_main_menu_accepts_numeric_selection(self):
+        sender_id = 1234
+        iface = _DummyInterface()
+        quick_help_mock = mock.Mock()
+
+        with mock.patch.object(message_processing, "_auto_update_profile"), \
+             mock.patch.dict(message_processing.main_menu_handlers, {"q": quick_help_mock}, clear=False):
+            utils.update_user_state(sender_id, {"command": "MAIN_MENU", "step": 1})
+            message_processing.process_message(sender_id, "1", interface=iface, is_sync_message=False)
+
+        quick_help_mock.assert_called_once_with(sender_id, iface)
 
 
 if __name__ == "__main__":

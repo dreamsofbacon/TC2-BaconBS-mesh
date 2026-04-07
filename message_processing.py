@@ -1046,8 +1046,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
         elif message_lower.startswith("chl"):
             handle_list_channels_command(sender_id, interface)
         else:
-            if state and state['command'] == 'MENU':
-                menu_name = state['menu']
+            if state and state['command'] in ('MENU', 'MAIN_MENU'):
+                menu_name = state.get('menu', 'main')
                 if menu_name == 'bbs':
                     handlers = bbs_menu_handlers
                     _bbs_alias = {'1': 'm', '2': 'b', '3': 'c', '4': 'j', '0': 'x'}
