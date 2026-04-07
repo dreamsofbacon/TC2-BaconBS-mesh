@@ -26,6 +26,7 @@ from utils import (
     send_game_score_to_bbs_nodes,
     send_zork_save_to_bbs_nodes,
     get_full_sync_delay_ms,
+    is_zork_save_sync_enabled,
 )
 
 
@@ -926,6 +927,7 @@ def get_local_record_counts() -> dict:
     """Return local record counts and compact hashes used by SYNCSTATE comparisons."""
     conn = get_db_connection()
     c = conn.cursor()
+    zork_save_sync_enabled = is_zork_save_sync_enabled()
     c.execute("SELECT COUNT(*) FROM bulletins WHERE local_only = 0")
     bulletins = int(c.fetchone()[0])
     c.execute("SELECT COUNT(*) FROM mail")
@@ -937,8 +939,11 @@ def get_local_record_counts() -> dict:
     )
     channels += int(c.fetchone()[0])
     _ensure_zork_saves_table()
-    c.execute("SELECT COUNT(*) FROM zork_saves")
-    zork_saves = int(c.fetchone()[0])
+    if zork_save_sync_enabled:
+        c.execute("SELECT COUNT(*) FROM zork_saves")
+        zork_saves = int(c.fetchone()[0])
+    else:
+        zork_saves = 0
     c.execute("SELECT COUNT(*) FROM user_profiles")
     profiles = int(c.fetchone()[0])
     c.execute("SELECT COUNT(*) FROM game_scores")
@@ -987,9 +992,12 @@ def get_local_record_counts() -> dict:
             channels_digest.update(blob)
     channels_digest.update(channels_row_count.to_bytes(8, 'big'))
     channels_hash = base64.urlsafe_b64encode(channels_digest.digest()).decode('ascii').rstrip('=')
-    zork_saves_hash = _hash_rows(
-        "SELECT user_id, game_id, save_data, updated_at FROM zork_saves ORDER BY user_id, game_id"
-    )
+    if zork_save_sync_enabled:
+        zork_saves_hash = _hash_rows(
+            "SELECT user_id, game_id, save_data, updated_at FROM zork_saves ORDER BY user_id, game_id"
+        )
+    else:
+        zork_saves_hash = _compact_row_hash(("zork_saves_disabled",))
     profiles_hash = _hash_rows(
         "SELECT user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio FROM user_profiles ORDER BY user_id"
     )
@@ -1104,6 +1112,7 @@ def get_mismatched_peer_nodes(expected_peer_nodes=None) -> set:
     local = get_local_record_counts()
     expected = set(expected_peer_nodes or [])
     mismatched = set()
+    zork_save_sync_enabled = is_zork_save_sync_enabled()
     for row in get_peer_sync_states():
         peer = str(row[0])
         if expected and peer not in expected:
@@ -1119,13 +1128,13 @@ def get_mismatched_peer_nodes(expected_peer_nodes=None) -> set:
             pb != int(local.get('bulletins', 0))
             or pm != int(local.get('mail', 0))
             or pc != int(local.get('channels', 0))
-            or pz != int(local.get('zork_saves', 0))
+            or (zork_save_sync_enabled and pz != int(local.get('zork_saves', 0)))
             or pp != int(local.get('profiles', 0))
             or ps != int(local.get('game_scores', 0))
             or (phb and phb != str(local.get('bulletins_hash', '')))
             or (phm and phm != str(local.get('mail_hash', '')))
             or (phc and phc != str(local.get('channels_hash', '')))
-            or (phz and phz != str(local.get('zork_saves_hash', '')))
+            or (zork_save_sync_enabled and phz and phz != str(local.get('zork_saves_hash', '')))
             or (php and php != str(local.get('profiles_hash', '')))
             or (phs and phs != str(local.get('game_scores_hash', '')))
         ):
@@ -1138,6 +1147,7 @@ def get_mismatched_peer_scopes(expected_peer_nodes=None) -> dict:
     local = get_local_record_counts()
     expected = set(expected_peer_nodes or [])
     by_peer = {}
+    zork_save_sync_enabled = is_zork_save_sync_enabled()
 
     for row in get_peer_sync_states():
         peer = str(row[0])
@@ -1159,7 +1169,7 @@ def get_mismatched_peer_scopes(expected_peer_nodes=None) -> dict:
             scopes.append('mail')
         if pc != int(local.get('channels', 0)) or (phc and phc != str(local.get('channels_hash', ''))):
             scopes.append('channels')
-        if pz != int(local.get('zork_saves', 0)) or (phz and phz != str(local.get('zork_saves_hash', ''))):
+        if zork_save_sync_enabled and (pz != int(local.get('zork_saves', 0)) or (phz and phz != str(local.get('zork_saves_hash', '')))):
             scopes.append('zork_saves')
         if pp != int(local.get('profiles', 0)) or (php and php != str(local.get('profiles_hash', ''))):
             scopes.append('profiles')
@@ -2047,6 +2057,8 @@ def get_record_hash_manifest(scope: str) -> dict:
             key = f"{row[0]}:{row[1]}"
             manifest[key] = _compact_row_hash(row)
     elif scope == 'zork_saves':
+        if not is_zork_save_sync_enabled():
+            return manifest
         _ensure_zork_saves_table()
         for row in c.execute(
             "SELECT user_id, game_id, save_data, updated_at FROM zork_saves"
@@ -2058,6 +2070,8 @@ def get_record_hash_manifest(scope: str) -> dict:
         for row in c.execute(
             "SELECT tombstone_key, deleted_at FROM deleted_sync_tombstones"
         ):
+            if not is_zork_save_sync_enabled() and str(row[0]).startswith('zork_saves:'):
+                continue
             key = str(row[0])
             manifest[key] = _compact_row_hash(row)
 
@@ -2192,6 +2206,8 @@ def sync_mail_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] = Non
                           started_at=now_str, last_updated_at=now_str, last_result='Running (P1: mail)')
     mail_synced = 0
     try:
+        if total_items and delay_seconds > 0:
+            time.sleep(delay_seconds)
         c.execute("SELECT sender, sender_short_name, recipient, subject, content, unique_id FROM mail")
         for sender_id, sender_short_name, recipient_id, subject, content, unique_id in c.fetchall():
             send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, content, unique_id,
@@ -2202,7 +2218,6 @@ def sync_mail_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] = Non
                                   remaining_items=max(total_items - mail_synced, 0),
                                   current_phase='syncing_mail',
                                   last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-            time.sleep(delay_seconds)
         logging.info(f"P1 mail sync: sent {mail_synced} messages to {len(bbs_nodes)} peer(s)")
         _update_sync_progress(in_progress=False, progress_percent=100, completed_items=total_items,
                               total_items=total_items, remaining_items=0, current_phase='mail_complete',
@@ -2235,6 +2250,8 @@ def sync_bulletins_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] 
                           started_at=now_str, last_updated_at=now_str, last_result='Running (P2: bulletins)')
     bulletins_synced = 0
     try:
+        if total_items and delay_seconds > 0:
+            time.sleep(delay_seconds)
         c.execute("SELECT board, sender_short_name, subject, content, unique_id FROM bulletins WHERE local_only = 0")
         for board, sender_short_name, subject, content, unique_id in c.fetchall():
             send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface)
@@ -2244,7 +2261,6 @@ def sync_bulletins_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] 
                                   remaining_items=max(total_items - bulletins_synced, 0),
                                   current_phase='syncing_bulletins',
                                   last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-            time.sleep(delay_seconds)
         logging.info(f"P2 bulletin sync: sent {bulletins_synced} bulletins to {len(bbs_nodes)} peer(s)")
         _update_sync_progress(in_progress=False, progress_percent=100, completed_items=total_items,
                               total_items=total_items, remaining_items=0, current_phase='bulletins_complete',
@@ -2281,6 +2297,8 @@ def sync_channels_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] =
                           started_at=now_str, last_updated_at=now_str, last_result='Running (P3: channels)')
     channels_synced = 0
     try:
+        if total_items and delay_seconds > 0:
+            time.sleep(delay_seconds)
         c.execute("SELECT name, url FROM channels WHERE local_only = 0")
         for name, url in c.fetchall():
             send_channel_to_bbs_nodes(name, url, bbs_nodes, interface)
@@ -2290,7 +2308,6 @@ def sync_channels_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] =
                                   remaining_items=max(total_items - channels_synced, 0),
                                   current_phase='syncing_channels',
                                   last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-            time.sleep(delay_seconds)
         c.execute(
             "SELECT ch.name, ch.url, cc.sender_short_name, cc.date, cc.content, cc.unique_id "
             "FROM channel_comments cc JOIN channels ch ON ch.id = cc.channel_id WHERE ch.local_only = 0 ORDER BY cc.date ASC, cc.unique_id ASC"
@@ -2311,7 +2328,6 @@ def sync_channels_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] =
                                   remaining_items=max(total_items - channels_synced, 0),
                                   current_phase='syncing_channels',
                                   last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-            time.sleep(delay_seconds)
         logging.info(f"P3 channel sync: sent {channels_synced} channels to {len(bbs_nodes)} peer(s)")
         _update_sync_progress(in_progress=False, progress_percent=100, completed_items=total_items,
                               total_items=total_items, remaining_items=0, current_phase='channels_complete',
@@ -2344,6 +2360,8 @@ def sync_profiles_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] =
                           started_at=now_str, last_updated_at=now_str, last_result='Running (P4: profiles)')
     profiles_synced = 0
     try:
+        if total_items and delay_seconds > 0:
+            time.sleep(delay_seconds)
         c.execute("SELECT user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio FROM user_profiles")
         for user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio in c.fetchall():
             send_profile_to_bbs_nodes(user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio,
@@ -2354,7 +2372,6 @@ def sync_profiles_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] =
                                   remaining_items=max(total_items - profiles_synced, 0),
                                   current_phase='syncing_profiles',
                                   last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-            time.sleep(delay_seconds)
         logging.info(f"P4 profile sync: sent {profiles_synced} profiles to {len(bbs_nodes)} peer(s)")
         _update_sync_progress(in_progress=False, progress_percent=100, completed_items=total_items,
                               total_items=total_items, remaining_items=0, current_phase='profiles_complete',
@@ -2420,8 +2437,11 @@ def sync_game_data_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] 
 
     c.execute("SELECT COUNT(*) FROM game_scores")
     game_score_total = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM zork_saves")
-    zork_total = c.fetchone()[0]
+    if is_zork_save_sync_enabled():
+        c.execute("SELECT COUNT(*) FROM zork_saves")
+        zork_total = c.fetchone()[0]
+    else:
+        zork_total = 0
     total_items = game_score_total + zork_total
 
     completed_items = 0
@@ -2451,6 +2471,8 @@ def sync_game_data_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] 
     )
 
     try:
+        if total_items and delay_seconds > 0:
+            time.sleep(delay_seconds)
         _update_sync_progress(current_phase='syncing_game_scores')
         c.execute("SELECT user_id, game_id, short_name, score, max_score, moves, achieved_at FROM game_scores")
         game_scores_synced = 0
@@ -2460,19 +2482,20 @@ def sync_game_data_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] 
             game_scores_synced += 1
             total_messages += 1
             _progress_tick('syncing_game_scores')
-            time.sleep(delay_seconds)
         logging.info(f"Game sync: Sent {game_scores_synced} game scores to {len(bbs_nodes)} peer(s)")
 
-        _update_sync_progress(current_phase='syncing_zork_saves')
-        c.execute("SELECT user_id, game_id, save_data, updated_at FROM zork_saves")
         zork_saves_synced = 0
-        for user_id, game_id, save_data, updated_at in c.fetchall():
-            send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nodes, interface)
-            zork_saves_synced += 1
-            total_messages += 1
-            _progress_tick('syncing_zork_saves')
-            time.sleep(delay_seconds)
-        logging.info(f"Game sync: Sent {zork_saves_synced} zork saves to {len(bbs_nodes)} peer(s)")
+        if is_zork_save_sync_enabled():
+            _update_sync_progress(current_phase='syncing_zork_saves')
+            c.execute("SELECT user_id, game_id, save_data, updated_at FROM zork_saves")
+            for user_id, game_id, save_data, updated_at in c.fetchall():
+                send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nodes, interface)
+                zork_saves_synced += 1
+                total_messages += 1
+                _progress_tick('syncing_zork_saves')
+            logging.info(f"Game sync: Sent {zork_saves_synced} zork saves to {len(bbs_nodes)} peer(s)")
+        else:
+            logging.info("Game sync: zork save sync disabled by config; skipping zork save phase")
 
         result = {
             'game_scores_synced': game_scores_synced,

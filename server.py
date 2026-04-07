@@ -46,7 +46,7 @@ from message_processing import (
     get_candidate_resolution_snapshot,
 )
 from pubsub import pub
-from utils import send_hash_request_to_bbs_nodes, send_sync_state_to_bbs_nodes
+from utils import send_hash_request_to_bbs_nodes, send_sync_state_to_bbs_nodes, select_syncstate_peers_to_notify
 
 # General logging
 logging.basicConfig(
@@ -243,6 +243,7 @@ def main():
         game_synced_nodes: set = set()       # P5: game scores + zork saves (lowest priority)
         synced_nodes: set = set()            # alias: P1+P2 both complete (used for new-node detection)
         pending_sync_nodes: set = set()
+        syncstate_advertisement_cache: dict = {}
         sync_interval_minutes = int(system_config.get('sync_interval_minutes', 5))
         last_schedule_epoch = 0
         last_manual_trigger_mtime = 0.0
@@ -250,9 +251,6 @@ def main():
         last_peer_resync_trigger_mtime = 0.0
         last_zork_save_resolve_trigger_mtime = 0.0
         last_record_resolve_trigger_mtime = 0.0
-        mismatch_resync_cooldown_seconds = 300
-        last_mismatch_resync_at = {}
-        mismatch_attempt_counts = {}
         system_config['sync_last_trigger_reason'] = 'scheduled'
         system_config['sync_interval_minutes_runtime'] = sync_interval_minutes
         system_config['sync_next_run_epoch'] = int(time.time())
@@ -304,7 +302,9 @@ def main():
             # Send SYNCSTATE so peers can compare counts before game data starts.
             try:
                 local_counts = get_local_record_counts()
-                send_sync_state_to_bbs_nodes(local_counts, [node], interface)
+                destinations = select_syncstate_peers_to_notify([node], local_counts, syncstate_advertisement_cache, now=time.time(), force=True)
+                if destinations:
+                    send_sync_state_to_bbs_nodes(local_counts, destinations, interface)
             except Exception as exc:
                 logging.warning(f"SYNCSTATE ping after P4 failed for {node}: {exc}")
 
@@ -415,8 +415,7 @@ def main():
                     game_synced_nodes.discard(peer_resync_triggered_node)
                     synced_nodes.discard(peer_resync_triggered_node)
                     pending_sync_nodes.discard(peer_resync_triggered_node)
-                    mismatch_attempt_counts.pop(peer_resync_triggered_node, None)
-                    last_mismatch_resync_at.pop(peer_resync_triggered_node, None)
+                    syncstate_advertisement_cache.pop(peer_resync_triggered_node, None)
                     force_mismatch_check = True
                     system_config['sync_last_trigger_reason'] = 'peer_resync'
                     logging.info(f"Peer full-resync requested for {peer_resync_triggered_node}; cleared from synced/game sets")
@@ -451,8 +450,10 @@ def main():
                 if (manual_triggered or sync_due) and not pending_sync_nodes:
                     last_schedule_epoch = now
                     local_counts = get_local_record_counts()
-                    send_sync_state_to_bbs_nodes(local_counts, list(current_bbs_nodes), interface)
                     if manual_triggered:
+                        destinations = select_syncstate_peers_to_notify(current_bbs_nodes, local_counts, syncstate_advertisement_cache, now=now, force=True)
+                        if destinations:
+                            send_sync_state_to_bbs_nodes(local_counts, destinations, interface)
                         # Manual sync clears all phase sets so every phase reruns from scratch.
                         mail_synced_nodes.clear()
                         bulletins_synced_nodes.clear()
@@ -465,47 +466,36 @@ def main():
                         system_config['sync_last_trigger_reason'] = 'manual'
                         logging.info("Manual sync trigger received from web admin")
                     else:
+                        destinations = select_syncstate_peers_to_notify(current_bbs_nodes, local_counts, syncstate_advertisement_cache, now=now, force=False)
                         # Scheduled cycle is lightweight; mismatch path requests targeted repairs.
                         system_config['sync_last_trigger_reason'] = 'scheduled'
-                        logging.info(
-                            f"Scheduled sync interval reached ({sync_interval_minutes} minutes); "
-                            f"sent SYNCSTATE to {len(current_bbs_nodes)} peer(s)"
-                        )
+                        if destinations:
+                            send_sync_state_to_bbs_nodes(local_counts, destinations, interface)
+                            logging.info(
+                                f"Scheduled sync interval reached ({sync_interval_minutes} minutes); "
+                                f"sent SYNCSTATE to {len(destinations)} peer(s)"
+                            )
+                        else:
+                            logging.info(
+                                f"Scheduled sync interval reached ({sync_interval_minutes} minutes); "
+                                "local state unchanged, skipping SYNCSTATE broadcast"
+                            )
 
-                # If diagnostics reports mismatch, force targeted re-sync for those peers.
-                if not pending_sync_nodes:
+                # Automatic scheduled SYNCSTATE already prompts peers to request targeted repair.
+                # Reserve proactive local HASHREQs for explicit force-check actions to avoid
+                # duplicate manifest exchanges on both sides of the link.
+                if force_mismatch_check and not pending_sync_nodes:
                     mismatch_nodes = get_mismatched_peer_nodes(current_bbs_nodes)
                     mismatch_scopes_by_peer = get_mismatched_peer_scopes(current_bbs_nodes)
-                    if force_mismatch_check:
-                        eligible = set(mismatch_nodes)
-                    else:
-                        eligible = {
-                            node for node in mismatch_nodes
-                            if (now - float(last_mismatch_resync_at.get(node, 0))) >= mismatch_resync_cooldown_seconds
-                        }
+                    eligible = set(mismatch_nodes)
                     if eligible:
                         for node in sorted(eligible, key=str):
                             scopes = mismatch_scopes_by_peer.get(node, ['all'])
                             for scope in scopes:
                                 if not is_hashreq_pending_for_peer_scope(node, scope):
                                     send_hash_request_to_bbs_nodes([node], interface, scope=scope)
-                        full_sync_fallback_nodes = set()
                         for node in eligible:
-                            last_mismatch_resync_at[node] = now
                             system_config['sync_mismatch_retry_at'][str(node)] = datetime.now(timezone.utc).isoformat()
-                            mismatch_attempt_counts[node] = int(mismatch_attempt_counts.get(node, 0)) + 1
-                            # Every 3rd mismatch cycle, fall back to full per-peer sync.
-                            if mismatch_attempt_counts[node] % 3 == 0:
-                                full_sync_fallback_nodes.add(node)
-                        if full_sync_fallback_nodes:
-                            # On a persistent mismatch fallback only re-trigger P1 mail and
-                            # P2 bulletins — the most commonly mismatched scopes.
-                            # P3 channels, P4 profiles, and P5 game data are left intact
-                            # so they are not re-flooded every 3rd mismatch cycle.
-                            mail_synced_nodes -= full_sync_fallback_nodes
-                            bulletins_synced_nodes -= full_sync_fallback_nodes
-                            synced_nodes -= full_sync_fallback_nodes
-                            logging.info(f"Mismatch persisted; re-triggering P1+P2 for nodes: {full_sync_fallback_nodes}")
                         system_config['sync_last_trigger_reason'] = 'mismatch'
                         logging.info(f"Peer mismatch detected; requested hash manifests from nodes: {eligible}")
 
