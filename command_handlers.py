@@ -734,7 +734,7 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
                     post_id = post[0]
                     comments = get_channel_comments(post_id)
                     if comments:
-                        latest_commenter = comments[-1][0]
+                        latest_commenter = comments[0][1]
                         post_lines.append(f"[{i}] {latest_commenter}")
                     else:
                         post_lines.append(f"[{i}] No comments yet")
@@ -783,7 +783,7 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
             comments = get_channel_comments(channel_id)
             if comments:
                 for i, comment in enumerate(comments, start=1):
-                    sender_short_name, date, content = comment
+                    sender_short_name, date, content = comment[1], comment[2], comment[3]
                     send_message(f"[{i}] {sender_short_name} @ {date}\n{content}", sender_id, interface)
             else:
                 send_message("No comments yet for this post.", sender_id, interface)
@@ -808,7 +808,8 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
                 send_message("Comment was empty. Nothing posted.", sender_id, interface)
             else:
                 node_short_name = get_node_short_name(get_node_id_from_num(sender_id, interface), interface) or "Unknown"
-                add_channel_comment(state.get('channel_id'), node_short_name, content)
+                add_channel_comment(state.get('channel_id'), node_short_name, content,
+                                    bbs_nodes=interface.bbs_nodes, interface=interface)
                 send_message("Comment posted.", sender_id, interface)
             send_message("[1]View comments [2]Comment [0]Exit", sender_id, interface)
             update_user_state(sender_id, {
@@ -829,7 +830,7 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
     elif step == 4:
         channel_url = message
         channel_name = state['channel_name']
-        add_channel(channel_name, channel_url)
+        add_channel(channel_name, channel_url, interface.bbs_nodes, interface)
         send_message(f"Your channel '{channel_name}' has been added to the directory.", sender_id, interface)
         handle_channel_directory_command(sender_id, interface)
 
