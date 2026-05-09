@@ -36,6 +36,11 @@ from db_operations import (
     get_mismatched_peer_nodes,
     get_mismatched_peer_scopes,
     get_local_record_counts,
+    mark_peer_phase_synced,
+    clear_peer_phases_complete,
+    clear_all_peer_phases_complete,
+    get_peers_with_phase_complete,
+    get_incomplete_record_uids,
 )
 from js8call_integration import JS8CallClient
 from message_processing import (
@@ -235,6 +240,7 @@ def main():
     try:
         next_diagnostics_write = 0.0
         next_node_sync_check = 0.0
+        next_incomplete_repair = 0.0
         # Empty on startup — receivers use unique_id idempotency, so re-syncing is safe
         mail_synced_nodes: set = set()       # P1: direct mail
         bulletins_synced_nodes: set = set()  # P2: bulletin board posts
@@ -243,6 +249,25 @@ def main():
         game_synced_nodes: set = set()       # P5: game scores + zork saves (lowest priority)
         synced_nodes: set = set()            # alias: P1+P2 both complete (used for new-node detection)
         pending_sync_nodes: set = set()
+
+        # Seed phase-completion sets from the persistent DB record so a server
+        # restart does NOT re-trigger a full push to peers already synced.
+        _db_mail_peers = get_peers_with_phase_complete('mail')
+        _db_bulletin_peers = get_peers_with_phase_complete('bulletins')
+        _db_channel_peers = get_peers_with_phase_complete('channels')
+        _db_profile_peers = get_peers_with_phase_complete('profiles')
+        _db_game_peers = get_peers_with_phase_complete('game')
+        mail_synced_nodes.update(_db_mail_peers)
+        bulletins_synced_nodes.update(_db_bulletin_peers)
+        channels_synced_nodes.update(_db_channel_peers)
+        profiles_synced_nodes.update(_db_profile_peers)
+        game_synced_nodes.update(_db_game_peers)
+        synced_nodes.update(_db_mail_peers & _db_bulletin_peers)
+        if _db_mail_peers:
+            logging.info(
+                f"Resumed from DB: {len(_db_mail_peers)} peer(s) already fully synced — "
+                "skipping full re-push, using hash-repair for any drift."
+            )
         syncstate_advertisement_cache: dict = {}
         sync_interval_minutes = int(system_config.get('sync_interval_minutes', 5))
         last_schedule_epoch = 0
@@ -261,43 +286,76 @@ def main():
             P1 mail → P2 bulletins → P3 channels → P4 profiles → P5 game data.
             Each phase is tracked independently so a mismatch fallback only re-sends
             the scopes that need repair without restarting lower-priority phases.
+
+            Before each phase the peer's most-recently-advertised SYNCSTATE is checked.
+            If both count and hash already match local, the full-push for that scope is
+            skipped and the hash-repair protocol is trusted to handle any residual drift,
+            dramatically reducing airtime when a peer is already mostly up-to-date.
             """
+            local_counts = get_local_record_counts()
+            peer_scopes_mismatched = set(get_mismatched_peer_scopes({node}).get(node, []))
+
             # P1 — mail (highest priority; abort remaining phases on failure)
-            try:
-                m = sync_mail_to_nodes([node], interface)
-                logging.info(f"P1 mail sync done for {node}: {m['mail_synced']} sent")
+            if 'mail' not in peer_scopes_mismatched:
+                logging.info(f"P1 mail skipped for {node}: SYNCSTATE counts/hash match, trusting hash-repair for drift")
                 mail_synced_nodes.add(node)
-            except Exception as exc:
-                logging.error(f"P1 mail sync failed for {node}: {exc}")
-                pending_sync_nodes.discard(node)
-                return
+                mark_peer_phase_synced(node, 'mail')
+            else:
+                try:
+                    m = sync_mail_to_nodes([node], interface)
+                    logging.info(f"P1 mail sync done for {node}: {m['mail_synced']} sent")
+                    mail_synced_nodes.add(node)
+                    mark_peer_phase_synced(node, 'mail')
+                except Exception as exc:
+                    logging.error(f"P1 mail sync failed for {node}: {exc}")
+                    pending_sync_nodes.discard(node)
+                    return
 
             # P2 — bulletins
-            try:
-                b = sync_bulletins_to_nodes([node], interface)
-                logging.info(f"P2 bulletin sync done for {node}: {b['bulletins_synced']} sent")
+            if 'bulletins' not in peer_scopes_mismatched:
+                logging.info(f"P2 bulletins skipped for {node}: SYNCSTATE counts/hash match")
                 bulletins_synced_nodes.add(node)
-                synced_nodes.add(node)  # P1+P2 complete: stop new-node re-trigger
-            except Exception as exc:
-                logging.error(f"P2 bulletin sync failed for {node}: {exc}")
-                pending_sync_nodes.discard(node)
-                return
+                synced_nodes.add(node)
+                mark_peer_phase_synced(node, 'bulletins')
+            else:
+                try:
+                    b = sync_bulletins_to_nodes([node], interface)
+                    logging.info(f"P2 bulletin sync done for {node}: {b['bulletins_synced']} sent")
+                    bulletins_synced_nodes.add(node)
+                    synced_nodes.add(node)  # P1+P2 complete: stop new-node re-trigger
+                    mark_peer_phase_synced(node, 'bulletins')
+                except Exception as exc:
+                    logging.error(f"P2 bulletin sync failed for {node}: {exc}")
+                    pending_sync_nodes.discard(node)
+                    return
 
             # P3 — channels (failure does not block profiles or game data)
-            try:
-                ch = sync_channels_to_nodes([node], interface)
-                logging.info(f"P3 channel sync done for {node}: {ch['channels_synced']} sent")
+            if 'channels' not in peer_scopes_mismatched:
+                logging.info(f"P3 channels skipped for {node}: SYNCSTATE counts/hash match")
                 channels_synced_nodes.add(node)
-            except Exception as exc:
-                logging.error(f"P3 channel sync failed for {node}: {exc}")
+                mark_peer_phase_synced(node, 'channels')
+            else:
+                try:
+                    ch = sync_channels_to_nodes([node], interface)
+                    logging.info(f"P3 channel sync done for {node}: {ch['channels_synced']} sent")
+                    channels_synced_nodes.add(node)
+                    mark_peer_phase_synced(node, 'channels')
+                except Exception as exc:
+                    logging.error(f"P3 channel sync failed for {node}: {exc}")
 
             # P4 — profiles
-            try:
-                pr = sync_profiles_to_nodes([node], interface)
-                logging.info(f"P4 profile sync done for {node}: {pr['profiles_synced']} sent")
+            if 'profiles' not in peer_scopes_mismatched:
+                logging.info(f"P4 profiles skipped for {node}: SYNCSTATE counts/hash match")
                 profiles_synced_nodes.add(node)
-            except Exception as exc:
-                logging.error(f"P4 profile sync failed for {node}: {exc}")
+                mark_peer_phase_synced(node, 'profiles')
+            else:
+                try:
+                    pr = sync_profiles_to_nodes([node], interface)
+                    logging.info(f"P4 profile sync done for {node}: {pr['profiles_synced']} sent")
+                    profiles_synced_nodes.add(node)
+                    mark_peer_phase_synced(node, 'profiles')
+                except Exception as exc:
+                    logging.error(f"P4 profile sync failed for {node}: {exc}")
 
             # Send SYNCSTATE so peers can compare counts before game data starts.
             try:
@@ -309,18 +367,27 @@ def main():
                 logging.warning(f"SYNCSTATE ping after P4 failed for {node}: {exc}")
 
             # P5 — game data (lowest priority)
-            try:
-                g = sync_game_data_to_nodes([node], interface)
-                logging.info(
-                    f"P5 game data sync done for {node}: "
-                    f"scores={g['game_scores_synced']}, saves={g['zork_saves_synced']}"
-                )
+            game_scopes_match = ('game_scores' not in peer_scopes_mismatched
+                                 and 'zork_saves' not in peer_scopes_mismatched)
+            if game_scopes_match:
+                logging.info(f"P5 game data skipped for {node}: SYNCSTATE counts/hash match")
                 game_synced_nodes.add(node)
-            except Exception as exc:
-                logging.error(f"P5 game data sync failed for {node}: {exc}")
-                # game_synced_nodes not updated; will retry next eligible cycle
-            finally:
+                mark_peer_phase_synced(node, 'game')
                 pending_sync_nodes.discard(node)
+            else:
+                try:
+                    g = sync_game_data_to_nodes([node], interface)
+                    logging.info(
+                        f"P5 game data sync done for {node}: "
+                        f"scores={g['game_scores_synced']}, saves={g['zork_saves_synced']}"
+                    )
+                    game_synced_nodes.add(node)
+                    mark_peer_phase_synced(node, 'game')
+                except Exception as exc:
+                    logging.error(f"P5 game data sync failed for {node}: {exc}")
+                    # game_synced_nodes not updated; will retry next eligible cycle
+                finally:
+                    pending_sync_nodes.discard(node)
 
         while True:
             now = time.time()
@@ -332,6 +399,33 @@ def main():
                 write_runtime_diagnostics_snapshot(interface, system_config)
                 sync_progress = get_sync_progress()
                 next_diagnostics_write = now + (5 if sync_progress.get('in_progress') else 30)
+
+            # Periodic scan: request repair of records whose content arrived truncated.
+            # Only runs when not actively syncing so it doesn't pile on top of a flood.
+            if now >= next_incomplete_repair and not get_sync_progress().get('in_progress'):
+                _incomplete = get_incomplete_record_uids()
+                _repair_targets = [
+                    (scope, uid)
+                    for scope in ('bulletins', 'mail', 'channels')
+                    for uid in _incomplete.get(scope, [])
+                ]
+                _repair_peers = set(getattr(interface, 'bbs_nodes', []) or [])
+                if _repair_targets and _repair_peers:
+                    from utils import _send_one_sync, get_hash_repair_pause_seconds
+                    logging.info(
+                        f"Incomplete-content repair: requesting {len(_repair_targets)} record(s) "
+                        f"from {len(_repair_peers)} peer(s)"
+                    )
+                    for _scope, _uid in _repair_targets:
+                        for _peer in sorted(_repair_peers):
+                            _send_one_sync(
+                                f"HASHMISS|{_scope}|{_uid}",
+                                _peer,
+                                interface,
+                                pause_seconds=get_hash_repair_pause_seconds(),
+                            )
+                # Re-check sooner when incomplete records are known; back off when all complete.
+                next_incomplete_repair = now + (120 if _repair_targets else 600)
 
             # Check/launch sync work frequently so manual triggers feel responsive
             if now >= next_node_sync_check:
@@ -416,6 +510,7 @@ def main():
                     synced_nodes.discard(peer_resync_triggered_node)
                     pending_sync_nodes.discard(peer_resync_triggered_node)
                     syncstate_advertisement_cache.pop(peer_resync_triggered_node, None)
+                    clear_peer_phases_complete(peer_resync_triggered_node)
                     force_mismatch_check = True
                     system_config['sync_last_trigger_reason'] = 'peer_resync'
                     logging.info(f"Peer full-resync requested for {peer_resync_triggered_node}; cleared from synced/game sets")
@@ -461,6 +556,7 @@ def main():
                         profiles_synced_nodes.clear()
                         game_synced_nodes.clear()
                         synced_nodes.clear()
+                        clear_all_peer_phases_complete()
                         # Also force immediate mismatch re-check for currently configured peers.
                         force_mismatch_check = True
                         system_config['sync_last_trigger_reason'] = 'manual'
