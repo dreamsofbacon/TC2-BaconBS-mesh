@@ -557,7 +557,8 @@ def initialize_database():
                     zork_saves_hash TEXT NOT NULL DEFAULT '',
                     profiles_hash TEXT NOT NULL DEFAULT '',
                     game_scores_hash TEXT NOT NULL DEFAULT '',
-                    reported_at TEXT NOT NULL
+                    reported_at TEXT NOT NULL,
+                    phases_complete TEXT NOT NULL DEFAULT ''
                 );''')
     c.execute('''CREATE TABLE IF NOT EXISTS deleted_sync_tombstones (
                     tombstone_key TEXT PRIMARY KEY,
@@ -1185,6 +1186,93 @@ def get_mismatched_peer_scopes(expected_peer_nodes=None) -> dict:
     return by_peer
 
 
+# ---------------------------------------------------------------------------
+# Per-peer full-push phase persistence
+# ---------------------------------------------------------------------------
+
+def mark_peer_phase_synced(peer_node_id: str, phase: str) -> None:
+    """Record that a full push of *phase* has completed for this peer.
+
+    Phase names: 'mail', 'bulletins', 'channels', 'profiles', 'game'.
+    """
+    if not peer_node_id or not phase:
+        return
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT phases_complete FROM peer_sync_state WHERE peer_node_id = ?", (peer_node_id,))
+    row = c.fetchone()
+    if row is None:
+        c.execute(
+            "INSERT INTO peer_sync_state (peer_node_id, bulletins, mail, channels, zork_saves, profiles, "
+            "game_scores, bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, "
+            "game_scores_hash, reported_at, phases_complete) VALUES (?, 0, 0, 0, 0, 0, 0, '', '', '', '', '', '', ?, ?)",
+            (peer_node_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), phase),
+        )
+    else:
+        existing = set(str(row[0] or '').split(',')) - {''}
+        existing.add(str(phase))
+        c.execute(
+            "UPDATE peer_sync_state SET phases_complete = ? WHERE peer_node_id = ?",
+            (','.join(sorted(existing)), peer_node_id),
+        )
+    conn.commit()
+
+
+def clear_peer_phases_complete(peer_node_id: str) -> None:
+    """Clear all phase completions for a peer so a full re-push will be triggered."""
+    if not peer_node_id:
+        return
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("UPDATE peer_sync_state SET phases_complete = '' WHERE peer_node_id = ?", (peer_node_id,))
+    conn.commit()
+
+
+def clear_all_peer_phases_complete() -> None:
+    """Clear phase completions for every peer (called on manual full-resync)."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("UPDATE peer_sync_state SET phases_complete = ''")
+    conn.commit()
+
+
+def get_peers_with_phase_complete(phase: str) -> set:
+    """Return the set of peer node IDs that have completed the given full-push phase."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT peer_node_id, phases_complete FROM peer_sync_state "
+        "WHERE phases_complete IS NOT NULL AND phases_complete != ''"
+    )
+    result = set()
+    for peer_id, phases_str in c.fetchall():
+        phases = set(str(phases_str or '').split(',')) - {''}
+        if str(phase) in phases:
+            result.add(str(peer_id))
+    return result
+
+
+def get_incomplete_record_uids() -> dict:
+    """Return unique_ids of records with content_complete = 0, grouped by scope.
+
+    Used by the server's periodic repair scan to re-request truncated content
+    from peer nodes.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT unique_id FROM bulletins WHERE content_complete = 0")
+    bulletins_uids = [row[0] for row in c.fetchall()]
+    c.execute("SELECT unique_id FROM mail WHERE content_complete = 0")
+    mail_uids = [row[0] for row in c.fetchall()]
+    c.execute("SELECT unique_id FROM channel_comments WHERE content_complete = 0")
+    channel_uids = [row[0] for row in c.fetchall()]
+    return {
+        'bulletins': bulletins_uids,
+        'mail': mail_uids,
+        'channels': channel_uids,
+    }
+
+
 def _ensure_local_only_columns(cursor) -> None:
     """Backfill schema changes on existing deployments."""
     cursor.execute("PRAGMA table_info(bulletins)")
@@ -1215,6 +1303,8 @@ def _ensure_local_only_columns(cursor) -> None:
         cursor.execute("ALTER TABLE peer_sync_state ADD COLUMN profiles_hash TEXT NOT NULL DEFAULT ''")
     if 'game_scores_hash' not in peer_cols:
         cursor.execute("ALTER TABLE peer_sync_state ADD COLUMN game_scores_hash TEXT NOT NULL DEFAULT ''")
+    if 'phases_complete' not in peer_cols:
+        cursor.execute("ALTER TABLE peer_sync_state ADD COLUMN phases_complete TEXT NOT NULL DEFAULT ''")
 
 
 def _dedupe_channels_and_create_unique_index(cursor) -> None:

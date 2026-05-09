@@ -106,15 +106,19 @@ _peer_hash_compressed_buffers = {}
 _SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "profiles", "game_scores", "zork_saves", "tombstones"]
 _HASH_BUFFER_MAX_AGE_SECONDS = 600
 _recent_hashmiss_requests = {}
+# Maximum records pulled (HASHMISS) or pushed per single reconcile pass to avoid
+# flooding LoRa and causing the packet loss that stalls convergence.
+_RECONCILE_MAX_PULL_PER_PASS = 20
+_RECONCILE_MAX_PUSH_PER_PASS = 20
 _recent_syncstate_repairs = {}
-_SYNCSTATE_REPAIR_TTL_SECONDS = 300
+_SYNCSTATE_REPAIR_TTL_SECONDS = 90
 _candidate_resolution_requests = {}
 _recent_candidate_resolution_results = []
 _CANDIDATE_REQUEST_TIMEOUT_SECONDS = 15.0
 # Track in-flight HASHREQ exchanges so we don't flood a peer with duplicate requests
 # while their manifest response is still being assembled.
 _pending_hashreq = {}  # (peer_id, scope) -> float timestamp
-_PENDING_HASHREQ_TIMEOUT = 180
+_PENDING_HASHREQ_TIMEOUT = 60
 
 
 def _prune_old_zork_save_chunks() -> None:
@@ -336,11 +340,11 @@ def _prune_recent_hashmiss_requests() -> None:
 
 
 def _get_hashmiss_request_ttl_seconds() -> float:
-    raw = str(os.getenv("BBS_HASHMISS_REQUEST_TTL_SECONDS", "60")).strip()
+    raw = str(os.getenv("BBS_HASHMISS_REQUEST_TTL_SECONDS", "30")).strip()
     try:
         return max(0.0, float(raw))
     except ValueError:
-        return 60.0
+        return 30.0
 
 
 def _should_send_hashmiss(sender_node_id: str, scope: str, key: str, local_hash: str, remote_hash: str) -> bool:
@@ -429,12 +433,24 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
     # Ask peer for keys we do not have, plus keys that exist on both sides but differ.
     need_from_remote = set(remote_keys - local_keys)
     need_from_remote.update(key for key in (remote_keys & local_keys) if local.get(key) != remote.get(key))
+    push_keys = sorted(local_keys - remote_keys)
     logging.info(
         f"Reconciling manifest scope={scope} peer={sender_node_id} "
         f"remote_keys={len(remote_keys)} local_keys={len(local_keys)} "
-        f"pull={len(need_from_remote)} push={len(local_keys - remote_keys)}"
+        f"pull={len(need_from_remote)} push={len(push_keys)}"
     )
+
+    # Cap HASHMISS requests per pass to avoid flooding the LoRa channel, which causes
+    # the very packet loss that stalls convergence.  Deferred keys will be retried on
+    # the next SYNCSTATE → HASHREQ → reconcile cycle.
+    pull_sent = 0
     for key in sorted(need_from_remote):
+        if pull_sent >= _RECONCILE_MAX_PULL_PER_PASS:
+            logging.info(
+                f"Reconcile pull cap reached ({_RECONCILE_MAX_PULL_PER_PASS}) for scope={scope} peer={sender_node_id}; "
+                f"{len(need_from_remote) - pull_sent} key(s) deferred to next repair cycle"
+            )
+            break
         local_hash = str(local.get(key, ""))
         remote_hash = str(remote.get(key, ""))
         if not _should_send_hashmiss(sender_node_id, scope, key, local_hash, remote_hash):
@@ -445,11 +461,21 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
         else:
             logging.info(f"Requesting record from {sender_node_id} scope={scope} key={key}")
             _send_one_sync(f"HASHMISS|{scope}|{key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+        pull_sent += 1
 
     # Proactively push records the peer is missing to converge in one cycle.
-    for key in sorted(local_keys - remote_keys):
+    # Also capped per pass to avoid blocking the receive callback for too long.
+    push_sent = 0
+    for key in push_keys:
+        if push_sent >= _RECONCILE_MAX_PUSH_PER_PASS:
+            logging.info(
+                f"Reconcile push cap reached ({_RECONCILE_MAX_PUSH_PER_PASS}) for scope={scope} peer={sender_node_id}; "
+                f"{len(push_keys) - push_sent} key(s) deferred to next repair cycle"
+            )
+            break
         logging.info(f"Pushing local-only record to {sender_node_id} scope={scope} key={key}")
         _send_requested_record(scope, key, sender_node_id, interface)
+        push_sent += 1
 
 
 def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface) -> None:
