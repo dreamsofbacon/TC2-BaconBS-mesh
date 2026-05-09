@@ -283,9 +283,9 @@ def get_node_short_name(node_id, interface):
     return None
 
 
-def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface):
+def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface, date=None):
     header = f"BULLETIN|{board}|{sender_short_name}|{subject}|"
-    footer = f"|{unique_id}"
+    footer = f"|{unique_id}|{date}" if date else f"|{unique_id}"
     _send_sync_with_cont(
         header, footer, content, unique_id,
         cont_prefix=f"BULLETINCONT|{unique_id}|",
@@ -295,10 +295,10 @@ def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, uniqu
 
 
 def send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, content, unique_id, bbs_nodes,
-                           interface):
+                           interface, date=None):
     logging.info(f"SERVER SYNC: Syncing new mail message '{subject}' from {sender_short_name} to peers.")
     header = f"MAIL|{sender_id}|{sender_short_name}|{recipient_id}|{subject}|"
-    footer = f"|{unique_id}"
+    footer = f"|{unique_id}|{date}" if date else f"|{unique_id}"
     _send_sync_with_cont(
         header, footer, content, unique_id,
         cont_prefix=f"MAILCONT|{unique_id}|",
