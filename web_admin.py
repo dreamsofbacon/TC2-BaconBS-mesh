@@ -2096,8 +2096,8 @@ TRANSMISSION_DASHBOARD_CONTENT = """
         const resp = await fetch('/api/sync/transmissions?since_id=' + encodeURIComponent(lastId), { headers: { 'Accept': 'application/json' } });
         if (!resp.ok) return;
         const data = await resp.json();
-        if (!data.events || !data.events.length) return;
-        data.events.forEach((entry) => {
+        if (!data.entries || !data.entries.length) return;
+        data.entries.forEach((entry) => {
           entries.push(entry);
           lastId = Math.max(lastId, Number(entry.id || 0));
         });
