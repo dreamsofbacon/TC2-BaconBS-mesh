@@ -1188,8 +1188,9 @@ def on_receive(packet, interface):
             bbs_nodes = interface.bbs_nodes
             is_sync_message = any(message_string.startswith(prefix) for prefix in
                                   ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|", "DELETE_ZORKSAVE|",
-                                   "CHANNEL|", "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
-                                                                     "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|", "CANDREQ|", "CANDRSP|",
+                                   "CHANNEL|", "CHANNELCOMMENT|", "CHANNELCOMMENTCONT|", "CHANNELCOMMENTMETA|", "DELETE_CHANNELCOMMENT|",
+                                   "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
+                                   "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|", "CANDREQ|", "CANDRSP|",
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|"])
 
             msg_type = "sync" if is_sync_message else "user"
@@ -1210,7 +1211,7 @@ def on_receive(packet, interface):
                             message_string,
                             sender_node_id,
                             len(message_bytes),
-                            is_continuation=message_string.startswith(("BULLETINCONT|", "MAILCONT|")),
+                            is_continuation=message_string.startswith(("BULLETINCONT|", "MAILCONT|", "CHANNELCOMMENTCONT|")),
                             direction='rx',
                         )
                     except Exception as exc:

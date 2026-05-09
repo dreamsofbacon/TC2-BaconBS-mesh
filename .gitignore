@@ -6,3 +6,5 @@ venv/
 .idea
 config.ini
 fortunes.txt
+meshtastic-web/
+meshtastic-web-dist/

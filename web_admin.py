@@ -9,7 +9,7 @@ from functools import wraps
 from typing import Optional
 from app_paths import resolve_app_path
 
-from flask import Flask, flash, jsonify, redirect, render_template_string, request, session, url_for
+from flask import Flask, flash, jsonify, redirect, render_template_string, request, send_from_directory, session, url_for
 
 from db_operations import install_connection_log_handler
 from utils import get_sync_runtime_settings
@@ -680,6 +680,7 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('system_flowchart') }}\">System Flowchart</a>
       <a href=\"{{ url_for('system_transmissions') }}\">Transmission Stats</a>
       <a href=\"{{ url_for('meshtastic_device') }}\">Meshtastic Device</a>
+      <a href=\"{{ url_for('mesh_ui_index') }}\" target=\"_blank\">Mesh UI</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
       <div class="nav-right">
         <div class="version-chip" title="Running version">{{ app_version_display }}</div>
@@ -2180,6 +2181,8 @@ def create_app(runtime_interface=None) -> Flask:
     app.config["BULLETIN_BOARDS"] = load_bulletin_boards(app.config["CONFIG_PATH"])
     app.config["RUNTIME_UPDATES_ENABLED"] = runtime_interface is not None
     app.config["DISPLAY_VERSION"] = get_display_version()
+    _mesh_ui_dist_env = os.getenv("BBS_MESH_UI_DIST_PATH", "")
+    app.config["MESH_UI_DIST_PATH"] = resolve_app_path(_mesh_ui_dist_env if _mesh_ui_dist_env else None, "meshtastic-web-dist")
 
     @app.context_processor
     def inject_global_template_values():
@@ -2904,6 +2907,39 @@ def create_app(runtime_interface=None) -> Flask:
         if session.get("logged_in"):
             return redirect(url_for("table_list", table="bulletins"))
         return redirect(url_for("login"))
+
+    @app.route("/mesh-ui/")
+    @app.route("/mesh-ui/<path:filename>")
+    @login_required
+    def mesh_ui_index(filename="index.html"):
+        dist_path = app.config["MESH_UI_DIST_PATH"]
+        if not os.path.isdir(dist_path):
+            return render_template_string(
+                BASE_TEMPLATE,
+                show_nav=True,
+                content=(
+                    '<div class="card">'
+                    '<h2>Meshtastic Web UI</h2>'
+                    '<p>The Meshtastic web client has not been built yet.</p>'
+                    '<p>Run <code>setup_mesh_ui.ps1</code> (Windows) or '
+                    '<code>setup_mesh_ui.sh</code> (Linux) to clone and build it.</p>'
+                    '</div>'
+                ),
+            )
+        return send_from_directory(dist_path, filename)
+
+    @app.route("/api/mesh-ui/node-config")
+    @login_required
+    def mesh_ui_node_config():
+        config = read_config_file(app.config["CONFIG_PATH"])
+        iface_type = config.get("interface", "type", fallback="serial").strip()
+        hostname = config.get("interface", "hostname", fallback="").strip()
+        port = config.get("interface", "port", fallback="").strip()
+        return jsonify({
+            "interface_type": iface_type,
+            "hostname": hostname if iface_type == "tcp" else None,
+            "serial_port": port if iface_type == "serial" else None,
+        })
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
