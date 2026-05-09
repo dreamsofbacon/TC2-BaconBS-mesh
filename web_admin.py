@@ -679,6 +679,7 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('settings_page') }}\">Settings</a>
       <a href=\"{{ url_for('system_flowchart') }}\">System Flowchart</a>
       <a href=\"{{ url_for('system_transmissions') }}\">Transmission Stats</a>
+      <a href=\"{{ url_for('meshtastic_device') }}\">Meshtastic Device</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
       <div class="nav-right">
         <div class="version-chip" title="Running version">{{ app_version_display }}</div>
@@ -2126,6 +2127,44 @@ TRANSMISSION_DASHBOARD_CONTENT = """
 
 FLOWCHART_CONTENT = UPDATED_FLOWCHART_CONTENT
 
+MESHTASTIC_DEVICE_CONTENT_SERIAL = """
+<div class="card">
+  <h2>Meshtastic Device</h2>
+  <p class="muted">This BBS is connected to the Meshtastic device via <strong>serial</strong>.
+     Serial ports only support one connection at a time, so the built-in device web UI cannot
+     run alongside the BBS server.</p>
+  <p>You can still access the Meshtastic web client directly in your browser using
+     <strong>WebSerial</strong> — it connects from the browser side without going through the BBS
+     server, so there is no conflict as long as you stop the BBS server first.</p>
+  <div style="margin:24px 0;">
+    <a class="btn" href="https://client.meshtastic.org" target="_blank" rel="noopener noreferrer">
+      Open Meshtastic Web Client (client.meshtastic.org)
+    </a>
+  </div>
+  <p class="muted" style="font-size:0.85em;">
+    Steps: stop the BBS server &rarr; open the link above &rarr; click <em>New connection &rarr; Serial</em>
+    &rarr; select your device &rarr; reconnect the BBS server when finished.
+  </p>
+</div>
+"""
+
+MESHTASTIC_DEVICE_CONTENT_TCP = """
+<div class="card">
+  <h2>Meshtastic Device</h2>
+  <p class="muted">Connected via TCP to <strong>{{ device_host }}</strong>.
+     The device's built-in web UI is embedded below.</p>
+  <p class="muted" style="font-size:0.85em;">If the frame is blank, ensure the device is powered on
+     and reachable at <a href="{{ device_url }}" target="_blank" rel="noopener noreferrer">{{ device_url }}</a>.</p>
+</div>
+<div style="margin:0 -8px;">
+  <iframe src="{{ device_url }}"
+          style="width:100%;height:calc(100vh - 180px);border:none;border-radius:6px;background:#000;"
+          allow="serial"
+          title="Meshtastic Device Web UI">
+  </iframe>
+</div>
+"""
+
 
 def create_app(runtime_interface=None) -> Flask:
     app = Flask(__name__)
@@ -3341,6 +3380,27 @@ def create_app(runtime_interface=None) -> Flask:
         )
         events = [serialize_connection_event(row) for row in cursor.fetchall()]
       return jsonify({"events": events})
+
+    @app.route("/system/meshtastic")
+    @login_required
+    def meshtastic_device():
+      config = read_config_file(app.config["CONFIG_PATH"])
+      interface_type = config.get("interface", "type", fallback="serial").strip().lower()
+      if interface_type == "tcp":
+        hostname = config.get("interface", "hostname", fallback="").strip()
+        if not hostname:
+          interface = get_runtime_interface()
+          if interface is not None:
+            hostname = getattr(interface, "hostname", "") or ""
+        device_url = f"http://{hostname}" if hostname else "http://meshtastic.local"
+        content = render_template_string(
+          MESHTASTIC_DEVICE_CONTENT_TCP,
+          device_host=hostname or "meshtastic.local",
+          device_url=device_url,
+        )
+      else:
+        content = MESHTASTIC_DEVICE_CONTENT_SERIAL
+      return render_template_string(BASE_TEMPLATE, title="Meshtastic Device", content=content, show_nav=True)
 
     @app.route("/system/flowchart")
     @login_required
