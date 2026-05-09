@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import time
 import zlib
 import uuid
@@ -112,6 +113,8 @@ _RECONCILE_MAX_PULL_PER_PASS = 20
 _RECONCILE_MAX_PUSH_PER_PASS = 20
 _recent_syncstate_repairs = {}
 _SYNCSTATE_REPAIR_TTL_SECONDS = 90
+# Pattern for the optional original-date field appended to BULLETIN/MAIL wire frames.
+_SYNC_DATE_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$')
 _candidate_resolution_requests = {}
 _recent_candidate_resolution_results = []
 _CANDIDATE_REQUEST_TIMEOUT_SECONDS = 15.0
@@ -510,15 +513,17 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
     if scope == 'bulletins':
         row = get_bulletin_by_unique_id(key)
         if row:
+            # row: (board, sender_short_name, date, subject, content, unique_id)
             logging.info(f"Sending requested bulletin to {destination_node_id} key={key}")
-            send_bulletin_to_bbs_nodes(row[0], row[1], row[2], row[3], row[4], [destination_node_id], interface)
+            send_bulletin_to_bbs_nodes(row[0], row[1], row[3], row[4], row[5], [destination_node_id], interface, date=row[2])
         else:
             logging.warning(f"Requested bulletin missing locally for resend key={key}")
     elif scope == 'mail':
         row = get_mail_by_unique_id(key)
         if row:
+            # row: (sender, sender_short_name, recipient, date, subject, content, unique_id)
             logging.info(f"Sending requested mail to {destination_node_id} key={key}")
-            send_mail_to_bbs_nodes(row[0], row[1], row[2], row[3], row[4], row[5], [destination_node_id], interface)
+            send_mail_to_bbs_nodes(row[0], row[1], row[2], row[4], row[5], row[6], [destination_node_id], interface, date=row[3])
         else:
             logging.warning(f"Requested mail missing locally for resend key={key}")
     elif scope == 'channels':
@@ -613,24 +618,48 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
 
     if is_sync_message:
         if message.startswith("BULLETIN|"):
-            parts = message.split("|", 5)
-            if len(parts) != 6:
+            # Use rsplit from the right so content with embedded '|' is handled correctly.
+            # Wire format: BULLETIN|board|sender|subject|content|unique_id[|date]
+            body = message[len("BULLETIN|"):]
+            # Try to strip optional date from the far right.
+            tail = body.rsplit("|", 2)
+            if len(tail) == 3 and _SYNC_DATE_PATTERN.match(tail[2]):
+                original_date, unique_id = tail[2], tail[1]
+                header_content = tail[0]
+            else:
+                tail2 = body.rsplit("|", 1)
+                original_date = None
+                unique_id = tail2[1] if len(tail2) == 2 else body
+                header_content = tail2[0] if len(tail2) == 2 else ""
+            hparts = header_content.split("|", 3)
+            if len(hparts) != 4:
                 logging.warning(f"Malformed BULLETIN sync message ignored: {message}")
                 return
-            board, sender_short_name, subject, content, unique_id = parts[1], parts[2], parts[3], parts[4], parts[5]
-            add_bulletin(board, sender_short_name, subject, content, [], interface, unique_id=unique_id)
+            board, sender_short_name, subject, content = hparts[0], hparts[1], hparts[2], hparts[3]
+            add_bulletin(board, sender_short_name, subject, content, [], interface, unique_id=unique_id, date=original_date)
             flush_pending_bulletin_continuations(unique_id)
 
             if board.lower() == "urgent":
                 notification_message = f"💥NEW URGENT BULLETIN💥\nFrom: {sender_short_name}\nTitle: {subject}\nDM 'CB,,Urgent' to view"
                 send_message(notification_message, BROADCAST_NUM, interface)
         elif message.startswith("MAIL|"):
-            parts = message.split("|", 6)
-            if len(parts) != 7:
+            # Wire format: MAIL|sender_id|sender_short|recipient_id|subject|content|unique_id[|date]
+            body = message[len("MAIL|"):]
+            tail = body.rsplit("|", 2)
+            if len(tail) == 3 and _SYNC_DATE_PATTERN.match(tail[2]):
+                original_date, unique_id = tail[2], tail[1]
+                header_content = tail[0]
+            else:
+                tail2 = body.rsplit("|", 1)
+                original_date = None
+                unique_id = tail2[1] if len(tail2) == 2 else body
+                header_content = tail2[0] if len(tail2) == 2 else ""
+            hparts = header_content.split("|", 4)
+            if len(hparts) != 5:
                 logging.warning(f"Malformed MAIL sync message ignored: {message}")
                 return
-            sync_sender_id, sender_short_name, recipient_id, subject, content, unique_id = parts[1], parts[2], parts[3], parts[4], parts[5], parts[6]
-            add_mail(sync_sender_id, sender_short_name, recipient_id, subject, content, [], interface, unique_id=unique_id)
+            sync_sender_id, sender_short_name, recipient_id, subject, content = hparts[0], hparts[1], hparts[2], hparts[3], hparts[4]
+            add_mail(sync_sender_id, sender_short_name, recipient_id, subject, content, [], interface, unique_id=unique_id, date=original_date)
             flush_pending_mail_continuations(unique_id)
         elif message.startswith("DELETE_BULLETIN|"):
             parts = message.split("|", 1)

@@ -1579,10 +1579,10 @@ def append_channel_comment_content(unique_id: str, char_offset: Optional[int], a
 
 
 
-def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interface, unique_id=None, local_only: bool = False):
+def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interface, unique_id=None, local_only: bool = False, date=None):
     conn = get_db_connection()
     c = conn.cursor()
-    date = datetime.now().strftime('%Y-%m-%d %H:%M')
+    original_date = str(date).strip() if date else datetime.now().strftime('%Y-%m-%d %H:%M')
     if not unique_id:
         unique_id = str(uuid.uuid4())
     else:
@@ -1623,7 +1623,7 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
         (
             board,
             sender_short_name,
-            date,
+            original_date,
             subject,
             content,
             unique_id,
@@ -1636,7 +1636,7 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
     _flush_pending_expected_content_length('bulletins', unique_id, _pending_bulletin_expected_lengths, 'bulletin')
     clear_sync_tombstone('bulletins', str(unique_id))
     if (not local_only) and bbs_nodes and interface:
-        send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface)
+        send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface, date=original_date)
 
     # New logic to send group chat notification for urgent bulletins
     if board.lower() == "urgent":
@@ -1745,10 +1745,10 @@ def append_bulletin_content(unique_id: str, char_offset: Optional[int], addition
     """
     _apply_continuation_update('bulletins', unique_id, char_offset, additional_content, _pending_bulletin_continuations, 'bulletin')
 
-def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_nodes, interface, unique_id=None):
+def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_nodes, interface, unique_id=None, date=None):
     conn = get_db_connection()
     c = conn.cursor()
-    date = datetime.now().strftime('%Y-%m-%d %H:%M')
+    original_date = str(date).strip() if date else datetime.now().strftime('%Y-%m-%d %H:%M')
     if not unique_id:
         unique_id = str(uuid.uuid4())
     else:
@@ -1785,7 +1785,7 @@ def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_n
             sender_id,
             sender_short_name,
             recipient_id,
-            date,
+            original_date,
             subject,
             content,
             unique_id,
@@ -1797,7 +1797,7 @@ def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_n
     _flush_pending_expected_content_length('mail', unique_id, _pending_mail_expected_lengths, 'mail')
     clear_sync_tombstone('mail', str(unique_id))
     if bbs_nodes and interface:
-        send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, content, unique_id, bbs_nodes, interface)
+        send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, content, unique_id, bbs_nodes, interface, date=original_date)
     return unique_id
 
 def get_mail(recipient_id):
@@ -2172,7 +2172,7 @@ def get_bulletin_by_unique_id(unique_id: str):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT board, sender_short_name, subject, content, unique_id FROM bulletins WHERE unique_id = ? ORDER BY LENGTH(content) DESC, id ASC",
+        "SELECT board, sender_short_name, date, subject, content, unique_id FROM bulletins WHERE unique_id = ? ORDER BY LENGTH(content) DESC, id ASC",
         (unique_id,),
     )
     return c.fetchone()
@@ -2182,7 +2182,7 @@ def get_mail_by_unique_id(unique_id: str):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT sender, sender_short_name, recipient, subject, content, unique_id FROM mail WHERE unique_id = ? ORDER BY LENGTH(content) DESC, id ASC",
+        "SELECT sender, sender_short_name, recipient, date, subject, content, unique_id FROM mail WHERE unique_id = ? ORDER BY LENGTH(content) DESC, id ASC",
         (unique_id,),
     )
     return c.fetchone()
@@ -2298,10 +2298,10 @@ def sync_mail_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] = Non
     try:
         if total_items and delay_seconds > 0:
             time.sleep(delay_seconds)
-        c.execute("SELECT sender, sender_short_name, recipient, subject, content, unique_id FROM mail")
-        for sender_id, sender_short_name, recipient_id, subject, content, unique_id in c.fetchall():
+        c.execute("SELECT sender, sender_short_name, recipient, date, subject, content, unique_id FROM mail")
+        for sender_id, sender_short_name, recipient_id, mail_date, subject, content, unique_id in c.fetchall():
             send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, content, unique_id,
-                                   bbs_nodes, interface)
+                                   bbs_nodes, interface, date=mail_date)
             mail_synced += 1
             pct = int((mail_synced * 100) / total_items) if total_items else 100
             _update_sync_progress(progress_percent=pct, completed_items=mail_synced,
@@ -2342,9 +2342,9 @@ def sync_bulletins_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] 
     try:
         if total_items and delay_seconds > 0:
             time.sleep(delay_seconds)
-        c.execute("SELECT board, sender_short_name, subject, content, unique_id FROM bulletins WHERE local_only = 0")
-        for board, sender_short_name, subject, content, unique_id in c.fetchall():
-            send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface)
+        c.execute("SELECT board, sender_short_name, date, subject, content, unique_id FROM bulletins WHERE local_only = 0")
+        for board, sender_short_name, bulletin_date, subject, content, unique_id in c.fetchall():
+            send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface, date=bulletin_date)
             bulletins_synced += 1
             pct = int((bulletins_synced * 100) / total_items) if total_items else 100
             _update_sync_progress(progress_percent=pct, completed_items=bulletins_synced,
