@@ -17,6 +17,7 @@ If you're a Docker user, TC²-BBS Meshtastic is available on Docker Hub!
 - Python 3.x
 - Meshtastic
 - pypubsub
+- **dfrotz** (required for Zork/interactive fiction games): `sudo apt install frotz`
 
 ### Update and Install Git
    

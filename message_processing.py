@@ -705,17 +705,26 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             channel_name, channel_url = parts[1], parts[2]
             add_channel(channel_name, channel_url)
         elif message.startswith("CHANNELCOMMENT|"):
-            parts = message.split("|", 5)
-            if len(parts) != 6:
+            # Wire format: CHANNELCOMMENT|{manifest_key}|{b64_sender}|{date}|{content}|{unique_id}
+            # Use rsplit from the right so content with embedded '|' is handled correctly.
+            body = message[len("CHANNELCOMMENT|"):]
+            tail = body.rsplit("|", 1)
+            if len(tail) != 2 or not tail[1]:
                 logging.warning(f"Malformed CHANNELCOMMENT sync message ignored: {message}")
                 return
+            unique_id = tail[1]
+            hparts = tail[0].split("|", 3)
+            if len(hparts) != 4:
+                logging.warning(f"Malformed CHANNELCOMMENT header ignored: {message}")
+                return
+            channel_key, b64_sender_raw, comment_date, content = hparts
             try:
-                sender_short_name = base64.b64decode(parts[2].encode('ascii')).decode('utf-8')
+                sender_short_name = base64.b64decode(b64_sender_raw.encode('ascii')).decode('utf-8')
             except Exception:
                 logging.warning(f"Malformed CHANNELCOMMENT sender ignored: {message}")
                 return
-            add_channel_comment_by_manifest_key(parts[1], sender_short_name, parts[3], parts[4], parts[5])
-            flush_pending_channel_comment_continuations(parts[5])
+            add_channel_comment_by_manifest_key(channel_key, sender_short_name, comment_date, content, unique_id)
+            flush_pending_channel_comment_continuations(unique_id)
         elif message.startswith("BULLETINCONT|"):
             parts = message.split("|", 3)
             if len(parts) < 3 or not parts[1]:
