@@ -116,7 +116,7 @@ _HASH_BUFFER_MAX_AGE_SECONDS = 600
 # would otherwise leave the buffer stuck for ``_HASH_BUFFER_MAX_AGE_SECONDS``
 # (10 minutes) before pruning, during which no retry happens on either side
 # and sync appears stalled.
-_HASH_BUFFER_RETRY_AFTER_SECONDS = 30
+_HASH_BUFFER_RETRY_AFTER_SECONDS = 15
 _recent_hashmiss_requests = {}
 # Per-pass HASHMISS pull/push caps and SYNCSTATE repair TTL are tunable via the
 # [sync] config section (reconcile_max_per_pass, repair_cycle_seconds) or the
@@ -130,7 +130,7 @@ _CANDIDATE_REQUEST_TIMEOUT_SECONDS = 15.0
 # Track in-flight HASHREQ exchanges so we don't flood a peer with duplicate requests
 # while their manifest response is still being assembled.
 _pending_hashreq = {}  # (peer_id, scope) -> float timestamp
-_PENDING_HASHREQ_TIMEOUT = 60
+_PENDING_HASHREQ_TIMEOUT = 25
 
 
 def _prune_old_zork_save_chunks() -> None:
