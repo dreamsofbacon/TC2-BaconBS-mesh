@@ -436,11 +436,22 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
     # Ask peer for keys we do not have, plus keys that exist on both sides but differ.
     need_from_remote = set(remote_keys - local_keys)
     need_from_remote.update(key for key in (remote_keys & local_keys) if local.get(key) != remote.get(key))
-    push_keys = sorted(local_keys - remote_keys)
+    # Push records the peer is missing entirely, AND records both sides have but
+    # whose hashes differ.  When hashes differ for a shared key, the most common
+    # cause is that one side received only some of a multi-frame record (base
+    # frame landed, META or CONT was lost).  Re-pushing our copy lets the peer's
+    # _merge_continuation_content extend its truncated row to our complete one.
+    # The merge logic is idempotent — if the peer already has equal-or-longer
+    # content the push is treated as a duplicate and ignored.  Without this,
+    # records with mismatched hashes can never converge because the pull-only
+    # path just round-trips the peer's truncated content back to us.
+    differing_shared = {k for k in (remote_keys & local_keys) if local.get(k) != remote.get(k)}
+    push_keys = sorted((local_keys - remote_keys) | differing_shared)
     logging.info(
         f"Reconciling manifest scope={scope} peer={sender_node_id} "
         f"remote_keys={len(remote_keys)} local_keys={len(local_keys)} "
-        f"pull={len(need_from_remote)} push={len(push_keys)}"
+        f"pull={len(need_from_remote)} push={len(push_keys)} "
+        f"(of which {len(differing_shared)} shared-but-differ)"
     )
 
     # Cap HASHMISS requests per pass to avoid flooding the LoRa channel, which causes
