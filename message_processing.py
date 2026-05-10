@@ -583,7 +583,12 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
         row = get_zork_save_row_by_user_and_game(user_id, game_id)
         if row:
             logging.info(f"Sending requested zork save to {destination_node_id} key={key}")
-            send_zork_save_to_bbs_nodes(row[0], row[1], row[2], row[3], [destination_node_id], interface, pause_seconds=get_hash_repair_pause_seconds())
+            # Multi-chunk ZORKSAVE pushes need the same inter-frame floor as
+            # HASHZ to keep LoRa from dropping trailing chunks under turbo.
+            send_zork_save_to_bbs_nodes(
+                row[0], row[1], row[2], row[3], [destination_node_id], interface,
+                pause_seconds=max(get_hash_repair_pause_seconds(), get_hash_chunk_pause_seconds()),
+            )
     elif scope == 'tombstones':
         if key.startswith('bulletins:'):
             unique_id = key.split(':', 1)[1]

@@ -26,6 +26,7 @@ from utils import (
     send_game_score_to_bbs_nodes,
     send_zork_save_to_bbs_nodes,
     get_full_sync_delay_ms,
+    get_hash_chunk_pause_seconds,
     is_zork_save_sync_enabled,
 )
 
@@ -2578,8 +2579,14 @@ def sync_game_data_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] 
         if is_zork_save_sync_enabled():
             _update_sync_progress(current_phase='syncing_zork_saves')
             c.execute("SELECT user_id, game_id, save_data, updated_at FROM zork_saves")
+            # Multi-chunk ZORKSAVE frames need an inter-chunk pause floor or
+            # the receiving LoRa radio drops trailing chunks under turbo.
+            zork_chunk_pause = get_hash_chunk_pause_seconds()
             for user_id, game_id, save_data, updated_at in c.fetchall():
-                send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nodes, interface)
+                send_zork_save_to_bbs_nodes(
+                    user_id, game_id, save_data, updated_at, bbs_nodes, interface,
+                    pause_seconds=zork_chunk_pause,
+                )
                 zork_saves_synced += 1
                 total_messages += 1
                 _progress_tick('syncing_zork_saves')
