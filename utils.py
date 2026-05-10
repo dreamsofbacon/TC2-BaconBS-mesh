@@ -111,17 +111,48 @@ def get_full_sync_delay_ms() -> int:
     return _config_int("sync", "full_sync_delay_ms", default)
 
 
+def get_repair_cycle_seconds() -> int:
+    """Minimum seconds between SYNCSTATE-triggered repair cycles for the same peer/scope.
+
+    Lower values converge mismatches faster but risk repair-storms on busy meshes.
+    Turbo mode shrinks this aggressively for small (e.g. 2-node) deployments.
+    """
+    turbo = _is_sync_turbo_enabled()
+    default = 30 if turbo else 90
+    if os.getenv("BBS_REPAIR_CYCLE_SECONDS") is not None:
+        return _env_int("BBS_REPAIR_CYCLE_SECONDS", default)
+    return _config_int("sync", "repair_cycle_seconds", default)
+
+
+def get_reconcile_max_per_pass() -> int:
+    """Cap on records pulled (HASHMISS) or pushed per single reconcile pass.
+
+    Higher values converge larger mismatches in one cycle but tie up the receive
+    callback longer. Turbo mode raises this for small meshes where collisions
+    are rare.
+    """
+    turbo = _is_sync_turbo_enabled()
+    default = 100 if turbo else 20
+    if os.getenv("BBS_RECONCILE_MAX_PER_PASS") is not None:
+        return _env_int("BBS_RECONCILE_MAX_PER_PASS", default)
+    return _config_int("sync", "reconcile_max_per_pass", default)
+
+
 def get_sync_runtime_settings() -> dict:
     return {
         "sync_turbo": _is_sync_turbo_enabled(),
         "sync_pause_seconds": get_sync_pause_seconds(),
         "hash_repair_pause_seconds": get_hash_repair_pause_seconds(),
         "full_sync_delay_ms": get_full_sync_delay_ms(),
+        "repair_cycle_seconds": get_repair_cycle_seconds(),
+        "reconcile_max_per_pass": get_reconcile_max_per_pass(),
         "env_overrides": {
             "sync_turbo": os.getenv("BBS_SYNC_TURBO") is not None,
             "sync_pause_seconds": os.getenv("BBS_SYNC_PAUSE_SECONDS") is not None,
             "hash_repair_pause_seconds": os.getenv("BBS_HASH_REPAIR_PAUSE_SECONDS") is not None,
             "full_sync_delay_ms": os.getenv("BBS_FULL_SYNC_DELAY_MS") is not None,
+            "repair_cycle_seconds": os.getenv("BBS_REPAIR_CYCLE_SECONDS") is not None,
+            "reconcile_max_per_pass": os.getenv("BBS_RECONCILE_MAX_PER_PASS") is not None,
         },
     }
 
