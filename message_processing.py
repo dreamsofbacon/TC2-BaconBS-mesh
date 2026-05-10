@@ -62,6 +62,8 @@ from utils import (
     send_delete_zork_save_to_bbs_nodes,
     send_hash_request_to_bbs_nodes,
     get_hash_repair_pause_seconds,
+    get_repair_cycle_seconds,
+    get_reconcile_max_per_pass,
     is_zork_save_sync_enabled,
     _send_one_sync, _MESHTASTIC_MAX_BYTES,
 )
@@ -107,12 +109,10 @@ _peer_hash_compressed_buffers = {}
 _SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "profiles", "game_scores", "zork_saves", "tombstones"]
 _HASH_BUFFER_MAX_AGE_SECONDS = 600
 _recent_hashmiss_requests = {}
-# Maximum records pulled (HASHMISS) or pushed per single reconcile pass to avoid
-# flooding LoRa and causing the packet loss that stalls convergence.
-_RECONCILE_MAX_PULL_PER_PASS = 20
-_RECONCILE_MAX_PUSH_PER_PASS = 20
+# Per-pass HASHMISS pull/push caps and SYNCSTATE repair TTL are tunable via the
+# [sync] config section (reconcile_max_per_pass, repair_cycle_seconds) or the
+# corresponding BBS_* environment variables. Turbo mode lifts these defaults.
 _recent_syncstate_repairs = {}
-_SYNCSTATE_REPAIR_TTL_SECONDS = 90
 # Pattern for the optional original-date field appended to BULLETIN/MAIL wire frames.
 _SYNC_DATE_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$')
 _candidate_resolution_requests = {}
@@ -388,9 +388,10 @@ def is_hashreq_pending_for_peer_scope(peer_id: str, scope: str) -> bool:
 
 def _prune_recent_syncstate_repairs() -> None:
     now = time.time()
+    ttl = get_repair_cycle_seconds()
     stale_keys = [
         k for k, last_sent in _recent_syncstate_repairs.items()
-        if now - float(last_sent) > _SYNCSTATE_REPAIR_TTL_SECONDS
+        if now - float(last_sent) > ttl
     ]
     for key in stale_keys:
         _recent_syncstate_repairs.pop(key, None)
@@ -410,7 +411,7 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
     now = time.time()
     repair_sig = (str(sender_node_id), tuple(sorted(scopes)))
     last_sent = _recent_syncstate_repairs.get(repair_sig)
-    if last_sent is not None and (now - float(last_sent)) < _SYNCSTATE_REPAIR_TTL_SECONDS:
+    if last_sent is not None and (now - float(last_sent)) < get_repair_cycle_seconds():
         return
 
     _recent_syncstate_repairs[repair_sig] = now
@@ -457,11 +458,12 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
     # Cap HASHMISS requests per pass to avoid flooding the LoRa channel, which causes
     # the very packet loss that stalls convergence.  Deferred keys will be retried on
     # the next SYNCSTATE → HASHREQ → reconcile cycle.
+    max_per_pass = get_reconcile_max_per_pass()
     pull_sent = 0
     for key in sorted(need_from_remote):
-        if pull_sent >= _RECONCILE_MAX_PULL_PER_PASS:
+        if pull_sent >= max_per_pass:
             logging.info(
-                f"Reconcile pull cap reached ({_RECONCILE_MAX_PULL_PER_PASS}) for scope={scope} peer={sender_node_id}; "
+                f"Reconcile pull cap reached ({max_per_pass}) for scope={scope} peer={sender_node_id}; "
                 f"{len(need_from_remote) - pull_sent} key(s) deferred to next repair cycle"
             )
             break
@@ -481,9 +483,9 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
     # Also capped per pass to avoid blocking the receive callback for too long.
     push_sent = 0
     for key in push_keys:
-        if push_sent >= _RECONCILE_MAX_PUSH_PER_PASS:
+        if push_sent >= max_per_pass:
             logging.info(
-                f"Reconcile push cap reached ({_RECONCILE_MAX_PUSH_PER_PASS}) for scope={scope} peer={sender_node_id}; "
+                f"Reconcile push cap reached ({max_per_pass}) for scope={scope} peer={sender_node_id}; "
                 f"{len(push_keys) - push_sent} key(s) deferred to next repair cycle"
             )
             break
