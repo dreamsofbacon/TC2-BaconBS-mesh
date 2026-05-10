@@ -1,6 +1,7 @@
 param(
   [string]$ConfigPath = "$PSScriptRoot\node-update-config.json",
-  [switch]$ResetCredential
+  [switch]$ResetCredential,
+  [switch]$Reboot
 )
 
 $ErrorActionPreference = "Stop"
@@ -42,7 +43,8 @@ function Invoke-RemoteUpdate {
   param(
     [pscustomobject]$Node,
     [pscredential]$Credential,
-    [pscustomobject]$Config
+    [pscustomobject]$Config,
+    [bool]$Reboot
   )
 
   $port = if ($Node.PSObject.Properties.Name -contains "port") { [int]$Node.port } else { 22 }
@@ -54,22 +56,45 @@ function Invoke-RemoteUpdate {
   Write-Host "Connecting to $($Node.host):$port ..."
   $session = New-SSHSession -ComputerName $Node.host -Port $port -Credential $Credential -AcceptKey
   try {
-    $command = "bash '$remoteScript' --repo-path '$repoPath' --branch '$branch' --services '$services'"
-    $result = Invoke-SSHCommand -SSHSession $session -Command $command -TimeOut 1200
-
-    if ($result.Output) {
-      Write-Host "[$($Node.host)] output:"
-      $result.Output | ForEach-Object { Write-Host "  $_" }
+    if ($Reboot) {
+      # Pull the repo, then reboot. Reboot kills the SSH connection so swallow
+      # the resulting non-zero exit from the second command.
+      # Translate leading ~/ to $HOME so single-quoting in bash doesn't break expansion.
+      $remoteRepo = $repoPath -replace '^~/', '$HOME/' -replace '^~$', '$HOME'
+      $pullCmd = "cd `"$remoteRepo`" && git fetch --all --prune && git checkout '$branch' && git pull --ff-only origin '$branch'"
+      Write-Host "[$($Node.host)] pulling latest on $branch ..."
+      $pull = Invoke-SSHCommand -SSHSession $session -Command $pullCmd -TimeOut 300
+      if ($pull.Output) { $pull.Output | ForEach-Object { Write-Host "  $_" } }
+      if ($pull.Error) { $pull.Error | ForEach-Object { Write-Host "  [stderr] $_" } }
+      if ($pull.ExitStatus -ne 0) {
+        throw "git pull failed on $($Node.host) with exit code $($pull.ExitStatus)"
+      }
+      Write-Host "[$($Node.host)] rebooting ..."
+      try {
+        Invoke-SSHCommand -SSHSession $session -Command "sudo /sbin/shutdown -r now" -TimeOut 15 | Out-Null
+      } catch {
+        # Expected: connection drops when reboot starts.
+        Write-Host "[$($Node.host)] reboot command issued (connection closed)"
+      }
     }
+    else {
+      $command = "bash '$remoteScript' --repo-path '$repoPath' --branch '$branch' --services '$services'"
+      $result = Invoke-SSHCommand -SSHSession $session -Command $command -TimeOut 1200
 
-    if ($result.ExitStatus -ne 0) {
-      throw "Remote update failed on $($Node.host) with exit code $($result.ExitStatus)"
+      if ($result.Output) {
+        Write-Host "[$($Node.host)] output:"
+        $result.Output | ForEach-Object { Write-Host "  $_" }
+      }
+
+      if ($result.ExitStatus -ne 0) {
+        throw "Remote update failed on $($Node.host) with exit code $($result.ExitStatus)"
+      }
+
+      Write-Host "[$($Node.host)] update succeeded"
     }
-
-    Write-Host "[$($Node.host)] update succeeded"
   }
   finally {
-    Remove-SSHSession -SSHSession $session | Out-Null
+    Remove-SSHSession -SSHSession $session -ErrorAction SilentlyContinue | Out-Null
   }
 }
 
@@ -87,7 +112,11 @@ $credPath = Get-StoredCredentialPath
 $credential = Get-OrCreateCredential -CredPath $credPath -ForceReset:$ResetCredential.IsPresent
 
 foreach ($node in $config.nodes) {
-  Invoke-RemoteUpdate -Node $node -Credential $credential -Config $config
+  Invoke-RemoteUpdate -Node $node -Credential $credential -Config $config -Reboot:$Reboot.IsPresent
 }
 
-Write-Host "All node updates completed."
+if ($Reboot) {
+  Write-Host "All nodes pulled latest and rebooted."
+} else {
+  Write-Host "All node updates completed."
+}
