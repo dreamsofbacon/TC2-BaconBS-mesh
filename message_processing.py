@@ -109,6 +109,12 @@ _peer_hash_manifest_buffers = {}
 _peer_hash_compressed_buffers = {}
 _SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "profiles", "game_scores", "zork_saves", "tombstones"]
 _HASH_BUFFER_MAX_AGE_SECONDS = 600
+# After this many seconds with no new chunk for a HASHZ manifest, drop the
+# partial buffer and re-issue HASHREQ. Without this, a single dropped chunk
+# would otherwise leave the buffer stuck for ``_HASH_BUFFER_MAX_AGE_SECONDS``
+# (10 minutes) before pruning, during which no retry happens on either side
+# and sync appears stalled.
+_HASH_BUFFER_RETRY_AFTER_SECONDS = 30
 _recent_hashmiss_requests = {}
 # Per-pass HASHMISS pull/push caps and SYNCSTATE repair TTL are tunable via the
 # [sync] config section (reconcile_max_per_pass, repair_cycle_seconds) or the
@@ -141,6 +147,47 @@ def _prune_old_hash_manifest_chunks() -> None:
     ]
     for key in stale_keys:
         _peer_hash_compressed_buffers.pop(key, None)
+
+
+def _retry_stale_hash_manifest_buffers(interface) -> None:
+    """Re-request HASHZ for any manifest whose chunks have stopped arriving.
+
+    A multi-chunk HASHZ manifest can stall indefinitely if a single chunk is
+    lost mid-stream. ``_prune_old_hash_manifest_chunks`` waits 10 minutes
+    before silently dropping the buffer, and the in-flight HASHREQ guard
+    prevents a fresh request for another 60s on top. The next SYNCSTATE
+    heartbeat is up to 30 minutes away. Result: a single dropped chunk can
+    block convergence for the better part of an hour.
+
+    This function checks every active partial manifest buffer; any that has
+    received no new chunk for ``_HASH_BUFFER_RETRY_AFTER_SECONDS`` is dropped
+    along with its in-flight HASHREQ marker, and a fresh HASHREQ is sent so
+    the peer re-streams the manifest.
+    """
+    if not _peer_hash_compressed_buffers:
+        return
+    now = time.time()
+    stale = []
+    for (peer_id, scope, manifest_id), buf in list(_peer_hash_compressed_buffers.items()):
+        if now - float(buf.get('updated_at', now)) <= _HASH_BUFFER_RETRY_AFTER_SECONDS:
+            continue
+        received = len(buf.get('chunks', {}))
+        total = int(buf.get('total', 0))
+        if received >= total > 0:
+            continue
+        stale.append((peer_id, scope, manifest_id, received, total))
+    for peer_id, scope, manifest_id, received, total in stale:
+        _peer_hash_compressed_buffers.pop((peer_id, scope, manifest_id), None)
+        _clear_hashreq_pending(peer_id, scope)
+        logging.warning(
+            f"HASHZ buffer stalled (peer={peer_id} scope={scope} manifest_id={manifest_id} "
+            f"{received}/{total} chunks); re-requesting manifest"
+        )
+        try:
+            send_hash_request_to_bbs_nodes([peer_id], interface, scope=scope)
+            _mark_hashreq_pending(peer_id, scope)
+        except Exception as exc:
+            logging.warning(f"Failed to re-request HASHZ for {peer_id}/{scope}: {exc}")
 
 
 def _candidate_payload_hash(payload: bytes) -> str:
@@ -867,6 +914,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     f"b={bulletins} m={mail} c={channels} z={zork_saves} p={profiles} g={game_scores} | "
                     f"bH={bulletins_hash} mH={mail_hash} cH={channels_hash} zH={zork_saves_hash} pH={profiles_hash} gH={game_scores_hash}"
                 )
+                _retry_stale_hash_manifest_buffers(interface)
                 _request_targeted_repair_if_needed(sender_node_id, interface)
             else:
                 logging.warning("SYNCSTATE ignored due to missing sender_node_id")
@@ -914,6 +962,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 return
 
             _prune_old_hash_manifest_chunks()
+            _retry_stale_hash_manifest_buffers(interface)
             buf_key = (sender_node_id, scope, manifest_id)
             buf = _peer_hash_compressed_buffers.get(buf_key)
             if buf is None or int(buf.get('total', -1)) != total_chunks:
