@@ -105,6 +105,8 @@ board_action_handlers = {
 
 _zork_save_chunk_buffers = {}
 _ZORK_SAVE_BUFFER_MAX_AGE_SECONDS = 600
+# Max ZORKGAP retry rounds before falling back to a full HASHMISS retransmit.
+_ZORK_GAP_FILL_MAX_ATTEMPTS = 3
 _peer_hash_manifest_buffers = {}
 _peer_hash_compressed_buffers = {}
 _SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "profiles", "game_scores", "zork_saves", "tombstones"]
@@ -140,42 +142,88 @@ def _prune_old_zork_save_chunks() -> None:
 
 
 def _retry_stale_zork_save_buffers(interface) -> None:
-    """Re-request a ZORKSAVE record whose chunks have stopped arriving.
+    """Recover from LoRa frame loss during a multi-chunk ZORKSAVE push.
 
-    Multi-chunk ZORKSAVE pushes are vulnerable to LoRa frame loss. If even a
-    single chunk is dropped the receiving buffer sits idle until the 600s
-    hard prune, and the sender has no way to know. Re-issue HASHMISS for any
-    incomplete buffer that hasn't received a new chunk in 30s so the sender
-    re-streams it. The HASHMISS key for zork_saves is the save_id itself
-    (``<user>:<game>``).
+    For a partial buffer that has stopped advancing for
+    ``_HASH_BUFFER_RETRY_AFTER_SECONDS``, send a targeted gap-fill request
+    (``ZORKGAP|save_id|user_b64|game_b64|csv``) listing only the missing
+    indices. The sender re-emits just those frames. The partial buffer is
+    preserved so already-received chunks are not retransmitted.
+
+    After ``_ZORK_GAP_FILL_MAX_ATTEMPTS`` unproductive gap-fill rounds the
+    buffer is dropped and a full HASHMISS retransmit is requested as a
+    fallback, in case the buffer or the sender's record got out of sync.
     """
     if not _zork_save_chunk_buffers:
         return
     now = time.time()
-    stale = []
+    candidates = []
     for (peer_id, save_id), buf in list(_zork_save_chunk_buffers.items()):
         if now - float(buf.get('updated_at', now)) <= _HASH_BUFFER_RETRY_AFTER_SECONDS:
             continue
-        received = len(buf.get('chunks', {}))
+        chunks = buf.get('chunks', {})
         total = int(buf.get('total', 0))
-        if received >= total > 0:
+        if total <= 0 or len(chunks) >= total:
             continue
-        stale.append((peer_id, save_id, received, total))
-    for peer_id, save_id, received, total in stale:
-        _zork_save_chunk_buffers.pop((peer_id, save_id), None)
+        candidates.append((peer_id, save_id, buf, chunks, total))
+    for peer_id, save_id, buf, chunks, total in candidates:
+        last_count = int(buf.get('last_retry_received', -1))
+        received = len(chunks)
+        # Reset attempt counter whenever new chunks arrived since the last retry.
+        if received != last_count:
+            buf['gap_attempts'] = 0
+        buf['last_retry_received'] = received
+        attempts = int(buf.get('gap_attempts', 0))
+        missing = sorted(set(range(total)) - set(int(i) for i in chunks.keys()))
+
+        if attempts >= _ZORK_GAP_FILL_MAX_ATTEMPTS:
+            # Gap-fill not working; drop buffer and fall back to full retransmit.
+            _zork_save_chunk_buffers.pop((peer_id, save_id), None)
+            logging.warning(
+                f"ZORKSAVE gap-fill exhausted (peer={peer_id} save_id={save_id} "
+                f"{received}/{total} chunks, missing={missing}); falling back to full HASHMISS"
+            )
+            try:
+                _send_one_sync(
+                    f"HASHMISS|zork_saves|{save_id}",
+                    peer_id,
+                    interface,
+                    pause_seconds=get_hash_repair_pause_seconds(),
+                )
+            except Exception as exc:
+                logging.warning(f"Failed to re-request ZORKSAVE {peer_id}/{save_id}: {exc}")
+            continue
+
+        # Send a ZORKGAP request for only the missing frames.
+        user_b64 = str(buf.get('user_b64', ''))
+        game_b64 = str(buf.get('game_b64', ''))
+        csv = ",".join(str(i) for i in missing)
+        gap_msg = f"ZORKGAP|{save_id}|{user_b64}|{game_b64}|{csv}"
+        if len(gap_msg.encode('utf-8')) > 200:
+            # CSV too large to fit; fall back immediately.
+            buf['gap_attempts'] = _ZORK_GAP_FILL_MAX_ATTEMPTS
+            buf['updated_at'] = now
+            logging.warning(
+                f"ZORKSAVE gap list too large for one frame (peer={peer_id} save_id={save_id} "
+                f"missing={len(missing)}); will fall back to HASHMISS next tick"
+            )
+            continue
+        buf['gap_attempts'] = attempts + 1
+        buf['updated_at'] = now  # don't immediately retry next tick
         logging.warning(
             f"ZORKSAVE buffer stalled (peer={peer_id} save_id={save_id} "
-            f"{received}/{total} chunks); re-requesting via HASHMISS"
+            f"{received}/{total} chunks, missing={missing}); sending ZORKGAP attempt "
+            f"{attempts + 1}/{_ZORK_GAP_FILL_MAX_ATTEMPTS}"
         )
         try:
             _send_one_sync(
-                f"HASHMISS|zork_saves|{save_id}",
+                gap_msg,
                 peer_id,
                 interface,
                 pause_seconds=get_hash_repair_pause_seconds(),
             )
         except Exception as exc:
-            logging.warning(f"Failed to re-request ZORKSAVE {peer_id}/{save_id}: {exc}")
+            logging.warning(f"Failed to send ZORKGAP {peer_id}/{save_id}: {exc}")
 
 
 def _prune_old_hash_manifest_chunks() -> None:
@@ -1145,6 +1193,45 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed SCORESYNC payload ignored: {message}")
                 return
             upsert_synced_game_score(parts[1], parts[2], short_name, score, max_score, moves, parts[7])
+        elif message.startswith("ZORKGAP|"):
+            # Gap-fill request from a peer who received a partial ZORKSAVE.
+            # Wire format: ZORKGAP|save_id|user_b64|game_b64|csv_of_missing_indices
+            if not is_zork_save_sync_enabled():
+                return
+            parts = message.split("|", 4)
+            if len(parts) != 5:
+                logging.warning(f"Malformed ZORKGAP ignored: {message}")
+                return
+            save_id, user_b64, game_b64, csv = parts[1], parts[2], parts[3], parts[4]
+            try:
+                user_id = base64.b64decode(user_b64.encode('ascii')).decode('utf-8')
+                game_id = base64.b64decode(game_b64.encode('ascii')).decode('utf-8')
+                missing = sorted({int(x) for x in csv.split(',') if x.strip() != ''})
+            except Exception:
+                logging.warning(f"Malformed ZORKGAP payload ignored: {message}")
+                return
+            row = get_zork_save_row_by_user_and_game(user_id, game_id)
+            if not row:
+                logging.warning(
+                    f"ZORKGAP for unknown save user={user_id} game={game_id} from {sender_node_id}; "
+                    f"falling back to full retransmit not possible (no row)"
+                )
+                return
+            logging.info(
+                f"Honoring ZORKGAP from {sender_node_id} save_id={save_id} user={user_id} "
+                f"game={game_id} missing={missing}"
+            )
+            try:
+                send_zork_save_to_bbs_nodes(
+                    row[0], row[1], row[2], row[3], [sender_node_id], interface,
+                    pause_seconds=max(get_hash_repair_pause_seconds(), get_hash_chunk_pause_seconds()),
+                    only_indices=missing,
+                )
+            except Exception:
+                import traceback
+                logging.error(
+                    f"Exception honoring ZORKGAP save_id={save_id} to {sender_node_id}:\n{traceback.format_exc()}"
+                )
         elif message.startswith("ZORKSAVE|"):
             if not is_zork_save_sync_enabled():
                 logging.info("Ignoring ZORKSAVE because zork save sync is disabled locally")
@@ -1181,6 +1268,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     'total': total_chunks,
                     'chunks': {},
                     'updated_at': time.time(),
+                    'gap_attempts': 0,
+                    'last_retry_received': -1,
                 }
                 _zork_save_chunk_buffers[key] = buf
             elif buf.get('total') != total_chunks:
@@ -1193,6 +1282,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     'total': total_chunks,
                     'chunks': {},
                     'updated_at': time.time(),
+                    'gap_attempts': 0,
+                    'last_retry_received': -1,
                 }
                 _zork_save_chunk_buffers[key] = buf
 

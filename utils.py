@@ -450,10 +450,17 @@ def send_game_score_to_bbs_nodes(user_id, game_id, short_name, score, max_score,
         _send_one_sync(message, node_id, interface)
 
 
-def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nodes, interface, pause_seconds=None):
-    """Send binary zork save payload as chunked base64 sync frames."""
+def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nodes, interface, pause_seconds=None, only_indices=None):
+    """Send binary zork save payload as chunked base64 sync frames.
+
+    When ``only_indices`` is provided (iterable of int), only those chunk
+    indices are emitted — used to satisfy gap-fill (ZORKGAP) requests so we
+    don't re-stream the entire payload just to recover a couple of dropped
+    frames.
+    """
     if not is_zork_save_sync_enabled():
         return
+    only_set = set(int(i) for i in only_indices) if only_indices is not None else None
     payload_b64 = base64.b64encode(save_data or b"").decode("ascii")
     payload_hash = base64.urlsafe_b64encode(hashlib.blake2b(save_data or b"", digest_size=8).digest()).decode("ascii").rstrip("=")
     user_b64 = _b64(str(user_id))
@@ -479,9 +486,13 @@ def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nod
     logging.info(
         f"ZORKSAVE send begin save_id={save_id} user={user_id} game={game_id} "
         f"bytes={len(save_data or b'')} b64_len={len(payload_b64)} chunks={total_chunks} "
-        f"payload_hash={payload_hash} pause={pause_seconds} peers={list(bbs_nodes)}"
+        f"payload_hash={payload_hash} pause={pause_seconds} peers={list(bbs_nodes)} "
+        f"only_indices={sorted(only_set) if only_set is not None else 'all'}"
     )
+    sent_count = 0
     for idx, chunk in enumerate(chunks):
+        if only_set is not None and idx not in only_set:
+            continue
         message = f"{prefix}{idx}|{total_chunks}|{chunk}"
         for node_id in bbs_nodes:
             logging.info(
@@ -489,7 +500,8 @@ def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nod
                 f"frame_bytes={len(message.encode('utf-8'))} -> {node_id}"
             )
             _send_one_sync(message, node_id, interface, pause_seconds)
-    logging.info(f"ZORKSAVE send end save_id={save_id} chunks_sent={total_chunks}")
+        sent_count += 1
+    logging.info(f"ZORKSAVE send end save_id={save_id} chunks_sent={sent_count}/{total_chunks}")
 
 
 def _send_one_sync(message, destination, interface, pause_seconds=None):
