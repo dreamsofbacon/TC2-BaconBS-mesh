@@ -1420,6 +1420,7 @@ SETTINGS_CONTENT = """
 
     <label><input type=\"checkbox\" name=\"sync_turbo\" value=\"1\" {% if sync_speed_settings.sync_turbo %}checked{% endif %}> Enable turbo pacing</label><br>
     <p class=\"muted\">Turbo uses the smallest normal delays and is useful when you want sync traffic to move as fast as possible.</p>
+    <p class=\"muted\" style=\"color:#b35900;\"><strong>⚠ Warning:</strong> Only enable turbo on small meshes (typically 2&ndash;3 BBS nodes on the same channel). The inter-frame pause is what prevents LoRa packet collisions on busy meshes; with 3+ active BBS peers turbo can <em>worsen</em> convergence by causing the very packet loss it tries to outrun.</p>
 
     <label>Inter-frame Pause (seconds)</label><br>
     <input type=\"text\" name=\"sync_pause_seconds\" value=\"{{ sync_speed_settings.sync_pause_seconds }}\"><br>
