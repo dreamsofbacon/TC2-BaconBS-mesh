@@ -132,7 +132,7 @@ def get_repair_cycle_seconds() -> int:
     Turbo mode shrinks this aggressively for small (e.g. 2-node) deployments.
     """
     turbo = _is_sync_turbo_enabled()
-    default = 30 if turbo else 90
+    default = 15 if turbo else 90
     if os.getenv("BBS_REPAIR_CYCLE_SECONDS") is not None:
         return _env_int("BBS_REPAIR_CYCLE_SECONDS", default)
     return _config_int("sync", "repair_cycle_seconds", default)
