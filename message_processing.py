@@ -139,6 +139,45 @@ def _prune_old_zork_save_chunks() -> None:
         _zork_save_chunk_buffers.pop(key, None)
 
 
+def _retry_stale_zork_save_buffers(interface) -> None:
+    """Re-request a ZORKSAVE record whose chunks have stopped arriving.
+
+    Multi-chunk ZORKSAVE pushes are vulnerable to LoRa frame loss. If even a
+    single chunk is dropped the receiving buffer sits idle until the 600s
+    hard prune, and the sender has no way to know. Re-issue HASHMISS for any
+    incomplete buffer that hasn't received a new chunk in 30s so the sender
+    re-streams it. The HASHMISS key for zork_saves is the save_id itself
+    (``<user>:<game>``).
+    """
+    if not _zork_save_chunk_buffers:
+        return
+    now = time.time()
+    stale = []
+    for (peer_id, save_id), buf in list(_zork_save_chunk_buffers.items()):
+        if now - float(buf.get('updated_at', now)) <= _HASH_BUFFER_RETRY_AFTER_SECONDS:
+            continue
+        received = len(buf.get('chunks', {}))
+        total = int(buf.get('total', 0))
+        if received >= total > 0:
+            continue
+        stale.append((peer_id, save_id, received, total))
+    for peer_id, save_id, received, total in stale:
+        _zork_save_chunk_buffers.pop((peer_id, save_id), None)
+        logging.warning(
+            f"ZORKSAVE buffer stalled (peer={peer_id} save_id={save_id} "
+            f"{received}/{total} chunks); re-requesting via HASHMISS"
+        )
+        try:
+            _send_one_sync(
+                f"HASHMISS|zork_saves|{save_id}",
+                peer_id,
+                interface,
+                pause_seconds=get_hash_repair_pause_seconds(),
+            )
+        except Exception as exc:
+            logging.warning(f"Failed to re-request ZORKSAVE {peer_id}/{save_id}: {exc}")
+
+
 def _prune_old_hash_manifest_chunks() -> None:
     now = time.time()
     stale_keys = [
@@ -915,6 +954,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     f"bH={bulletins_hash} mH={mail_hash} cH={channels_hash} zH={zork_saves_hash} pH={profiles_hash} gH={game_scores_hash}"
                 )
                 _retry_stale_hash_manifest_buffers(interface)
+                _retry_stale_zork_save_buffers(interface)
                 _request_targeted_repair_if_needed(sender_node_id, interface)
             else:
                 logging.warning("SYNCSTATE ignored due to missing sender_node_id")
@@ -1120,6 +1160,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 return
 
             _prune_old_zork_save_chunks()
+            _retry_stale_zork_save_buffers(interface)
             sender_key = sender_node_id or "unknown"
             key = (sender_key, save_id)
             buf = _zork_save_chunk_buffers.get(key)
