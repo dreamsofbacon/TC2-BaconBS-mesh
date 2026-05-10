@@ -62,6 +62,7 @@ from utils import (
     send_delete_zork_save_to_bbs_nodes,
     send_hash_request_to_bbs_nodes,
     get_hash_repair_pause_seconds,
+    get_hash_chunk_pause_seconds,
     get_repair_cycle_seconds,
     get_reconcile_max_per_pass,
     is_zork_save_sync_enabled,
@@ -406,6 +407,7 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
     scopes = by_peer.get(str(sender_node_id), [])
     if not scopes:
         return
+    logging.info(f"SYNCSTATE-driven mismatch eval for {sender_node_id}: scopes={scopes}")
 
     _prune_recent_syncstate_repairs()
     now = time.time()
@@ -497,10 +499,13 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
 def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface) -> None:
     manifest = get_record_hash_manifest(scope)
     logging.info(f"Sending hash manifest to {destination_node_id} scope={scope} count={len(manifest)} compressed={_hash_manifest_compression_enabled()}")
+    # Manifest frames travel back-to-back; a chunk-pause floor (independent of
+    # turbo) keeps trailing chunks from being dropped on the LoRa receive path.
+    chunk_pause = max(get_hash_repair_pause_seconds(), get_hash_chunk_pause_seconds())
     if not _hash_manifest_compression_enabled():
         for key, rec_hash in manifest.items():
-            _send_one_sync(f"HASHREC|{scope}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
-        _send_one_sync(f"HASHEND|{scope}|{len(manifest)}", destination_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+            _send_one_sync(f"HASHREC|{scope}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=chunk_pause)
+        _send_one_sync(f"HASHEND|{scope}|{len(manifest)}", destination_node_id, interface, pause_seconds=chunk_pause)
         return
 
     payload = json.dumps(manifest, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
@@ -512,14 +517,14 @@ def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface)
     if max_chunk <= 0:
         logging.warning("HASHZ prefix too large for packet limit; falling back to HASHREC")
         for key, rec_hash in manifest.items():
-            _send_one_sync(f"HASHREC|{scope}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
-        _send_one_sync(f"HASHEND|{scope}|{len(manifest)}", destination_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+            _send_one_sync(f"HASHREC|{scope}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=chunk_pause)
+        _send_one_sync(f"HASHEND|{scope}|{len(manifest)}", destination_node_id, interface, pause_seconds=chunk_pause)
         return
 
     chunks = [b64[i:i + max_chunk] for i in range(0, len(b64), max_chunk)] or [""]
     total = len(chunks)
     for idx, chunk in enumerate(chunks):
-        _send_one_sync(f"{prefix}{idx}|{total}|{chunk}", destination_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+        _send_one_sync(f"{prefix}{idx}|{total}|{chunk}", destination_node_id, interface, pause_seconds=chunk_pause)
 
 
 def _send_requested_record(scope: str, key: str, destination_node_id: str, interface) -> None:
@@ -851,6 +856,11 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     zork_saves_hash,
                     profiles_hash,
                     game_scores_hash,
+                )
+                logging.info(
+                    f"SYNCSTATE recv from {sender_node_id}: "
+                    f"b={bulletins} m={mail} c={channels} z={zork_saves} p={profiles} g={game_scores} | "
+                    f"bH={bulletins_hash} mH={mail_hash} cH={channels_hash} zH={zork_saves_hash} pH={profiles_hash} gH={game_scores_hash}"
                 )
                 _request_targeted_repair_if_needed(sender_node_id, interface)
             else:
