@@ -476,10 +476,20 @@ def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nod
         chunks = [""]
     total_chunks = len(chunks)
 
+    logging.info(
+        f"ZORKSAVE send begin save_id={save_id} user={user_id} game={game_id} "
+        f"bytes={len(save_data or b'')} b64_len={len(payload_b64)} chunks={total_chunks} "
+        f"payload_hash={payload_hash} pause={pause_seconds} peers={list(bbs_nodes)}"
+    )
     for idx, chunk in enumerate(chunks):
         message = f"{prefix}{idx}|{total_chunks}|{chunk}"
         for node_id in bbs_nodes:
+            logging.info(
+                f"ZORKSAVE send chunk save_id={save_id} idx={idx}/{total_chunks} "
+                f"frame_bytes={len(message.encode('utf-8'))} -> {node_id}"
+            )
             _send_one_sync(message, node_id, interface, pause_seconds)
+    logging.info(f"ZORKSAVE send end save_id={save_id} chunks_sent={total_chunks}")
 
 
 def _send_one_sync(message, destination, interface, pause_seconds=None):

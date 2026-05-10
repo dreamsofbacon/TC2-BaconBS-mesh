@@ -671,10 +671,18 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
             logging.info(f"Sending requested zork save to {destination_node_id} key={key}")
             # Multi-chunk ZORKSAVE pushes need the same inter-frame floor as
             # HASHZ to keep LoRa from dropping trailing chunks under turbo.
-            send_zork_save_to_bbs_nodes(
-                row[0], row[1], row[2], row[3], [destination_node_id], interface,
-                pause_seconds=max(get_hash_repair_pause_seconds(), get_hash_chunk_pause_seconds()),
-            )
+            try:
+                send_zork_save_to_bbs_nodes(
+                    row[0], row[1], row[2], row[3], [destination_node_id], interface,
+                    pause_seconds=max(get_hash_repair_pause_seconds(), get_hash_chunk_pause_seconds()),
+                )
+            except Exception:
+                import traceback
+                logging.error(
+                    f"Exception while sending zork save key={key} to {destination_node_id}:\n{traceback.format_exc()}"
+                )
+        else:
+            logging.warning(f"Requested zork save missing locally for resend key={key}")
     elif scope == 'tombstones':
         if key.startswith('bulletins:'):
             unique_id = key.split(':', 1)[1]
@@ -1191,6 +1199,11 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             buf['updated_at'] = time.time()
             if chunk_idx not in buf['chunks']:
                 buf['chunks'][chunk_idx] = parts[8] if len(parts) == 9 else parts[7]
+            logging.info(
+                f"ZORKSAVE recv chunk save_id={save_id} idx={chunk_idx}/{total_chunks} "
+                f"have={len(buf['chunks'])}/{buf['total']} from={sender_key} "
+                f"payload_hash={payload_hash or '(legacy)'}"
+            )
 
             if len(buf['chunks']) == buf['total']:
                 try:
@@ -1205,10 +1218,16 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                         ).decode('ascii').rstrip('=')
                         if actual_hash != expected_hash:
                             logging.warning(
-                                f"ZORKSAVE hash mismatch for save_id {save_id}: expected {expected_hash}, got {actual_hash}"
+                                f"ZORKSAVE hash mismatch for save_id {save_id} user={user_id} game={game_id} "
+                                f"expected={expected_hash} actual={actual_hash} "
+                                f"bytes={len(save_data)} b64_len={len(ordered)} chunks={buf['total']} from={sender_key}"
                             )
                             _zork_save_chunk_buffers.pop(key, None)
                             return
+                    logging.info(
+                        f"ZORKSAVE assembled save_id={save_id} user={user_id} game={game_id} "
+                        f"bytes={len(save_data)} chunks={buf['total']} from={sender_key}"
+                    )
                     upsert_synced_zork_save(user_id, game_id, save_data, buf['updated_at_str'])
                 except Exception:
                     logging.warning(f"Malformed ZORKSAVE payload ignored: {message}")
