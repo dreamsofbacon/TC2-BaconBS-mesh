@@ -555,6 +555,17 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
     if not requested_scopes:
         logging.debug(f"SYNCSTATE mismatch from {sender_node_id} but all scopes already have in-flight HASHREQ; skipping")
         return
+    # Deprioritize zork_saves: it carries the largest, most chunk-loss-prone
+    # payloads and is the least important scope. If anything else is also out
+    # of sync, repair those first and defer zork_saves to a later cycle so a
+    # stuck multi-chunk save can't starve bulletins/mail/channels of airtime.
+    non_zork = [s for s in requested_scopes if s != 'zork_saves']
+    if non_zork and len(non_zork) != len(requested_scopes):
+        logging.info(
+            f"Deferring zork_saves repair for {sender_node_id} until other scopes converge "
+            f"(active: {', '.join(non_zork)})"
+        )
+        requested_scopes = non_zork
     logging.info(f"SYNCSTATE mismatch from {sender_node_id}; requesting targeted repair for scopes: {', '.join(requested_scopes)}")
     for scope in requested_scopes:
         send_hash_request_to_bbs_nodes([sender_node_id], interface, scope=scope)
@@ -595,6 +606,11 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
     # the very packet loss that stalls convergence.  Deferred keys will be retried on
     # the next SYNCSTATE → HASHREQ → reconcile cycle.
     max_per_pass = get_reconcile_max_per_pass()
+    # zork_saves payloads are the largest and least important; cap them at 1
+    # per pass so a stuck (or chunk-lossy) save can't blanket the channel and
+    # block the other scopes from converging.
+    if scope == 'zork_saves':
+        max_per_pass = 1
     pull_sent = 0
     for key in sorted(need_from_remote):
         if pull_sent >= max_per_pass:
