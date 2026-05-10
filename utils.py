@@ -103,6 +103,20 @@ def get_hash_repair_pause_seconds() -> float:
     return _config_float("sync", "hash_repair_pause_seconds", default)
 
 
+def get_hash_chunk_pause_seconds() -> float:
+    """Minimum airtime gap between consecutive HASHZ manifest chunks and HASHREQ
+    frames sent to the same peer.
+
+    Multi-chunk HASHZ manifests and HASHREQ bursts (one per scope) MUST clear the
+    receiver's RX path between frames or LoRa drops the trailing frames. This
+    floor applies regardless of ``sync_turbo`` because back-to-back small frames
+    cause silent manifest loss that breaks the entire reconcile cycle. Lower
+    only when running on a non-LoRa transport (e.g. simulator)."""
+    if os.getenv("BBS_HASH_CHUNK_PAUSE_SECONDS") is not None:
+        return _env_float("BBS_HASH_CHUNK_PAUSE_SECONDS", 1.5)
+    return _config_float("sync", "hash_chunk_pause_seconds", 1.5)
+
+
 def get_full_sync_delay_ms() -> int:
     turbo = _is_sync_turbo_enabled()
     default = 0 if turbo else 500
@@ -143,6 +157,7 @@ def get_sync_runtime_settings() -> dict:
         "sync_turbo": _is_sync_turbo_enabled(),
         "sync_pause_seconds": get_sync_pause_seconds(),
         "hash_repair_pause_seconds": get_hash_repair_pause_seconds(),
+        "hash_chunk_pause_seconds": get_hash_chunk_pause_seconds(),
         "full_sync_delay_ms": get_full_sync_delay_ms(),
         "repair_cycle_seconds": get_repair_cycle_seconds(),
         "reconcile_max_per_pass": get_reconcile_max_per_pass(),
@@ -150,6 +165,7 @@ def get_sync_runtime_settings() -> dict:
             "sync_turbo": os.getenv("BBS_SYNC_TURBO") is not None,
             "sync_pause_seconds": os.getenv("BBS_SYNC_PAUSE_SECONDS") is not None,
             "hash_repair_pause_seconds": os.getenv("BBS_HASH_REPAIR_PAUSE_SECONDS") is not None,
+            "hash_chunk_pause_seconds": os.getenv("BBS_HASH_CHUNK_PAUSE_SECONDS") is not None,
             "full_sync_delay_ms": os.getenv("BBS_FULL_SYNC_DELAY_MS") is not None,
             "repair_cycle_seconds": os.getenv("BBS_REPAIR_CYCLE_SECONDS") is not None,
             "reconcile_max_per_pass": os.getenv("BBS_RECONCILE_MAX_PER_PASS") is not None,
@@ -398,10 +414,18 @@ def send_sync_state_to_bbs_nodes(counts, bbs_nodes, interface):
 
 
 def send_hash_request_to_bbs_nodes(bbs_nodes, interface, scope='all'):
-    """Ask peers to send per-record hash manifests for selective repair."""
+    """Ask peers to send per-record hash manifests for selective repair.
+
+    Uses the hash-chunk pause floor between frames so callers that loop one
+    HASHREQ per scope (one per call) still leave enough RF gap for the
+    receiver's radio to clear between frames. Without this, multi-scope
+    HASHREQ bursts (e.g. four scopes back-to-back) lose trailing frames on
+    LoRa and the peer never replies for the missing scopes.
+    """
     message = f"HASHREQ|{scope}"
+    pause = max(get_sync_pause_seconds(), get_hash_chunk_pause_seconds())
     for node_id in bbs_nodes:
-        _send_one_sync(message, node_id, interface)
+        _send_one_sync(message, node_id, interface, pause_seconds=pause)
 
 
 def _b64(text: str) -> str:
