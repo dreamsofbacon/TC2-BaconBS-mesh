@@ -8,3 +8,6 @@ config.ini
 fortunes.txt
 meshtastic-web/
 meshtastic-web-dist/
+bbs-recent.log
+*.log
+
