@@ -48,6 +48,7 @@ from message_processing import (
     is_hashreq_pending_for_peer_scope,
     start_zork_save_best_candidate_resolution,
     process_pending_candidate_resolutions,
+    process_stale_sync_buffers,
     get_candidate_resolution_snapshot,
 )
 from pubsub import pub
@@ -393,6 +394,11 @@ def main():
             now = time.time()
             force_mismatch_check = False
             process_pending_candidate_resolutions(interface)
+            # Drive stale-buffer retries (HASHZGAP / ZORKGAP) on a steady tick so
+            # a dropped chunk in the middle of a manifest or zork save stream
+            # always triggers a gap-fill request even when no further frames
+            # arrive from the peer to drive the opportunistic retry path.
+            process_stale_sync_buffers(interface)
 
             # Refresh diagnostics snapshot (5 s while syncing, 30 s otherwise)
             if now >= next_diagnostics_write:

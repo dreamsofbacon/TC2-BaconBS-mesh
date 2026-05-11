@@ -496,6 +496,27 @@ def _finalize_candidate_resolution_request(request_id: str, interface, timed_out
     _record_candidate_resolution_result(result)
 
 
+def process_stale_sync_buffers(interface) -> None:
+    """Periodic tick to drive stale-buffer retries when no sync messages arrive.
+
+    The retry helpers ``_retry_stale_hash_manifest_buffers`` and
+    ``_retry_stale_zork_save_buffers`` are also invoked opportunistically on
+    incoming SYNCSTATE/HASHZ/ZORKSAVE frames, but if the peer simply stops
+    sending (because of dropped chunks) there's no event to drive them. This
+    function is meant to be called from the server's main loop on a steady
+    cadence so a stalled partial buffer always gets a HASHZGAP/ZORKGAP after
+    ``_HASH_BUFFER_RETRY_AFTER_SECONDS``.
+    """
+    try:
+        _retry_stale_hash_manifest_buffers(interface)
+    except Exception as exc:
+        logging.debug(f"process_stale_sync_buffers: hash retry tick failed: {exc}")
+    try:
+        _retry_stale_zork_save_buffers(interface)
+    except Exception as exc:
+        logging.debug(f"process_stale_sync_buffers: zork retry tick failed: {exc}")
+
+
 def process_pending_candidate_resolutions(interface) -> None:
     now = time.time()
     ready = []
