@@ -107,8 +107,16 @@ _zork_save_chunk_buffers = {}
 _ZORK_SAVE_BUFFER_MAX_AGE_SECONDS = 600
 # Max ZORKGAP retry rounds before falling back to a full HASHMISS retransmit.
 _ZORK_GAP_FILL_MAX_ATTEMPTS = 3
+# Max HASHZGAP retry rounds before falling back to dropping the buffer and
+# issuing a fresh HASHREQ (which makes the sender start over from scratch).
+_HASHZ_GAP_FILL_MAX_ATTEMPTS = 3
 _peer_hash_manifest_buffers = {}
 _peer_hash_compressed_buffers = {}
+# Cache of recently-sent HASHZ manifest chunks so we can replay specific
+# indices when a peer asks for gap-fill via HASHZGAP. Keyed by
+# (destination_node_id, scope, manifest_id). Entry shape:
+#   {'chunks': [b64_str, ...], 'total': int, 'created_at': float}
+_outgoing_hash_manifest_cache = {}
 _SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "profiles", "game_scores", "zork_saves", "tombstones"]
 _HASH_BUFFER_MAX_AGE_SECONDS = 600
 # After this many seconds with no new chunk for a HASHZ manifest, drop the
@@ -234,47 +242,88 @@ def _prune_old_hash_manifest_chunks() -> None:
     ]
     for key in stale_keys:
         _peer_hash_compressed_buffers.pop(key, None)
+    stale_out = [
+        k for k, v in _outgoing_hash_manifest_cache.items()
+        if now - v.get('created_at', now) > _HASH_BUFFER_MAX_AGE_SECONDS
+    ]
+    for key in stale_out:
+        _outgoing_hash_manifest_cache.pop(key, None)
 
 
 def _retry_stale_hash_manifest_buffers(interface) -> None:
-    """Re-request HASHZ for any manifest whose chunks have stopped arriving.
+    """Recover from LoRa frame loss during a multi-chunk HASHZ manifest stream.
 
-    A multi-chunk HASHZ manifest can stall indefinitely if a single chunk is
-    lost mid-stream. ``_prune_old_hash_manifest_chunks`` waits 10 minutes
-    before silently dropping the buffer, and the in-flight HASHREQ guard
-    prevents a fresh request for another 60s on top. The next SYNCSTATE
-    heartbeat is up to 30 minutes away. Result: a single dropped chunk can
-    block convergence for the better part of an hour.
+    Same failure mode as ZORKSAVE: a stalled partial buffer means one or more
+    chunk frames were dropped on the air. Instead of re-issuing HASHREQ (which
+    makes the sender replay the *entire* manifest and is very likely to lose
+    the same chunks again), send HASHZGAP listing only the missing indices.
+    The sender replays just those frames using cached chunk data keyed by
+    manifest_id, so the receiver's partial buffer remains valid.
 
-    This function checks every active partial manifest buffer; any that has
-    received no new chunk for ``_HASH_BUFFER_RETRY_AFTER_SECONDS`` is dropped
-    along with its in-flight HASHREQ marker, and a fresh HASHREQ is sent so
-    the peer re-streams the manifest.
+    After ``_HASHZ_GAP_FILL_MAX_ATTEMPTS`` unproductive gap-fill rounds, fall
+    back to the original behavior: drop the buffer and re-issue HASHREQ.
     """
     if not _peer_hash_compressed_buffers:
         return
     now = time.time()
-    stale = []
+    candidates = []
     for (peer_id, scope, manifest_id), buf in list(_peer_hash_compressed_buffers.items()):
         if now - float(buf.get('updated_at', now)) <= _HASH_BUFFER_RETRY_AFTER_SECONDS:
             continue
-        received = len(buf.get('chunks', {}))
+        chunks = buf.get('chunks', {})
         total = int(buf.get('total', 0))
-        if received >= total > 0:
+        if total <= 0 or len(chunks) >= total:
             continue
-        stale.append((peer_id, scope, manifest_id, received, total))
-    for peer_id, scope, manifest_id, received, total in stale:
-        _peer_hash_compressed_buffers.pop((peer_id, scope, manifest_id), None)
-        _clear_hashreq_pending(peer_id, scope)
+        candidates.append((peer_id, scope, manifest_id, buf, chunks, total))
+    for peer_id, scope, manifest_id, buf, chunks, total in candidates:
+        last_count = int(buf.get('last_retry_received', -1))
+        received = len(chunks)
+        if received != last_count:
+            buf['gap_attempts'] = 0
+        buf['last_retry_received'] = received
+        attempts = int(buf.get('gap_attempts', 0))
+        missing = sorted(set(range(total)) - set(int(i) for i in chunks.keys()))
+
+        if attempts >= _HASHZ_GAP_FILL_MAX_ATTEMPTS:
+            _peer_hash_compressed_buffers.pop((peer_id, scope, manifest_id), None)
+            _clear_hashreq_pending(peer_id, scope)
+            logging.warning(
+                f"HASHZ gap-fill exhausted (peer={peer_id} scope={scope} manifest_id={manifest_id} "
+                f"{received}/{total} chunks, missing={missing}); falling back to full HASHREQ"
+            )
+            try:
+                send_hash_request_to_bbs_nodes([peer_id], interface, scope=scope)
+                _mark_hashreq_pending(peer_id, scope)
+            except Exception as exc:
+                logging.warning(f"Failed to re-request HASHZ for {peer_id}/{scope}: {exc}")
+            continue
+
+        csv = ",".join(str(i) for i in missing)
+        gap_msg = f"HASHZGAP|{scope}|{manifest_id}|{csv}"
+        if len(gap_msg.encode('utf-8')) > 200:
+            buf['gap_attempts'] = _HASHZ_GAP_FILL_MAX_ATTEMPTS
+            buf['updated_at'] = now
+            logging.warning(
+                f"HASHZ gap list too large for one frame (peer={peer_id} scope={scope} "
+                f"manifest_id={manifest_id} missing={len(missing)}); will fall back to HASHREQ next tick"
+            )
+            continue
+        buf['gap_attempts'] = attempts + 1
+        buf['updated_at'] = now
         logging.warning(
             f"HASHZ buffer stalled (peer={peer_id} scope={scope} manifest_id={manifest_id} "
-            f"{received}/{total} chunks); re-requesting manifest"
+            f"{received}/{total} chunks, missing={missing}); sending HASHZGAP attempt "
+            f"{attempts + 1}/{_HASHZ_GAP_FILL_MAX_ATTEMPTS}"
         )
         try:
-            send_hash_request_to_bbs_nodes([peer_id], interface, scope=scope)
-            _mark_hashreq_pending(peer_id, scope)
+            _send_one_sync(
+                gap_msg,
+                peer_id,
+                interface,
+                pause_seconds=get_hash_repair_pause_seconds(),
+            )
         except Exception as exc:
-            logging.warning(f"Failed to re-request HASHZ for {peer_id}/{scope}: {exc}")
+            logging.warning(f"Failed to send HASHZGAP for {peer_id}/{scope}: {exc}")
 
 
 def _candidate_payload_hash(payload: bytes) -> str:
@@ -673,6 +722,14 @@ def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface)
 
     chunks = [b64[i:i + max_chunk] for i in range(0, len(b64), max_chunk)] or [""]
     total = len(chunks)
+    # Cache chunks so we can honor HASHZGAP gap-fill requests from this peer
+    # without recomputing (and risking content drift if the local DB changes).
+    _prune_old_hash_manifest_chunks()
+    _outgoing_hash_manifest_cache[(destination_node_id, scope, manifest_id)] = {
+        'chunks': list(chunks),
+        'total': total,
+        'created_at': time.time(),
+    }
     for idx, chunk in enumerate(chunks):
         _send_one_sync(f"{prefix}{idx}|{total}|{chunk}", destination_node_id, interface, pause_seconds=chunk_pause)
 
@@ -1103,6 +1160,50 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     _clear_hashreq_pending(sender_node_id, scope)
                 finally:
                     _peer_hash_compressed_buffers.pop(buf_key, None)
+        elif message.startswith("HASHZGAP|"):
+            # Gap-fill request from a peer who received a partial HASHZ manifest.
+            # Wire format: HASHZGAP|scope|manifest_id|csv_of_missing_indices
+            if not sender_node_id:
+                return
+            parts = message.split("|", 3)
+            if len(parts) != 4:
+                logging.warning(f"Malformed HASHZGAP ignored: {message}")
+                return
+            scope, manifest_id, csv = parts[1], parts[2], parts[3]
+            if scope not in _SUPPORTED_HASH_SCOPES:
+                return
+            try:
+                missing = sorted({int(x) for x in csv.split(',') if x.strip() != ''})
+            except Exception:
+                logging.warning(f"Malformed HASHZGAP payload ignored: {message}")
+                return
+            cache_key = (sender_node_id, scope, manifest_id)
+            entry = _outgoing_hash_manifest_cache.get(cache_key)
+            if not entry:
+                logging.info(
+                    f"HASHZGAP from {sender_node_id} for unknown manifest scope={scope} "
+                    f"manifest_id={manifest_id} (cache miss); peer will fall back to HASHREQ"
+                )
+                return
+            cached_chunks = entry['chunks']
+            total = int(entry['total'])
+            prefix = f"HASHZ|{scope}|{manifest_id}|"
+            chunk_pause = max(get_hash_repair_pause_seconds(), get_hash_chunk_pause_seconds())
+            logging.info(
+                f"Honoring HASHZGAP from {sender_node_id} scope={scope} manifest_id={manifest_id} "
+                f"missing={missing} total={total}"
+            )
+            for idx in missing:
+                if 0 <= idx < total:
+                    try:
+                        _send_one_sync(
+                            f"{prefix}{idx}|{total}|{cached_chunks[idx]}",
+                            sender_node_id,
+                            interface,
+                            pause_seconds=chunk_pause,
+                        )
+                    except Exception as exc:
+                        logging.warning(f"Failed to resend HASHZ chunk {idx} to {sender_node_id}: {exc}")
         elif message.startswith("HASHEND|"):
             if not sender_node_id:
                 return
@@ -1472,8 +1573,8 @@ def on_receive(packet, interface):
                                   ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|", "DELETE_ZORKSAVE|",
                                    "CHANNEL|", "CHANNELCOMMENT|", "CHANNELCOMMENTCONT|", "CHANNELCOMMENTMETA|", "DELETE_CHANNELCOMMENT|",
                                    "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
-                                   "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|", "CANDREQ|", "CANDRSP|",
-                                   "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|"])
+                                   "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
+                                   "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|", "HASHZGAP|"])
 
             msg_type = "sync" if is_sync_message else "user"
             sync_frame = message_string.split("|", 1)[0] if is_sync_message and "|" in message_string else (message_string[:24] if is_sync_message else "")
