@@ -44,6 +44,7 @@ from db_operations import (
     set_local_node_id,
     get_local_node_id,
     run_op_log_backfill,
+    get_peer_sync_states,
 )
 from js8call_integration import JS8CallClient
 from message_processing import (
@@ -586,10 +587,42 @@ def main():
                                 f"sent SYNCSTATE to {len(destinations)} peer(s)"
                             )
                         else:
-                            logging.info(
-                                f"Scheduled sync interval reached ({sync_interval_minutes} minutes); "
-                                "local state unchanged, skipping SYNCSTATE broadcast"
-                            )
+                            # Even if our local state hasn't changed, peers that are
+                            # behind on records need our SYNCSTATE so they can request
+                            # the data they're missing.  Check the peer_sync_state table
+                            # and force-broadcast to any peer with fewer records in any scope.
+                            _check_scopes = [
+                                ('bulletins', 1), ('mail', 2), ('channels', 3),
+                                ('zork_saves', 4), ('profiles', 5), ('game_scores', 6),
+                            ]
+                            _peer_rows = {str(r[0]): r for r in get_peer_sync_states()}
+                            behind_peers = set()
+                            for _pid in current_bbs_nodes:
+                                _row = _peer_rows.get(str(_pid))
+                                if _row is None:
+                                    continue
+                                for _sk, _idx in _check_scopes:
+                                    if int(local_counts.get(_sk, 0)) > int(_row[_idx] or 0):
+                                        behind_peers.add(str(_pid))
+                                        break
+                            if behind_peers:
+                                _forced = select_syncstate_peers_to_notify(
+                                    list(behind_peers), local_counts,
+                                    syncstate_advertisement_cache, now=now, force=True
+                                )
+                                if _forced:
+                                    send_sync_state_to_bbs_nodes(local_counts, _forced, interface)
+                                    send_have_to_bbs_nodes(get_local_node_id(), _forced, interface)
+                                    logging.info(
+                                        f"Scheduled sync interval reached ({sync_interval_minutes} minutes); "
+                                        f"state unchanged but {len(behind_peers)} peer(s) behind — "
+                                        f"sent SYNCSTATE to {behind_peers}"
+                                    )
+                            else:
+                                logging.info(
+                                    f"Scheduled sync interval reached ({sync_interval_minutes} minutes); "
+                                    "local state unchanged, skipping SYNCSTATE broadcast"
+                                )
 
                 # Automatic scheduled SYNCSTATE already prompts peers to request targeted repair.
                 # Reserve proactive local HASHREQs for explicit force-check actions to avoid
