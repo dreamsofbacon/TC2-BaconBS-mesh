@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import os
+import random
 import re
 import time
 import zlib
@@ -813,7 +814,13 @@ def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface)
             'created_at': time.time(),
         }
     for idx, chunk in enumerate(chunks):
-        _send_one_sync(f"{prefix}{idx}|{total}|{chunk}", destination_node_id, interface, pause_seconds=chunk_pause)
+        # Add random jitter so consecutive chunks don't arrive at the receiver
+        # at perfectly predictable intervals. This breaks the half-duplex
+        # collision pattern where certain chunk indices are systematically lost
+        # because the receiver transmits at a predictable offset from chunk 0.
+        jitter = random.uniform(0, chunk_pause) if idx > 0 else 0.0
+        _send_one_sync(f"{prefix}{idx}|{total}|{chunk}", destination_node_id, interface,
+                       pause_seconds=chunk_pause + jitter)
 
 
 def _send_requested_record(scope: str, key: str, destination_node_id: str, interface) -> None:
@@ -1341,11 +1348,12 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             for idx in missing:
                 if 0 <= idx < total:
                     try:
+                        jitter = random.uniform(0, chunk_pause)
                         _send_one_sync(
                             f"{prefix}{idx}|{total}|{cached_chunks[idx]}",
                             sender_node_id,
                             interface,
-                            pause_seconds=chunk_pause,
+                            pause_seconds=chunk_pause + jitter,
                         )
                     except Exception as exc:
                         logging.warning(f"Failed to resend HASHZ chunk {idx} to {sender_node_id}: {exc}")
