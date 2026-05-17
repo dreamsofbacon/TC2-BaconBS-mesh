@@ -256,6 +256,9 @@ def _prune_old_hash_manifest_chunks() -> None:
             _outgoing_hash_manifest_cache.pop(key, None)
 
 
+_last_retry_stale_hash_ts: float = 0.0
+
+
 def _retry_stale_hash_manifest_buffers(interface) -> None:
     """Recover from LoRa frame loss during a multi-chunk HASHZ manifest stream.
 
@@ -269,10 +272,17 @@ def _retry_stale_hash_manifest_buffers(interface) -> None:
     After ``_HASHZ_GAP_FILL_MAX_ATTEMPTS`` unproductive gap-fill rounds, fall
     back to the original behavior: drop the buffer and re-issue HASHREQ.
     """
+    global _last_retry_stale_hash_ts
     with _hash_buffer_lock:
         if not _peer_hash_compressed_buffers:
             return
     now = time.time()
+    # Rate-limit to once per _HASH_BUFFER_RETRY_AFTER_SECONDS to avoid
+    # sending HASHZGAPs for stale buffers mid-stream (which would collide
+    # with ongoing HASHZ chunk delivery on half-duplex LoRa).
+    if now - _last_retry_stale_hash_ts < _HASH_BUFFER_RETRY_AFTER_SECONDS:
+        return
+    _last_retry_stale_hash_ts = now
     candidates = []
     with _hash_buffer_lock:
         for (peer_id, scope, manifest_id), buf in list(_peer_hash_compressed_buffers.items()):
