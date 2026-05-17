@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card" style="max-width:600px;margin:2rem auto">
+  <h2>New Bulletin</h2>
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-group">
+      <label for="board">Board</label>
+      <select id="board" name="board" class="form-control" required>
+        {% for b in boards %}
+        <option value="{{ b }}">{{ b }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="sender_short_name">Sender Short Name</label>
+      <input type="text" id="sender_short_name" name="sender_short_name" class="form-control"
+             value="{{ request.form.get('sender_short_name', '') }}">
+    </div>
+    <div class="form-group">
+      <label for="subject">Subject</label>
+      <input type="text" id="subject" name="subject" class="form-control"
+             value="{{ request.form.get('subject', '') }}">
+    </div>
+    <div class="form-group">
+      <label for="content">Content</label>
+      <textarea id="content" name="content" class="form-control" rows="8">{{ request.form.get('content', '') }}</textarea>
+    </div>
+    <div class="row-actions">
+      <button type="submit" class="btn btn-primary">Create Bulletin</button>
+      <a class="btn" href="{{ url_for('table_list', table='bulletins') }}">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

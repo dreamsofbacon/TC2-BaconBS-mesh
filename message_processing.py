@@ -71,6 +71,7 @@ from utils import (
     get_repair_cycle_seconds,
     get_reconcile_max_per_pass,
     is_zork_save_sync_enabled,
+    decode_ts_minute, decode_ts_second,
     _send_one_sync, _MESHTASTIC_MAX_BYTES,
 )
 
@@ -136,10 +137,14 @@ _recent_hashmiss_requests = {}
 # [sync] config section (reconcile_max_per_pass, repair_cycle_seconds) or the
 # corresponding BBS_* environment variables. Turbo mode lifts these defaults.
 _recent_syncstate_repairs = {}
-# Pattern for the optional original-date field appended to BULLETIN/MAIL wire frames.
-_SYNC_DATE_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$')
-# Pattern for the optional source_timestamp field (ISO format with T separator and seconds).
-_SYNC_ISO_TIMESTAMP_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}')
+# Pattern for the optional original-date field appended to BULLETIN/MAIL wire
+# frames.  Matches both legacy ISO "YYYY-MM-DD HH:MM" and PR 2 epoch form
+# "m<seconds>".  Distinct prefix 'm' (minute precision) disambiguates from the
+# 's' (second precision) source_timestamp tokens even when both are present.
+_SYNC_DATE_PATTERN = re.compile(r'^(?:\d{4}-\d{2}-\d{2} \d{2}:\d{2}|m\d+)$')
+# Pattern for the optional source_timestamp field.  Matches both legacy ISO
+# "YYYY-MM-DDTHH:MM:SS[...]" and PR 2 epoch form "s<seconds>".
+_SYNC_ISO_TIMESTAMP_PATTERN = re.compile(r'^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}|s\d+$)')
 _candidate_resolution_requests = {}
 _recent_candidate_resolution_results = []
 _CANDIDATE_REQUEST_TIMEOUT_SECONDS = 15.0
@@ -983,7 +988,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             # Strip optional ISO source_timestamp from far right
             _tmp = body.rsplit("|", 1)
             if len(_tmp) == 2 and _SYNC_ISO_TIMESTAMP_PATTERN.match(_tmp[1]):
-                source_timestamp = _tmp[1]
+                source_timestamp = decode_ts_second(_tmp[1])
                 body = _tmp[0]
                 # Strip optional source_node_id (starts with '!')
                 _tmp2 = body.rsplit("|", 1)
@@ -993,7 +998,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             # Try to strip optional date from the far right.
             tail = body.rsplit("|", 2)
             if len(tail) == 3 and _SYNC_DATE_PATTERN.match(tail[2]):
-                original_date, unique_id = tail[2], tail[1]
+                original_date, unique_id = decode_ts_minute(tail[2]), tail[1]
                 header_content = tail[0]
             else:
                 tail2 = body.rsplit("|", 1)
@@ -1019,7 +1024,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             # Strip optional ISO source_timestamp from far right
             _tmp = body.rsplit("|", 1)
             if len(_tmp) == 2 and _SYNC_ISO_TIMESTAMP_PATTERN.match(_tmp[1]):
-                source_timestamp = _tmp[1]
+                source_timestamp = decode_ts_second(_tmp[1])
                 body = _tmp[0]
                 _tmp2 = body.rsplit("|", 1)
                 if len(_tmp2) == 2 and _tmp2[1].startswith('!'):
@@ -1027,7 +1032,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     body = _tmp2[0]
             tail = body.rsplit("|", 2)
             if len(tail) == 3 and _SYNC_DATE_PATTERN.match(tail[2]):
-                original_date, unique_id = tail[2], tail[1]
+                original_date, unique_id = decode_ts_minute(tail[2]), tail[1]
                 header_content = tail[0]
             else:
                 tail2 = body.rsplit("|", 1)
@@ -1076,7 +1081,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             except Exception:
                 logging.warning(f"Malformed DELETE_ZORKSAVE payload ignored: {message}")
                 return
-            apply_synced_zork_save_delete(user_id, game_id, parts[3])
+            apply_synced_zork_save_delete(user_id, game_id, decode_ts_second(parts[3]))
         elif message.startswith("CHANNEL|"):
             parts = message.split("|", 2)
             if len(parts) != 3:
@@ -1093,7 +1098,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             # Strip optional ISO source_timestamp from far right
             _tmp = body.rsplit("|", 1)
             if len(_tmp) == 2 and _SYNC_ISO_TIMESTAMP_PATTERN.match(_tmp[1]):
-                source_timestamp = _tmp[1]
+                source_timestamp = decode_ts_second(_tmp[1])
                 body = _tmp[0]
                 _tmp2 = body.rsplit("|", 1)
                 if len(_tmp2) == 2 and _tmp2[1].startswith('!'):
@@ -1109,6 +1114,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed CHANNELCOMMENT header ignored: {message}")
                 return
             channel_key, b64_sender_raw, comment_date, content = hparts
+            comment_date = decode_ts_minute(comment_date)
             try:
                 sender_short_name = base64.b64decode(b64_sender_raw.encode('ascii')).decode('utf-8')
             except Exception:
@@ -1490,7 +1496,9 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             except Exception:
                 logging.warning(f"Malformed PROFILESYNC payload ignored: {message}")
                 return
-            upsert_synced_user_profile(parts[1], short_name, long_name, parts[4], parts[5], messages_sent, bio)
+            upsert_synced_user_profile(parts[1], short_name, long_name,
+                                       decode_ts_second(parts[4]), decode_ts_second(parts[5]),
+                                       messages_sent, bio)
         elif message.startswith("SCORESYNC|"):
             parts = message.split("|", 7)
             if len(parts) != 8:
@@ -1504,7 +1512,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             except Exception:
                 logging.warning(f"Malformed SCORESYNC payload ignored: {message}")
                 return
-            upsert_synced_game_score(parts[1], parts[2], short_name, score, max_score, moves, parts[7])
+            upsert_synced_game_score(parts[1], parts[2], short_name, score, max_score, moves,
+                                     decode_ts_second(parts[7]))
         elif message.startswith("ZORKGAP|"):
             # Gap-fill request from a peer who received a partial ZORKSAVE.
             # Wire format: ZORKGAP|save_id|user_b64|game_b64|csv_of_missing_indices
@@ -1554,7 +1563,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             if len(parts) not in (8, 9):
                 logging.warning(f"Malformed ZORKSAVE ignored: {message}")
                 return
-            save_id, user_b64, game_b64, updated_at = parts[1], parts[2], parts[3], parts[4]
+            save_id, user_b64, game_b64, updated_at = parts[1], parts[2], parts[3], decode_ts_second(parts[4])
             payload_hash = parts[5] if len(parts) == 9 else ''
             try:
                 chunk_idx = int(parts[6] if len(parts) == 9 else parts[5])

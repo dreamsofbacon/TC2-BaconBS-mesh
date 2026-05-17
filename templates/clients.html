@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Client Post Counts</h2>
+  <p class="text-muted">Unique clients and how many bulletin posts each has created.</p>
+  <p class="text-muted">Clients: {{ rows|length }} | Total bulletin posts: {{ total_posts }}</p>
+  <div class="table-scroll-container">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>sender_short_name</th>
+          <th>post_count</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ row['sender_short_name'] }}</td>
+          <td>{{ row['post_count'] }}</td>
+          <td>
+            {% if row['sender_node_id'] %}
+            <a href="{{ url_for('client_profile', node_id=row['sender_node_id']) }}" class="btn btn-sm">View Profile</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not rows %}
+        <tr>
+          <td colspan="3" class="text-muted empty-state">No client posts found.</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Live Log</h3>
+  <p class="text-muted">Terminal-style stream of inbound mesh activity. Auto-refreshes every 2 seconds.</p>
+  <div class="terminal-controls">
+    <span class="text-muted" style="font-size:11px;font-family:Consolas,monospace">Filter:</span>
+    <button class="terminal-btn active" data-filter="all">All <span class="filter-count">0</span></button>
+    <button class="terminal-btn" data-filter="rx">RX <span class="filter-count">0</span></button>
+    <button class="terminal-btn" data-filter="sync">SYNC <span class="filter-count">0</span></button>
+    <button class="terminal-btn" data-filter="direct">DIRECT <span class="filter-count">0</span></button>
+    <button class="terminal-btn" data-filter="drop">DROP <span class="filter-count">0</span></button>
+    <button class="terminal-btn" data-filter="log">LOG <span class="filter-count">0</span></button>
+    <button class="terminal-btn" data-filter="warn">WARN <span class="filter-count">0</span></button>
+    <button class="terminal-btn" data-filter="error">ERROR <span class="filter-count">0</span></button>
+    <span style="flex:1"></span>
+    <button class="terminal-btn btn-pause" id="btn-pause">Pause</button>
+    <button class="terminal-btn btn-clear" id="btn-clear">Clear</button>
+  </div>
+  <div id="connection-terminal" class="terminal-window"></div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  (function () {
+    var terminal = document.getElementById('connection-terminal');
+    if (!terminal) return;
+
+    var lastId = {{ last_event_id }};
+    var paused = false;
+    var currentFilter = 'all';
+
+    function refreshFilterCounts() {
+      var counts = { all: 0, rx: 0, sync: 0, direct: 0, drop: 0, log: 0, warn: 0, error: 0 };
+      terminal.querySelectorAll('.terminal-line').forEach(function(line) {
+        counts.all += 1;
+        var type = (line.dataset.type || '').toLowerCase();
+        if (Object.prototype.hasOwnProperty.call(counts, type)) counts[type] += 1;
+      });
+      document.querySelectorAll('.terminal-btn[data-filter]').forEach(function(btn) {
+        var badge = btn.querySelector('.filter-count');
+        if (!badge) return;
+        badge.textContent = String(counts[btn.dataset.filter] || 0);
+      });
+    }
+
+    function setFilter(f) {
+      currentFilter = f;
+      document.querySelectorAll('.terminal-btn[data-filter]').forEach(function(b) {
+        b.classList.toggle('active', b.dataset.filter === f);
+      });
+      terminal.querySelectorAll('.terminal-line').forEach(function(line) {
+        line.style.display = (f === 'all' || line.dataset.type === f) ? '' : 'none';
+      });
+    }
+
+    function togglePause() {
+      paused = !paused;
+      var btn = document.getElementById('btn-pause');
+      btn.textContent = paused ? 'Resume' : 'Pause';
+      btn.classList.toggle('active', paused);
+      if (!paused) terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    function clearTerminal() {
+      terminal.innerHTML = '';
+      refreshFilterCounts();
+    }
+
+    document.querySelectorAll('.terminal-btn[data-filter]').forEach(function(btn) {
+      btn.addEventListener('click', function() { setFilter(btn.dataset.filter); });
+    });
+    var pauseBtn = document.getElementById('btn-pause');
+    if (pauseBtn) pauseBtn.addEventListener('click', togglePause);
+    var clearBtn = document.getElementById('btn-clear');
+    if (clearBtn) clearBtn.addEventListener('click', clearTerminal);
+
+    function appendLine(evt) {
+      var line = document.createElement('div');
+      line.className = 'terminal-line';
+      line.dataset.type = evt.display_type;
+      if (currentFilter !== 'all' && evt.display_type !== currentFilter) line.style.display = 'none';
+      var sender = evt.source_label || evt.sender_short_name || evt.sender_node_id || evt.sender_num || '?';
+      var to = evt.to_id || 'group';
+      line.innerHTML =
+        '<span class="terminal-time">[' + evt.event_time + ']</span> ' +
+        '<span class="terminal-type">' + evt.display_label + '</span> ' +
+        sender + ' -&gt; ' + to + ' :: ' + evt.event_text;
+      terminal.appendChild(line);
+      refreshFilterCounts();
+      if (!paused) terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    {% for evt in connection_events %}
+    appendLine({
+      event_time: {{ evt['event_time']|tojson }},
+      message_type: {{ evt['message_type']|tojson }},
+      display_type: {{ evt['display_type']|tojson }},
+      display_label: {{ evt['display_label']|tojson }},
+      source_label: {{ evt['source_label']|tojson }},
+      sender_short_name: {{ evt['sender_short_name']|tojson }},
+      sender_node_id: {{ evt['sender_node_id']|tojson }},
+      sender_num: {{ evt['sender_num']|tojson }},
+      to_id: {{ evt['to_id']|tojson }},
+      event_text: {{ evt['event_text']|tojson }}
+    });
+    {% endfor %}
+
+    async function poll() {
+      if (paused) return;
+      try {
+        var resp = await fetch('/api/connection-events?since_id=' + encodeURIComponent(lastId), {
+          headers: { 'Accept': 'application/json' }
+        });
+        if (!resp.ok) return;
+        var data = await resp.json();
+        if (!data.events || !data.events.length) return;
+        data.events.forEach(function(evt) {
+          appendLine(evt);
+          lastId = evt.id;
+        });
+      } catch (e) { /* keep polling */ }
+    }
+
+    setInterval(poll, 2000);
+  })();
+</script>
+{% endblock %}

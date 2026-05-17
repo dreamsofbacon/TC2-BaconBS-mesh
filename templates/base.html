@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>{{ title }} — TC²-BBS Admin</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+<a href="#main-content" class="skip-link">Skip to content</a>
+<div class="page-wrapper">
+
+{% if show_nav %}
+<nav class="top-nav" aria-label="Main navigation">
+  <div class="top-nav-inner">
+    <button id="hamburger-btn" class="hamburger-btn" aria-label="Open menu" aria-expanded="false" aria-controls="nav-drawer">
+      <svg viewBox="0 0 18 18" fill="currentColor" width="18" height="18" aria-hidden="true">
+        <rect y="2" width="18" height="2" rx="1"/>
+        <rect y="8" width="18" height="2" rx="1"/>
+        <rect y="14" width="18" height="2" rx="1"/>
+      </svg>
+    </button>
+    <a href="{{ url_for('table_list', table='bulletins') }}" class="nav-brand" aria-label="TC²-BBS Home">TC²-BBS</a>
+    <div class="nav-links" role="list">
+      <a href="{{ url_for('table_list', table='bulletins') }}"
+         class="nav-link{% if request.endpoint == 'table_list' and request.view_args.get('table') == 'bulletins' %} active{% endif %}"
+         role="listitem">Bulletins</a>
+      <a href="{{ url_for('table_list', table='channels') }}"
+         class="nav-link{% if request.endpoint == 'table_list' and request.view_args.get('table') == 'channels' %} active{% endif %}"
+         role="listitem">Channels</a>
+      <a href="{{ url_for('table_list', table='mail') }}"
+         class="nav-link{% if request.endpoint == 'table_list' and request.view_args.get('table') == 'mail' %} active{% endif %}"
+         role="listitem">Mail</a>
+      <a href="{{ url_for('clients_summary') }}"
+         class="nav-link{% if request.endpoint == 'clients_summary' or request.endpoint == 'client_profile' %} active{% endif %}"
+         role="listitem">Clients</a>
+      <a href="{{ url_for('settings_page') }}"
+         class="nav-link{% if request.endpoint == 'settings_page' %} active{% endif %}"
+         role="listitem">Settings</a>
+      <a href="{{ url_for('system_transmissions') }}"
+         class="nav-link{% if request.endpoint == 'system_transmissions' %} active{% endif %}"
+         role="listitem">Transmissions</a>
+      <a href="{{ url_for('system_flowchart') }}"
+         class="nav-link{% if request.endpoint == 'system_flowchart' %} active{% endif %}"
+         role="listitem">Docs</a>
+      <a href="{{ url_for('meshtastic_device') }}"
+         class="nav-link{% if request.endpoint == 'meshtastic_device' %} active{% endif %}"
+         role="listitem">Meshtastic</a>
+      <a href="{{ url_for('mesh_ui_index') }}" class="nav-link" target="_blank" rel="noopener noreferrer" role="listitem">Mesh UI ↗</a>
+    </div>
+    <div class="nav-right">
+      <span class="version-chip" title="Running version">{{ app_version_display }}</span>
+      <div id="sync-pill" class="sync-pill" title="Sync status — hold 1.2s to force manual sync" role="status" aria-live="polite">Sync 0% | --:--</div>
+      <div class="theme-picker">
+        <button id="theme-picker-toggle" class="theme-picker-toggle" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="listbox" aria-expanded="false">
+          <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8s3.58 8 8 8 8-3.58 8-8S12.42 0 8 0zm0 14V2c3.31 0 6 2.69 6 6s-2.69 6-6 6z"/></svg>
+          <span id="theme-label">Dark</span>
+          <svg viewBox="0 0 10 6" fill="currentColor" width="10" height="6" aria-hidden="true"><path d="M1 1l4 4 4-4"/></svg>
+        </button>
+        <div id="theme-picker-menu" class="theme-picker-menu" role="listbox" aria-label="Theme options"></div>
+      </div>
+      <a href="{{ url_for('logout') }}" class="btn btn-sm">Logout</a>
+    </div>
+  </div>
+</nav>
+
+<!-- Mobile drawer backdrop -->
+<div id="drawer-backdrop" class="drawer-backdrop" aria-hidden="true"></div>
+<!-- Mobile nav drawer -->
+<nav id="nav-drawer" class="nav-drawer" aria-hidden="true" aria-modal="true" aria-label="Mobile navigation" role="dialog">
+  <div class="drawer-header">
+    <span class="nav-brand">TC²-BBS Admin</span>
+    <button id="drawer-close" class="drawer-close" aria-label="Close menu">
+      <svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16" aria-hidden="true">
+        <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
+      </svg>
+    </button>
+  </div>
+  <div class="drawer-section">
+    <div class="drawer-section-label">Content</div>
+    <a href="{{ url_for('table_list', table='bulletins') }}" class="drawer-link">Bulletins</a>
+    <a href="{{ url_for('table_list', table='channels') }}" class="drawer-link">Channels</a>
+    <a href="{{ url_for('table_list', table='mail') }}" class="drawer-link">Mail</a>
+  </div>
+  <div class="drawer-section">
+    <div class="drawer-section-label">Admin</div>
+    <a href="{{ url_for('clients_summary') }}" class="drawer-link">Clients</a>
+    <a href="{{ url_for('settings_page') }}" class="drawer-link">Settings</a>
+    <a href="{{ url_for('system_transmissions') }}" class="drawer-link">Transmissions</a>
+    <a href="{{ url_for('system_flowchart') }}" class="drawer-link">Docs</a>
+    <a href="{{ url_for('meshtastic_device') }}" class="drawer-link">Meshtastic</a>
+    <a href="{{ url_for('mesh_ui_index') }}" class="drawer-link" target="_blank" rel="noopener">Mesh UI ↗</a>
+  </div>
+  <div class="drawer-section">
+    <a href="{{ url_for('logout') }}" class="drawer-link">Logout</a>
+  </div>
+</nav>
+{% endif %}
+
+<!-- Server-rendered flash messages (kept in DOM for test assertions; toast.js also lifts these) -->
+<div id="server-flashes">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash flash-{{ category }}" data-flash="{{ message }}" data-category="{{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+</div>
+
+<!-- Toast container -->
+<div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
+
+<main id="main-content" class="main-content">
+  {% block content %}{% endblock %}
+</main>
+
+</div><!-- /.page-wrapper -->
+
+<!-- Quick-search modal (backdrop = this element; click outside inner modal to close) -->
+<div class="modal-backdrop" id="qs-modal" aria-hidden="true">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="Quick search" aria-labelledby="qs-title">
+    <div class="modal-header">
+      <svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16" aria-hidden="true"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.099zm-5.242 1.656a5.5 5.5 0 1 1 0-11 5.5 5.5 0 0 1 0 11z"/></svg>
+      <span id="qs-title" class="sr-only">Quick search</span>
+      <input type="text" id="qs-input" placeholder="Search bulletins, mail, channels, clients…" autocomplete="off" aria-label="Search query" spellcheck="false">
+    </div>
+    <div class="modal-body" id="qs-results" role="listbox" aria-label="Search results"></div>
+    <div class="modal-footer">
+      <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+      <span><kbd>↵</kbd> open</span>
+      <span><kbd>Esc</kbd> close</span>
+      <span><kbd>Ctrl</kbd>+<kbd>K</kbd> reopen</span>
+    </div>
+  </div>
+</div>
+
+<!-- Keyboard-shortcut help modal -->
+<div class="modal-backdrop" id="help-modal" aria-hidden="true">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" style="max-width:640px">
+    <div class="modal-header" style="justify-content:space-between">
+      <strong>Keyboard Shortcuts</strong>
+      <button id="help-close" class="btn btn-sm btn-icon" aria-label="Close shortcuts">✕</button>
+    </div>
+    <div class="modal-body shortcut-grid">
+      <div class="shortcut-item"><kbd>Ctrl</kbd>+<kbd>K</kbd><span>Open quick search</span></div>
+      <div class="shortcut-item"><kbd>/</kbd><span>Focus table search</span></div>
+      <div class="shortcut-item"><kbd>?</kbd><span>This help</span></div>
+      <div class="shortcut-item"><kbd>n</kbd><span>New record</span></div>
+      <div class="shortcut-item"><kbd>g</kbd>+<kbd>b</kbd><span>Go to Bulletins</span></div>
+      <div class="shortcut-item"><kbd>g</kbd>+<kbd>c</kbd><span>Go to Channels</span></div>
+      <div class="shortcut-item"><kbd>g</kbd>+<kbd>s</kbd><span>Go to Settings</span></div>
+      <div class="shortcut-item"><kbd>g</kbd>+<kbd>d</kbd><span>Go to Dashboard</span></div>
+      <div class="shortcut-item"><kbd>g</kbd>+<kbd>t</kbd><span>Go to Transmissions</span></div>
+      <div class="shortcut-item"><kbd>g</kbd>+<kbd>l</kbd><span>Go to Clients</span></div>
+      <div class="shortcut-item"><kbd>g</kbd>+<kbd>m</kbd><span>Go to Mail</span></div>
+    </div>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script src="{{ url_for('static', filename='js/nav.js') }}"></script>
+<script src="{{ url_for('static', filename='js/data-table.js') }}"></script>
+<script src="{{ url_for('static', filename='js/toast.js') }}"></script>
+<script src="{{ url_for('static', filename='js/shortcuts.js') }}"></script>
+{% block extra_scripts %}{% endblock %}
+</body>
+</html>

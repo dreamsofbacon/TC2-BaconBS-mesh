@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+{% if device_mode == 'tcp' %}
+<div class="card">
+  <h2>Meshtastic Device</h2>
+  <p class="text-muted">Connected to <strong>{{ device_host }}</strong> via TCP. The device web interface is embedded below. You can also open it in a new tab.</p>
+  <p><a href="{{ device_url }}" target="_blank" class="btn btn-sm">Open in new tab &rarr;</a></p>
+</div>
+<div class="card" style="padding:0;overflow:hidden;">
+  <iframe src="{{ device_url }}"
+          style="width:100%;height:80vh;border:none;display:block;"
+          title="Meshtastic Device Web UI ({{ device_host }})">
+  </iframe>
+</div>
+{% else %}
+<div class="card">
+  <h2>Meshtastic Device</h2>
+  <p class="text-muted">This BBS is connected to the Meshtastic radio via a <strong>serial (USB)</strong> port. The device web UI is served from the radio itself and cannot be embedded here because this node accesses it over a direct USB connection, not over TCP/IP.</p>
+  <h3>To access the device web UI</h3>
+  <ol>
+    <li>Plug the Meshtastic radio directly into a computer with a web browser (USB cable).</li>
+    <li>Open <a href="https://client.meshtastic.org" target="_blank" rel="noopener noreferrer">client.meshtastic.org</a> in a Chrome or Edge browser (requires WebSerial support).</li>
+    <li>Click <strong>+ New device</strong> and select the serial port for your radio.</li>
+  </ol>
+  <p class="text-muted">Alternatively, you can switch to TCP mode by setting <code>type = tcp</code> and <code>hostname = &lt;device-ip&gt;</code> in the <code>[interface]</code> section of your <code>config.ini</code>. In TCP mode, the device web UI will be embedded directly on this page.</p>
+</div>
+{% endif %}
+{% endblock %}

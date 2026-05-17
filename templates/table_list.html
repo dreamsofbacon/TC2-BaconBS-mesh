@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="table-toolbar">
+  <h2 class="table-title">{{ table_title }}</h2>
+  <div class="table-toolbar-actions">
+    <form class="table-search-form" id="table-search-form" method="get">
+      <div class="search-box">
+        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14" aria-hidden="true"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.099zm-5.242 1.656a5.5 5.5 0 1 1 0-11 5.5 5.5 0 0 1 0 11z"/></svg>
+        <input type="text" id="table-search-input" name="q" value="{{ search_query }}"
+               placeholder="Search {{ table_title }}…" autocomplete="off" aria-label="Search {{ table_title }}">
+      </div>
+      <button class="btn btn-sm" type="submit">Search</button>
+      {% if search_query %}
+      <a class="btn btn-sm" href="{{ url_for('table_list', table=table_name) }}">Clear</a>
+      {% endif %}
+    </form>
+    <div class="table-toolbar-right">
+      {% if create_url %}
+      <a class="btn btn-primary btn-sm" id="new-record-btn" href="{{ create_url }}">{{ create_label }}</a>
+      {% endif %}
+      <!-- Column picker -->
+      <div class="col-picker-wrap" id="col-picker-wrap">
+        <button class="btn btn-sm btn-icon" id="col-picker-btn" type="button" title="Show/hide columns"
+                aria-label="Column picker" aria-haspopup="listbox" aria-expanded="false"
+                aria-controls="col-picker-menu">
+          <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14" aria-hidden="true"><path d="M0 0h1v16H0zm2 0h1v16H2zm2 0h1v16H4zm2 0h1v16H6zm2 0h1v16H8zm2 0h1v16h-1zm2 0h1v16h-1zm2 0h1v16h-1z" opacity=".3"/><path d="M2 2h12v1H2zm0 4h12v1H2zm0 4h12v1H2z"/></svg>
+          Columns
+        </button>
+        <div class="col-picker-menu" id="col-picker-menu" role="listbox" aria-multiselectable="true" aria-label="Visible columns"></div>
+      </div>
+      <!-- Density toggle -->
+      <button class="btn btn-sm btn-icon" id="density-btn" type="button" title="Toggle table density" aria-label="Toggle table density">
+        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14" aria-hidden="true"><path d="M0 0h16v3H0zm0 5h16v1H0zm0 3h16v1H0zm0 3h16v1H0zm0 3h16v3H0z" opacity=".5"/></svg>
+        Density
+      </button>
+      <!-- Per-page selector -->
+      <form method="get" class="per-page-form" id="per-page-form">
+        {% if request.args.get('q') %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+        {% if request.args.get('sort') %}<input type="hidden" name="sort" value="{{ request.args.get('sort') }}">{% endif %}
+        {% if request.args.get('dir') %}<input type="hidden" name="dir" value="{{ request.args.get('dir') }}">{% endif %}
+        <select name="per_page" id="per-page-select" class="form-control" style="width:auto" onchange="this.form.submit()" aria-label="Rows per page">
+          {% for n in [10, 25, 50, 100, 250] %}
+          <option value="{{ n }}" {% if per_page == n %}selected{% endif %}>{{ n }} / page</option>
+          {% endfor %}
+        </select>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="table-scroll-container">
+  <table id="data-table" class="data-table" data-table-id="{{ table_name }}"
+         data-reorderable="{{ url_for('api_reorder', table=table_name) }}">
+    <thead>
+      <tr>
+        <th class="col-handle" aria-label="Drag to reorder"></th>
+        <th class="col-expand" aria-label="Expand row"></th>
+        {% for column in display_columns %}
+        <th data-col="{{ column }}" class="sortable-th">
+          {% set current_sort = request.args.get('sort', '') %}
+          {% set current_dir = request.args.get('dir', 'asc') %}
+          {% set next_dir = 'desc' if (current_sort == column and current_dir == 'asc') else 'asc' %}
+          <a href="{{ url_for('table_list', table=table_name, q=search_query, sort=column, dir=next_dir, page=1, per_page=per_page) }}"
+             class="sort-link{% if current_sort == column %} sort-{{ current_dir }}{% endif %}"
+             aria-label="Sort by {{ column }}{% if current_sort == column %} ({{ current_dir }}){% endif %}">
+            {{ column | replace('_', ' ') | title }}
+            <span class="sort-icon" aria-hidden="true">{% if current_sort == column %}{% if current_dir == 'asc' %}↑{% else %}↓{% endif %}{% else %}⇅{% endif %}</span>
+          </a>
+        </th>
+        {% endfor %}
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody data-reorderable="{{ url_for('api_reorder', table=table_name) }}">
+      {% for row in rows %}
+      <tr class="data-row" data-row-id="{{ row['id'] }}">
+        <td class="reorder-handle col-handle" title="Drag to reorder" aria-label="Drag handle">⋮⋮</td>
+        <td class="col-expand">
+          <button class="expand-btn btn btn-sm btn-icon" type="button" aria-label="Expand row" aria-expanded="false">
+            <svg viewBox="0 0 12 12" fill="currentColor" width="10" height="10" aria-hidden="true"><path d="M6 1v10M1 6h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+        </td>
+        {% for column in display_columns %}
+        <td data-label="{{ column | replace('_', ' ') | title }}" data-col="{{ column }}">
+          {% if column == 'sync_status' %}
+            {% if row.get('_sync_incomplete') %}
+              <strong class="badge badge-error">Incomplete</strong>
+              <span class="text-muted"> {{ row.get('_sync_status_text', '') }}</span>
+            {% else %}
+              <span class="text-muted">{{ row.get('_sync_status_text', 'OK') }}</span>
+            {% endif %}
+          {% else %}
+            {{ row.get(column, '') }}
+          {% endif %}
+        </td>
+        {% endfor %}
+        <td class="col-actions">
+          <div class="row-actions">
+            <a class="btn btn-sm" href="{{ url_for('table_edit', table=table_name, row_id=row['id']) }}">{{ edit_label }}</a>
+            {% if comments_enabled %}
+            <a class="btn btn-sm" href="{{ url_for('channel_comments', channel_id=row['id']) }}">Comments</a>
+            {% endif %}
+            {% if row.get('_resolve_scope') and row.get('_resolve_key') %}
+            <form method="post" action="{{ url_for('resolve_record') }}" class="inline-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="scope" value="{{ row['_resolve_scope'] }}">
+              <input type="hidden" name="key" value="{{ row['_resolve_key'] }}">
+              <input type="hidden" name="redirect_to" value="{{ request.full_path if request.query_string else request.path }}">
+              <button type="submit" class="btn btn-sm btn-success">Resolve</button>
+            </form>
+            {% endif %}
+            <form method="post" action="{{ url_for('table_delete', table=table_name, row_id=row['id']) }}" class="inline-form"
+                  onsubmit="return confirm('Delete this row?');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      <!-- Expand detail row -->
+      <tr class="row-detail" aria-hidden="true">
+        <td colspan="{{ display_columns|length + 3 }}" class="row-detail-cell">
+          <dl class="row-detail-grid">
+            {% for column in display_columns %}
+            <div>
+              <dt>{{ column | replace('_', ' ') | title }}</dt>
+              <dd>{{ row.get(column, '—') or '—' }}</dd>
+            </div>
+            {% endfor %}
+          </dl>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not rows %}
+      <tr class="empty-row">
+        <td colspan="{{ display_columns|length + 3 }}" class="empty-state">
+          <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" width="48" height="48" aria-hidden="true"><circle cx="24" cy="24" r="20"/><path d="M16 24h16M24 16v16" stroke-linecap="round"/></svg>
+          <p>No {{ table_title | lower }} found{% if search_query %} matching "<strong>{{ search_query }}</strong>"{% endif %}.</p>
+          {% if create_url %}
+          <a class="btn btn-primary" href="{{ create_url }}">{{ create_label }}</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+{% if total_pages and total_pages > 1 %}
+<div class="pagination" role="navigation" aria-label="Table pagination">
+  {% if page > 1 %}
+  <a class="btn btn-sm" href="{{ url_for('table_list', table=table_name, q=search_query, sort=request.args.get('sort',''), dir=request.args.get('dir','asc'), page=page-1, per_page=per_page) }}" aria-label="Previous page">← Prev</a>
+  {% else %}
+  <span class="btn btn-sm" aria-disabled="true">← Prev</span>
+  {% endif %}
+
+  <span class="pagination-info">Page {{ page }} of {{ total_pages }}{% if total_count %} &middot; {{ total_count }} total{% endif %}</span>
+
+  {% if page < total_pages %}
+  <a class="btn btn-sm" href="{{ url_for('table_list', table=table_name, q=search_query, sort=request.args.get('sort',''), dir=request.args.get('dir','asc'), page=page+1, per_page=per_page) }}" aria-label="Next page">Next →</a>
+  {% else %}
+  <span class="btn btn-sm" aria-disabled="true">Next →</span>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

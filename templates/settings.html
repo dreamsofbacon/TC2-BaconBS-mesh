@@ -1,0 +1,282 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Settings</h2>
+  <p class="text-muted">Manage boards, sync peers, allowed nodes, and web admin credentials from one place.</p>
+</div>
+
+<div class="card" id="boards">
+  <h2>Board Settings</h2>
+  <p class="text-muted">Manage bulletin board categories used by create/edit dropdowns.</p>
+  {% if env_override %}
+  <p class="text-muted"><code>BBS_BULLETIN_BOARDS</code> is set in environment and overrides config file at startup.</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('settings_page') }}#boards">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="boards">
+    <div class="form-group">
+      <label for="bulletin_boards">Boards (comma separated)</label>
+      <textarea id="bulletin_boards" name="bulletin_boards" class="form-control" required>{{ boards_text }}</textarea>
+    </div>
+    <button class="btn btn-primary" type="submit">Save Boards</button>
+  </form>
+</div>
+
+<div class="card" id="sync" style="max-width:800px">
+  <h2>Sync Settings</h2>
+  <p class="text-muted">Manage BBS peer sync targets, sync pacing, and the node IDs allowed to post to the Urgent board.</p>
+  <form method="post" action="{{ url_for('settings_page') }}#sync">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="sync">
+    <div class="form-group">
+      <label for="bbs_nodes">Sync BBS Nodes</label>
+      <textarea id="bbs_nodes" name="bbs_nodes" class="form-control" placeholder="One per line or comma separated">{{ bbs_nodes_text }}</textarea>
+      <p class="text-muted">These nodes receive bulletin, mail, delete, and channel sync traffic.</p>
+    </div>
+    <div class="form-group">
+      <label for="allowed_nodes">Allowed Urgent Board Nodes</label>
+      <textarea id="allowed_nodes" name="allowed_nodes" class="form-control" placeholder="Leave blank to allow all nodes">{{ allowed_nodes_text }}</textarea>
+      <p class="text-muted">If left blank, any node can post to the Urgent board.</p>
+    </div>
+    <div class="form-group">
+      <label for="sync_interval_minutes">Sync Interval (minutes)</label>
+      <input type="text" id="sync_interval_minutes" name="sync_interval_minutes" value="{{ sync_interval_minutes }}" class="form-control">
+      <p class="text-muted">How often to re-run full peer sync. For testing, set to 5 minutes.</p>
+    </div>
+    <div class="form-group">
+      <label>
+        <input type="checkbox" name="sync_zork_saves" value="1" {% if sync_zork_saves %}checked{% endif %}>
+        Sync game saves across nodes
+      </label>
+      <p class="text-muted">When disabled, players can still save locally on this node, but that progress will not appear on other BBS nodes.</p>
+    </div>
+
+    <hr style="margin:1.5rem 0">
+    <h3>Transmission Pacing</h3>
+    <p class="text-muted">Raise speed for debugging, or slow it down if you need cleaner over-the-air pacing. Environment variables still override GUI settings while they are present.</p>
+
+    <div class="form-group">
+      <label>
+        <input type="checkbox" name="sync_turbo" value="1" {% if sync_speed_settings.sync_turbo %}checked{% endif %}>
+        Enable turbo pacing
+      </label>
+      <p class="text-muted">Turbo uses the smallest normal delays and is useful when you want sync traffic to move as fast as possible.</p>
+      <p class="text-muted" style="color:#b35900"><strong>⚠ Warning:</strong> Only enable turbo on small meshes (typically 2–3 BBS nodes on the same channel). The inter-frame pause is what prevents LoRa packet collisions on busy meshes; with 3+ active BBS peers turbo can <em>worsen</em> convergence by causing the very packet loss it tries to outrun.</p>
+    </div>
+    <div class="form-group">
+      <label for="sync_pause_seconds">Inter-frame Pause (seconds)</label>
+      <input type="text" id="sync_pause_seconds" name="sync_pause_seconds" value="{{ sync_speed_settings.sync_pause_seconds }}" class="form-control">
+      <p class="text-muted">Delay after normal sync frames such as bulletins, mail, and channels.</p>
+    </div>
+    <div class="form-group">
+      <label for="hash_repair_pause_seconds">Hash Repair Pause (seconds)</label>
+      <input type="text" id="hash_repair_pause_seconds" name="hash_repair_pause_seconds" value="{{ sync_speed_settings.hash_repair_pause_seconds }}" class="form-control">
+      <p class="text-muted">Delay between HASHREQ, HASHREC, HASHMISS, and related repair frames.</p>
+    </div>
+    <div class="form-group">
+      <label for="full_sync_delay_ms">Full Sync Startup Delay (milliseconds)</label>
+      <input type="text" id="full_sync_delay_ms" name="full_sync_delay_ms" value="{{ sync_speed_settings.full_sync_delay_ms }}" class="form-control">
+      <p class="text-muted">Pause before a full outbound sync begins after a trigger or interval fires.</p>
+    </div>
+
+    <p class="text-muted">Effective runtime pacing: turbo={{ sync_runtime_settings.sync_turbo }}, pause={{ sync_runtime_settings.sync_pause_seconds }}s, hash repair={{ sync_runtime_settings.hash_repair_pause_seconds }}s, full sync delay={{ sync_runtime_settings.full_sync_delay_ms }}ms.</p>
+    {% if sync_env_override_flags.sync_turbo or sync_env_override_flags.sync_pause_seconds or sync_env_override_flags.hash_repair_pause_seconds or sync_env_override_flags.full_sync_delay_ms %}
+    <p class="text-muted">Environment overrides are active for:
+      {% if sync_env_override_flags.sync_turbo %}sync_turbo {% endif %}{% if sync_env_override_flags.sync_pause_seconds %}sync_pause_seconds {% endif %}{% if sync_env_override_flags.hash_repair_pause_seconds %}hash_repair_pause_seconds {% endif %}{% if sync_env_override_flags.full_sync_delay_ms %}full_sync_delay_ms{% endif %}
+    </p>
+    {% endif %}
+    {% if runtime_updates_enabled %}
+    <p class="text-muted">Changes are also applied to the active interface immediately.</p>
+    {% else %}
+    <p class="text-muted">Changes are saved to config.ini. Restart server.py if the BBS process is running separately from this web GUI.</p>
+    {% endif %}
+    <button class="btn btn-primary" type="submit">Save Sync Settings</button>
+  </form>
+
+  <form method="post" action="{{ url_for('settings_page') }}#sync" style="margin-top:12px">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="manual_sync">
+    <button class="btn" type="submit">Run Manual Sync Now</button>
+  </form>
+
+  <form method="post" action="{{ url_for('settings_page') }}#sync" style="margin-top:8px">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="force_check">
+    <button class="btn" type="submit">Force Mismatch Check Now</button>
+  </form>
+
+  <hr style="margin:1.5rem 0">
+  <h3>Resolve Save by Best Candidate</h3>
+  <p class="text-muted">Ask every configured peer for a specific Zork save candidate, then choose the best result by newest timestamp, then larger payload size, then stable hash tie-break.</p>
+  <form method="post" action="{{ url_for('settings_page') }}#sync" style="margin-top:8px;display:flex;gap:8px;align-items:end;flex-wrap:wrap">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="resolve_zork_save">
+    <div class="form-group" style="margin:0">
+      <label>User ID</label>
+      <input type="text" name="resolve_user_id" placeholder="e.g. 1234" style="width:220px" class="form-control" required>
+    </div>
+    <div class="form-group" style="margin:0">
+      <label>Game ID</label>
+      <input type="text" name="resolve_game_id" placeholder="e.g. zork1" value="zork1" style="width:220px" class="form-control" required>
+    </div>
+    <button class="btn" type="submit">Resolve Save</button>
+  </form>
+
+  <hr style="margin:1.5rem 0">
+  <h3>Force Full Resync to Peer</h3>
+  <p class="text-muted">Use this when a peer node was wiped and rebuilt and its game data or other content is not converging via normal hash repair. This clears the in-memory sync cache for that peer and triggers a complete database push to it.</p>
+  <form method="post" action="{{ url_for('settings_page') }}#sync" style="margin-top:8px">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="peer_resync">
+    <div class="form-group">
+      <label for="peer_node_id">Peer Node ID</label>
+      <input type="text" id="peer_node_id" name="peer_node_id" placeholder="e.g. !a1b2c3d4" style="width:260px" class="form-control" required>
+    </div>
+    <button class="btn" type="submit">Force Full Resync to Peer</button>
+  </form>
+</div>
+
+<div class="card" id="admin" style="max-width:600px">
+  <h2>Admin Credentials</h2>
+  <p class="text-muted">Change the username and password for the web admin interface.</p>
+  {% if username_env_override or password_env_override %}
+  <p class="text-muted">Environment variables are overriding stored admin credentials for this running process. GUI changes are saved to config.ini but will be replaced again on restart until those environment variables are removed.</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('settings_page') }}#admin">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="admin">
+    <div class="form-group">
+      <label for="current_password">Current Password (required)</label>
+      <input type="password" id="current_password" name="current_password" class="form-control" required>
+    </div>
+    <div class="form-group">
+      <label for="new_username">New Username (leave blank to keep current)</label>
+      <input type="text" id="new_username" name="new_username" placeholder="Current: {{ current_username }}" class="form-control">
+    </div>
+    <div class="form-group">
+      <label for="new_password">New Password (leave blank to keep current)</label>
+      <input type="password" id="new_password" name="new_password" placeholder="Leave blank to keep current" class="form-control">
+    </div>
+    <div class="form-group">
+      <label for="confirm_password">Confirm New Password</label>
+      <input type="password" id="confirm_password" name="confirm_password" placeholder="Confirm new password" class="form-control">
+    </div>
+    <button class="btn btn-primary" type="submit">Update Credentials</button>
+  </form>
+</div>
+
+<div class="card" id="danger" style="max-width:700px;border-color:#6b2323">
+  <h2>Danger Zone</h2>
+  <p class="text-muted">Wipe all local bulletin, mail, channel, profile, score, save, diagnostics, peer-state, and tombstone data from the SQLite database.</p>
+  <p class="text-muted">Type <strong>WIPE DATABASE</strong> exactly to confirm. If peer sync remains enabled, remote nodes may repopulate data on later sync cycles.</p>
+  <form method="post" action="{{ url_for('settings_page') }}#danger"
+        onsubmit="return confirm('This will permanently delete all local database content. Continue?');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="wipe_database">
+    <div class="form-group">
+      <label for="wipe_confirmation">Confirmation</label>
+      <input type="text" id="wipe_confirmation" name="wipe_confirmation" placeholder="Type WIPE DATABASE" class="form-control" required>
+    </div>
+    <button class="btn" type="submit" style="background:#521c1c;border-color:#8d3434;color:#ffd7d7">Wipe Database</button>
+  </form>
+</div>
+
+<div class="card" id="diagnostics" style="max-width:900px">
+  <h2>Diagnostics</h2>
+  <p class="text-muted">Quick runtime and BBS status details for troubleshooting.</p>
+
+  <h3>Runtime</h3>
+  <p><strong>Runtime source:</strong> {{ diagnostics.runtime_source }}</p>
+  <p><strong>Snapshot updated at:</strong> {{ diagnostics.snapshot_updated_at }}</p>
+  <p><strong>Interface attached:</strong> {{ diagnostics.interface_attached }}</p>
+  <p><strong>Interface type:</strong> {{ diagnostics.interface_type }}</p>
+  <p><strong>Known mesh nodes:</strong> {{ diagnostics.mesh_node_count }}</p>
+  <p><strong>Local node:</strong> {{ diagnostics.local_node_id }}</p>
+  <p><strong>Local short name:</strong> {{ diagnostics.local_short_name }}</p>
+  <p><strong>Local long name:</strong> {{ diagnostics.local_long_name }}</p>
+
+  <h3>BBS</h3>
+  <p><strong>Configured sync peers:</strong> {{ diagnostics.bbs_nodes_count }}{% if diagnostics.bbs_nodes_text %} ({{ diagnostics.bbs_nodes_text }}){% endif %}</p>
+  <p><strong>Configured urgent allow-list:</strong> {{ diagnostics.allowed_nodes_count }}{% if diagnostics.allowed_nodes_text %} ({{ diagnostics.allowed_nodes_text }}){% endif %}</p>
+  <p><strong>Bulletin boards:</strong> {{ diagnostics.board_count }} ({{ diagnostics.board_list }})</p>
+  <p><strong>Outbound peer sync:</strong>
+    {% if diagnostics.sync_in_progress == "Yes" %}
+      Sending &mdash; {{ diagnostics.sync_progress_percent }}% ({{ diagnostics.sync_completed_items }}/{{ diagnostics.sync_total_items }} items) to {{ diagnostics.sync_target_nodes_text }}
+    {% elif diagnostics.sync_current_phase == "never_run" %}
+      Not yet run since startup
+    {% else %}
+      Complete &mdash; sent {{ diagnostics.sync_total_items }} item(s) to {{ diagnostics.sync_target_nodes_text }}
+    {% endif %}
+  </p>
+  <p><strong>Sync phase:</strong> {{ diagnostics.sync_current_phase }} &nbsp;|&nbsp; <strong>Last update:</strong> {{ diagnostics.sync_last_updated_at }}</p>
+  <p><strong>Last sync result:</strong> {{ diagnostics.sync_last_result }}</p>
+  {% if diagnostics.sync_in_progress == "Yes" %}
+  <p class="text-muted"><strong>Notice:</strong> Outbound sync is running. Some historical posts may not be available on peers yet.</p>
+  {% endif %}
+  <p><strong>Peer consistency:</strong> {{ diagnostics.peer_sync_status }}</p>
+  <p><strong>Mismatch re-sync attempts:</strong> {{ diagnostics.mismatch_retry_summary }}</p>
+  <p><strong>Peer-advertised record counts:</strong></p>
+  <pre style="white-space:pre-wrap;margin-top:4px">{{ diagnostics.peer_sync_counts }}</pre>
+  <p><strong>Per-scope mismatch reasons:</strong></p>
+  <pre style="white-space:pre-wrap;margin-top:4px">{{ diagnostics.peer_scope_mismatches }}</pre>
+
+  <h3>Zork Save Mismatch Focus</h3>
+  <pre style="white-space:pre-wrap;margin-top:4px">{{ diagnostics.zork_save_peer_mismatches }}</pre>
+
+  <h3>Zork Save Tombstones</h3>
+  <pre style="white-space:pre-wrap;margin-top:4px">{{ diagnostics.zork_save_tombstones }}</pre>
+
+  <h3>Best-Candidate Resolver</h3>
+  <pre style="white-space:pre-wrap;margin-top:4px">{{ diagnostics.zork_save_candidate_resolution }}</pre>
+
+  <h3>Peer Hash Graph</h3>
+  {% if diagnostics.peer_hash_graph %}
+  <div class="peer-graph-grid">
+    {% for peer in diagnostics.peer_hash_graph %}
+    <div class="peer-graph-card">
+      <h4>{{ peer.peer_node_id }}</h4>
+      <div class="text-muted">Reported at {{ peer.reported_at }}</div>
+      {% for scope in peer.scopes %}
+      <div class="scope-bar-row">
+        <div class="scope-bar-header">
+          <span><strong>{{ scope.label }}</strong></span>
+          <span class="{% if scope.hash_match and scope.count_match %}scope-status-ok{% else %}scope-status-bad{% endif %}">{% if scope.hash_match and scope.count_match %}aligned{% else %}mismatch{% endif %}</span>
+        </div>
+        <div class="scope-bar-track">
+          <div class="scope-bar-local" style="width:{{ scope.local_width }}%" title="Local {{ scope.local_count }}"></div>
+          <div class="scope-bar-peer" style="width:{{ scope.peer_width }}%" title="Peer {{ scope.peer_count }}"></div>
+        </div>
+        <div class="scope-bar-meta">
+          <span>Local {{ scope.local_count }}</span>
+          <span>Peer {{ scope.peer_count }}</span>
+          <span>{% if scope.hash_match %}hash ok{% else %}hash differs{% endif %}</span>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+  <p class="text-muted">Blue bars are local counts. Amber bars are peer-reported counts. A scope can keep the same count and still have a hash mismatch.</p>
+  {% else %}
+  <p class="text-muted">No peer hash data available yet.</p>
+  {% endif %}
+  <p class="text-muted">Outbound progress can be 100% while peer consistency is mismatched. Peer counts above indicate missing records between nodes.</p>
+  {% if diagnostics.mismatch_retry_details %}
+  <pre style="white-space:pre-wrap;margin-top:4px">{{ diagnostics.mismatch_retry_details }}</pre>
+  {% endif %}
+
+  <h3>Database</h3>
+  <p><strong>App version:</strong> {{ diagnostics.app_version }}</p>
+  <p><strong>Path:</strong> <code>{{ diagnostics.db_path }}</code></p>
+  <p><strong>Bulletins:</strong> {{ diagnostics.bulletins_count }}</p>
+  <p><strong>Mail:</strong> {{ diagnostics.mail_count }}</p>
+  <p><strong>Channels:</strong> {{ diagnostics.channels_count }}</p>
+  <p><strong>Zork saves:</strong> {{ diagnostics.zork_saves_count }}</p>
+  <p><strong>Game scores:</strong> {{ diagnostics.game_scores_count }}</p>
+  <p><strong>Connection events:</strong> {{ diagnostics.connection_events_count }}</p>
+  <p><strong>Last connection event:</strong> {{ diagnostics.last_connection_event }}</p>
+  {% if diagnostics.error %}
+  <p class="text-muted">Diagnostics note: {{ diagnostics.error }}</p>
+  {% endif %}
+</div>
+{% endblock %}

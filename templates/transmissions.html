@@ -1,0 +1,566 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card" id="sync-progress-card">
+  <h2>Current Sync Tasks</h2>
+  <p class="text-muted">Live view of per-peer record gaps and active content delivery sequences. Refreshes every 10 seconds.</p>
+  <div id="sync-progress-status" style="font-size:0.82em;color:var(--text-muted);margin-bottom:10px"></div>
+  <div id="sync-progress-peers"></div>
+  <div id="sync-progress-items">
+    <p class="text-muted" style="font-size:0.9em">Loading active repair items&hellip;</p>
+  </div>
+</div>
+
+<div class="card" id="sync-sessions-card">
+  <h2>Sync Session History</h2>
+  <p class="text-muted">Each row is one inferred sync burst — a cluster of non-SYNCSTATE frames to the same peer with no gap longer than 90 seconds. Duration, byte totals, and effective throughput are derived from the live transmission log.</p>
+  <div id="sync-sessions-active" style="margin-bottom:14px"></div>
+  <h3 style="margin-bottom:4px">Recent (last 24 hours)</h3>
+  <div id="sync-sessions-table"><p class="text-muted" style="font-size:0.9em">Loading&hellip;</p></div>
+  <div id="sync-sessions-status" style="font-size:0.78em;color:var(--text-muted);margin-top:8px"></div>
+
+  <h3 style="margin-top:22px;margin-bottom:4px">Long-term History</h3>
+  <p class="text-muted" style="font-size:0.85em">Persisted to the database, so completed sync sessions are preserved even after the raw transmission log rolls over. Use this to track how full-sync duration changes over time.</p>
+  <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+    <label for="sync-history-window" style="font-size:0.85em">Window:</label>
+    <select id="sync-history-window" style="font-size:0.85em" class="form-control" style="width:auto">
+      <option value="86400">Last 24 hours</option>
+      <option value="604800" selected>Last 7 days</option>
+      <option value="2592000">Last 30 days</option>
+      <option value="7776000">Last 90 days</option>
+      <option value="31536000">Last year</option>
+    </select>
+    <span id="sync-history-summary" style="font-size:0.82em;color:var(--text-muted)"></span>
+  </div>
+  <div id="sync-history-table"><p class="text-muted" style="font-size:0.9em">Loading&hellip;</p></div>
+</div>
+
+<div class="card">
+  <h2>Sync Transmission Stats</h2>
+  <form method="post" action="{{ url_for('system_transmissions_reset') }}"
+        onsubmit="return confirm('Reset transmission stats history now?');" style="margin:8px 0 14px 0">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="btn btn-danger">Reset Stats</button>
+  </form>
+  <p class="text-muted">Breakdown of sync frames sent and received by this node, with live inbound and outbound panes below for verification.</p>
+
+  <h3>Direction Summary</h3>
+  <p class="text-muted">Rebuilding nodes often show most game traffic under received frames, because the primary node is pushing state toward them.</p>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:10px 0 24px 0">
+    <div class="card"><h4 style="margin-top:0">Last Hour</h4>{{ stats_1h_direction_html|safe }}</div>
+    <div class="card"><h4 style="margin-top:0">Last 24 Hours</h4>{{ stats_24h_direction_html|safe }}</div>
+  </div>
+
+  <h3>Category Summary</h3>
+  <p class="text-muted">Game = SCORESYNC + ZORKSAVE, Content = BULLETIN/MAIL/CHANNEL/deletes, Profile = PROFILESYNC, Protocol = SYNCSTATE/HASH* frames.</p>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:10px 0 24px 0">
+    <div class="card"><h4 style="margin-top:0">Last Hour</h4>{{ stats_1h_category_html|safe }}</div>
+    <div class="card"><h4 style="margin-top:0">Last 24 Hours</h4>{{ stats_24h_category_html|safe }}</div>
+  </div>
+
+  <h3>Per-Frame-Type Detail</h3>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:20px 0">
+    <div class="card"><h4 style="margin-top:0">Last Hour</h4>{{ stats_1h_breakdown_html|safe }}</div>
+    <div class="card"><h4 style="margin-top:0">Last 24 Hours</h4>{{ stats_24h_breakdown_html|safe }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Live Transmission Log</h3>
+  <p class="text-muted">Separate outbound and inbound panes, with shared filters for frame type, peer, free-text search, and an important-only verification view.</p>
+  <div class="filter-grid">
+    <div>
+      <label for="sync-log-frame-filter">Frame Type</label>
+      <select id="sync-log-frame-filter" class="form-control"><option value="">All frame types</option></select>
+    </div>
+    <div>
+      <label for="sync-log-peer-filter">Peer Node</label>
+      <select id="sync-log-peer-filter" class="form-control"><option value="">All peers</option></select>
+    </div>
+    <div>
+      <label for="sync-log-search">Search Payload</label>
+      <input type="text" id="sync-log-search" placeholder="HASHMISS, uid, node id, payload text" class="form-control">
+    </div>
+    <div style="display:flex;align-items:end;gap:12px;flex-wrap:wrap">
+      <label><input type="checkbox" id="sync-log-important-only"> Important only</label>
+      <label><input type="checkbox" id="sync-log-hide-continuations"> Hide continuations</label>
+      <button class="btn btn-sm" type="button" id="sync-log-clear">Clear View</button>
+    </div>
+  </div>
+  <div class="log-grid">
+    <div class="log-pane">
+      <h4>Outbound Frames</h4>
+      <div class="log-meta" id="sync-log-outbound-meta">0 frame(s)</div>
+      <div id="sync-log-outbound" class="log-window"></div>
+    </div>
+    <div class="log-pane">
+      <h4>Inbound Frames</h4>
+      <div class="log-meta" id="sync-log-inbound-meta">0 frame(s)</div>
+      <div id="sync-log-inbound" class="log-window"></div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Recent Channel Activity</h3>
+  <p class="text-muted">Nearby channel state for sync/debug sessions: recent channel directory entries plus recent comment traffic.</p>
+  <div class="channel-grid">
+    <div>
+      <h4 style="margin-top:0">Recent Channels</h4>
+      <ul class="activity-list">
+        {% for row in recent_channels %}
+        <li><strong>{{ row['name'] }}</strong> <span class="text-muted">{{ row['url'] }}</span></li>
+        {% endfor %}
+        {% if not recent_channels %}
+        <li class="text-muted">No channel entries recorded.</li>
+        {% endif %}
+      </ul>
+    </div>
+    <div>
+      <h4 style="margin-top:0">Recent Channel Comments</h4>
+      <ul class="activity-list">
+        {% for row in recent_channel_comments %}
+        <li><strong>{{ row['channel_name'] }}</strong> <span class="text-muted">{{ row['sender_short_name'] }} | {{ row['date'] }}</span><br>{{ row['content'] }}</li>
+        {% endfor %}
+        {% if not recent_channel_comments %}
+        <li class="text-muted">No recent channel comment activity.</li>
+        {% endif %}
+      </ul>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+(function() {
+  var SCOPE_LABELS = {
+    bulletins:   'Bulletins',
+    mail:        'Mail',
+    channels:    'Channels',
+    zork_saves:  'Zork Saves',
+    profiles:    'Profiles',
+    game_scores: 'Game Scores',
+  };
+  var SCOPE_ORDER = ['bulletins', 'mail', 'channels', 'zork_saves', 'profiles', 'game_scores'];
+  var FRAME_COLOR = {
+    BULLETIN:          '#2a9d8f',
+    BULLETINCONT:      '#52b3a8',
+    MAIL:              '#457b9d',
+    MAILCONT:          '#6a9dbd',
+    CHANNELCOMMENTCONT:'#e9c46a',
+  };
+
+  function esc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function fmtTime(iso) {
+    if (!iso) return '';
+    var d = new Date(iso.replace(' ', 'T'));
+    if (isNaN(d)) return iso;
+    return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  }
+  function relativeAge(iso) {
+    if (!iso) return '';
+    var d = new Date(iso.replace(' ', 'T').replace(/Z$/, '') + (iso.includes('Z') || iso.includes('+') ? '' : 'Z'));
+    if (isNaN(d)) return iso;
+    var secs = Math.round((Date.now() - d.getTime()) / 1000);
+    if (secs < 5)    return 'just now';
+    if (secs < 60)   return secs + 's ago';
+    if (secs < 3600) return Math.floor(secs/60) + 'm ago';
+    return Math.floor(secs/3600) + 'h ago';
+  }
+
+  // Sync progress
+  function renderPeers(data) {
+    var peers = data.peers || [];
+    var local = data.local_counts || {};
+    if (!peers.length) {
+      document.getElementById('sync-progress-peers').innerHTML =
+        '<p class="text-muted" style="font-size:0.9em">No peer sync state recorded yet.</p>';
+      return;
+    }
+    var html = '';
+    peers.forEach(function(peer) {
+      var age = relativeAge(peer.reported_at);
+      var hasGaps = peer.gaps && peer.gaps.length > 0;
+      var headerColor = hasGaps ? '#b45309' : '#166534';
+      var headerBg = hasGaps ? 'rgba(251,191,36,0.08)' : 'rgba(22,163,74,0.07)';
+      html += '<div style="margin-bottom:18px;border:1px solid var(--border);border-radius:8px;overflow:hidden;">';
+      html += '<div style="padding:8px 14px;background:' + headerBg + ';border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;">';
+      html += '<span style="font-family:monospace;font-weight:700;color:' + headerColor + ';">' + esc(peer.peer_node_id) + '</span>';
+      html += '<span style="color:var(--text-muted);font-size:0.82em;">reported ' + esc(age) + '</span>';
+      if (hasGaps) html += '<span style="margin-left:auto;font-size:0.8em;color:#b45309;font-weight:600;">' + peer.gaps.length + ' scope(s) out of sync</span>';
+      else         html += '<span style="margin-left:auto;font-size:0.8em;color:#166534;font-weight:600;">&#10003; All scopes in sync</span>';
+      html += '</div>';
+      html += '<table style="width:100%;border-collapse:collapse;font-size:0.88em;">';
+      html += '<thead><tr style="background:var(--surface-2);border-bottom:1px solid var(--border);">';
+      html += '<th style="padding:6px 10px;text-align:left;">Scope</th><th style="padding:6px 10px;text-align:right;">Local</th><th style="padding:6px 10px;text-align:right;">Peer</th><th style="padding:6px 10px;">Status</th>';
+      html += '</tr></thead><tbody>';
+      SCOPE_ORDER.forEach(function(scope) {
+        var localVal = parseInt(local[scope] || 0);
+        var peerVal  = parseInt((peer.counts || {})[scope] || 0);
+        var delta = localVal - peerVal;
+        var statusHtml, rowBg;
+        if (delta > 0) {
+          statusHtml = '<span style="color:#b45309;">&darr; Peer missing ' + delta + '</span>';
+          rowBg = 'rgba(251,191,36,0.06)';
+        } else if (delta < 0) {
+          statusHtml = '<span style="color:#1d4ed8;">&uarr; We are behind by ' + Math.abs(delta) + '</span>';
+          rowBg = 'rgba(29,78,216,0.06)';
+        } else {
+          statusHtml = '<span style="color:#166534;">&#10003; In sync</span>';
+          rowBg = '';
+        }
+        html += '<tr style="border-bottom:1px solid var(--border);' + (rowBg ? 'background:'+rowBg+';' : '') + '">';
+        html += '<td style="padding:5px 10px;">' + esc(SCOPE_LABELS[scope] || scope) + '</td>';
+        html += '<td style="padding:5px 10px;text-align:right;font-family:monospace;">' + localVal + '</td>';
+        html += '<td style="padding:5px 10px;text-align:right;font-family:monospace;">' + peerVal + '</td>';
+        html += '<td style="padding:5px 10px;">' + statusHtml + '</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table></div>';
+    });
+    document.getElementById('sync-progress-peers').innerHTML = html;
+  }
+
+  function renderActiveItems(data) {
+    var items = data.active_items || [];
+    var container = document.getElementById('sync-progress-items');
+    if (!items.length) {
+      container.innerHTML = '<p class="text-muted" style="font-size:0.9em;margin-top:6px">No active repair items in the last 30 minutes.</p>';
+      return;
+    }
+    var html = '<h4 style="margin:14px 0 6px 0">Active Repair Items <span style="font-weight:normal;font-size:0.82em;color:var(--text-muted)">(last 30 min)</span></h4>';
+    items.forEach(function(item) {
+      var frames = item.sent_frames || [];
+      var frameMap = {};
+      frames.forEach(function(f) {
+        var key = f.type + '|' + (f.offset !== null && f.offset !== undefined ? f.offset : 'base');
+        if (!frameMap[key] || f.sent_at > frameMap[key].sent_at) frameMap[key] = f;
+      });
+      var dedupedFrames = Object.values(frameMap).sort(function(a, b) {
+        var oa = (a.offset !== null && a.offset !== undefined) ? a.offset : -1;
+        var ob = (b.offset !== null && b.offset !== undefined) ? b.offset : -1;
+        return oa - ob;
+      });
+      var scopeColor = {bulletins:'#2a9d8f',mail:'#457b9d',channels:'#e9c46a',zork_saves:'#e63946',profiles:'#6d28d9',game_scores:'#dc2626'}[item.scope] || '#888';
+      html += '<div style="margin-bottom:14px;border:1px solid var(--border);border-radius:8px;overflow:hidden;">';
+      html += '<div style="padding:8px 14px;background:rgba(0,0,0,0.03);border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;align-items:center;gap:10px;">';
+      html += '<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:'+scopeColor+';color:#fff;font-size:0.78em;font-weight:700;text-transform:uppercase;">' + esc(item.scope) + '</span>';
+      html += '<span style="font-weight:600;font-size:0.95em;">' + esc(item.subject) + '</span>';
+      html += '<span style="font-family:monospace;font-size:0.78em;color:var(--text-muted);">' + esc(item.unique_id) + '</span>';
+      html += '<span style="margin-left:auto;font-size:0.82em;color:var(--text-muted);">peer: <strong>' + esc(item.peer) + '</strong></span>';
+      html += '<span style="font-size:0.82em;color:var(--text-muted);">' + item.request_count + ' request(s), last ' + esc(relativeAge(item.last_hashmiss_at)) + '</span>';
+      html += '</div>';
+      if (dedupedFrames.length) {
+        html += '<div style="padding:10px 14px;">';
+        html += '<div style="font-size:0.8em;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.04em">Recent outbound frame sequence</div>';
+        html += '<div style="font-family:monospace;font-size:0.88em;display:flex;flex-direction:column;gap:4px;">';
+        dedupedFrames.forEach(function(f) {
+          var color = FRAME_COLOR[f.type] || '#888';
+          var label;
+          if (f.type === 'BULLETIN' || f.type === 'MAIL' || f.type === 'CHANNEL') label = f.type + ' (base frame, offset 0)';
+          else if (f.offset !== null && f.offset !== undefined) label = f.type + '@' + f.offset;
+          else label = f.type;
+          html += '<div style="display:flex;align-items:center;gap:10px;">';
+          html += '<span style="display:inline-block;min-width:8px;height:8px;background:'+color+';border-radius:50%;flex-shrink:0;"></span>';
+          html += '<span style="color:'+color+';font-weight:600;min-width:240px;">' + esc(label) + '</span>';
+          html += '<span style="color:var(--text-muted);font-size:0.9em;">sent ' + esc(fmtTime(f.sent_at)) + '</span>';
+          html += '</div>';
+        });
+        html += '</div></div>';
+      } else {
+        html += '<div style="padding:8px 14px;font-size:0.88em;color:var(--text-muted)">No outbound frames recorded for this item in this window.</div>';
+      }
+      html += '</div>';
+    });
+    container.innerHTML = html;
+  }
+
+  function refreshProgress() {
+    fetch('/api/sync/progress?lookback_seconds=1800', { headers: { 'Accept': 'application/json' } })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        renderPeers(data);
+        renderActiveItems(data);
+        document.getElementById('sync-progress-status').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+      })
+      .catch(function() {
+        document.getElementById('sync-progress-status').textContent = 'Update failed \u2014 retrying\u2026';
+      });
+  }
+  refreshProgress();
+  setInterval(refreshProgress, 10000);
+})();
+</script>
+
+<script>
+(function() {
+  function fmtBytes(b) {
+    if (b == null) return '\u2014';
+    b = parseInt(b) || 0;
+    if (b < 1024)    return b + ' B';
+    if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+    return (b / 1048576).toFixed(2) + ' MB';
+  }
+  function fmtDur(sec) {
+    if (sec == null) return '\u2014';
+    sec = parseFloat(sec);
+    if (sec < 60) return sec.toFixed(1) + 's';
+    var m = Math.floor(sec / 60), s = Math.round(sec % 60);
+    if (sec < 3600) return m + 'm ' + s + 's';
+    var h = Math.floor(m / 60); m = m % 60;
+    return h + 'h ' + m + 'm';
+  }
+  function fmtSpeed(bps) {
+    if (bps == null) return '\u2014';
+    bps = parseFloat(bps);
+    if (bps < 1024)    return bps.toFixed(1) + ' B/s';
+    if (bps < 1048576) return (bps / 1024).toFixed(2) + ' KB/s';
+    return (bps / 1048576).toFixed(3) + ' MB/s';
+  }
+  function isoToDate(s) {
+    if (!s) return null;
+    return new Date(s.replace(' ', 'T').replace(/Z?$/, 'Z'));
+  }
+  function relTime(s) {
+    var d = isoToDate(s);
+    if (!d || isNaN(d)) return '';
+    var secs = Math.round((Date.now() - d.getTime()) / 1000);
+    if (secs < 5)    return 'just now';
+    if (secs < 60)   return secs + 's ago';
+    if (secs < 3600) return Math.floor(secs / 60) + 'm ago';
+    return Math.floor(secs / 3600) + 'h ago';
+  }
+  function esc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  var _activeSessions = [];
+  var _timerInterval = null;
+
+  function renderActive() {
+    var el = document.getElementById('sync-sessions-active');
+    if (!_activeSessions.length) { el.innerHTML = ''; return; }
+    var now = Date.now();
+    var html = '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:4px;">';
+    _activeSessions.forEach(function(s) {
+      var startMs = (isoToDate(s.started_at) || new Date()).getTime();
+      var elapsed = ((now - startMs) / 1000);
+      html += '<div style="border:2px solid #2a9d8f;border-radius:8px;padding:10px 14px;background:rgba(42,157,143,0.06);min-width:220px;">';
+      html += '<div style="font-size:0.75em;text-transform:uppercase;letter-spacing:0.06em;color:#2a9d8f;font-weight:700;margin-bottom:4px;">&#9679; Syncing</div>';
+      html += '<div style="font-family:monospace;font-size:0.9em;margin-bottom:4px;">' + esc(s.peer_node_id) + '</div>';
+      html += '<div style="font-size:1.5em;font-weight:700;letter-spacing:0.04em;" class="session-elapsed" data-start="' + startMs + '">' + fmtDur(elapsed) + '</div>';
+      html += '<div style="font-size:0.82em;color:var(--text-muted);margin-top:4px;">' + fmtBytes(s.total_bytes) + ' &middot; ' + s.frame_count + ' frames</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+    el.innerHTML = html;
+  }
+
+  function tickElapsed() {
+    var now = Date.now();
+    document.querySelectorAll('.session-elapsed').forEach(function(el) {
+      var start = parseInt(el.dataset.start) || now;
+      el.textContent = fmtDur((now - start) / 1000);
+    });
+  }
+
+  function renderTable(sessions) {
+    var el = document.getElementById('sync-sessions-table');
+    if (!sessions || !sessions.length) {
+      el.innerHTML = '<p class="text-muted" style="font-size:0.9em">No completed sync sessions recorded yet in the last 24 hours.</p>';
+      return;
+    }
+    var html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.88em;">';
+    html += '<thead><tr style="background:var(--surface-2);border-bottom:2px solid var(--border);">';
+    html += '<th style="padding:7px 8px;text-align:left;">Peer</th><th style="padding:7px 8px;text-align:left;">Ended</th><th style="padding:7px 8px;text-align:right;">Duration</th><th style="padding:7px 8px;text-align:right;">Sent</th><th style="padding:7px 8px;text-align:right;">Received</th><th style="padding:7px 8px;text-align:right;">Total</th><th style="padding:7px 8px;text-align:right;">Speed</th><th style="padding:7px 8px;text-align:right;">Frames</th>';
+    html += '</tr></thead><tbody>';
+    sessions.forEach(function(s, i) {
+      var rowBg = i % 2 === 0 ? '' : 'background:var(--surface-2);';
+      html += '<tr style="border-bottom:1px solid var(--border);' + rowBg + '">';
+      html += '<td style="padding:6px 8px;font-family:monospace;font-size:0.85em;">' + esc(s.peer_node_id) + '</td>';
+      html += '<td style="padding:6px 8px;font-size:0.82em;color:var(--text-muted);" title="' + esc(s.ended_at) + '">' + esc(relTime(s.ended_at)) + '</td>';
+      html += '<td style="padding:6px 8px;text-align:right;font-weight:600;">' + fmtDur(s.duration_seconds) + '</td>';
+      html += '<td style="padding:6px 8px;text-align:right;">' + fmtBytes(s.bytes_tx) + '</td>';
+      html += '<td style="padding:6px 8px;text-align:right;">' + fmtBytes(s.bytes_rx) + '</td>';
+      html += '<td style="padding:6px 8px;text-align:right;font-weight:600;">' + fmtBytes(s.total_bytes) + '</td>';
+      html += '<td style="padding:6px 8px;text-align:right;color:#2a9d8f;">' + fmtSpeed(s.bps) + '</td>';
+      html += '<td style="padding:6px 8px;text-align:right;color:var(--text-muted);">' + esc(s.frame_count) + '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
+  }
+
+  function refreshSessions() {
+    fetch('/api/sync/sessions', { headers: { 'Accept': 'application/json' } })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        _activeSessions = data.active || [];
+        renderActive();
+        renderTable(data.sessions || []);
+        document.getElementById('sync-sessions-status').textContent = 'Updated ' + new Date().toLocaleTimeString();
+      })
+      .catch(function() {
+        document.getElementById('sync-sessions-status').textContent = 'Refresh failed \u2014 retrying\u2026';
+      });
+  }
+  refreshSessions();
+  setInterval(refreshSessions, 30000);
+  if (_timerInterval) clearInterval(_timerInterval);
+  _timerInterval = setInterval(tickElapsed, 1000);
+
+  function renderHistory(sessions) {
+    var el = document.getElementById('sync-history-table');
+    var sumEl = document.getElementById('sync-history-summary');
+    if (!sessions || !sessions.length) {
+      el.innerHTML = '<p class="text-muted" style="font-size:0.9em">No persisted sessions in this window yet.</p>';
+      sumEl.textContent = '';
+      return;
+    }
+    var n = sessions.length, sumDur = 0, sumBytes = 0;
+    var minDur = Infinity, maxDur = 0;
+    sessions.forEach(function(s) {
+      var d = parseFloat(s.duration_seconds) || 0;
+      sumDur += d; sumBytes += (parseInt(s.total_bytes) || 0);
+      if (d < minDur) minDur = d;
+      if (d > maxDur) maxDur = d;
+    });
+    var avg = sumDur / n;
+    sumEl.textContent = n + ' sessions \u2014 avg ' + fmtDur(avg) + ', min ' + fmtDur(minDur) + ', max ' + fmtDur(maxDur) + ', total ' + fmtBytes(sumBytes);
+    var html = '<div style="overflow-x:auto;max-height:480px;overflow-y:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.85em;">';
+    html += '<thead style="position:sticky;top:0;"><tr style="background:var(--surface-2);border-bottom:2px solid var(--border);">';
+    html += '<th style="padding:6px 8px;text-align:left;">Peer</th><th style="padding:6px 8px;text-align:left;">Ended</th><th style="padding:6px 8px;text-align:right;">Duration</th><th style="padding:6px 8px;text-align:right;">Total</th><th style="padding:6px 8px;text-align:right;">Speed</th><th style="padding:6px 8px;text-align:right;">Frames</th>';
+    html += '</tr></thead><tbody>';
+    sessions.forEach(function(s, i) {
+      var rowBg = i % 2 === 0 ? '' : 'background:var(--surface-2);';
+      html += '<tr style="border-bottom:1px solid var(--border);' + rowBg + '">';
+      html += '<td style="padding:5px 8px;font-family:monospace;font-size:0.82em;">' + esc(s.peer_node_id) + '</td>';
+      html += '<td style="padding:5px 8px;font-size:0.8em;color:var(--text-muted);" title="' + esc(s.ended_at) + '">' + esc(relTime(s.ended_at)) + '</td>';
+      html += '<td style="padding:5px 8px;text-align:right;font-weight:600;">' + fmtDur(s.duration_seconds) + '</td>';
+      html += '<td style="padding:5px 8px;text-align:right;">' + fmtBytes(s.total_bytes) + '</td>';
+      html += '<td style="padding:5px 8px;text-align:right;color:#2a9d8f;">' + fmtSpeed(s.bps) + '</td>';
+      html += '<td style="padding:5px 8px;text-align:right;color:var(--text-muted);">' + esc(s.frame_count) + '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
+  }
+
+  function refreshHistory() {
+    var sel = document.getElementById('sync-history-window');
+    var since = sel ? sel.value : 604800;
+    fetch('/api/sync/session-history?since_seconds=' + encodeURIComponent(since) + '&limit=500', { headers: { 'Accept': 'application/json' } })
+      .then(function(r) { return r.json(); })
+      .then(function(data) { renderHistory(data.sessions || []); })
+      .catch(function() {
+        document.getElementById('sync-history-table').innerHTML = '<p class="text-muted" style="font-size:0.9em">Failed to load history.</p>';
+      });
+  }
+  var winSel = document.getElementById('sync-history-window');
+  if (winSel) winSel.addEventListener('change', refreshHistory);
+  refreshHistory();
+  setInterval(refreshHistory, 60000);
+})();
+</script>
+
+<script>
+  (function () {
+    var outboundRoot = document.getElementById('sync-log-outbound');
+    var inboundRoot  = document.getElementById('sync-log-inbound');
+    if (!outboundRoot || !inboundRoot) return;
+
+    var frameFilter      = document.getElementById('sync-log-frame-filter');
+    var peerFilter       = document.getElementById('sync-log-peer-filter');
+    var searchInput      = document.getElementById('sync-log-search');
+    var importantOnly    = document.getElementById('sync-log-important-only');
+    var hideContinuations= document.getElementById('sync-log-hide-continuations');
+    var clearButton      = document.getElementById('sync-log-clear');
+    var outboundMeta     = document.getElementById('sync-log-outbound-meta');
+    var inboundMeta      = document.getElementById('sync-log-inbound-meta');
+
+    var entries = {{ initial_transmissions|tojson }};
+    var lastId  = {{ last_transmission_id }};
+
+    function escapeHtml(value) {
+      return String(value || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
+    function updateFilterOptions() {
+      var selectedFrame = frameFilter.value;
+      var selectedPeer  = peerFilter.value;
+      var frameTypes = Array.from(new Set(entries.map(function(e) { return e.frame_type; }).filter(Boolean))).sort();
+      var peers      = Array.from(new Set(entries.map(function(e) { return e.peer_node_id; }).filter(Boolean))).sort();
+      frameFilter.innerHTML = '<option value="">All frame types</option>' + frameTypes.map(function(v) { return '<option value="'+escapeHtml(v)+'">'+escapeHtml(v)+'</option>'; }).join('');
+      peerFilter.innerHTML  = '<option value="">All peers</option>'       + peers.map(function(v) { return '<option value="'+escapeHtml(v)+'">'+escapeHtml(v)+'</option>'; }).join('');
+      frameFilter.value = frameTypes.indexOf(selectedFrame) >= 0 ? selectedFrame : '';
+      peerFilter.value  = peers.indexOf(selectedPeer) >= 0 ? selectedPeer : '';
+    }
+
+    function renderPane(target, metaTarget, direction) {
+      var frameType  = frameFilter.value;
+      var peer       = peerFilter.value;
+      var search     = (searchInput.value || '').trim().toLowerCase();
+      var important  = importantOnly.checked;
+      var hideChunks = hideContinuations.checked;
+      var filtered   = entries.filter(function(e) {
+        if (e.direction !== direction) return false;
+        if (frameType && e.frame_type !== frameType) return false;
+        if (peer && e.peer_node_id !== peer) return false;
+        if (important && !e.is_important) return false;
+        if (hideChunks && e.is_continuation) return false;
+        if (search) {
+          var hay = [e.frame_text, e.frame_type, e.peer_node_id].join(' ').toLowerCase();
+          if (hay.indexOf(search) < 0) return false;
+        }
+        return true;
+      });
+      metaTarget.textContent = filtered.length + ' frame(s)';
+      target.innerHTML = filtered.map(function(e) {
+        var badges = (e.is_important ? '<span class="log-badge important">important</span>' : '') +
+                     (e.is_continuation ? '<span class="log-badge">chunk</span>' : '');
+        return '<div class="log-line">'
+          + '<span class="log-time">[' + escapeHtml(e.transmission_time) + ']</span> '
+          + '<span class="log-type">' + escapeHtml(e.frame_type) + '</span> '
+          + '<span class="log-peer">' + escapeHtml(e.peer_node_id) + '</span> '
+          + '<span class="log-size">' + escapeHtml(e.frame_size_bytes) + ' B</span>'
+          + badges
+          + '<div class="log-preview">' + escapeHtml(e.frame_preview) + '</div>'
+          + '</div>';
+      }).join('');
+      target.scrollTop = target.scrollHeight;
+    }
+
+    function render() {
+      updateFilterOptions();
+      renderPane(outboundRoot, outboundMeta, 'tx');
+      renderPane(inboundRoot,  inboundMeta,  'rx');
+    }
+
+    async function poll() {
+      try {
+        var resp = await fetch('/api/sync/transmissions?since_id=' + encodeURIComponent(lastId), { headers: { 'Accept': 'application/json' } });
+        if (!resp.ok) return;
+        var data = await resp.json();
+        if (!data.entries || !data.entries.length) return;
+        data.entries.forEach(function(e) {
+          entries.push(e);
+          lastId = Math.max(lastId, Number(e.id || 0));
+        });
+        if (entries.length > 600) entries = entries.slice(entries.length - 600);
+        render();
+      } catch (err) { /* ignore */ }
+    }
+
+    [frameFilter, peerFilter, searchInput, importantOnly, hideContinuations].forEach(function(el) {
+      el.addEventListener('input',  render);
+      el.addEventListener('change', render);
+    });
+    clearButton.addEventListener('click', function() { entries = []; render(); });
+
+    render();
+    setInterval(poll, 2000);
+  })();
+</script>
+{% endblock %}

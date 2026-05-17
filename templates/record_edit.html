@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card" style="max-width:760px">
+  <h2>Edit {{ table_title }}</h2>
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% for field in editable_fields %}
+    <div class="form-group">
+      <label for="field_{{ field }}">{{ field | replace('_', ' ') | title }}</label>
+      {% if field == 'content' %}
+      <textarea id="field_{{ field }}" name="{{ field }}" class="form-control" required>{{ row[field] }}</textarea>
+      {% else %}
+      <input type="text" id="field_{{ field }}" name="{{ field }}" value="{{ row[field] }}" class="form-control" required>
+      {% endif %}
+    </div>
+    {% endfor %}
+    <div class="row-actions">
+      <button class="btn btn-primary" type="submit">Save Changes</button>
+      <a class="btn" href="{{ url_for('table_list', table=table_name) }}">Back</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

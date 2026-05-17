@@ -10,7 +10,7 @@ from functools import wraps
 from typing import Optional
 from app_paths import resolve_app_path
 
-from flask import Flask, flash, jsonify, redirect, render_template_string, request, send_from_directory, session, url_for
+from flask import Flask, flash, jsonify, redirect, render_template, render_template_string, request, send_from_directory, session, url_for
 
 from db_operations import install_connection_log_handler
 from utils import get_sync_runtime_settings
@@ -2761,7 +2761,7 @@ MESHTASTIC_DEVICE_CONTENT_TCP = """
 
 
 def create_app(runtime_interface=None) -> Flask:
-    app = Flask(__name__)
+    app = Flask(__name__, template_folder='templates', static_folder='static')
     app.secret_key = os.getenv("BBS_WEBGUI_SECRET", "change-this-secret")
     app.config["DB_PATH"] = resolve_app_path(os.getenv("BBS_DB_PATH"), "bulletins.db")
     app.config["CONFIG_PATH"] = resolve_app_path(os.getenv("BBS_CONFIG_PATH"), "config.ini")
@@ -3527,8 +3527,10 @@ def create_app(runtime_interface=None) -> Flask:
       sync_speed_settings = load_sync_speed_settings(app.config["CONFIG_PATH"])
       sync_runtime_settings = get_sync_runtime_settings()
       diagnostics = build_settings_diagnostics()
-      content = render_template_string(
-        SETTINGS_CONTENT,
+      return render_template(
+        "settings.html",
+        title="Settings",
+        show_nav=True,
         boards_text=",".join(app.config["BULLETIN_BOARDS"]),
         env_override=bool(os.getenv("BBS_BULLETIN_BOARDS", "").strip()),
         bbs_nodes_text="\n".join(bbs_nodes),
@@ -3544,7 +3546,6 @@ def create_app(runtime_interface=None) -> Flask:
         password_env_override=app.config["ADMIN_PASSWORD_ENV_OVERRIDE"],
         diagnostics=diagnostics,
       )
-      return render_template_string(BASE_TEMPLATE, title="Settings", content=content, show_nav=True)
 
     initialize_db_safety()
 
@@ -3617,6 +3618,47 @@ def create_app(runtime_interface=None) -> Flask:
     def api_csrf_token():
       return jsonify({"csrf_token": get_csrf_token()})
 
+    @app.get("/api/quick-search")
+    @login_required
+    def api_quick_search():
+      q = request.args.get("q", "").strip()
+      if not q or len(q) > 200:
+        return jsonify({"results": []})
+      results = []
+      like = f"%{q}%"
+      with get_db_connection() as conn:
+        cursor = conn.cursor()
+        try:
+          cursor.execute(
+            "SELECT id, board, subject, sender_short_name FROM bulletins "
+            "WHERE subject LIKE ? OR sender_short_name LIKE ? OR content LIKE ? ORDER BY id DESC LIMIT 8",
+            (like, like, like),
+          )
+          for row in cursor.fetchall():
+            results.append({"type": "bulletin", "id": row["id"], "label": f"[{row['board']}] {row['subject']}", "sub": row["sender_short_name"], "url": f"/bulletins/{row['id']}/edit"})
+        except Exception:
+          pass
+        try:
+          cursor.execute(
+            "SELECT id, sender_short_name, recipient, subject FROM mail "
+            "WHERE subject LIKE ? OR sender_short_name LIKE ? OR recipient LIKE ? ORDER BY id DESC LIMIT 8",
+            (like, like, like),
+          )
+          for row in cursor.fetchall():
+            results.append({"type": "mail", "id": row["id"], "label": f"Mail: {row['subject']}", "sub": f"{row['sender_short_name']} → {row['recipient']}", "url": f"/mail/{row['id']}/edit"})
+        except Exception:
+          pass
+        try:
+          cursor.execute(
+            "SELECT id, name, url FROM channels WHERE name LIKE ? OR url LIKE ? ORDER BY id DESC LIMIT 6",
+            (like, like),
+          )
+          for row in cursor.fetchall():
+            results.append({"type": "channel", "id": row["id"], "label": f"Channel: {row['name']}", "sub": row["url"], "url": f"/channels/{row['id']}/edit"})
+        except Exception:
+          pass
+      return jsonify({"results": results})
+
     @app.route("/login", methods=["GET", "POST"])
     def login():
         if request.method == "POST":
@@ -3628,12 +3670,7 @@ def create_app(runtime_interface=None) -> Flask:
                 return redirect(url_for("table_list", table="bulletins"))
             flash("Invalid username or password.", "error")
 
-        return render_template_string(
-            BASE_TEMPLATE,
-            title="Login",
-            content=render_template_string(LOGIN_CONTENT),
-            show_nav=False,
-        )
+        return render_template("login.html", title="Login", show_nav=False)
 
     @app.route("/logout")
     @login_required
@@ -4069,14 +4106,15 @@ def create_app(runtime_interface=None) -> Flask:
       connection_events = [serialize_connection_event(row) for row in reversed(events_desc)]
       last_event_id = connection_events[-1]["id"] if connection_events else 0
 
-      content = render_template_string(
-        CLIENTS_CONTENT,
+      return render_template(
+        "clients.html",
+        title="Clients",
+        show_nav=True,
         rows=rows,
         total_posts=total_posts,
         connection_events=connection_events,
         last_event_id=last_event_id,
       )
-      return render_template_string(BASE_TEMPLATE, title="Clients", content=content, show_nav=True)
 
     @app.route("/clients/<path:node_id>/profile")
     @login_required
@@ -4089,13 +4127,14 @@ def create_app(runtime_interface=None) -> Flask:
           (node_id,),
         )
         profile = cursor.fetchone()
-      content = render_template_string(
-        CLIENT_PROFILE_CONTENT,
+      short = profile["short_name"] if profile else node_id
+      return render_template(
+        "client_profile.html",
+        title=f"Profile – {short}",
+        show_nav=True,
         profile=profile,
         node_id=node_id,
       )
-      short = profile["short_name"] if profile else node_id
-      return render_template_string(BASE_TEMPLATE, title=f"Profile – {short}", content=content, show_nav=True)
 
     @app.get("/api/connection-events")
     @login_required
@@ -4132,14 +4171,21 @@ def create_app(runtime_interface=None) -> Flask:
           if interface is not None:
             hostname = getattr(interface, "hostname", "") or ""
         device_url = f"http://{hostname}" if hostname else "http://meshtastic.local"
-        content = render_template_string(
-          MESHTASTIC_DEVICE_CONTENT_TCP,
+        return render_template(
+          "meshtastic_device.html",
+          title="Meshtastic Device",
+          show_nav=True,
+          device_mode="tcp",
           device_host=hostname or "meshtastic.local",
           device_url=device_url,
         )
       else:
-        content = MESHTASTIC_DEVICE_CONTENT_SERIAL
-      return render_template_string(BASE_TEMPLATE, title="Meshtastic Device", content=content, show_nav=True)
+        return render_template(
+          "meshtastic_device.html",
+          title="Meshtastic Device",
+          show_nav=True,
+          device_mode="serial",
+        )
 
     @app.route("/system/flowchart")
     @login_required
@@ -4256,15 +4302,16 @@ def create_app(runtime_interface=None) -> Flask:
       for channel_name, comments in channel_comment_posts.items():
         comment_branches.append({"channel": channel_name, "comments": comments})
 
-      content = render_template_string(
-        FLOWCHART_CONTENT,
+      return render_template(
+        "flowchart.html",
+        title="Documentation",
+        show_nav=True,
         recent_bulletins=recent_bulletins,
         recent_mail=recent_mail,
         recent_channels=recent_channels,
         topic_branches=topic_branches,
         comment_branches=comment_branches,
       )
-      return render_template_string(BASE_TEMPLATE, title="Documentation", content=content, show_nav=True)
 
     @app.route("/system/transmissions")
     @login_required
@@ -4503,8 +4550,10 @@ def create_app(runtime_interface=None) -> Flask:
         except sqlite3.OperationalError:
           recent_channel_comments = []
 
-        html = render_template_string(
-            TRANSMISSION_DASHBOARD_CONTENT,
+        return render_template(
+            "transmissions.html",
+            title="Transmission Stats",
+            show_nav=True,
             stats_1h_direction_html=_direction_html(stats_1h),
             stats_24h_direction_html=_direction_html(stats_24h),
             stats_1h_category_html=_category_html(stats_1h),
@@ -4516,8 +4565,6 @@ def create_app(runtime_interface=None) -> Flask:
             recent_channels=recent_channels,
             recent_channel_comments=recent_channel_comments,
         )
-
-        return render_template_string(BASE_TEMPLATE, title="Transmission Stats", content=html, show_nav=True)
 
     @app.route("/system/transmissions/reset", methods=["POST"])
     @login_required
@@ -4579,8 +4626,10 @@ def create_app(runtime_interface=None) -> Flask:
                 row["_resolve_scope"] = "bulletins"
                 row["_resolve_key"] = str(row.get("unique_id") or "")
 
-        content = render_template_string(
-            TABLE_LIST_CONTENT,
+        return render_template(
+            "table_list.html",
+            title=cfg["title"],
+            show_nav=True,
             table_title=cfg["title"],
             table_name=table,
             display_columns=display_columns,
@@ -4591,8 +4640,11 @@ def create_app(runtime_interface=None) -> Flask:
             create_label=("New Bulletin Post" if table == "bulletins" else "New Channel Entry" if table == "channels" else ""),
             edit_label=("Post/Edit" if table == "channels" else "Edit"),
             comments_enabled=(table == "channels"),
+            per_page=25,
+            page=1,
+            total_pages=None,
+            total_count=len(rows),
         )
-        return render_template_string(BASE_TEMPLATE, title=cfg["title"], content=content, show_nav=True)
 
     @app.route("/bulletins/new", methods=["GET", "POST"])
     @login_required
@@ -4620,12 +4672,13 @@ def create_app(runtime_interface=None) -> Flask:
           flash("Bulletin post created.", "success")
           return redirect(url_for("table_list", table="bulletins"))
 
-      content = render_template_string(
-        NEW_BULLETIN_CONTENT,
+      return render_template(
+        "bulletin_new.html",
+        title="New Bulletin",
+        show_nav=True,
         bulletin_boards=bulletin_boards,
         selected_board=selected_board,
       )
-      return render_template_string(BASE_TEMPLATE, title="New Bulletin", content=content, show_nav=True)
 
     @app.route("/channels/new", methods=["GET", "POST"])
     @login_required
@@ -4645,8 +4698,7 @@ def create_app(runtime_interface=None) -> Flask:
           flash("Channel entry created.", "success")
           return redirect(url_for("table_list", table="channels"))
 
-      content = render_template_string(NEW_CHANNEL_CONTENT)
-      return render_template_string(BASE_TEMPLATE, title="New Channel", content=content, show_nav=True)
+      return render_template("channel_new.html", title="New Channel", show_nav=True)
 
     @app.route("/channels/<int:channel_id>/comments", methods=["GET", "POST"])
     @login_required
@@ -4690,14 +4742,15 @@ def create_app(runtime_interface=None) -> Flask:
           comment["sync_status"] = f"Incomplete ({actual}/{expected})" if int(comment.get("content_complete") or 0) == 0 else ""
           comments.append(comment)
 
-      rendered = render_template_string(
-        CHANNEL_COMMENTS_CONTENT,
+      return render_template(
+        "channel_comments.html",
+        title="Channel Comments",
+        show_nav=True,
         channel_id=channel["id"],
         channel_name=channel["name"],
         channel_url=channel["url"],
         comments=comments,
       )
-      return render_template_string(BASE_TEMPLATE, title="Channel Comments", content=rendered, show_nav=True)
 
     @app.post("/channels/<int:channel_id>/comments/<int:comment_id>/delete")
     @login_required
@@ -4757,22 +4810,25 @@ def create_app(runtime_interface=None) -> Flask:
             row = cursor.fetchone()
 
         if table == "bulletins":
-          content = render_template_string(
-            EDIT_BULLETIN_CONTENT,
+          return render_template(
+            "bulletin_edit.html",
+            title=f"Edit {cfg['title']}",
+            show_nav=True,
             table_title=cfg["title"],
             table_name=table,
             row=row,
             bulletin_boards=app.config["BULLETIN_BOARDS"],
           )
         else:
-          content = render_template_string(
-            EDIT_CONTENT,
+          return render_template(
+            "record_edit.html",
+            title=f"Edit {cfg['title']}",
+            show_nav=True,
             table_title=cfg["title"],
             table_name=table,
             editable_fields=cfg["editable"],
             row=row,
           )
-        return render_template_string(BASE_TEMPLATE, title=f"Edit {cfg['title']}", content=content, show_nav=True)
 
     @app.post("/<table>/<int:row_id>/delete")
     @login_required
