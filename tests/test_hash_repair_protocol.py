@@ -424,7 +424,7 @@ class HashRepairProtocolTests(unittest.TestCase):
 
         row = db_operations.get_bulletin_by_unique_id(unique_id)
         self.assertIsNotNone(row)
-        self.assertEqual(row[3], content)
+        self.assertEqual(row[4], content)
 
     def test_bulletin_is_marked_incomplete_until_all_chunks_arrive(self):
         content = "Q" * 600
@@ -536,7 +536,7 @@ class HashRepairProtocolTests(unittest.TestCase):
 
         row = db_operations.get_bulletin_by_unique_id(unique_id)
         self.assertIsNotNone(row)
-        self.assertEqual(row[3], content)
+        self.assertEqual(row[4], content)
 
     def test_bulletin_continuation_before_base_record_is_buffered(self):
         content = "ABCDEFGH" * 90
@@ -568,7 +568,7 @@ class HashRepairProtocolTests(unittest.TestCase):
 
         row = db_operations.get_bulletin_by_unique_id(unique_id)
         self.assertIsNotNone(row)
-        self.assertEqual(row[3], content)
+        self.assertEqual(row[4], content)
 
     def test_replayed_bulletin_base_packet_repairs_existing_short_prefix(self):
         content = "REPAIR" * 120
@@ -602,7 +602,7 @@ class HashRepairProtocolTests(unittest.TestCase):
 
         row = db_operations.get_bulletin_by_unique_id(unique_id)
         self.assertIsNotNone(row)
-        self.assertEqual(row[3], content)
+        self.assertEqual(row[4], content)
 
 
 if __name__ == "__main__":

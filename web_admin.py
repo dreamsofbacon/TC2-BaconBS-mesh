@@ -3,6 +3,7 @@ import json
 import logging
 import sqlite3
 import uuid
+import secrets
 import configparser
 from datetime import datetime
 from functools import wraps
@@ -19,13 +20,13 @@ from version_info import get_display_version
 TABLE_CONFIG = {
     "bulletins": {
         "title": "Bulletins",
-    "columns": ["id", "board", "sender_short_name", "date", "subject", "content", "local_only", "unique_id"],
+    "columns": ["id", "board", "sender_short_name", "date", "subject", "content", "local_only", "unique_id", "source_node_id", "source_timestamp", "received_at"],
     "editable": ["board", "sender_short_name", "date", "subject", "content", "local_only"],
     "searchable": ["board", "sender_short_name", "subject", "content", "unique_id", "local_only"],
     },
     "mail": {
         "title": "Mail",
-        "columns": ["id", "sender", "sender_short_name", "recipient", "date", "subject", "content", "unique_id"],
+        "columns": ["id", "sender", "sender_short_name", "recipient", "date", "subject", "content", "unique_id", "source_node_id", "source_timestamp", "received_at"],
         "editable": ["sender", "sender_short_name", "recipient", "date", "subject", "content"],
         "searchable": ["sender", "sender_short_name", "recipient", "subject", "content", "unique_id"],
     },
@@ -387,6 +388,7 @@ BASE_TEMPLATE = """
 <head>
   <meta charset=\"utf-8\">
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <meta name=\"csrf-token\" content=\"{{ csrf_token }}\">
   <title>{{ title }}</title>
   <style>
     :root {
@@ -677,7 +679,7 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('table_list', table='channels') }}\">Channels</a>
       <a href=\"{{ url_for('clients_summary') }}\">Clients</a>
       <a href=\"{{ url_for('settings_page') }}\">Settings</a>
-      <a href=\"{{ url_for('system_flowchart') }}\">System Flowchart</a>
+      <a href=\"{{ url_for('system_flowchart') }}\">Documentation</a>
       <a href=\"{{ url_for('system_transmissions') }}\">Transmission Stats</a>
       <a href=\"{{ url_for('meshtastic_device') }}\">Meshtastic Device</a>
       <a href=\"{{ url_for('mesh_ui_index') }}\" target=\"_blank\">Mesh UI</a>
@@ -735,6 +737,41 @@ BASE_TEMPLATE = """
       }
     }
 
+    function getCsrfToken() {
+      const meta = document.querySelector('meta[name="csrf-token"]');
+      return meta ? String(meta.content || '') : '';
+    }
+
+    function withCsrfHeaders(headers) {
+      const merged = Object.assign({}, headers || {});
+      const csrf = getCsrfToken();
+      if (csrf) {
+        merged['X-CSRF-Token'] = csrf;
+      }
+      return merged;
+    }
+
+    function injectCsrfIntoForms() {
+      const csrf = getCsrfToken();
+      if (!csrf) {
+        return;
+      }
+      document.querySelectorAll('form').forEach((form) => {
+        const method = String(form.getAttribute('method') || 'get').toLowerCase();
+        if (method !== 'post') {
+          return;
+        }
+        let input = form.querySelector('input[name="csrf_token"]');
+        if (!input) {
+          input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'csrf_token';
+          form.appendChild(input);
+        }
+        input.value = csrf;
+      });
+    }
+
     function enableDragAndDrop(tableName) {
       const table = document.querySelector('table tbody');
       if (!table) return;
@@ -780,7 +817,7 @@ BASE_TEMPLATE = """
             try {
               const response = await fetch(`/api/reorder/${tableName}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: withCsrfHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({ from_id: draggedId, to_id: targetId })
               });
               
@@ -1003,7 +1040,10 @@ BASE_TEMPLATE = """
 
       async function forceManualSync() {
         try {
-          const resp = await fetch('/api/sync/manual', { method: 'POST' });
+          const resp = await fetch('/api/sync/manual', {
+            method: 'POST',
+            headers: withCsrfHeaders(),
+          });
           if (resp.ok) {
             pill.textContent = 'Sync requested';
             setTimeout(refreshStatus, 1000);
@@ -1047,6 +1087,7 @@ BASE_TEMPLATE = """
     }
     
     document.addEventListener('DOMContentLoaded', () => {
+      injectCsrfIntoForms();
       initializeTheme();
       initializeSyncNavStatus();
       initializeFlowchartNavigation();
@@ -1164,15 +1205,28 @@ EDIT_BULLETIN_CONTENT = """
 
 UPDATED_FLOWCHART_CONTENT = """
 <div class=\"card\">
-  <h2>System Flowchart</h2>
-  <p class=\"muted\">Updated to match the current mesh runtime: five sync phases, selective hash repair, tombstone replay, and the manual zork save best-candidate resolver.</p>
+  <h2>Documentation</h2>
+  <p class=\"muted\">Reference for this BBS instance: project overview, the runtime sync pipeline, sync protocol frames, BBS user commands, web admin pages, configuration, and database schema. The flowchart, snapshot, and tables on this page reflect the current code.</p>
+</div>
+
+<div class=\"card\">
+  <h3>Project Overview</h3>
+  <p class=\"muted\">TC&sup2;-BBS Meshtastic is a Python BBS that runs over the Meshtastic LoRa mesh radio network. Each node owns a local SQLite database (<code>bulletins.db</code>) and exchanges only what is needed with peers using a low-bandwidth, hash-repair-driven sync protocol. Two long-running processes are typical: <code>server.py</code> (mesh I/O, command handling, sync) and <code>web_admin.py</code> (this Flask web UI for moderation and diagnostics). A standalone Meshtastic Web bundle is also served at the <strong>Mesh UI</strong> link.</p>
+  <ul class=\"muted\">
+    <li><strong>Mail</strong> &mdash; per-recipient inbox messages.</li>
+    <li><strong>Bulletins</strong> &mdash; per-board posts (default boards: General, Info, News, Urgent).</li>
+    <li><strong>Channels</strong> &mdash; shared Meshtastic channel directory + per-channel comments.</li>
+    <li><strong>Profiles</strong> &mdash; per-user profile records synced across nodes.</li>
+    <li><strong>Game data</strong> &mdash; Hall of Fame scores and Zork (dfrotz) interactive-fiction saves.</li>
+    <li><strong>Tombstones</strong> &mdash; deletes are replayed as tombstones so removed records cannot be resurrected by a peer.</li>
+  </ul>
 </div>
 
 <div class=\"card\">
   <h3>Five-Phase Mesh Sync</h3>
-  <p class=\"muted\">The scheduler now pushes user-visible content first, then profile metadata, and only then game data. Repair stays record-scoped instead of forcing a full replay.</p>
+  <p class=\"muted\">The scheduler pushes user-visible content first, then profile metadata, and only then game data. Each phase is checked against the peer's last advertised SYNCSTATE; matching scopes are skipped and only mismatched scopes are repaired. Repair stays record-scoped instead of forcing a full replay.</p>
   <div class=\"pipeline-flow\">
-    <div class=\"pipeline-node\"><strong>Triggers</strong><br><span class=\"muted\">scheduled sync, manual sync, peer resync, force mismatch check, resolve save key</span></div>
+    <div class=\"pipeline-node\"><strong>Triggers</strong><br><span class=\"muted\">scheduled sync, manual sync, peer resync, force mismatch check, resolve save key, resolve record key, inbound peer traffic</span></div>
     <div class=\"pipeline-arrow\">→</div>
     <div class=\"pipeline-node\"><strong>Phase 1</strong><br><span class=\"muted\">mail</span></div>
     <div class=\"pipeline-arrow\">→</div>
@@ -1185,10 +1239,10 @@ UPDATED_FLOWCHART_CONTENT = """
     <div class=\"pipeline-node\"><strong>Phase 5</strong><br><span class=\"muted\">game scores + zork saves</span></div>
   </div>
   <div class=\"pipeline-flow\">
-    <div class=\"pipeline-node\"><strong>Selective hash repair</strong><br><span class=\"muted\">SYNCSTATE → HASHREQ → HASHREC/HASHEND → HASHMISS replay</span></div>
-    <div class=\"pipeline-node\"><strong>Chunk healing</strong><br><span class=\"muted\">MAILMETA/BULLMETA + CONT frames with incomplete markers until repaired</span></div>
-    <div class=\"pipeline-node\"><strong>Tombstones</strong><br><span class=\"muted\">DELETE_BULLETIN, DELETE_MAIL, DELETE_ZORKSAVE and deleted_sync_tombstones</span></div>
-    <div class=\"pipeline-node\"><strong>Zork conflict assist</strong><br><span class=\"muted\">CANDREQ / CANDRSP chooses the best peer candidate before replay</span></div>
+    <div class=\"pipeline-node\"><strong>Selective hash repair</strong><br><span class=\"muted\">SYNCSTATE → HASHREQ → HASHREC/HASHEND or HASHZ/HASHZGAP (compressed) → HASHMISS replay</span></div>
+    <div class=\"pipeline-node\"><strong>Chunk healing</strong><br><span class=\"muted\">MAILMETA / BULLMETA / CHANNELCOMMENTMETA + CONT frames; incomplete markers stay visible until repaired. Compact channel keys avoid 220-byte radio packet overflow.</span></div>
+    <div class=\"pipeline-node\"><strong>Tombstones</strong><br><span class=\"muted\">DELETE_BULLETIN, DELETE_MAIL, DELETE_ZORKSAVE flow through deleted_sync_tombstones so older deletes cannot wipe newer records.</span></div>
+    <div class=\"pipeline-node\"><strong>Zork conflict assist</strong><br><span class=\"muted\">CANDREQ / CANDRSP asks every peer for one save key, ranks candidates by newest timestamp / largest payload / stable hash, then replays the winner.</span></div>
   </div>
 </div>
 
@@ -1271,8 +1325,9 @@ UPDATED_FLOWCHART_CONTENT = """
         <text x=\"950\" y=\"691\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">request per-scope record hashes</text>
 
         <rect x=\"1160\" y=\"640\" width=\"300\" height=\"72\" rx=\"12\" fill=\"#ffffff\" stroke=\"#8b5cf6\" stroke-width=\"1.5\"/>
-        <text x=\"1310\" y=\"670\" font-size=\"14\" text-anchor=\"middle\" font-weight=\"bold\">HASHREC / HASHEND</text>
-        <text x=\"1310\" y=\"691\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">peer streams hashes, then closes scope</text>
+        <text x=\"1310\" y=\"666\" font-size=\"14\" text-anchor=\"middle\" font-weight=\"bold\">HASHREC / HASHEND</text>
+        <text x=\"1310\" y=\"684\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">peer streams hashes; HASHZ/HASHZGAP</text>
+        <text x=\"1310\" y=\"700\" font-size=\"11\" text-anchor=\"middle\" fill=\"#475569\">used when compression is enabled</text>
 
         <rect x=\"820\" y=\"760\" width=\"300\" height=\"72\" rx=\"12\" fill=\"#ffffff\" stroke=\"#8b5cf6\" stroke-width=\"1.5\"/>
         <text x=\"970\" y=\"790\" font-size=\"14\" text-anchor=\"middle\" font-weight=\"bold\">HASHMISS</text>
@@ -1300,10 +1355,10 @@ UPDATED_FLOWCHART_CONTENT = """
         <rect x=\"80\" y=\"915\" width=\"1440\" height=\"250\" rx=\"16\" fill=\"#fff7ed\" stroke=\"#ea580c\" stroke-width=\"2\"/>
         <text x=\"130\" y=\"950\" font-size=\"18\" font-weight=\"bold\" fill=\"#9a3412\">4. Special cases that changed recently</text>
         <rect x=\"130\" y=\"985\" width=\"400\" height=\"135\" rx=\"12\" fill=\"#ffffff\" stroke=\"#fb923c\" stroke-width=\"1.5\"/>
-        <text x=\"165\" y=\"1015\" font-size=\"15\" font-weight=\"bold\" fill=\"#7c2d12\">Long bulletin and mail payloads</text>
-        <text x=\"165\" y=\"1040\" font-size=\"12\" fill=\"#475569\">MAILMETA / BULLMETA declare chunk counts.</text>
-        <text x=\"165\" y=\"1060\" font-size=\"12\" fill=\"#475569\">CONT frames fill missing chunks later.</text>
-        <text x=\"165\" y=\"1080\" font-size=\"12\" fill=\"#475569\">Incomplete markers remain visible until healed.</text>
+        <text x=\"165\" y=\"1015\" font-size=\"15\" font-weight=\"bold\" fill=\"#7c2d12\">Long bulletins, mail, channel comments</text>
+        <text x=\"165\" y=\"1040\" font-size=\"12\" fill=\"#475569\">MAILMETA / BULLMETA / CHANNELCOMMENTMETA</text>
+        <text x=\"165\" y=\"1060\" font-size=\"12\" fill=\"#475569\">declare chunk counts; CONT frames fill gaps.</text>
+        <text x=\"165\" y=\"1080\" font-size=\"12\" fill=\"#475569\">Compact channel keys avoid 220-byte overflow.</text>
 
         <rect x=\"600\" y=\"985\" width=\"400\" height=\"135\" rx=\"12\" fill=\"#ffffff\" stroke=\"#fb923c\" stroke-width=\"1.5\"/>
         <text x=\"635\" y=\"1015\" font-size=\"15\" font-weight=\"bold\" fill=\"#7c2d12\">Delete replay uses tombstones</text>
@@ -1337,6 +1392,128 @@ UPDATED_FLOWCHART_CONTENT = """
       </g>
     </svg>
   </div>
+</div>
+
+<div class=\"card\">
+  <h3>Sync Protocol Frame Reference</h3>
+  <p class=\"muted\">All frames travel as Meshtastic text messages on the channel where the BBS node is listening. Maximum payload per frame is approximately 220 bytes; larger records are split into base + META + CONT frames.</p>
+  <table>
+    <thead><tr><th>Frame</th><th>Direction</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>SYNCSTATE</code></td><td>broadcast</td><td>Advertise local per-scope record counts and content hashes so peers can detect drift.</td></tr>
+      <tr><td><code>HASHREQ</code></td><td>peer&rarr;peer</td><td>Request the per-record hash manifest for one scope.</td></tr>
+      <tr><td><code>HASHREC</code> / <code>HASHEND</code></td><td>response</td><td>Stream record hashes and close out the scope (uncompressed manifest).</td></tr>
+      <tr><td><code>HASHZ</code> / <code>HASHZGAP</code></td><td>response</td><td>Compressed manifest variant (enabled by <code>BBS_HASH_MANIFEST_COMPRESSION=1</code>); HASHZGAP requests a re-send of any missing chunks.</td></tr>
+      <tr><td><code>HASHMISS</code></td><td>peer&rarr;peer</td><td>Request replay of a specific scope+unique_id that the receiver is missing or has truncated.</td></tr>
+      <tr><td><code>BULLETIN</code> / <code>BULLMETA</code> / <code>BULLCONT</code></td><td>peer&rarr;peer</td><td>Bulletin replay; META declares total length and CONT carries payload chunks.</td></tr>
+      <tr><td><code>MAIL</code> / <code>MAILMETA</code> / <code>MAILCONT</code></td><td>peer&rarr;peer</td><td>Mail replay with chunked payload support.</td></tr>
+      <tr><td><code>CHANNEL</code></td><td>peer&rarr;peer</td><td>Channel directory entry replay (name + URL).</td></tr>
+      <tr><td><code>CHANNELCOMMENT</code> / <code>CHANNELCOMMENTMETA</code> / <code>CHANNELCOMMENTCONT</code></td><td>peer&rarr;peer</td><td>Per-channel comment replay. The channel manifest key is shortened to a compact <code>~</code>-prefixed hash when the full key would leave fewer than 8 content bytes in the base packet.</td></tr>
+      <tr><td><code>PROFILESYNC</code></td><td>peer&rarr;peer</td><td>User profile record replay.</td></tr>
+      <tr><td><code>SCORESYNC</code></td><td>peer&rarr;peer</td><td>Hall of Fame score replay.</td></tr>
+      <tr><td><code>ZORKSAVE</code></td><td>peer&rarr;peer</td><td>Zork (dfrotz) save replay; supports chunking via the same META/CONT pattern.</td></tr>
+      <tr><td><code>DELETE_BULLETIN</code> / <code>DELETE_MAIL</code> / <code>DELETE_ZORKSAVE</code></td><td>peer&rarr;peer</td><td>Tombstone replay so a delete on one node propagates and cannot be silently undone by an older copy.</td></tr>
+      <tr><td><code>CANDREQ</code> / <code>CANDRSP</code></td><td>peer&rarr;peer</td><td>Best-candidate resolver: ask all peers for one save key, rank candidates by newest timestamp / largest payload / stable hash, then replay the winner.</td></tr>
+    </tbody>
+  </table>
+  <p class=\"muted\">Pacing knobs (env or Settings &rarr; Sync Settings): <code>BBS_SYNC_TURBO</code>, <code>BBS_SYNC_PAUSE_SECONDS</code>, <code>BBS_HASH_REPAIR_PAUSE_SECONDS</code>, <code>BBS_FULL_SYNC_DELAY_MS</code>, <code>BBS_HASHMISS_REQUEST_TTL_SECONDS</code>.</p>
+</div>
+
+<div class=\"card\">
+  <h3>BBS Commands (over the mesh)</h3>
+  <p class=\"muted\">Send a direct message to the BBS node. Any message returns the main menu. Make selections by sending the bracketed letter or number.</p>
+  <table>
+    <thead><tr><th>Menu</th><th>Selections</th></tr></thead>
+    <tbody>
+      <tr><td>Main Menu (💾Bacon BBS💾)</td><td><strong>Q</strong> BBS Menu, <strong>B</strong> BBS Submenu, <strong>U</strong> Utilities Menu, <strong>P</strong> Profile, <strong>X</strong> Exit (configurable via <code>[menu] main_menu_items</code>)</td></tr>
+      <tr><td>BBS Menu (📰)</td><td><strong>M</strong> Mail, <strong>B</strong> Bulletins, <strong>C</strong> Channel Directory, <strong>J</strong> JS8Call gateway, <strong>X</strong> Exit</td></tr>
+      <tr><td>Utilities Menu (🛠️)</td><td><strong>S</strong> Stats, <strong>F</strong> Fortune, <strong>W</strong> Wall of Shame, <strong>G</strong> Games (Zork + Hall of Fame), <strong>X</strong> Exit</td></tr>
+      <tr><td>Mail</td><td>Read inbox, send to a node short name, delete; long messages chunk automatically.</td></tr>
+      <tr><td>Bulletins</td><td>Browse by board, read post, post new (Urgent board may require an allow-listed node).</td></tr>
+      <tr><td>Channels</td><td>List directory, view a channel, read &amp; add comments.</td></tr>
+      <tr><td>Games</td><td>Launch Zork (dfrotz), continue saved game, view Hall of Fame.</td></tr>
+      <tr><td>Profile</td><td>View / set short name, long name, callsign, location.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class=\"card\">
+  <h3>Web Admin Pages</h3>
+  <table>
+    <thead><tr><th>Page</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><a href=\"{{ url_for('table_list', table='bulletins') }}\">Bulletins</a></td><td>Moderate bulletins; create new posts; edit/delete; per-board filter; tombstone deletes propagate via sync.</td></tr>
+      <tr><td><a href=\"{{ url_for('table_list', table='channels') }}\">Channels</a></td><td>Moderate channel directory entries and per-channel comments.</td></tr>
+      <tr><td><a href=\"{{ url_for('clients_summary') }}\">Clients</a></td><td>Connected mesh clients, last-seen, hardware, role, battery, recent activity.</td></tr>
+      <tr><td><a href=\"{{ url_for('settings_page') }}\">Settings</a></td><td>Boards, Sync (peers, allow-list, interval, pacing, manual triggers, force resync, save resolver), Diagnostics (peer hash graph, mismatch attempts), Admin credentials.</td></tr>
+      <tr><td>Documentation (this page)</td><td>Project reference, runtime sync flowchart, protocol frames, commands, configuration, schema, and live snapshot.</td></tr>
+      <tr><td><a href=\"{{ url_for('system_transmissions') }}\">Transmission Stats</a></td><td>Recent <code>sync_transmissions</code> rows: timestamp, frame type, destination, direction, frame size, continuation flag.</td></tr>
+      <tr><td><a href=\"{{ url_for('meshtastic_device') }}\">Meshtastic Device</a></td><td>Live snapshot of the local Meshtastic interface (serial/TCP, hardware, role, channels, neighbors).</td></tr>
+      <tr><td><a href=\"{{ url_for('mesh_ui_index') }}\" target=\"_blank\">Mesh UI</a></td><td>Embedded build of the official Meshtastic Web client served from <code>meshtastic-web-dist/</code>.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class=\"card\">
+  <h3>Configuration</h3>
+  <p class=\"muted\">Effective values come from environment variables first (when set) and then from <code>config.ini</code> in the application root. Environment overrides for credentials and pacing remain authoritative until removed.</p>
+  <table>
+    <thead><tr><th>Section / Variable</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>[interface] type</code></td><td><code>serial</code> or <code>tcp</code>. With serial, set <code>port</code> (e.g. <code>/dev/ttyUSB0</code> or <code>COM3</code>). With TCP, set <code>hostname</code>.</td></tr>
+      <tr><td><code>[sync] bbs_nodes</code></td><td>Comma-separated peer node IDs (e.g. <code>!a1b2c3d4,!f5e6d7c8</code>) that receive bulletin, mail, channel, profile, score, and zork-save sync traffic.</td></tr>
+      <tr><td><code>[sync] allowed_nodes</code></td><td>Optional allow-list for posting to the Urgent bulletin board. Blank = anyone allowed.</td></tr>
+      <tr><td><code>[sync] sync_interval_minutes</code></td><td>How often a full peer sync re-runs (default 5).</td></tr>
+      <tr><td><code>[sync] sync_zork_saves</code></td><td>When false, Zork saves stay local to that node and do not appear on peers.</td></tr>
+      <tr><td><code>[boards] bulletin_boards</code></td><td>Bulletin board categories (default <code>General,Info,News,Urgent</code>).</td></tr>
+      <tr><td><code>[menu] main_menu_items</code> / <code>bbs_menu_items</code> / <code>utilities_menu_items</code></td><td>Comma-separated menu letters (G is auto-injected for the Games entry).</td></tr>
+      <tr><td><code>BBS_BULLETIN_BOARDS</code></td><td>Env override for boards.</td></tr>
+      <tr><td><code>BBS_WEBGUI_USER</code> / <code>BBS_WEBGUI_PASSWORD</code> / <code>BBS_WEBGUI_SECRET</code></td><td>Web admin credentials and Flask session secret.</td></tr>
+      <tr><td><code>BBS_WEBGUI_HOST</code> / <code>BBS_WEBGUI_PORT</code></td><td>Bind address (default <code>127.0.0.1:8081</code>).</td></tr>
+      <tr><td><code>BBS_DB_PATH</code> / <code>BBS_CONFIG_PATH</code></td><td>Override default <code>bulletins.db</code> and <code>config.ini</code> locations.</td></tr>
+      <tr><td><code>BBS_ZORK_INTERPRETER</code></td><td>Path to the dfrotz binary (typical: <code>/usr/games/dfrotz</code>).</td></tr>
+      <tr><td><code>BBS_HASH_MANIFEST_COMPRESSION</code></td><td>Set to <code>1</code> to enable compressed HASHZ/HASHZGAP manifest transport.</td></tr>
+      <tr><td><code>BBS_SYNC_TURBO</code></td><td>Aggressive pacing defaults. Only safe on small meshes (2&ndash;3 BBS nodes) &mdash; on busy meshes turbo can <em>worsen</em> convergence by causing packet collisions.</td></tr>
+      <tr><td><code>BBS_SYNC_PAUSE_SECONDS</code></td><td>Inter-frame pause after normal sync frames (default 0.75, turbo 0.02).</td></tr>
+      <tr><td><code>BBS_HASH_REPAIR_PAUSE_SECONDS</code></td><td>Pause between HASHREQ/HASHREC/HASHMISS frames (default 0.1, turbo 0).</td></tr>
+      <tr><td><code>BBS_FULL_SYNC_DELAY_MS</code></td><td>Per-record delay during full database push (default 500, turbo 0).</td></tr>
+      <tr><td><code>BBS_HASHMISS_REQUEST_TTL_SECONDS</code></td><td>How long an outstanding HASHMISS suppresses duplicates (default 30s).</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class=\"card\">
+  <h3>Setup, Install, and Service</h3>
+  <ul class=\"muted\">
+    <li><strong>Quick setup:</strong> <code>setup.ps1</code> (Windows) or <code>bash setup.sh</code> (Linux/macOS) creates a venv, installs <code>requirements.txt</code>, and seeds <code>config.ini</code> from <code>example_config.ini</code>.</li>
+    <li><strong>Run server:</strong> <code>./run_server.sh</code>, <code>run_server.bat</code>, or <code>./venv/bin/python server.py</code>.</li>
+    <li><strong>Run web admin:</strong> <code>./run_web_admin.sh</code>, <code>run_web_admin.bat</code>, or <code>python web_admin.py</code> (defaults to <code>127.0.0.1:8081</code>).</li>
+    <li><strong>systemd:</strong> <code>bash install_services.sh</code> installs <code>mesh-bbs.service</code> and <code>bacon-web-admin.service</code>. Use <code>--yes --user $USER --dir $HOME/TC2-BaconBS-mesh</code> for non-interactive installs.</li>
+    <li><strong>Zork dependency:</strong> <code>sudo apt install frotz</code> and ensure <code>BBS_ZORK_INTERPRETER=/usr/games/dfrotz</code> is exported in the service environment.</li>
+    <li><strong>Two-node remote update:</strong> from Windows, <code>scripts/update-two-nodes.ps1</code> uses Posh-SSH and <code>scripts/node-update-config.json</code> to <code>git pull</code> + restart both services on each node. Pass <code>-ResetCredential</code> to re-prompt.</li>
+    <li><strong>Smoke test:</strong> <code>python tests/smoke_test.py</code> exercises sync parsing and menu input without a radio.</li>
+    <li><strong>Logs:</strong> <code>journalctl -u mesh-bbs.service -u bacon-web-admin.service -f</code>.</li>
+  </ul>
+  <p class=\"muted\">Recommended Meshtastic device roles for the BBS node: <strong>Client</strong> or <strong>Router_Client</strong>. Other roles have shown sporadic responsiveness loss on long links.</p>
+</div>
+
+<div class=\"card\">
+  <h3>Database Schema (highlights)</h3>
+  <p class=\"muted\">SQLite at <code>BBS_DB_PATH</code> (default <code>bulletins.db</code>). The web admin opens it in WAL mode with a busy timeout; both processes can run concurrently.</p>
+  <table>
+    <thead><tr><th>Table</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>bulletins</code></td><td>Per-board posts. <code>unique_id</code> has a uniqueness index; legacy duplicates are deduped on init.</td></tr>
+      <tr><td><code>mail</code></td><td>Per-recipient inbox messages with chunked content support (<code>expected_content_length</code>, status flags).</td></tr>
+      <tr><td><code>channels</code> / <code>channel_comments</code></td><td>Channel directory and per-channel comment threads. Comments use a compact channel manifest key when needed.</td></tr>
+      <tr><td><code>profiles</code></td><td>Per-user profile records synced across nodes.</td></tr>
+      <tr><td><code>game_scores</code></td><td>Hall of Fame entries.</td></tr>
+      <tr><td><code>zork_saves</code></td><td>Per-user / per-game (currently <code>zork1</code>) interactive-fiction saves.</td></tr>
+      <tr><td><code>deleted_sync_tombstones</code></td><td>Records of deletes that have been or should be replayed to peers; older deletes cannot wipe newer records.</td></tr>
+      <tr><td><code>peer_sync_state</code></td><td>The most recent SYNCSTATE counts/hashes received from each peer; drives mismatch badges and phase-skip decisions.</td></tr>
+      <tr><td><code>sync_transmissions</code></td><td>Rolling log of sent/received sync frames (<code>transmission_time</code>, <code>frame_type</code>, <code>destination_node_id</code>, <code>direction</code>, <code>frame_size_bytes</code>, <code>is_continuation</code>) shown on the Transmission Stats page.</td></tr>
+    </tbody>
+  </table>
 </div>
 
 <div class=\"card\">
@@ -1656,12 +1833,8 @@ CHANNEL_COMMENTS_CONTENT = """
   <form method=\"post\">
     <label>Sender Short Name</label><br>
     <input type=\"text\" name=\"sender_short_name\" required><br><br>
-
-        <th>mesh_id</th>
     <label>Comment</label><br>
     <textarea name=\"content\" required></textarea><br><br>
-        <th>sync_status</th>
-
     <button class=\"btn btn-primary\" type=\"submit\">Add Comment</button>
     <a class=\"btn\" href=\"{{ url_for('table_list', table='channels') }}\">Back to Channels</a>
   </form>
@@ -1669,31 +1842,43 @@ CHANNEL_COMMENTS_CONTENT = """
 
 <div class=\"card\">
   <h3>Existing Comments</h3>
-        <td>{{ comment['mesh_id'] }}</td>
   <table>
     <thead>
-        <td>{% if comment['content_complete'] == 0 %}<strong style="color:#b91c1c;">{{ comment['sync_status'] }}</strong>{% else %}<span class="muted">{{ comment['sync_status'] }}</span>{% endif %}</td>
       <tr>
         <th>id</th>
-          <form method="post" action="{{ url_for('resolve_record') }}" class="inline">
-            <input type="hidden" name="scope" value="channels">
-            <input type="hidden" name="key" value="comment:{{ comment['unique_id'] }}">
-            <input type="hidden" name="redirect_to" value="{{ request.path }}">
-            <button type="submit" class="btn btn-small">Resolve</button>
-          </form>
         <th>sender_short_name</th>
         <th>date</th>
         <th>content</th>
+        <th>sync_status</th>
+        <th>source_node_id</th>
+        <th>source_timestamp</th>
+        <th>received_at</th>
         <th>Actions</th>
       </tr>
     </thead>
     <tbody>
       {% for comment in comments %}
-        <td colspan="7" class="muted">No comments yet.</td>
+      <tr{% if comment['content_complete'] == 0 %} style="background:#fff1f1"{% endif %}>
         <td>{{ comment['id'] }}</td>
         <td>{{ comment['sender_short_name'] }}</td>
         <td>{{ comment['date'] }}</td>
         <td>{{ comment['content'] }}</td>
+        <td>
+          {% if comment['content_complete'] == 0 %}
+            <strong style="color:#b91c1c;">{{ comment['sync_status'] }}</strong>
+            <form method="post" action="{{ url_for('resolve_record') }}" class="inline" style="display:inline;margin-left:4px">
+              <input type="hidden" name="scope" value="channels">
+              <input type="hidden" name="key" value="comment:{{ comment['unique_id'] }}">
+              <input type="hidden" name="redirect_to" value="{{ request.path }}">
+              <button type="submit" class="btn btn-small">Resolve</button>
+            </form>
+          {% else %}
+            <span class="muted">{{ comment['sync_status'] }}</span>
+          {% endif %}
+        </td>
+        <td>{{ comment['source_node_id'] or '' }}</td>
+        <td>{{ comment['source_timestamp'] or '' }}</td>
+        <td>{{ comment['received_at'] or '' }}</td>
         <td>
           <form method=\"post\" action=\"{{ url_for('channel_comment_delete', channel_id=channel_id, comment_id=comment['id']) }}\" class=\"inline\" onsubmit=\"return confirm('Delete this comment?');\">
             <button type=\"submit\" class=\"btn btn-danger\">Delete</button>
@@ -1703,7 +1888,7 @@ CHANNEL_COMMENTS_CONTENT = """
       {% endfor %}
       {% if not comments %}
       <tr>
-        <td colspan=\"5\" class=\"muted\">No comments yet.</td>
+        <td colspan=\"9\" class=\"muted\">No comments yet.</td>
       </tr>
       {% endif %}
     </tbody>
@@ -2189,7 +2374,31 @@ def create_app(runtime_interface=None) -> Flask:
     def inject_global_template_values():
       return {
         "app_version_display": app.config.get("DISPLAY_VERSION", "unknown"),
+        "csrf_token": get_csrf_token(),
       }
+
+    _CSRF_SESSION_KEY = "_csrf_token"
+    _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+    def get_csrf_token() -> str:
+      token = str(session.get(_CSRF_SESSION_KEY) or "").strip()
+      if not token:
+        token = secrets.token_urlsafe(32)
+        session[_CSRF_SESSION_KEY] = token
+      return token
+
+    def csrf_request_valid() -> bool:
+      expected = str(session.get(_CSRF_SESSION_KEY) or "").strip()
+      if not expected:
+        return False
+      provided = str(request.form.get("csrf_token", "") or "").strip()
+      if not provided:
+        provided = str(request.headers.get("X-CSRF-Token", "") or "").strip()
+      if not provided:
+        provided = str(request.headers.get("X-CSRFToken", "") or "").strip()
+      if not provided:
+        return False
+      return secrets.compare_digest(expected, provided)
 
     def get_runtime_interface():
         return runtime_interface
@@ -2215,6 +2424,9 @@ def create_app(runtime_interface=None) -> Flask:
               unique_id TEXT NOT NULL DEFAULT '',
               expected_content_length INTEGER,
               content_complete INTEGER NOT NULL DEFAULT 1,
+              source_node_id TEXT,
+              source_timestamp TEXT,
+              received_at TEXT,
               FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
             )''')
             try:
@@ -2227,6 +2439,42 @@ def create_app(runtime_interface=None) -> Flask:
               pass
             try:
               conn.execute("ALTER TABLE channel_comments ADD COLUMN content_complete INTEGER NOT NULL DEFAULT 1")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE channel_comments ADD COLUMN source_node_id TEXT")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE channel_comments ADD COLUMN source_timestamp TEXT")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE channel_comments ADD COLUMN received_at TEXT")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE bulletins ADD COLUMN source_node_id TEXT")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE bulletins ADD COLUMN source_timestamp TEXT")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE bulletins ADD COLUMN received_at TEXT")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE mail ADD COLUMN source_node_id TEXT")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE mail ADD COLUMN source_timestamp TEXT")
+            except Exception:
+              pass
+            try:
+              conn.execute("ALTER TABLE mail ADD COLUMN received_at TEXT")
             except Exception:
               pass
             conn.execute('''CREATE TABLE IF NOT EXISTS connection_events (
@@ -2898,6 +3146,18 @@ def create_app(runtime_interface=None) -> Flask:
 
         return wrapped
 
+    @app.before_request
+    def enforce_csrf_for_mutations():
+      if request.method not in _MUTATING_METHODS:
+        return None
+      if request.endpoint == "static":
+        return None
+      if csrf_request_valid():
+        return None
+      if request.path.startswith("/api/"):
+        return jsonify({"ok": False, "error": "CSRF token missing or invalid"}), 403
+      return "CSRF token missing or invalid", 403
+
     def get_table_config(table: str) -> dict:
         if table not in TABLE_CONFIG:
             raise KeyError(f"Unknown table: {table}")
@@ -2941,6 +3201,10 @@ def create_app(runtime_interface=None) -> Flask:
             "hostname": hostname if iface_type == "tcp" else None,
             "serial_port": port if iface_type == "serial" else None,
         })
+
+    @app.get("/api/csrf-token")
+    def api_csrf_token():
+      return jsonify({"csrf_token": get_csrf_token()})
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
@@ -3562,7 +3826,7 @@ def create_app(runtime_interface=None) -> Flask:
         topic_branches=topic_branches,
         comment_branches=comment_branches,
       )
-      return render_template_string(BASE_TEMPLATE, title="System Flowchart", content=content, show_nav=True)
+      return render_template_string(BASE_TEMPLATE, title="Documentation", content=content, show_nav=True)
 
     @app.route("/system/transmissions")
     @login_required
@@ -3873,7 +4137,7 @@ def create_app(runtime_interface=None) -> Flask:
                 row["mesh_id"] = str(row.get("unique_id") or "")[:12]
                 row["sync_status"] = "Incomplete" if incomplete else "OK"
                 row["_sync_incomplete"] = incomplete
-                row["_sync_status_text"] = f"{actual}/{expected} chars" if incomplete else "Mesh ID is the cross-peer stable record key"
+                row["_sync_status_text"] = f"{actual}/{expected} chars" if incomplete else ""
                 row["_resolve_scope"] = "bulletins"
                 row["_resolve_key"] = str(row.get("unique_id") or "")
 
@@ -3960,33 +4224,42 @@ def create_app(runtime_interface=None) -> Flask:
 
         if request.method == "POST":
           sender_short_name = request.form.get("sender_short_name", "").strip()
-          content = request.form.get("content", "").strip()
-          if not sender_short_name or not content:
+          comment_content = request.form.get("content", "").strip()
+          if not sender_short_name or not comment_content:
             flash("Sender and comment are required.", "error")
           else:
             from db_operations import add_channel_comment
             current_interface = get_runtime_interface()
             bbs_nodes = list(getattr(current_interface, "bbs_nodes", []) or []) if current_interface else []
-            add_channel_comment(channel_id, sender_short_name, content, bbs_nodes=bbs_nodes, interface=current_interface)
+            add_channel_comment(channel_id, sender_short_name, comment_content, bbs_nodes=bbs_nodes, interface=current_interface)
             flash("Comment added.", "success")
             return redirect(url_for("channel_comments", channel_id=channel_id))
 
-        from db_operations import get_channel_comments
-        comments = [dict(row) for row in get_channel_comments(channel_id)]
-        for comment in comments:
+        cursor.execute(
+          "SELECT id, sender_short_name, date, content, unique_id, "
+          "COALESCE(content_complete, 1) AS content_complete, "
+          "COALESCE(expected_content_length, LENGTH(content)) AS expected_content_length, "
+          "source_node_id, source_timestamp, received_at "
+          "FROM channel_comments WHERE channel_id = ? ORDER BY date DESC, unique_id DESC, id DESC",
+          (channel_id,)
+        )
+        comments = []
+        for row in cursor.fetchall():
+          comment = dict(row)
           expected = int(comment.get("expected_content_length") or len(str(comment.get("content") or "")))
           actual = len(str(comment.get("content") or ""))
           comment["mesh_id"] = str(comment.get("unique_id") or "")[:12]
-          comment["sync_status"] = f"Incomplete ({actual}/{expected})" if int(comment.get("content_complete") or 0) == 0 else "OK"
+          comment["sync_status"] = f"Incomplete ({actual}/{expected})" if int(comment.get("content_complete") or 0) == 0 else ""
+          comments.append(comment)
 
-      content = render_template_string(
+      rendered = render_template_string(
         CHANNEL_COMMENTS_CONTENT,
         channel_id=channel["id"],
         channel_name=channel["name"],
         channel_url=channel["url"],
         comments=comments,
       )
-      return render_template_string(BASE_TEMPLATE, title="Channel Comments", content=content, show_nav=True)
+      return render_template_string(BASE_TEMPLATE, title="Channel Comments", content=rendered, show_nav=True)
 
     @app.post("/channels/<int:channel_id>/comments/<int:comment_id>/delete")
     @login_required

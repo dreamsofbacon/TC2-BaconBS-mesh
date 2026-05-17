@@ -330,9 +330,15 @@ def get_node_short_name(node_id, interface):
     return None
 
 
-def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface, date=None):
+def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface, date=None, source_node_id=None, source_timestamp=None):
     header = f"BULLETIN|{board}|{sender_short_name}|{subject}|"
-    footer = f"|{unique_id}|{date}" if date else f"|{unique_id}"
+    if source_node_id and source_timestamp:
+        date_str = str(date) if date else ''
+        footer = f"|{unique_id}|{date_str}|{source_node_id}|{source_timestamp}"
+    elif date:
+        footer = f"|{unique_id}|{date}"
+    else:
+        footer = f"|{unique_id}"
     _send_sync_with_cont(
         header, footer, content, unique_id,
         cont_prefix=f"BULLETINCONT|{unique_id}|",
@@ -342,10 +348,16 @@ def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, uniqu
 
 
 def send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, content, unique_id, bbs_nodes,
-                           interface, date=None):
+                           interface, date=None, source_node_id=None, source_timestamp=None):
     logging.info(f"SERVER SYNC: Syncing new mail message '{subject}' from {sender_short_name} to peers.")
     header = f"MAIL|{sender_id}|{sender_short_name}|{recipient_id}|{subject}|"
-    footer = f"|{unique_id}|{date}" if date else f"|{unique_id}"
+    if source_node_id and source_timestamp:
+        date_str = str(date) if date else ''
+        footer = f"|{unique_id}|{date_str}|{source_node_id}|{source_timestamp}"
+    elif date:
+        footer = f"|{unique_id}|{date}"
+    else:
+        footer = f"|{unique_id}"
     _send_sync_with_cont(
         header, footer, content, unique_id,
         cont_prefix=f"MAILCONT|{unique_id}|",
@@ -382,9 +394,35 @@ def send_channel_to_bbs_nodes(name, url, bbs_nodes, interface):
         _send_one_sync(message, node_id, interface)
 
 
-def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_date, content, unique_id, bbs_nodes, interface):
+def compact_channel_manifest_key(full_key: str) -> str:
+    """Return an 8-char compact hash key for use in CHANNELCOMMENT wire frames
+    when the full base64(name+url) key would make the frame exceed the packet limit.
+    Prefixed with '~' so it is unambiguous and cannot be mistaken for a full key.
+    """
+    digest = hashlib.blake2b(full_key.encode('ascii'), digest_size=6).digest()
+    return '~' + base64.urlsafe_b64encode(digest).decode('ascii').rstrip('=')
+
+
+def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_date, content, unique_id, bbs_nodes, interface, source_node_id=None, source_timestamp=None):
+    if source_node_id and source_timestamp:
+        footer = f"|{unique_id}|{source_node_id}|{source_timestamp}"
+    else:
+        footer = f"|{unique_id}"
     header = f"CHANNELCOMMENT|{channel_key}|{_b64(sender_short_name)}|{comment_date}|"
-    footer = f"|{unique_id}"
+    # Use compact key if the full key leaves fewer than 8 content bytes in the base packet.
+    # A base packet carrying only 1-7 bytes of content requires multi-packet sequences that
+    # are fragile under radio packet loss — compact key shrinks the header enough to fit
+    # most short comments in a single packet.
+    _MIN_CHANNEL_COMMENT_CONTENT_BYTES = 8
+    if len(header.encode('utf-8')) + len(footer.encode('utf-8')) > _MESHTASTIC_MAX_BYTES - _MIN_CHANNEL_COMMENT_CONTENT_BYTES:
+        # Full channel manifest key leaves too little room; fall back to a compact hash.
+        short_key = compact_channel_manifest_key(channel_key)
+        header = f"CHANNELCOMMENT|{short_key}|{_b64(sender_short_name)}|{comment_date}|"
+        if len(header.encode('utf-8')) + len(footer.encode('utf-8')) > _MESHTASTIC_MAX_BYTES:
+            logging.warning(
+                f"CHANNELCOMMENT header exceeds packet limit even with compact key for uid={unique_id}; skipping"
+            )
+            return
     _send_sync_with_cont(
         header, footer, content, unique_id,
         cont_prefix=f"CHANNELCOMMENTCONT|{unique_id}|",
