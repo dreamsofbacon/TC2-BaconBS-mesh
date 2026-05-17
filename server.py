@@ -596,10 +596,11 @@ def main():
                         scope = str(payload.get('scope', '')).strip().lower()
                         key = str(payload.get('key', '')).strip()
                         if scope and key:
-                            from utils import _send_one_sync, get_hash_repair_pause_seconds
+                            from utils import _send_one_sync, get_hash_repair_pause_seconds, encode_scope, peers_all_support
                             for peer_id in sorted(current_bbs_nodes):
                                 send_hash_request_to_bbs_nodes([peer_id], interface, scope=scope)
-                                _send_one_sync(f"HASHMISS|{scope}|{key}", peer_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+                                _scope_wire = encode_scope(scope, peers_all_support([peer_id], 'scc'))
+                                _send_one_sync(f"HASHMISS|{_scope_wire}|{key}", peer_id, interface, pause_seconds=get_hash_repair_pause_seconds())
                             system_config['sync_last_trigger_reason'] = 'record_resolver'
                             logging.info(f"Queued per-record repair for {scope}:{key} to peers: {sorted(current_bbs_nodes)}")
                     except Exception as exc:

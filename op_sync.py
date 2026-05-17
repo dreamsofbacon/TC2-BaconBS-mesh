@@ -45,21 +45,25 @@ _MAX_EVENTS_PER_WANT = 20
 
 # ── HAVE ──────────────────────────────────────────────────────────────────────
 
-def build_have_frame(local_node_id: str) -> Optional[str]:
+def build_have_frame(local_node_id: str, peer_id: Optional[str] = None) -> Optional[str]:
     """Build a HAVE announcement from the local op_log.
 
     Returns None when the op_log is empty (nothing to advertise yet).
+    When ``peer_id`` is provided and that peer supports the 'scc' wire cap,
+    scope names are encoded as single chars to save bytes.
     """
     if not local_node_id:
         return None
     try:
+        from utils import peers_all_support, encode_scope
+        use_codes = peers_all_support([peer_id], 'scc') if peer_id else False
         conn = db_operations.get_db_connection()
         c = conn.cursor()
         scope_parts = []
         for scope in _SUPPORTED_SCOPES:
             max_seq = op_log.get_local_op_log_head(c, local_node_id, scope)
             if max_seq > 0:
-                scope_parts.append(f'{scope}:{max_seq}')
+                scope_parts.append(f'{encode_scope(scope, use_codes)}:{max_seq}')
         if not scope_parts:
             return None
         frame = 'HAVE|' + local_node_id + '|' + '|'.join(scope_parts)
@@ -87,12 +91,13 @@ def handle_have(parts: list[str], sender_node_id: str, local_node_id: str, inter
     try:
         conn = db_operations.get_db_connection()
         c = conn.cursor()
-        from utils import _send_one_sync, get_hash_repair_pause_seconds
+        from utils import _send_one_sync, get_hash_repair_pause_seconds, decode_scope, encode_scope, peers_all_support
+        use_codes = peers_all_support([sender_node_id], 'scc')
         for field in parts[2:]:
             if ':' not in field:
                 continue
             colon = field.rfind(':')
-            scope = field[:colon]
+            scope = decode_scope(field[:colon])
             seq_str = field[colon + 1:]
             if scope not in _SUPPORTED_SCOPES:
                 continue
@@ -103,7 +108,7 @@ def handle_have(parts: list[str], sender_node_id: str, local_node_id: str, inter
             our_head = op_log.get_peer_received_head(c, origin_node_id, scope)
             if their_max_seq > our_head:
                 want_from = our_head + 1
-                want_frame = f'WANT|{scope}|{origin_node_id}|{want_from}'
+                want_frame = f'WANT|{encode_scope(scope, use_codes)}|{origin_node_id}|{want_from}'
                 logging.debug(
                     'op_sync HAVE: peer=%s scope=%s their_max=%d our_head=%d → WANT from %d',
                     origin_node_id, scope, their_max_seq, our_head, want_from,
@@ -126,7 +131,8 @@ def handle_want(parts: list[str], sender_node_id: str, local_node_id: str, inter
     # parts: ['WANT', scope, origin_node_id, from_seq]
     if len(parts) != 4:
         return
-    scope = parts[1]
+    from utils import decode_scope
+    scope = decode_scope(parts[1])
     origin_node_id = parts[2]
     from_seq_str = parts[3]
     if scope not in _SUPPORTED_SCOPES:
@@ -150,15 +156,16 @@ def handle_want(parts: list[str], sender_node_id: str, local_node_id: str, inter
         if not events:
             logging.debug('op_sync WANT: no events for scope=%s from_seq=%d', scope, from_seq)
             return
-        from utils import _send_one_sync, get_hash_repair_pause_seconds
+        from utils import _send_one_sync, get_hash_repair_pause_seconds, encode_scope, peers_all_support
+        use_codes = peers_all_support([sender_node_id], 'scc')
         pause = get_hash_repair_pause_seconds()
         logging.info(
-            'op_sync WANT from %s: scope=%s from_seq=%d → sending %d EVENT frame(s)',
+            'op_sync WANT from %s: scope=%s from_seq=%d \u2192 sending %d EVENT frame(s)',
             sender_node_id, scope, from_seq, len(events),
         )
         for ev in events:
             frame = (
-                f"EVENT|{scope}|{local_node_id}|{ev['origin_seq']}"
+                f"EVENT|{encode_scope(scope, use_codes)}|{local_node_id}|{ev['origin_seq']}"
                 f"|{ev['event_type']}|{ev['target_uid']}"
             )
             _send_one_sync(frame, sender_node_id, interface, pause_seconds=pause)
@@ -179,7 +186,8 @@ def handle_event(parts: list[str], sender_node_id: str, interface) -> None:
     if len(parts) != 6:
         logging.warning('op_sync EVENT: malformed frame (expected 6 parts): %s', '|'.join(parts))
         return
-    scope = parts[1]
+    from utils import decode_scope
+    scope = decode_scope(parts[1])
     origin_node_id = parts[2]
     seq_str = parts[3]
     event_type = parts[4]
