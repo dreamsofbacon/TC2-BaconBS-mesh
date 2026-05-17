@@ -58,6 +58,53 @@ from message_processing import (
 from pubsub import pub
 from utils import send_hash_request_to_bbs_nodes, send_sync_state_to_bbs_nodes, send_have_to_bbs_nodes, select_syncstate_peers_to_notify
 
+# Liveness watchdog: the main loop bumps this on every iteration. A daemon
+# thread restarts the process via os._exit(2) (systemd brings it back) if the
+# main loop wedges, typically because Meshtastic's _sendToRadio blocked on a
+# dead USB/serial link and every thread piles up behind it.
+_last_main_loop_tick: float = time.time()
+_WATCHDOG_STUCK_SECONDS: float = float(os.environ.get("BBS_WATCHDOG_STUCK_SECONDS", "180"))
+_WATCHDOG_CHECK_INTERVAL: float = 15.0
+
+
+def _watchdog_loop() -> None:
+    import sys
+    while True:
+        try:
+            time.sleep(_WATCHDOG_CHECK_INTERVAL)
+            age = time.time() - _last_main_loop_tick
+            if age > _WATCHDOG_STUCK_SECONDS:
+                msg = (
+                    f"Main-loop watchdog: no tick for {age:.0f}s "
+                    f"(>{_WATCHDOG_STUCK_SECONDS:.0f}s); restarting process via os._exit(2). "
+                    f"Probable cause: Meshtastic _sendToRadio wedged on dead serial link."
+                )
+                try:
+                    logging.critical(msg)
+                except Exception:
+                    pass
+                try:
+                    sys.stderr.write(msg + "\n")
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+                os._exit(2)
+        except Exception:
+            # Never let the watchdog die quietly.
+            try:
+                logging.exception("Watchdog tick failed; continuing")
+            except Exception:
+                pass
+
+
+def _start_main_loop_watchdog() -> None:
+    t = threading.Thread(target=_watchdog_loop, name="main-loop-watchdog", daemon=True)
+    t.start()
+    logging.info(
+        f"Main-loop watchdog started (stuck_threshold={_WATCHDOG_STUCK_SECONDS:.0f}s, "
+        f"check_interval={_WATCHDOG_CHECK_INTERVAL:.0f}s)"
+    )
+
 # General logging
 logging.basicConfig(
     level=logging.INFO,
@@ -232,6 +279,7 @@ def main():
     initialize_database()
     install_connection_log_handler()
     run_op_log_backfill()
+    _start_main_loop_watchdog()
 
     def receive_packet(packet, interface):
         on_receive(packet, interface)
@@ -398,6 +446,8 @@ def main():
                     pending_sync_nodes.discard(node)
 
         while True:
+            global _last_main_loop_tick
+            _last_main_loop_tick = time.time()
             now = time.time()
             force_mismatch_check = False
             process_pending_candidate_resolutions(interface)
