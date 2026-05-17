@@ -1021,7 +1021,102 @@ def get_sync_sessions(since_seconds: int = 86400, gap_seconds: int = 90, limit: 
 
     completed.sort(key=lambda x: x['ended_at'], reverse=True)
     active.sort(key=lambda x: x['started_at'])
+
+    # Persist completed sessions to long-term history (idempotent on peer+started_at).
+    try:
+        _persist_sync_sessions(completed)
+    except Exception as e:
+        logging.debug(f"_persist_sync_sessions failed: {e}")
+
     return {'sessions': completed[:max(1, int(limit))], 'active': active}
+
+
+def _ensure_sync_session_history_table() -> None:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS sync_session_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    peer_node_id TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL,
+                    duration_seconds REAL NOT NULL,
+                    bytes_tx INTEGER NOT NULL DEFAULT 0,
+                    bytes_rx INTEGER NOT NULL DEFAULT 0,
+                    total_bytes INTEGER NOT NULL DEFAULT 0,
+                    frame_count INTEGER NOT NULL DEFAULT 0,
+                    bps REAL,
+                    UNIQUE(peer_node_id, started_at)
+                );''')
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sync_session_history_ended "
+        "ON sync_session_history(ended_at DESC)"
+    )
+    conn.commit()
+
+
+def _persist_sync_sessions(sessions: list) -> None:
+    if not sessions:
+        return
+    _ensure_sync_session_history_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    for s in sessions:
+        try:
+            c.execute(
+                """INSERT OR IGNORE INTO sync_session_history
+                   (peer_node_id, started_at, ended_at, duration_seconds,
+                    bytes_tx, bytes_rx, total_bytes, frame_count, bps)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(s.get('peer_node_id') or 'broadcast'),
+                    str(s.get('started_at')),
+                    str(s.get('ended_at')),
+                    float(s.get('duration_seconds') or 0.0),
+                    int(s.get('bytes_tx') or 0),
+                    int(s.get('bytes_rx') or 0),
+                    int(s.get('total_bytes') or 0),
+                    int(s.get('frame_count') or 0),
+                    float(s['bps']) if s.get('bps') is not None else None,
+                ),
+            )
+        except Exception as e:
+            logging.debug(f"persist sync session row failed: {e}")
+    conn.commit()
+
+
+def get_sync_session_history(since_seconds: int = 30 * 24 * 3600, limit: int = 200) -> list:
+    """Return persisted completed sync sessions, most-recent first."""
+    try:
+        _ensure_sync_session_history_table()
+        conn = get_db_connection()
+        c = conn.cursor()
+        since = (datetime.utcnow() - timedelta(seconds=max(60, int(since_seconds)))).isoformat() + 'Z'
+        c.execute(
+            """SELECT peer_node_id, started_at, ended_at, duration_seconds,
+                      bytes_tx, bytes_rx, total_bytes, frame_count, bps
+               FROM sync_session_history
+               WHERE ended_at >= ?
+               ORDER BY ended_at DESC
+               LIMIT ?""",
+            (since, max(1, int(limit))),
+        )
+        return [
+            {
+                'peer_node_id': r[0],
+                'started_at': r[1],
+                'ended_at': r[2],
+                'duration_seconds': r[3],
+                'bytes_tx': r[4],
+                'bytes_rx': r[5],
+                'total_bytes': r[6],
+                'frame_count': r[7],
+                'bps': r[8],
+            }
+            for r in c.fetchall()
+        ]
+    except Exception as e:
+        logging.debug(f"get_sync_session_history error: {e}")
+        return []
 
 
 def _build_tombstone_key(scope: str, record_key: str) -> str:
