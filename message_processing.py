@@ -300,10 +300,22 @@ def _retry_stale_hash_manifest_buffers(interface) -> None:
             missing = sorted(set(range(total)) - set(int(i) for i in current_chunks.keys()))
 
             if attempts >= _HASHZ_GAP_FILL_MAX_ATTEMPTS:
-                _peer_hash_compressed_buffers.pop((peer_id, scope, manifest_id), None)
-                _clear_hashreq_pending(peer_id, scope)
-                fallback_to_hashreq = True
-                gap_msg = ""
+                # If we already have the majority of chunks, keep retrying rather
+                # than discarding the partial buffer and starting over from scratch.
+                # Resetting gap_attempts here lets the HASHZGAP loop continue.
+                if received > 0 and total > 0 and received >= (total + 1) // 2:
+                    buf['gap_attempts'] = 0
+                    buf['updated_at'] = now
+                    fallback_to_hashreq = False
+                    csv = ",".join(str(i) for i in missing)
+                    gap_msg = f"HASHZGAP|{scope}|{manifest_id}|{csv}"
+                    if len(gap_msg.encode('utf-8')) > 200:
+                        gap_msg = ""
+                else:
+                    _peer_hash_compressed_buffers.pop((peer_id, scope, manifest_id), None)
+                    _clear_hashreq_pending(peer_id, scope)
+                    fallback_to_hashreq = True
+                    gap_msg = ""
             else:
                 csv = ",".join(str(i) for i in missing)
                 gap_msg = f"HASHZGAP|{scope}|{manifest_id}|{csv}"
