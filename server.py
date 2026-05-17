@@ -41,6 +41,7 @@ from db_operations import (
     clear_all_peer_phases_complete,
     get_peers_with_phase_complete,
     get_incomplete_record_uids,
+    set_local_node_id,
 )
 from js8call_integration import JS8CallClient
 from message_processing import (
@@ -170,8 +171,10 @@ def write_runtime_diagnostics_snapshot(interface, system_config: dict) -> None:
             user = my_info.get('user', {}) if isinstance(my_info.get('user'), dict) else {}
             if node_num is not None:
                 snapshot['local_node_id'] = str(node_num)
+                set_local_node_id(str(node_num))
             if user.get('id'):
                 snapshot['local_node_id'] = str(user.get('id'))
+                set_local_node_id(str(user.get('id')))
             if user.get('shortName'):
                 snapshot['local_short_name'] = str(user.get('shortName'))
             if user.get('longName'):

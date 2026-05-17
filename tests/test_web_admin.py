@@ -1,6 +1,7 @@
 import configparser
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import unittest
@@ -87,11 +88,31 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def login(self, client, username="admin", password="oldpass"):
+        csrf_token = self.get_csrf_token(client)
         return client.post(
             "/login",
-            data={"username": username, "password": password},
+            data={"username": username, "password": password, "csrf_token": csrf_token},
             follow_redirects=False,
         )
+
+    def get_csrf_token(self, client):
+        response = client.get("/api/csrf-token")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        return payload["csrf_token"]
+
+    def post_with_csrf(self, client, path, data=None, json_data=None, follow_redirects=False):
+        csrf_token = self.get_csrf_token(client)
+        if json_data is not None:
+            return client.post(
+                path,
+                json=json_data,
+                headers={"X-CSRF-Token": csrf_token},
+                follow_redirects=follow_redirects,
+            )
+        form = dict(data or {})
+        form["csrf_token"] = csrf_token
+        return client.post(path, data=form, follow_redirects=follow_redirects)
 
     def test_settings_page_contains_all_sections(self):
         app = create_app()
@@ -118,7 +139,8 @@ class WebAdminSettingsTests(unittest.TestCase):
         response = self.login(client)
         self.assertEqual(response.status_code, 302)
 
-        response = client.post(
+        response = self.post_with_csrf(
+            client,
             "/settings",
             data={
                 "settings_section": "admin",
@@ -146,7 +168,8 @@ class WebAdminSettingsTests(unittest.TestCase):
         response = self.login(client)
         self.assertEqual(response.status_code, 302)
 
-        save_response = client.post(
+        save_response = self.post_with_csrf(
+            client,
             "/settings",
             data={
                 "settings_section": "sync",
@@ -175,7 +198,8 @@ class WebAdminSettingsTests(unittest.TestCase):
         response = self.login(client)
         self.assertEqual(response.status_code, 302)
 
-        save_response = client.post(
+        save_response = self.post_with_csrf(
+            client,
             "/settings",
             data={
                 "settings_section": "sync",
@@ -206,7 +230,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         response = self.login(client)
         self.assertEqual(response.status_code, 302)
 
-        api_response = client.post("/api/sync/manual")
+        api_response = self.post_with_csrf(client, "/api/sync/manual", json_data={})
         self.assertEqual(api_response.status_code, 200)
         self.assertTrue(self.manual_trigger_path.exists())
 
@@ -217,7 +241,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         response = self.login(client)
         self.assertEqual(response.status_code, 302)
 
-        api_response = client.post("/api/sync/force-check")
+        api_response = self.post_with_csrf(client, "/api/sync/force-check", json_data={})
         self.assertEqual(api_response.status_code, 200)
         self.assertTrue(self.force_check_trigger_path.exists())
 
@@ -228,7 +252,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         response = self.login(client)
         self.assertEqual(response.status_code, 302)
 
-        api_response = client.post("/api/sync/resolve-zork-save", json={"user_id": "1234", "game_id": "zork1"})
+        api_response = self.post_with_csrf(client, "/api/sync/resolve-zork-save", json_data={"user_id": "1234", "game_id": "zork1"})
         self.assertEqual(api_response.status_code, 200)
         self.assertTrue(self.resolve_zork_save_trigger_path.exists())
 
@@ -239,7 +263,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         response = self.login(client)
         self.assertEqual(response.status_code, 302)
 
-        api_response = client.post("/api/sync/resolve-record", json={"scope": "bulletins", "key": "uid-b"})
+        api_response = self.post_with_csrf(client, "/api/sync/resolve-record", json_data={"scope": "bulletins", "key": "uid-b"})
         self.assertEqual(api_response.status_code, 200)
         self.assertTrue(self.resolve_record_trigger_path.exists())
 
@@ -270,7 +294,8 @@ class WebAdminSettingsTests(unittest.TestCase):
         response = self.login(client)
         self.assertEqual(response.status_code, 302)
 
-        post_response = client.post(
+        post_response = self.post_with_csrf(
+            client,
             "/settings",
             data={"settings_section": "resolve_zork_save", "resolve_user_id": "1234", "resolve_game_id": "zork1"},
             follow_redirects=False,
@@ -285,13 +310,28 @@ class WebAdminSettingsTests(unittest.TestCase):
         response = self.login(client)
         self.assertEqual(response.status_code, 302)
 
-        post_response = client.post(
+        post_response = self.post_with_csrf(
+            client,
             "/settings",
             data={"settings_section": "force_check"},
             follow_redirects=False,
         )
         self.assertEqual(post_response.status_code, 302)
         self.assertTrue(self.force_check_trigger_path.exists())
+
+    def test_settings_post_without_csrf_is_rejected(self):
+        app = create_app()
+        client = app.test_client()
+
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        post_response = client.post(
+            "/settings",
+            data={"settings_section": "force_check"},
+            follow_redirects=False,
+        )
+        self.assertEqual(post_response.status_code, 403)
 
     def test_sync_status_api_returns_snapshot_values(self):
         with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:
@@ -469,7 +509,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         response = self.login(client)
         self.assertEqual(response.status_code, 302)
 
-        reset_response = client.post("/system/transmissions/reset", follow_redirects=True)
+        reset_response = self.post_with_csrf(client, "/system/transmissions/reset", data={}, follow_redirects=True)
         self.assertEqual(reset_response.status_code, 200)
         page = reset_response.get_data(as_text=True)
         self.assertIn("Transmission stats reset.", page)
@@ -629,7 +669,8 @@ class WebAdminSettingsTests(unittest.TestCase):
         response = self.login(client)
         self.assertEqual(response.status_code, 302)
 
-        wipe_response = client.post(
+        wipe_response = self.post_with_csrf(
+            client,
             "/settings",
             data={
                 "settings_section": "wipe_database",
@@ -669,7 +710,8 @@ class WebAdminSettingsTests(unittest.TestCase):
         response = self.login(client)
         self.assertEqual(response.status_code, 302)
 
-        wipe_response = client.post(
+        wipe_response = self.post_with_csrf(
+            client,
             "/settings",
             data={
                 "settings_section": "wipe_database",

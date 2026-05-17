@@ -7,6 +7,7 @@ import re
 import time
 import zlib
 import uuid
+import threading
 
 from meshtastic import BROADCAST_NUM
 
@@ -117,6 +118,7 @@ _peer_hash_compressed_buffers = {}
 # (destination_node_id, scope, manifest_id). Entry shape:
 #   {'chunks': [b64_str, ...], 'total': int, 'created_at': float}
 _outgoing_hash_manifest_cache = {}
+_hash_buffer_lock = threading.RLock()
 _SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "profiles", "game_scores", "zork_saves", "tombstones"]
 _HASH_BUFFER_MAX_AGE_SECONDS = 600
 # After this many seconds with no new chunk for a HASHZ manifest, drop the
@@ -132,6 +134,8 @@ _recent_hashmiss_requests = {}
 _recent_syncstate_repairs = {}
 # Pattern for the optional original-date field appended to BULLETIN/MAIL wire frames.
 _SYNC_DATE_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$')
+# Pattern for the optional source_timestamp field (ISO format with T separator and seconds).
+_SYNC_ISO_TIMESTAMP_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}')
 _candidate_resolution_requests = {}
 _recent_candidate_resolution_results = []
 _CANDIDATE_REQUEST_TIMEOUT_SECONDS = 15.0
@@ -236,18 +240,19 @@ def _retry_stale_zork_save_buffers(interface) -> None:
 
 def _prune_old_hash_manifest_chunks() -> None:
     now = time.time()
-    stale_keys = [
-        k for k, v in _peer_hash_compressed_buffers.items()
-        if now - v.get('updated_at', now) > _HASH_BUFFER_MAX_AGE_SECONDS
-    ]
-    for key in stale_keys:
-        _peer_hash_compressed_buffers.pop(key, None)
-    stale_out = [
-        k for k, v in _outgoing_hash_manifest_cache.items()
-        if now - v.get('created_at', now) > _HASH_BUFFER_MAX_AGE_SECONDS
-    ]
-    for key in stale_out:
-        _outgoing_hash_manifest_cache.pop(key, None)
+    with _hash_buffer_lock:
+        stale_keys = [
+            k for k, v in _peer_hash_compressed_buffers.items()
+            if now - v.get('updated_at', now) > _HASH_BUFFER_MAX_AGE_SECONDS
+        ]
+        for key in stale_keys:
+            _peer_hash_compressed_buffers.pop(key, None)
+        stale_out = [
+            k for k, v in _outgoing_hash_manifest_cache.items()
+            if now - v.get('created_at', now) > _HASH_BUFFER_MAX_AGE_SECONDS
+        ]
+        for key in stale_out:
+            _outgoing_hash_manifest_cache.pop(key, None)
 
 
 def _retry_stale_hash_manifest_buffers(interface) -> None:
@@ -263,30 +268,55 @@ def _retry_stale_hash_manifest_buffers(interface) -> None:
     After ``_HASHZ_GAP_FILL_MAX_ATTEMPTS`` unproductive gap-fill rounds, fall
     back to the original behavior: drop the buffer and re-issue HASHREQ.
     """
-    if not _peer_hash_compressed_buffers:
-        return
+    with _hash_buffer_lock:
+        if not _peer_hash_compressed_buffers:
+            return
     now = time.time()
     candidates = []
-    for (peer_id, scope, manifest_id), buf in list(_peer_hash_compressed_buffers.items()):
-        if now - float(buf.get('updated_at', now)) <= _HASH_BUFFER_RETRY_AFTER_SECONDS:
-            continue
-        chunks = buf.get('chunks', {})
-        total = int(buf.get('total', 0))
-        if total <= 0 or len(chunks) >= total:
-            continue
-        candidates.append((peer_id, scope, manifest_id, buf, chunks, total))
-    for peer_id, scope, manifest_id, buf, chunks, total in candidates:
-        last_count = int(buf.get('last_retry_received', -1))
-        received = len(chunks)
-        if received != last_count:
-            buf['gap_attempts'] = 0
-        buf['last_retry_received'] = received
-        attempts = int(buf.get('gap_attempts', 0))
-        missing = sorted(set(range(total)) - set(int(i) for i in chunks.keys()))
+    with _hash_buffer_lock:
+        for (peer_id, scope, manifest_id), buf in list(_peer_hash_compressed_buffers.items()):
+            if now - float(buf.get('updated_at', now)) <= _HASH_BUFFER_RETRY_AFTER_SECONDS:
+                continue
+            chunks = dict(buf.get('chunks', {}))
+            total = int(buf.get('total', 0))
+            if total <= 0 or len(chunks) >= total:
+                continue
+            candidates.append((peer_id, scope, manifest_id, len(chunks), total, chunks))
 
-        if attempts >= _HASHZ_GAP_FILL_MAX_ATTEMPTS:
-            _peer_hash_compressed_buffers.pop((peer_id, scope, manifest_id), None)
-            _clear_hashreq_pending(peer_id, scope)
+    for peer_id, scope, manifest_id, received, total, chunks_snapshot in candidates:
+        with _hash_buffer_lock:
+            buf = _peer_hash_compressed_buffers.get((peer_id, scope, manifest_id))
+            if not buf:
+                continue
+            current_chunks = dict(buf.get('chunks', {}))
+            if len(current_chunks) != received:
+                continue
+            last_count = int(buf.get('last_retry_received', -1))
+            if received != last_count:
+                buf['gap_attempts'] = 0
+            buf['last_retry_received'] = received
+            attempts = int(buf.get('gap_attempts', 0))
+            missing = sorted(set(range(total)) - set(int(i) for i in current_chunks.keys()))
+
+            if attempts >= _HASHZ_GAP_FILL_MAX_ATTEMPTS:
+                _peer_hash_compressed_buffers.pop((peer_id, scope, manifest_id), None)
+                _clear_hashreq_pending(peer_id, scope)
+                fallback_to_hashreq = True
+                gap_msg = ""
+            else:
+                csv = ",".join(str(i) for i in missing)
+                gap_msg = f"HASHZGAP|{scope}|{manifest_id}|{csv}"
+                if len(gap_msg.encode('utf-8')) > 200:
+                    buf['gap_attempts'] = _HASHZ_GAP_FILL_MAX_ATTEMPTS
+                    buf['updated_at'] = now
+                    gap_msg = ""
+                    fallback_to_hashreq = False
+                else:
+                    buf['gap_attempts'] = attempts + 1
+                    buf['updated_at'] = now
+                    fallback_to_hashreq = False
+
+        if fallback_to_hashreq:
             logging.warning(
                 f"HASHZ gap-fill exhausted (peer={peer_id} scope={scope} manifest_id={manifest_id} "
                 f"{received}/{total} chunks, missing={missing}); falling back to full HASHREQ"
@@ -298,22 +328,16 @@ def _retry_stale_hash_manifest_buffers(interface) -> None:
                 logging.warning(f"Failed to re-request HASHZ for {peer_id}/{scope}: {exc}")
             continue
 
-        csv = ",".join(str(i) for i in missing)
-        gap_msg = f"HASHZGAP|{scope}|{manifest_id}|{csv}"
-        if len(gap_msg.encode('utf-8')) > 200:
-            buf['gap_attempts'] = _HASHZ_GAP_FILL_MAX_ATTEMPTS
-            buf['updated_at'] = now
+        if not gap_msg:
             logging.warning(
                 f"HASHZ gap list too large for one frame (peer={peer_id} scope={scope} "
                 f"manifest_id={manifest_id} missing={len(missing)}); will fall back to HASHREQ next tick"
             )
             continue
-        buf['gap_attempts'] = attempts + 1
-        buf['updated_at'] = now
+
         logging.warning(
             f"HASHZ buffer stalled (peer={peer_id} scope={scope} manifest_id={manifest_id} "
-            f"{received}/{total} chunks, missing={missing}); sending HASHZGAP attempt "
-            f"{attempts + 1}/{_HASHZ_GAP_FILL_MAX_ATTEMPTS}"
+            f"{received}/{total} chunks, missing={missing}); sending HASHZGAP"
         )
         try:
             _send_one_sync(
@@ -644,9 +668,11 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
 
 def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> None:
     if scope == 'zork_saves' and not is_zork_save_sync_enabled():
-        _peer_hash_manifest_buffers.pop((sender_node_id, scope), None)
+        with _hash_buffer_lock:
+            _peer_hash_manifest_buffers.pop((sender_node_id, scope), None)
         return
-    remote = _peer_hash_manifest_buffers.pop((sender_node_id, scope), {})
+    with _hash_buffer_lock:
+        remote = dict(_peer_hash_manifest_buffers.pop((sender_node_id, scope), {}))
     local = get_record_hash_manifest(scope)
     remote_keys = set(remote.keys())
     local_keys = set(local.keys())
@@ -746,11 +772,12 @@ def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface)
     # Cache chunks so we can honor HASHZGAP gap-fill requests from this peer
     # without recomputing (and risking content drift if the local DB changes).
     _prune_old_hash_manifest_chunks()
-    _outgoing_hash_manifest_cache[(destination_node_id, scope, manifest_id)] = {
-        'chunks': list(chunks),
-        'total': total,
-        'created_at': time.time(),
-    }
+    with _hash_buffer_lock:
+        _outgoing_hash_manifest_cache[(destination_node_id, scope, manifest_id)] = {
+            'chunks': list(chunks),
+            'total': total,
+            'created_at': time.time(),
+        }
     for idx, chunk in enumerate(chunks):
         _send_one_sync(f"{prefix}{idx}|{total}|{chunk}", destination_node_id, interface, pause_seconds=chunk_pause)
 
@@ -759,17 +786,21 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
     if scope == 'bulletins':
         row = get_bulletin_by_unique_id(key)
         if row:
-            # row: (board, sender_short_name, date, subject, content, unique_id)
+            # row: (board, sender_short_name, date, subject, content, unique_id, source_node_id, source_timestamp)
             logging.info(f"Sending requested bulletin to {destination_node_id} key={key}")
-            send_bulletin_to_bbs_nodes(row[0], row[1], row[3], row[4], row[5], [destination_node_id], interface, date=row[2])
+            send_bulletin_to_bbs_nodes(row[0], row[1], row[3], row[4], row[5], [destination_node_id], interface, date=row[2],
+                                       source_node_id=row[6] if len(row) > 6 else None,
+                                       source_timestamp=row[7] if len(row) > 7 else None)
         else:
             logging.warning(f"Requested bulletin missing locally for resend key={key}")
     elif scope == 'mail':
         row = get_mail_by_unique_id(key)
         if row:
-            # row: (sender, sender_short_name, recipient, date, subject, content, unique_id)
+            # row: (sender, sender_short_name, recipient, date, subject, content, unique_id, source_node_id, source_timestamp)
             logging.info(f"Sending requested mail to {destination_node_id} key={key}")
-            send_mail_to_bbs_nodes(row[0], row[1], row[2], row[4], row[5], row[6], [destination_node_id], interface, date=row[3])
+            send_mail_to_bbs_nodes(row[0], row[1], row[2], row[4], row[5], row[6], [destination_node_id], interface, date=row[3],
+                                   source_node_id=row[7] if len(row) > 7 else None,
+                                   source_timestamp=row[8] if len(row) > 8 else None)
         else:
             logging.warning(f"Requested mail missing locally for resend key={key}")
     elif scope == 'channels':
@@ -781,6 +812,8 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
                 send_channel_comment_to_bbs_nodes(
                     make_channel_manifest_key(row[0], row[1]),
                     row[2], row[3], row[4], row[5], [destination_node_id], interface,
+                    source_node_id=row[8] if len(row) > 8 else None,
+                    source_timestamp=row[9] if len(row) > 9 else None,
                 )
             else:
                 logging.warning(f"Requested channel comment missing locally for resend key={key}")
@@ -878,8 +911,20 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
     if is_sync_message:
         if message.startswith("BULLETIN|"):
             # Use rsplit from the right so content with embedded '|' is handled correctly.
-            # Wire format: BULLETIN|board|sender|subject|content|unique_id[|date]
+            # Wire format: BULLETIN|board|sender|subject|content|unique_id[|date[|source_node_id|source_timestamp]]
             body = message[len("BULLETIN|"):]
+            source_timestamp = None
+            source_node_id = None
+            # Strip optional ISO source_timestamp from far right
+            _tmp = body.rsplit("|", 1)
+            if len(_tmp) == 2 and _SYNC_ISO_TIMESTAMP_PATTERN.match(_tmp[1]):
+                source_timestamp = _tmp[1]
+                body = _tmp[0]
+                # Strip optional source_node_id (starts with '!')
+                _tmp2 = body.rsplit("|", 1)
+                if len(_tmp2) == 2 and _tmp2[1].startswith('!'):
+                    source_node_id = _tmp2[1]
+                    body = _tmp2[0]
             # Try to strip optional date from the far right.
             tail = body.rsplit("|", 2)
             if len(tail) == 3 and _SYNC_DATE_PATTERN.match(tail[2]):
@@ -895,15 +940,26 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed BULLETIN sync message ignored: {message}")
                 return
             board, sender_short_name, subject, content = hparts[0], hparts[1], hparts[2], hparts[3]
-            add_bulletin(board, sender_short_name, subject, content, [], interface, unique_id=unique_id, date=original_date)
+            add_bulletin(board, sender_short_name, subject, content, [], interface, unique_id=unique_id, date=original_date, source_node_id=source_node_id, source_timestamp=source_timestamp)
             flush_pending_bulletin_continuations(unique_id)
 
             if board.lower() == "urgent":
                 notification_message = f"💥NEW URGENT BULLETIN💥\nFrom: {sender_short_name}\nTitle: {subject}\nDM 'CB,,Urgent' to view"
                 send_message(notification_message, BROADCAST_NUM, interface)
         elif message.startswith("MAIL|"):
-            # Wire format: MAIL|sender_id|sender_short|recipient_id|subject|content|unique_id[|date]
+            # Wire format: MAIL|sender_id|sender_short|recipient_id|subject|content|unique_id[|date[|source_node_id|source_timestamp]]
             body = message[len("MAIL|"):]
+            source_timestamp = None
+            source_node_id = None
+            # Strip optional ISO source_timestamp from far right
+            _tmp = body.rsplit("|", 1)
+            if len(_tmp) == 2 and _SYNC_ISO_TIMESTAMP_PATTERN.match(_tmp[1]):
+                source_timestamp = _tmp[1]
+                body = _tmp[0]
+                _tmp2 = body.rsplit("|", 1)
+                if len(_tmp2) == 2 and _tmp2[1].startswith('!'):
+                    source_node_id = _tmp2[1]
+                    body = _tmp2[0]
             tail = body.rsplit("|", 2)
             if len(tail) == 3 and _SYNC_DATE_PATTERN.match(tail[2]):
                 original_date, unique_id = tail[2], tail[1]
@@ -918,7 +974,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed MAIL sync message ignored: {message}")
                 return
             sync_sender_id, sender_short_name, recipient_id, subject, content = hparts[0], hparts[1], hparts[2], hparts[3], hparts[4]
-            add_mail(sync_sender_id, sender_short_name, recipient_id, subject, content, [], interface, unique_id=unique_id, date=original_date)
+            add_mail(sync_sender_id, sender_short_name, recipient_id, subject, content, [], interface, unique_id=unique_id, date=original_date, source_node_id=source_node_id, source_timestamp=source_timestamp)
             flush_pending_mail_continuations(unique_id)
         elif message.startswith("DELETE_BULLETIN|"):
             parts = message.split("|", 1)
@@ -964,9 +1020,20 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             channel_name, channel_url = parts[1], parts[2]
             add_channel(channel_name, channel_url)
         elif message.startswith("CHANNELCOMMENT|"):
-            # Wire format: CHANNELCOMMENT|{manifest_key}|{b64_sender}|{date}|{content}|{unique_id}
+            # Wire format: CHANNELCOMMENT|{manifest_key}|{b64_sender}|{date}|{content}|{unique_id}[|source_node_id|source_timestamp]
             # Use rsplit from the right so content with embedded '|' is handled correctly.
             body = message[len("CHANNELCOMMENT|"):]
+            source_timestamp = None
+            source_node_id = None
+            # Strip optional ISO source_timestamp from far right
+            _tmp = body.rsplit("|", 1)
+            if len(_tmp) == 2 and _SYNC_ISO_TIMESTAMP_PATTERN.match(_tmp[1]):
+                source_timestamp = _tmp[1]
+                body = _tmp[0]
+                _tmp2 = body.rsplit("|", 1)
+                if len(_tmp2) == 2 and _tmp2[1].startswith('!'):
+                    source_node_id = _tmp2[1]
+                    body = _tmp2[0]
             tail = body.rsplit("|", 1)
             if len(tail) != 2 or not tail[1]:
                 logging.warning(f"Malformed CHANNELCOMMENT sync message ignored: {message}")
@@ -982,7 +1049,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             except Exception:
                 logging.warning(f"Malformed CHANNELCOMMENT sender ignored: {message}")
                 return
-            add_channel_comment_by_manifest_key(channel_key, sender_short_name, comment_date, content, unique_id)
+            add_channel_comment_by_manifest_key(channel_key, sender_short_name, comment_date, content, unique_id, source_node_id=source_node_id, source_timestamp=source_timestamp)
             flush_pending_channel_comment_continuations(unique_id)
         elif message.startswith("BULLETINCONT|"):
             parts = message.split("|", 3)
@@ -1128,9 +1195,10 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             if scope not in _SUPPORTED_HASH_SCOPES:
                 return
             buf_key = (sender_node_id, scope)
-            if buf_key not in _peer_hash_manifest_buffers:
-                _peer_hash_manifest_buffers[buf_key] = {}
-            _peer_hash_manifest_buffers[buf_key][key] = rec_hash
+            with _hash_buffer_lock:
+                if buf_key not in _peer_hash_manifest_buffers:
+                    _peer_hash_manifest_buffers[buf_key] = {}
+                _peer_hash_manifest_buffers[buf_key][key] = rec_hash
         elif message.startswith("HASHZ|"):
             if not sender_node_id:
                 return
@@ -1154,33 +1222,40 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             _prune_old_hash_manifest_chunks()
             _retry_stale_hash_manifest_buffers(interface)
             buf_key = (sender_node_id, scope, manifest_id)
-            buf = _peer_hash_compressed_buffers.get(buf_key)
-            if buf is None or int(buf.get('total', -1)) != total_chunks:
-                buf = {
-                    'total': total_chunks,
-                    'chunks': {},
-                    'updated_at': time.time(),
-                }
-                _peer_hash_compressed_buffers[buf_key] = buf
-            buf['updated_at'] = time.time()
-            if chunk_idx not in buf['chunks']:
-                buf['chunks'][chunk_idx] = parts[5]
-
-            if len(buf['chunks']) == total_chunks:
-                try:
+            with _hash_buffer_lock:
+                buf = _peer_hash_compressed_buffers.get(buf_key)
+                if buf is None or int(buf.get('total', -1)) != total_chunks:
+                    buf = {
+                        'total': total_chunks,
+                        'chunks': {},
+                        'updated_at': time.time(),
+                    }
+                    _peer_hash_compressed_buffers[buf_key] = buf
+                buf['updated_at'] = time.time()
+                if chunk_idx not in buf['chunks']:
+                    buf['chunks'][chunk_idx] = parts[5]
+                complete = len(buf['chunks']) == total_chunks
+                if complete:
                     payload_b64 = ''.join(buf['chunks'][i] for i in range(total_chunks))
+                else:
+                    payload_b64 = ''
+
+            if complete:
+                try:
                     payload_bytes = base64.urlsafe_b64decode(payload_b64.encode('ascii'))
                     manifest_obj = json.loads(zlib.decompress(payload_bytes).decode('utf-8'))
                     if isinstance(manifest_obj, dict):
                         normalized = {str(k): str(v) for k, v in manifest_obj.items()}
-                        _peer_hash_manifest_buffers[(sender_node_id, scope)] = normalized
+                        with _hash_buffer_lock:
+                            _peer_hash_manifest_buffers[(sender_node_id, scope)] = normalized
                         _clear_hashreq_pending(sender_node_id, scope)
                         _reconcile_remote_manifest(scope, sender_node_id, interface)
                 except Exception:
                     logging.warning(f"Malformed HASHZ payload ignored: {message}")
                     _clear_hashreq_pending(sender_node_id, scope)
                 finally:
-                    _peer_hash_compressed_buffers.pop(buf_key, None)
+                    with _hash_buffer_lock:
+                        _peer_hash_compressed_buffers.pop(buf_key, None)
         elif message.startswith("HASHZGAP|"):
             # Gap-fill request from a peer who received a partial HASHZ manifest.
             # Wire format: HASHZGAP|scope|manifest_id|csv_of_missing_indices
@@ -1199,15 +1274,16 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed HASHZGAP payload ignored: {message}")
                 return
             cache_key = (sender_node_id, scope, manifest_id)
-            entry = _outgoing_hash_manifest_cache.get(cache_key)
+            with _hash_buffer_lock:
+                entry = _outgoing_hash_manifest_cache.get(cache_key)
+                cached_chunks = list(entry['chunks']) if entry else []
+                total = int(entry['total']) if entry else 0
             if not entry:
                 logging.info(
                     f"HASHZGAP from {sender_node_id} for unknown manifest scope={scope} "
                     f"manifest_id={manifest_id} (cache miss); peer will fall back to HASHREQ"
                 )
                 return
-            cached_chunks = entry['chunks']
-            total = int(entry['total'])
             prefix = f"HASHZ|{scope}|{manifest_id}|"
             chunk_pause = max(get_hash_repair_pause_seconds(), get_hash_chunk_pause_seconds())
             logging.info(
