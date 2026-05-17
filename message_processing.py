@@ -1195,7 +1195,9 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             apply_channel_comment_expected_content_length(parts[1], expected_length)
         elif message.startswith("SYNCSTATE|"):
             parts = message.split("|")
-            if len(parts) not in (5, 7, 13, 14):
+            # 5,7,13,14 = legacy variants; 15 = v2+ (trailing vN:caps token).
+            # Accept any len >=15 too so future fields tacked on don't break us.
+            if len(parts) not in (5, 7, 13, 14) and len(parts) < 15:
                 logging.warning(f"Malformed SYNCSTATE sync message ignored: {message}")
                 return
             try:
@@ -1220,6 +1222,11 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     tombstones_peer = int(parts[13])
                 except ValueError:
                     pass
+            peer_proto_v = 0
+            peer_caps_csv = ''
+            if len(parts) >= 15:
+                from utils import parse_capabilities_token
+                peer_proto_v, peer_caps_csv = parse_capabilities_token(parts[14])
             if sender_node_id:
                 upsert_peer_sync_state(
                     sender_node_id,
@@ -1236,11 +1243,14 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     profiles_hash,
                     game_scores_hash,
                     tombstones_peer,
+                    proto_v=peer_proto_v,
+                    caps=peer_caps_csv,
                 )
                 logging.info(
                     f"SYNCSTATE recv from {sender_node_id}: "
                     f"b={bulletins} m={mail} c={channels} z={zork_saves} p={profiles} g={game_scores} t={tombstones_peer} | "
-                    f"bH={bulletins_hash} mH={mail_hash} cH={channels_hash} zH={zork_saves_hash} pH={profiles_hash} gH={game_scores_hash}"
+                    f"bH={bulletins_hash} mH={mail_hash} cH={channels_hash} zH={zork_saves_hash} pH={profiles_hash} gH={game_scores_hash} | "
+                    f"v={peer_proto_v} caps=[{peer_caps_csv}]"
                 )
                 _retry_stale_hash_manifest_buffers(interface)
                 _retry_stale_zork_save_buffers(interface)

@@ -14,6 +14,50 @@ user_states = {}
 # under 220 to leave room for packet-layer overhead and multi-byte UTF-8 chars.
 _MESHTASTIC_MAX_BYTES = 220
 
+# ---------------------------------------------------------------------------
+# Wire protocol version + capability advertisement
+# ---------------------------------------------------------------------------
+#
+# A trailing ``vN:cap1,cap2,...`` token on every SYNCSTATE frame lets peers
+# negotiate optional wire-format trims (compact channel keys, epoch timestamps,
+# single-char scope codes, plain UTF-8 text, bitmap gap-fill).  Each new
+# capability is added to ``WIRE_CAPABILITIES`` in the PR that ships it; senders
+# gate the new format on ``db_operations.peer_supports(peer_id, cap)``.  Old
+# peers ignore the trailing field, new peers ignore unknown caps — so the
+# rollout is loss-free in either direction.
+WIRE_PROTOCOL_VERSION: int = 2
+WIRE_CAPABILITIES: tuple = ()  # Future: ('cck', 'epoch', 'scc', 'nob64', 'bmgap')
+
+
+def local_capabilities_token() -> str:
+    """Return the ``vN:cap1,cap2`` token to append to outbound SYNCSTATE frames."""
+    return f"v{WIRE_PROTOCOL_VERSION}:{','.join(WIRE_CAPABILITIES)}"
+
+
+def parse_capabilities_token(token: str) -> tuple:
+    """Parse a peer's ``vN:cap1,cap2`` advertisement.
+
+    Returns ``(proto_v, caps_csv)`` where ``proto_v`` is the int version (0
+    when missing/malformed) and ``caps_csv`` is the raw comma-separated cap
+    list with no surrounding whitespace (empty string when absent).  This
+    helper never raises — malformed input degrades to ``(0, '')`` so receivers
+    can keep going.
+    """
+    if not token:
+        return (0, '')
+    s = str(token).strip()
+    if not s.startswith('v') or ':' not in s:
+        return (0, '')
+    try:
+        version_part, caps_part = s.split(':', 1)
+        proto_v = int(version_part[1:])
+    except (ValueError, IndexError):
+        return (0, '')
+    if proto_v < 0:
+        return (0, '')
+    caps_clean = ','.join(tok for tok in (c.strip() for c in caps_part.split(',')) if tok)
+    return (proto_v, caps_clean)
+
 
 def _get_config_path() -> str:
     return os.getenv("BBS_CONFIG_PATH", "config.ini")
@@ -446,7 +490,8 @@ def send_sync_state_to_bbs_nodes(counts, bbs_nodes, interface):
         f"{str(counts.get('bulletins_hash', ''))}|{str(counts.get('mail_hash', ''))}|"
         f"{str(counts.get('channels_hash', ''))}|{str(counts.get('zork_saves_hash', ''))}|"
         f"{str(counts.get('profiles_hash', ''))}|{str(counts.get('game_scores_hash', ''))}|"
-        f"{int(counts.get('tombstones', 0))}"
+        f"{int(counts.get('tombstones', 0))}|"
+        f"{local_capabilities_token()}"
     )
     for node_id in bbs_nodes:
         _send_one_sync(message, node_id, interface)
