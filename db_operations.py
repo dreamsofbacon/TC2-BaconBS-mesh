@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from app_paths import resolve_app_path
+from op_log import ensure_op_log_schema, try_dual_write
 
 from meshtastic import BROADCAST_NUM
 
@@ -598,6 +599,7 @@ def initialize_database():
                     frame_size_bytes INTEGER,
                     is_continuation INTEGER NOT NULL DEFAULT 0
                 );''')
+    ensure_op_log_schema(c)
     _ensure_content_status_columns(c)
     _ensure_channel_comment_sync_columns(c)
     _ensure_local_only_columns(c)
@@ -1581,6 +1583,15 @@ def add_channel_comment(channel_id, sender_short_name, content, bbs_nodes=None, 
         (int(channel[0]), sender_short_name, date, content, unique_id, len(str(content or '')), 1, source_node_id, source_timestamp, now_iso)
     )
     conn.commit()
+    try_dual_write(
+        c, origin_node_id=source_node_id or get_local_node_id(),
+        event_type='upsert', scope='channel_comments', target_uid=unique_id,
+        payload={'channel_id': int(channel[0]), 'sender_short_name': sender_short_name,
+                 'date': date, 'content': content,
+                 'source_node_id': source_node_id, 'source_timestamp': source_timestamp},
+        created_at=now_iso,
+    )
+    conn.commit()
     _flush_pending_expected_content_length('channel_comments', unique_id, _pending_channel_comment_expected_lengths, 'channel comment')
     clear_sync_tombstone('channels', f"comment:{unique_id}")
     if bbs_nodes and interface:
@@ -1654,6 +1665,11 @@ def delete_channel_comment(unique_id, bbs_nodes, interface):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("DELETE FROM channel_comments WHERE unique_id = ?", (str(unique_id),))
+    conn.commit()
+    try_dual_write(
+        c, origin_node_id=get_local_node_id(),
+        event_type='delete', scope='channel_comments', target_uid=str(unique_id), payload={},
+    )
     conn.commit()
     record_sync_tombstone('channels', f"comment:{unique_id}")
     if bbs_nodes and interface:
@@ -1732,6 +1748,16 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
             source_timestamp,
             now_iso,
         ),
+    )
+    conn.commit()
+    try_dual_write(
+        c, origin_node_id=source_node_id or get_local_node_id(),
+        event_type='upsert', scope='bulletins', target_uid=unique_id,
+        payload={'board': board, 'sender_short_name': sender_short_name,
+                 'subject': subject, 'content': content, 'date': original_date,
+                 'local_only': 1 if local_only else 0,
+                 'source_node_id': source_node_id, 'source_timestamp': source_timestamp},
+        created_at=now_iso,
     )
     conn.commit()
     _flush_pending_expected_content_length('bulletins', unique_id, _pending_bulletin_expected_lengths, 'bulletin')
@@ -1831,6 +1857,11 @@ def delete_bulletin(unique_id, bbs_nodes, interface):
     c = conn.cursor()
     c.execute("DELETE FROM bulletins WHERE unique_id = ?", (unique_id,))
     conn.commit()
+    try_dual_write(
+        c, origin_node_id=get_local_node_id(),
+        event_type='delete', scope='bulletins', target_uid=str(unique_id), payload={},
+    )
+    conn.commit()
     record_sync_tombstone('bulletins', str(unique_id))
     send_delete_bulletin_to_bbs_nodes(unique_id, bbs_nodes, interface)
 
@@ -1910,6 +1941,16 @@ def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_n
         ),
     )
     conn.commit()
+    try_dual_write(
+        c, origin_node_id=source_node_id or get_local_node_id(),
+        event_type='upsert', scope='mail', target_uid=unique_id,
+        payload={'sender_id': sender_id, 'sender_short_name': sender_short_name,
+                 'recipient_id': recipient_id, 'subject': subject, 'content': content,
+                 'date': original_date,
+                 'source_node_id': source_node_id, 'source_timestamp': source_timestamp},
+        created_at=now_iso,
+    )
+    conn.commit()
     _flush_pending_expected_content_length('mail', unique_id, _pending_mail_expected_lengths, 'mail')
     clear_sync_tombstone('mail', str(unique_id))
     if bbs_nodes and interface:
@@ -1943,6 +1984,11 @@ def delete_mail(unique_id, recipient_id, bbs_nodes, interface):
             c.execute("DELETE FROM mail WHERE unique_id = ?", (unique_id,))
         else:
             c.execute("DELETE FROM mail WHERE unique_id = ? and recipient = ?", (unique_id, recipient_id,))
+        conn.commit()
+        try_dual_write(
+            c, origin_node_id=get_local_node_id(),
+            event_type='delete', scope='mail', target_uid=str(unique_id), payload={},
+        )
         conn.commit()
         record_sync_tombstone('mail', str(unique_id))
         if bbs_nodes and interface:
