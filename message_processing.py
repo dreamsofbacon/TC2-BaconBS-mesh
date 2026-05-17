@@ -1314,6 +1314,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     buf = {
                         'total': total_chunks,
                         'chunks': {},
+                        'created_at': time.time(),
                         'updated_at': time.time(),
                     }
                     _peer_hash_compressed_buffers[buf_key] = buf
