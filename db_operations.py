@@ -1507,7 +1507,8 @@ def get_sync_progress_data(lookback_seconds: int = 1800) -> dict:
     for row in hashmiss_rows:
         parts = str(row['frame_text'] or '').split('|')
         if len(parts) >= 3:
-            scope = parts[1]
+            from utils import decode_scope
+            scope = decode_scope(parts[1])
             uid = parts[2]
             peer = str(row['destination_node_id'] or '')
             ts = str(row['transmission_time'] or '')

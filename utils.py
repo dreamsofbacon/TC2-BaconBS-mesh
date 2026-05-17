@@ -27,7 +27,44 @@ _MESHTASTIC_MAX_BYTES = 220
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes
+
+# Single-char scope codes used by the 'scc' wire capability.  Senders gate
+# encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
+# through decode_scope which maps codes back to long names but leaves long
+# names untouched (so legacy senders Just Work).
+SCOPE_TO_CODE: dict = {
+    'bulletins': 'b',
+    'mail': 'm',
+    'channels': 'c',
+    'channel_comments': 'C',  # capital C distinguishes from 'channels'
+    'profiles': 'p',
+    'zork_saves': 'z',
+    'game_scores': 'g',
+    'tombstones': 't',
+}
+CODE_TO_SCOPE: dict = {v: k for k, v in SCOPE_TO_CODE.items()}
+
+
+def encode_scope(scope: str, use_codes: bool = False) -> str:
+    """Return single-char code for *scope* when ``use_codes`` and a mapping
+    exists; otherwise return the scope name unchanged.  Unknown scopes (e.g.
+    the literal 'all' used by HASHREQ) always pass through unchanged.
+    """
+    if not scope:
+        return scope or ''
+    if use_codes:
+        return SCOPE_TO_CODE.get(scope, scope)
+    return scope
+
+
+def decode_scope(token: str) -> str:
+    """Return long scope name for a single-char ``token`` when known;
+    otherwise return ``token`` unchanged so legacy long-name senders work.
+    """
+    if not token:
+        return token or ''
+    return CODE_TO_SCOPE.get(token, token)
 
 
 def local_capabilities_token() -> str:
@@ -657,9 +694,9 @@ def send_have_to_bbs_nodes(local_node_id: str, bbs_nodes, interface) -> None:
         return
     try:
         from op_sync import build_have_frame
-        frame = build_have_frame(local_node_id)
-        if frame:
-            for node_id in bbs_nodes:
+        for node_id in bbs_nodes:
+            frame = build_have_frame(local_node_id, peer_id=node_id)
+            if frame:
                 _send_one_sync(frame, node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
     except Exception as exc:
         logging.warning('send_have_to_bbs_nodes failed: %s', exc)
@@ -677,7 +714,13 @@ def send_hash_request_to_bbs_nodes(bbs_nodes, interface, scope='all'):
     message = f"HASHREQ|{scope}"
     pause = max(get_sync_pause_seconds(), get_hash_chunk_pause_seconds())
     for node_id in bbs_nodes:
-        _send_one_sync(message, node_id, interface, pause_seconds=pause)
+        # Per-peer scope-code encoding via 'scc' capability.  The literal
+        # 'all' has no code so it always passes through unchanged.
+        if scope != 'all' and peers_all_support([node_id], 'scc'):
+            per_peer_msg = f"HASHREQ|{encode_scope(scope, True)}"
+        else:
+            per_peer_msg = message
+        _send_one_sync(per_peer_msg, node_id, interface, pause_seconds=pause)
 
 
 def _b64(text: str) -> str:

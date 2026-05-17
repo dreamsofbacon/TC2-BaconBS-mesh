@@ -72,6 +72,7 @@ from utils import (
     get_reconcile_max_per_pass,
     is_zork_save_sync_enabled,
     decode_ts_minute, decode_ts_second,
+    encode_scope, decode_scope, peers_all_support,
     _send_one_sync, _MESHTASTIC_MAX_BYTES,
 )
 
@@ -335,8 +336,9 @@ def _retry_stale_hash_manifest_buffers(interface) -> None:
                     buf['gap_attempts'] = 0
                     buf['updated_at'] = now
                     fallback_to_hashreq = False
+                    _scope_wire = encode_scope(scope, peers_all_support([peer_id], 'scc'))
                     csv = ",".join(str(i) for i in missing)
-                    gap_msg = f"HASHZGAP|{scope}|{manifest_id}|{csv}"
+                    gap_msg = f"HASHZGAP|{_scope_wire}|{manifest_id}|{csv}"
                     if len(gap_msg.encode('utf-8')) > 200:
                         gap_msg = ""
                 else:
@@ -345,8 +347,9 @@ def _retry_stale_hash_manifest_buffers(interface) -> None:
                     fallback_to_hashreq = True
                     gap_msg = ""
             else:
+                _scope_wire = encode_scope(scope, peers_all_support([peer_id], 'scc'))
                 csv = ",".join(str(i) for i in missing)
-                gap_msg = f"HASHZGAP|{scope}|{manifest_id}|{csv}"
+                gap_msg = f"HASHZGAP|{_scope_wire}|{manifest_id}|{csv}"
                 if len(gap_msg.encode('utf-8')) > 200:
                     buf['gap_attempts'] = _HASHZ_GAP_FILL_MAX_ATTEMPTS
                     buf['updated_at'] = now
@@ -484,7 +487,8 @@ def _send_candidate_response(scope: str, request_id: str, user_id: str, game_id:
     updated_at = str(candidate.get('updated_at', '') or '')
     size = int(candidate.get('size', 0) or 0)
     payload_hash = str(candidate.get('payload_hash', '') or '')
-    message = f"CANDRSP|{scope}|{request_id}|{user_b64}|{game_b64}|{kind}|{updated_at}|{size}|{payload_hash}"
+    _scope_wire = encode_scope(scope, peers_all_support([destination_node_id], 'scc'))
+    message = f"CANDRSP|{_scope_wire}|{request_id}|{user_b64}|{game_b64}|{kind}|{updated_at}|{size}|{payload_hash}"
     _send_one_sync(message, destination_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
 
 
@@ -510,8 +514,9 @@ def start_zork_save_best_candidate_resolution(user_id: str, game_id: str, peer_n
     }
     user_b64 = base64.b64encode(normalized_user.encode('utf-8')).decode('ascii')
     game_b64 = base64.b64encode(normalized_game.encode('utf-8')).decode('ascii')
-    message = f"CANDREQ|zork_saves|{request_id}|{user_b64}|{game_b64}"
     for peer_id in sorted(peers):
+        _scope_wire = encode_scope('zork_saves', peers_all_support([peer_id], 'scc'))
+        message = f"CANDREQ|{_scope_wire}|{request_id}|{user_b64}|{game_b64}"
         _send_one_sync(message, peer_id, interface, pause_seconds=get_hash_repair_pause_seconds())
     if not peers:
         _finalize_candidate_resolution_request(request_id, interface, timed_out=False)
@@ -783,12 +788,15 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
         remote_hash = str(remote.get(key, ""))
         if not _should_send_hashmiss(sender_node_id, scope, key, local_hash, remote_hash):
             continue
+        _peer_scc = peers_all_support([sender_node_id], 'scc')
+        _scope_wire = encode_scope(scope, _peer_scc)
+        _tomb_wire = encode_scope('tombstones', _peer_scc)
         if scope in ('bulletins', 'mail', 'zork_saves', 'channels') and key not in local and has_sync_tombstone(scope, key):
             logging.info(f"Requesting tombstone replay from {sender_node_id} for {scope}:{key}")
-            _send_one_sync(f"HASHMISS|tombstones|{scope}:{key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+            _send_one_sync(f"HASHMISS|{_tomb_wire}|{_scope_wire}:{key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
         else:
             logging.info(f"Requesting record from {sender_node_id} scope={scope} key={key}")
-            _send_one_sync(f"HASHMISS|{scope}|{key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+            _send_one_sync(f"HASHMISS|{_scope_wire}|{key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
         pull_sent += 1
 
     # Proactively push records the peer is missing to converge in one cycle.
@@ -812,23 +820,24 @@ def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface)
     # Manifest frames travel back-to-back; a chunk-pause floor (independent of
     # turbo) keeps trailing chunks from being dropped on the LoRa receive path.
     chunk_pause = max(get_hash_repair_pause_seconds(), get_hash_chunk_pause_seconds())
+    _scope_wire = encode_scope(scope, peers_all_support([destination_node_id], 'scc'))
     if not _hash_manifest_compression_enabled():
         for key, rec_hash in manifest.items():
-            _send_one_sync(f"HASHREC|{scope}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=chunk_pause)
-        _send_one_sync(f"HASHEND|{scope}|{len(manifest)}", destination_node_id, interface, pause_seconds=chunk_pause)
+            _send_one_sync(f"HASHREC|{_scope_wire}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=chunk_pause)
+        _send_one_sync(f"HASHEND|{_scope_wire}|{len(manifest)}", destination_node_id, interface, pause_seconds=chunk_pause)
         return
 
     payload = json.dumps(manifest, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     compressed = zlib.compress(payload, level=6)
     b64 = base64.urlsafe_b64encode(compressed).decode("ascii")
     manifest_id = str(int(time.time() * 1000))
-    prefix = f"HASHZ|{scope}|{manifest_id}|"
+    prefix = f"HASHZ|{_scope_wire}|{manifest_id}|"
     max_chunk = _MESHTASTIC_MAX_BYTES - len(prefix.encode("utf-8")) - len("999999|999999|".encode("utf-8"))
     if max_chunk <= 0:
         logging.warning("HASHZ prefix too large for packet limit; falling back to HASHREC")
         for key, rec_hash in manifest.items():
-            _send_one_sync(f"HASHREC|{scope}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=chunk_pause)
-        _send_one_sync(f"HASHEND|{scope}|{len(manifest)}", destination_node_id, interface, pause_seconds=chunk_pause)
+            _send_one_sync(f"HASHREC|{_scope_wire}|{key}|{rec_hash}", destination_node_id, interface, pause_seconds=chunk_pause)
+        _send_one_sync(f"HASHEND|{_scope_wire}|{len(manifest)}", destination_node_id, interface, pause_seconds=chunk_pause)
         return
 
     chunks = [b64[i:i + max_chunk] for i in range(0, len(b64), max_chunk)] or [""]
@@ -1268,6 +1277,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning("HASHREQ ignored due to missing sender_node_id")
                 return
             requested = message.split("|", 1)[1].strip().lower() if "|" in message else "all"
+            requested = decode_scope(requested) if requested != 'all' else 'all'
             scopes = _SUPPORTED_HASH_SCOPES if requested == 'all' else [requested]
             for scope in scopes:
                 if scope in _SUPPORTED_HASH_SCOPES:
@@ -1280,6 +1290,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed HASHREC ignored: {message}")
                 return
             scope, key, rec_hash = parts[1], parts[2], parts[3]
+            scope = decode_scope(scope)
             if scope not in _SUPPORTED_HASH_SCOPES:
                 return
             buf_key = (sender_node_id, scope)
@@ -1295,6 +1306,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed HASHZ ignored: {message}")
                 return
             scope, manifest_id = parts[1], parts[2]
+            scope = decode_scope(scope)
             if scope not in _SUPPORTED_HASH_SCOPES:
                 return
             try:
@@ -1369,6 +1381,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed HASHZGAP ignored: {message}")
                 return
             scope, manifest_id, csv = parts[1], parts[2], parts[3]
+            scope = decode_scope(scope)
             if scope not in _SUPPORTED_HASH_SCOPES:
                 return
             try:
@@ -1387,7 +1400,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     f"manifest_id={manifest_id} (cache miss); peer will fall back to HASHREQ"
                 )
                 return
-            prefix = f"HASHZ|{scope}|{manifest_id}|"
+            _scope_wire = encode_scope(scope, peers_all_support([sender_node_id], 'scc'))
+            prefix = f"HASHZ|{_scope_wire}|{manifest_id}|"
             chunk_pause = max(get_hash_repair_pause_seconds(), get_hash_chunk_pause_seconds())
             logging.info(
                 f"Honoring HASHZGAP from {sender_node_id} scope={scope} manifest_id={manifest_id} "
@@ -1413,6 +1427,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed HASHEND ignored: {message}")
                 return
             scope = parts[1]
+            scope = decode_scope(scope)
             if scope not in _SUPPORTED_HASH_SCOPES:
                 return
             _clear_hashreq_pending(sender_node_id, scope)
@@ -1425,6 +1440,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed HASHMISS ignored: {message}")
                 return
             scope, key = parts[1], parts[2]
+            scope = decode_scope(scope)
             if scope not in _SUPPORTED_HASH_SCOPES:
                 return
             _send_requested_record(scope, key, sender_node_id, interface)
@@ -1438,6 +1454,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed CANDREQ ignored: {message}")
                 return
             scope, request_id = parts[1], parts[2]
+            scope = decode_scope(scope)
             if scope != 'zork_saves':
                 return
             try:
@@ -1458,6 +1475,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed CANDRSP ignored: {message}")
                 return
             scope, request_id = parts[1], parts[2]
+            scope = decode_scope(scope)
             if scope != 'zork_saves':
                 return
             try:
