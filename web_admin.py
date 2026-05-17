@@ -2300,8 +2300,24 @@ TRANSMISSION_DASHBOARD_CONTENT = """
   <h2>Sync Session History</h2>
   <p class="muted">Each row is one inferred sync burst — a cluster of non-SYNCSTATE frames to the same peer with no gap longer than 90 seconds. Duration, byte totals, and effective throughput are derived from the live transmission log.</p>
   <div id="sync-sessions-active" style="margin-bottom:14px;"></div>
+  <h3 style="margin-bottom:4px;">Recent (last 24 hours)</h3>
   <div id="sync-sessions-table"><p class="muted" style="font-size:0.9em;">Loading&hellip;</p></div>
   <div id="sync-sessions-status" style="font-size:0.78em;color:var(--muted);margin-top:8px;"></div>
+
+  <h3 style="margin-top:22px;margin-bottom:4px;">Long-term History</h3>
+  <p class="muted" style="font-size:0.85em;">Persisted to the database, so completed sync sessions are preserved even after the raw transmission log rolls over. Use this to track how full-sync duration changes over time.</p>
+  <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
+    <label for="sync-history-window" style="font-size:0.85em;">Window:</label>
+    <select id="sync-history-window" style="font-size:0.85em;">
+      <option value="86400">Last 24 hours</option>
+      <option value="604800" selected>Last 7 days</option>
+      <option value="2592000">Last 30 days</option>
+      <option value="7776000">Last 90 days</option>
+      <option value="31536000">Last year</option>
+    </select>
+    <span id="sync-history-summary" style="font-size:0.82em;color:var(--muted);"></span>
+  </div>
+  <div id="sync-history-table"><p class="muted" style="font-size:0.9em;">Loading&hellip;</p></div>
 </div>
 
 <script>
@@ -2429,6 +2445,69 @@ TRANSMISSION_DASHBOARD_CONTENT = """
   setInterval(refresh, 30000);
   if (_timerInterval) clearInterval(_timerInterval);
   _timerInterval = setInterval(tickElapsed, 1000);
+
+  function renderHistory(sessions) {
+    var el = document.getElementById('sync-history-table');
+    var sumEl = document.getElementById('sync-history-summary');
+    if (!sessions || !sessions.length) {
+      el.innerHTML = '<p class="muted" style="font-size:0.9em;">No persisted sessions in this window yet.</p>';
+      sumEl.textContent = '';
+      return;
+    }
+    // Compute summary stats (avg/min/max duration, total bytes).
+    var n = sessions.length, sumDur = 0, sumBytes = 0;
+    var minDur = Infinity, maxDur = 0;
+    sessions.forEach(function(s) {
+      var d = parseFloat(s.duration_seconds) || 0;
+      sumDur += d; sumBytes += (parseInt(s.total_bytes) || 0);
+      if (d < minDur) minDur = d;
+      if (d > maxDur) maxDur = d;
+    });
+    var avg = sumDur / n;
+    sumEl.textContent = n + ' sessions \u2014 avg ' + fmtDur(avg) +
+      ', min ' + fmtDur(minDur) + ', max ' + fmtDur(maxDur) +
+      ', total ' + fmtBytes(sumBytes);
+
+    var html = '<div style="overflow-x:auto;max-height:480px;overflow-y:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.85em;">';
+    html += '<thead style="position:sticky;top:0;"><tr style="background:var(--table-header-bg);border-bottom:2px solid var(--table-border);">';
+    html += '<th style="padding:6px 8px;text-align:left;">Peer</th>';
+    html += '<th style="padding:6px 8px;text-align:left;">Ended</th>';
+    html += '<th style="padding:6px 8px;text-align:right;">Duration</th>';
+    html += '<th style="padding:6px 8px;text-align:right;">Total</th>';
+    html += '<th style="padding:6px 8px;text-align:right;">Speed</th>';
+    html += '<th style="padding:6px 8px;text-align:right;">Frames</th>';
+    html += '</tr></thead><tbody>';
+    sessions.forEach(function(s, i) {
+      var rowBg = i % 2 === 0 ? '' : 'background:var(--table-alt-bg,rgba(0,0,0,0.02));';
+      html += '<tr style="border-bottom:1px solid var(--table-border);' + rowBg + '">';
+      html += '<td style="padding:5px 8px;font-family:monospace;font-size:0.82em;">' + esc(s.peer_node_id) + '</td>';
+      html += '<td style="padding:5px 8px;font-size:0.8em;color:var(--muted);" title="' + esc(s.ended_at) + '">' + esc(relTime(s.ended_at)) + '</td>';
+      html += '<td style="padding:5px 8px;text-align:right;font-weight:600;">' + fmtDur(s.duration_seconds) + '</td>';
+      html += '<td style="padding:5px 8px;text-align:right;">' + fmtBytes(s.total_bytes) + '</td>';
+      html += '<td style="padding:5px 8px;text-align:right;color:#2a9d8f;">' + fmtSpeed(s.bps) + '</td>';
+      html += '<td style="padding:5px 8px;text-align:right;color:var(--muted);">' + esc(s.frame_count) + '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
+  }
+
+  function refreshHistory() {
+    var sel = document.getElementById('sync-history-window');
+    var since = sel ? sel.value : 604800;
+    fetch('/api/sync/session-history?since_seconds=' + encodeURIComponent(since) + '&limit=500',
+          { headers: { 'Accept': 'application/json' } })
+      .then(function(r) { return r.json(); })
+      .then(function(data) { renderHistory(data.sessions || []); })
+      .catch(function() {
+        document.getElementById('sync-history-table').innerHTML =
+          '<p class="muted" style="font-size:0.9em;">Failed to load history.</p>';
+      });
+  }
+  var winSel = document.getElementById('sync-history-window');
+  if (winSel) winSel.addEventListener('change', refreshHistory);
+  refreshHistory();
+  setInterval(refreshHistory, 60000);
 })();
 </script>
 
@@ -3761,6 +3840,14 @@ def create_app(runtime_interface=None) -> Flask:
       since = min(max(int(request.args.get("since_seconds", 86400)), 300), 604800)
       data = get_sync_sessions(since_seconds=since)
       return jsonify(data)
+
+    @app.get("/api/sync/session-history")
+    @login_required
+    def api_sync_session_history():
+      from db_operations import get_sync_session_history
+      since = min(max(int(request.args.get("since_seconds", 30 * 24 * 3600)), 3600), 365 * 24 * 3600)
+      limit = min(max(int(request.args.get("limit", 200)), 1), 1000)
+      return jsonify({"sessions": get_sync_session_history(since_seconds=since, limit=limit)})
 
     @app.post("/api/sync/force-check")
     @login_required
