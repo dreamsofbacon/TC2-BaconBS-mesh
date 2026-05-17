@@ -41,6 +41,7 @@ from db_operations import (
     get_mismatched_peer_scopes,
     get_scopes_to_request_repair,
     get_record_hash_manifest,
+    get_local_record_counts,
     get_sync_progress,
     get_bulletin_by_unique_id,
     get_mail_by_unique_id,
@@ -64,6 +65,7 @@ from utils import (
     send_delete_channel_comment_to_bbs_nodes,
     send_delete_zork_save_to_bbs_nodes,
     send_hash_request_to_bbs_nodes,
+    send_sync_state_to_bbs_nodes,
     get_hash_repair_pause_seconds,
     get_hash_chunk_pause_seconds,
     get_repair_cycle_seconds,
@@ -679,10 +681,19 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
     # simultaneously causes bidirectional HASHZ storms on half-duplex LoRa.
     requested_scopes = get_scopes_to_request_repair(sender_node_id, requested_scopes)
     if not requested_scopes:
-        logging.debug(
+        # Local has more records in all mismatched scopes.  Send our SYNCSTATE
+        # directly to this peer so it sees our counts and can send HASHREQ to
+        # us.  Without this, mail/bulletins sit undelivered until the peer
+        # happens to receive our next scheduled broadcast (which may be delayed
+        # by the "state unchanged" skip-guard on lossy LoRa).
+        logging.info(
             f"SYNCSTATE mismatch from {sender_node_id}: local has more records in all scopes; "
-            f"letting peer request our manifest via HASHREQ"
+            f"poking peer with SYNCSTATE so it can request our manifest"
         )
+        try:
+            send_sync_state_to_bbs_nodes(get_local_record_counts(), [sender_node_id], interface)
+        except Exception as exc:
+            logging.warning(f"Failed to send poke SYNCSTATE to {sender_node_id}: {exc}")
         return
     # Deprioritize zork_saves: it carries the largest, most chunk-loss-prone
     # payloads and is the least important scope. If anything else is also out
