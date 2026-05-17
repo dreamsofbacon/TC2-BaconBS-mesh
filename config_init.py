@@ -3,6 +3,7 @@ import os
 import time
 from typing import Any
 from app_paths import resolve_app_path
+import meshtastic.mesh_interface
 import meshtastic.stream_interface
 import meshtastic.serial_interface
 import meshtastic.tcp_interface
@@ -191,3 +192,6 @@ def get_interface(system_config:dict[str, Any]) -> meshtastic.stream_interface.S
         except PermissionError as e:
             print(f"PermissionError: {e}. Retrying in 5 seconds...")
             time.sleep(5)
+        except meshtastic.mesh_interface.MeshInterface.MeshInterfaceError as e:
+            print(f"MeshInterfaceError: {e}. Radio may be hung — retrying in 10 seconds...")
+            time.sleep(10)
