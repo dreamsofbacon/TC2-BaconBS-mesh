@@ -1249,6 +1249,20 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             with _hash_buffer_lock:
                 buf = _peer_hash_compressed_buffers.get(buf_key)
                 if buf is None or int(buf.get('total', -1)) != total_chunks:
+                    # Before creating a new buffer, check whether we already have
+                    # a majority-complete buffer for this (peer, scope) with a
+                    # different manifest_id.  If so, discard the new manifest's
+                    # chunk to avoid fragmenting progress across competing streams.
+                    skip_new = False
+                    for existing_key, existing_buf in _peer_hash_compressed_buffers.items():
+                        if existing_key[0] == sender_node_id and existing_key[1] == scope and existing_key[2] != manifest_id:
+                            ex_received = len(existing_buf.get('chunks', {}))
+                            ex_total = int(existing_buf.get('total', 0))
+                            if ex_total > 0 and ex_received >= (ex_total + 1) // 2:
+                                skip_new = True
+                                break
+                    if skip_new:
+                        return
                     buf = {
                         'total': total_chunks,
                         'chunks': {},
