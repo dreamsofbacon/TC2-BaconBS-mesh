@@ -316,7 +316,17 @@ def _retry_stale_hash_manifest_buffers(interface) -> None:
                 # If we already have the majority of chunks, keep retrying rather
                 # than discarding the partial buffer and starting over from scratch.
                 # Resetting gap_attempts here lets the HASHZGAP loop continue.
-                if received > 0 and total > 0 and received >= (total + 1) // 2:
+                # However, if the buffer has been alive too long it means the
+                # sender has lost the manifest from its cache and HASHZGAP will
+                # never succeed — so cap majority-retries by wall-clock age.
+                buffer_age = now - float(buf.get('created_at', now))
+                majority_and_young = (
+                    received > 0
+                    and total > 0
+                    and received >= (total + 1) // 2
+                    and buffer_age < _HASH_BUFFER_MAX_AGE_SECONDS // 5
+                )
+                if majority_and_young:
                     buf['gap_attempts'] = 0
                     buf['updated_at'] = now
                     fallback_to_hashreq = False
