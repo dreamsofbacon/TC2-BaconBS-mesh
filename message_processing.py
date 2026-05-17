@@ -1538,6 +1538,52 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     logging.warning(f"Malformed ZORKSAVE payload ignored: {message}")
                 finally:
                     _zork_save_chunk_buffers.pop(key, None)
+        elif message.startswith("HAVE|"):
+            # Phase-2 op-log discovery: peer advertises its event heads per scope.
+            if not sender_node_id:
+                logging.warning("HAVE ignored: missing sender_node_id")
+                return
+            try:
+                import op_sync
+                from db_operations import get_local_node_id
+                op_sync.handle_have(
+                    message.split("|"),
+                    sender_node_id=sender_node_id,
+                    local_node_id=get_local_node_id() or '',
+                    interface=interface,
+                )
+            except Exception as exc:
+                logging.warning(f"HAVE handler failed: {exc}")
+        elif message.startswith("WANT|"):
+            # Phase-2 op-log discovery: peer requests EVENT frames for a scope/origin range.
+            if not sender_node_id:
+                logging.warning("WANT ignored: missing sender_node_id")
+                return
+            try:
+                import op_sync
+                from db_operations import get_local_node_id
+                op_sync.handle_want(
+                    message.split("|"),
+                    sender_node_id=sender_node_id,
+                    local_node_id=get_local_node_id() or '',
+                    interface=interface,
+                )
+            except Exception as exc:
+                logging.warning(f"WANT handler failed: {exc}")
+        elif message.startswith("EVENT|"):
+            # Phase-2 op-log discovery: peer delivers an op_log event; fetch record if missing.
+            if not sender_node_id:
+                logging.warning("EVENT ignored: missing sender_node_id")
+                return
+            try:
+                import op_sync
+                op_sync.handle_event(
+                    message.split("|"),
+                    sender_node_id=sender_node_id,
+                    interface=interface,
+                )
+            except Exception as exc:
+                logging.warning(f"EVENT handler failed: {exc}")
     else:
         if message_lower.startswith("sm,,"):
             handle_send_mail_command(sender_id, message_strip, interface, bbs_nodes)
@@ -1671,7 +1717,8 @@ def on_receive(packet, interface):
                                    "CHANNEL|", "CHANNELCOMMENT|", "CHANNELCOMMENTCONT|", "CHANNELCOMMENTMETA|", "DELETE_CHANNELCOMMENT|",
                                    "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
                                    "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
-                                   "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|", "HASHZGAP|"])
+                                   "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|", "HASHZGAP|",
+                                   "HAVE|", "WANT|", "EVENT|"])
 
             msg_type = "sync" if is_sync_message else "user"
             sync_frame = message_string.split("|", 1)[0] if is_sync_message and "|" in message_string else (message_string[:24] if is_sync_message else "")
