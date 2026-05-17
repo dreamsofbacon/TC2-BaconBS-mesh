@@ -1303,13 +1303,16 @@ def get_scopes_to_request_repair(peer_node_id: str, candidate_scopes: list) -> l
         peer_count = peer_counts.get(scope, 0)
         if local_count <= peer_count:
             result.append(scope)
-        elif peer_count == 0 and local_count > 0:
-            # Peer has zero records for this scope.  Request their empty
-            # manifest (a single tiny chunk) so we can immediately push all
-            # our local records without waiting for the peer to discover our
-            # counts through a SYNCSTATE it may never receive on a lossy link.
+        elif local_count <= 10:
+            # Small scope (≤10 records locally): request peer's manifest even
+            # when we have more.  The reconcile will push our extra records
+            # directly without relying on the peer receiving our SYNCSTATE
+            # (which may be lost on an 80% lossy half-duplex LoRa link).
+            # Large manifests (channels etc.) are excluded here to avoid
+            # bidirectional HASHZ storms; those peers will request via HASHREQ
+            # after observing our SYNCSTATE.
             result.append(scope)
-        # else: local has more and peer has some — peer will request our manifest via HASHREQ
+        # else: large scope and local has more — peer will request our manifest
     return result
 
 
