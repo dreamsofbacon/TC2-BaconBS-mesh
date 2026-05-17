@@ -66,8 +66,19 @@ def ensure_op_log_schema(cursor) -> None:
                next_seq INTEGER NOT NULL
            );'''
     )
+    # Tracks the highest seq we have *received* from each peer per scope via EVENT frames.
+    # Separate from op_log_state (which only allocates seqs for locally-created events).
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS op_log_peer_head (
+               peer_node_id TEXT NOT NULL,
+               scope TEXT NOT NULL,
+               max_received_seq INTEGER NOT NULL,
+               PRIMARY KEY (peer_node_id, scope)
+           );'''
+    )
     cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_op_log_event_id_unique ON op_log(event_id);')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_op_log_scope_target ON op_log(scope, target_uid);')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_op_log_origin_scope_seq ON op_log(origin_node_id, scope, origin_seq);')
 
 
 def _allocate_next_origin_seq(cursor, origin_node_id: str) -> int:
@@ -185,3 +196,65 @@ def try_dual_write(
         )
     except Exception as exc:
         logging.warning('op_log dual-write failed (%s %s %s): %s', event_type, scope, target_uid, exc)
+
+
+# ── Query helpers used by op_sync.py ──────────────────────────────────────────
+
+def get_local_op_log_head(cursor, local_node_id: str, scope: str) -> int:
+    """Return the highest origin_seq this node has in op_log for the given scope.
+    Returns 0 if no events exist yet.
+    """
+    row = cursor.execute(
+        'SELECT MAX(origin_seq) FROM op_log WHERE origin_node_id = ? AND scope = ?',
+        (str(local_node_id), str(scope)),
+    ).fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def get_peer_received_head(cursor, peer_node_id: str, scope: str) -> int:
+    """Return the highest seq we have acknowledged receiving from peer for scope.
+    Returns 0 if we have not seen any events from this peer for this scope.
+    """
+    row = cursor.execute(
+        'SELECT max_received_seq FROM op_log_peer_head WHERE peer_node_id = ? AND scope = ?',
+        (str(peer_node_id), str(scope)),
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def update_peer_received_head(cursor, peer_node_id: str, scope: str, received_seq: int) -> None:
+    """Advance the peer head watermark, but never go backwards."""
+    cursor.execute(
+        '''INSERT INTO op_log_peer_head (peer_node_id, scope, max_received_seq)
+           VALUES (?, ?, ?)
+           ON CONFLICT(peer_node_id, scope) DO UPDATE SET
+               max_received_seq = MAX(max_received_seq, excluded.max_received_seq)''',
+        (str(peer_node_id), str(scope), int(received_seq)),
+    )
+
+
+def get_op_log_events(
+    cursor,
+    origin_node_id: str,
+    scope: str,
+    from_seq: int,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Return up to *limit* op_log rows for (origin_node_id, scope) starting at from_seq."""
+    rows = cursor.execute(
+        '''SELECT origin_seq, event_id, event_type, target_uid
+           FROM op_log
+           WHERE origin_node_id = ? AND scope = ? AND origin_seq >= ?
+           ORDER BY origin_seq
+           LIMIT ?''',
+        (str(origin_node_id), str(scope), int(from_seq), int(limit)),
+    ).fetchall()
+    return [
+        {
+            'origin_seq': int(r[0]),
+            'event_id': str(r[1]),
+            'event_type': str(r[2]),
+            'target_uid': str(r[3]),
+        }
+        for r in rows
+    ]

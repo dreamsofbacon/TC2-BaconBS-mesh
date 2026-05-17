@@ -42,6 +42,7 @@ from db_operations import (
     get_peers_with_phase_complete,
     get_incomplete_record_uids,
     set_local_node_id,
+    get_local_node_id,
 )
 from js8call_integration import JS8CallClient
 from message_processing import (
@@ -53,7 +54,7 @@ from message_processing import (
     get_candidate_resolution_snapshot,
 )
 from pubsub import pub
-from utils import send_hash_request_to_bbs_nodes, send_sync_state_to_bbs_nodes, select_syncstate_peers_to_notify
+from utils import send_hash_request_to_bbs_nodes, send_sync_state_to_bbs_nodes, send_have_to_bbs_nodes, select_syncstate_peers_to_notify
 
 # General logging
 logging.basicConfig(
@@ -558,6 +559,7 @@ def main():
                         destinations = select_syncstate_peers_to_notify(current_bbs_nodes, local_counts, syncstate_advertisement_cache, now=now, force=True)
                         if destinations:
                             send_sync_state_to_bbs_nodes(local_counts, destinations, interface)
+                            send_have_to_bbs_nodes(get_local_node_id(), list(destinations), interface)
                         # Manual sync clears all phase sets so every phase reruns from scratch.
                         mail_synced_nodes.clear()
                         bulletins_synced_nodes.clear()
@@ -576,6 +578,7 @@ def main():
                         system_config['sync_last_trigger_reason'] = 'scheduled'
                         if destinations:
                             send_sync_state_to_bbs_nodes(local_counts, destinations, interface)
+                            send_have_to_bbs_nodes(get_local_node_id(), list(destinations), interface)
                             logging.info(
                                 f"Scheduled sync interval reached ({sync_interval_minutes} minutes); "
                                 f"sent SYNCSTATE to {len(destinations)} peer(s)"

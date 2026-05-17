@@ -451,6 +451,24 @@ def send_sync_state_to_bbs_nodes(counts, bbs_nodes, interface):
         _send_one_sync(message, node_id, interface)
 
 
+def send_have_to_bbs_nodes(local_node_id: str, bbs_nodes, interface) -> None:
+    """Broadcast a HAVE frame advertising local op_log heads to all peers.
+
+    This is the Phase-2 replacement for the SYNCSTATE heartbeat for op-log
+    scopes.  SYNCSTATE is still sent alongside for backward compatibility.
+    """
+    if not local_node_id or not bbs_nodes:
+        return
+    try:
+        from op_sync import build_have_frame
+        frame = build_have_frame(local_node_id)
+        if frame:
+            for node_id in bbs_nodes:
+                _send_one_sync(frame, node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+    except Exception as exc:
+        logging.warning('send_have_to_bbs_nodes failed: %s', exc)
+
+
 def send_hash_request_to_bbs_nodes(bbs_nodes, interface, scope='all'):
     """Ask peers to send per-record hash manifests for selective repair.
 
