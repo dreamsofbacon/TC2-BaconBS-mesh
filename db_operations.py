@@ -603,8 +603,20 @@ def initialize_database():
                     game_scores_hash TEXT NOT NULL DEFAULT '',
                     reported_at TEXT NOT NULL,
                     phases_complete TEXT NOT NULL DEFAULT '',
-                    tombstones INTEGER NOT NULL DEFAULT -1
+                    tombstones INTEGER NOT NULL DEFAULT -1,
+                    proto_v INTEGER NOT NULL DEFAULT 0,
+                    caps TEXT NOT NULL DEFAULT '',
+                    caps_observed_at TEXT NOT NULL DEFAULT ''
                 );''')
+    # Forward-compat migration: ensure newer columns exist on legacy DBs.
+    c.execute("PRAGMA table_info(peer_sync_state)")
+    _pss_cols = {row[1] for row in c.fetchall()}
+    if 'proto_v' not in _pss_cols:
+        c.execute("ALTER TABLE peer_sync_state ADD COLUMN proto_v INTEGER NOT NULL DEFAULT 0")
+    if 'caps' not in _pss_cols:
+        c.execute("ALTER TABLE peer_sync_state ADD COLUMN caps TEXT NOT NULL DEFAULT ''")
+    if 'caps_observed_at' not in _pss_cols:
+        c.execute("ALTER TABLE peer_sync_state ADD COLUMN caps_observed_at TEXT NOT NULL DEFAULT ''")
     c.execute('''CREATE TABLE IF NOT EXISTS deleted_sync_tombstones (
                     tombstone_key TEXT PRIMARY KEY,
                     deleted_at TEXT NOT NULL
@@ -1298,8 +1310,16 @@ def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channel
                            profiles: int = 0, game_scores: int = 0,
                            bulletins_hash: str = '', mail_hash: str = '', channels_hash: str = '',
                            zork_saves_hash: str = '', profiles_hash: str = '', game_scores_hash: str = '',
-                           tombstones: int = -1) -> None:
-    """Store the latest advertised SYNCSTATE counts for a peer node."""
+                           tombstones: int = -1,
+                           proto_v: int = 0, caps: str = '') -> None:
+    """Store the latest advertised SYNCSTATE counts for a peer node.
+
+    ``proto_v`` and ``caps`` carry the peer's wire-protocol version and
+    capability list as observed in the most recent SYNCSTATE frame.  ``caps``
+    is the comma-separated cap-code list ONLY (no ``vN:`` prefix); the prefix
+    is stripped by the caller.  When ``proto_v`` is 0 (legacy peer) the row
+    keeps any previously-observed caps untouched.
+    """
     if not peer_node_id:
         return
     conn = get_db_connection()
@@ -1308,9 +1328,9 @@ def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channel
         '''INSERT INTO peer_sync_state (
                peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores,
                bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, game_scores_hash,
-               reported_at, tombstones
+               reported_at, tombstones, proto_v, caps, caps_observed_at
            )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(peer_node_id) DO UPDATE SET
                bulletins=excluded.bulletins,
                mail=excluded.mail,
@@ -1325,7 +1345,10 @@ def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channel
                profiles_hash=excluded.profiles_hash,
                game_scores_hash=excluded.game_scores_hash,
                reported_at=excluded.reported_at,
-               tombstones=excluded.tombstones''',
+               tombstones=excluded.tombstones,
+               proto_v=CASE WHEN excluded.proto_v > 0 THEN excluded.proto_v ELSE peer_sync_state.proto_v END,
+               caps=CASE WHEN excluded.proto_v > 0 THEN excluded.caps ELSE peer_sync_state.caps END,
+               caps_observed_at=CASE WHEN excluded.proto_v > 0 THEN excluded.caps_observed_at ELSE peer_sync_state.caps_observed_at END''',
         (
             peer_node_id,
             int(bulletins),
@@ -1342,9 +1365,71 @@ def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channel
             str(game_scores_hash or ''),
             datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             int(tombstones),
+            int(proto_v or 0),
+            str(caps or ''),
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S') if int(proto_v or 0) > 0 else '',
         ),
     )
     conn.commit()
+    # Invalidate the in-process cap cache so subsequent peer_supports() calls
+    # observe the freshly-stored caps without waiting for TTL.
+    _peer_caps_cache.pop(peer_node_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Peer capability lookup (used by senders to gate new wire formats)
+# ---------------------------------------------------------------------------
+
+_peer_caps_cache: dict = {}  # peer_node_id -> (expires_at, proto_v, frozenset[str])
+_PEER_CAPS_CACHE_TTL_SECONDS = 60.0
+
+
+def get_peer_caps(peer_node_id: str) -> tuple:
+    """Return ``(proto_v, frozenset[caps])`` for the peer.
+
+    Cached for ``_PEER_CAPS_CACHE_TTL_SECONDS`` so the hot send path can call
+    this for every frame.  Returns ``(0, frozenset())`` for unknown peers and
+    legacy peers that have never sent ``proto_v``.
+    """
+    if not peer_node_id:
+        return (0, frozenset())
+    now = time.time()
+    cached = _peer_caps_cache.get(peer_node_id)
+    if cached is not None and cached[0] > now:
+        return (cached[1], cached[2])
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "SELECT proto_v, caps FROM peer_sync_state WHERE peer_node_id = ?",
+            (peer_node_id,),
+        )
+        row = c.fetchone()
+    except sqlite3.OperationalError:
+        # Table doesn't exist yet on a fresh DB.
+        row = None
+    if not row:
+        result = (0, frozenset())
+    else:
+        proto_v = int(row[0] or 0)
+        cap_csv = str(row[1] or '')
+        cap_set = frozenset(tok for tok in (s.strip() for s in cap_csv.split(',')) if tok)
+        result = (proto_v, cap_set)
+    _peer_caps_cache[peer_node_id] = (now + _PEER_CAPS_CACHE_TTL_SECONDS, result[0], result[1])
+    return result
+
+
+def peer_supports(peer_node_id: str, cap: str) -> bool:
+    """Return True iff ``peer_node_id`` has advertised ``cap`` in SYNCSTATE."""
+    if not peer_node_id or not cap:
+        return False
+    _, caps = get_peer_caps(peer_node_id)
+    return cap in caps
+
+
+def _clear_peer_caps_cache() -> None:
+    """Test hook: wipe the in-process cap cache."""
+    _peer_caps_cache.clear()
 
 
 def get_peer_sync_states() -> list:
