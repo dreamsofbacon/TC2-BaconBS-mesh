@@ -923,6 +923,107 @@ def clear_sync_transmissions() -> None:
         logging.debug(f"Failed to clear sync transmissions: {e}")
 
 
+def get_sync_sessions(since_seconds: int = 86400, gap_seconds: int = 90, limit: int = 30) -> dict:
+    """Infer sync sessions from the transmission log.
+
+    A "session" is a burst of non-SYNCSTATE frames to/from the same peer where
+    no two consecutive frames are more than *gap_seconds* apart.
+
+    Returns a dict with two keys:
+      'sessions': list of completed session dicts, most-recent first (up to *limit*)
+      'active':   list of still-in-progress session dicts (last frame < gap_seconds ago)
+
+    Each session dict contains:
+      peer_node_id, started_at, ended_at, duration_seconds,
+      bytes_tx, bytes_rx, total_bytes, frame_count, bps (float or None)
+    """
+    from datetime import timezone as _tz
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        since = (datetime.utcnow() - timedelta(seconds=max(60, int(since_seconds)))).isoformat() + 'Z'
+        c.execute(
+            """SELECT destination_node_id, transmission_time, frame_size_bytes, direction
+               FROM sync_transmissions
+               WHERE transmission_time >= ?
+                 AND frame_type != 'SYNCSTATE'
+               ORDER BY destination_node_id, transmission_time ASC""",
+            (since,),
+        )
+        rows = c.fetchall()
+    except Exception as e:
+        logging.debug(f"get_sync_sessions error: {e}")
+        return {'sessions': [], 'active': []}
+
+    def _to_ts(s: str) -> float:
+        try:
+            return datetime.fromisoformat(s.rstrip('Z').replace(' ', 'T')).replace(tzinfo=_tz.utc).timestamp()
+        except Exception:
+            return 0.0
+
+    now = datetime.utcnow().replace(tzinfo=_tz.utc).timestamp()
+    buckets: dict = {}
+
+    for row in rows:
+        peer = str(row[0] or 'broadcast')
+        t_str = str(row[1])
+        size = int(row[2] or 0)
+        direction = str(row[3] or 'tx')
+        ts = _to_ts(t_str)
+        if ts == 0.0:
+            continue
+        buckets.setdefault(peer, []).append((ts, size, direction, t_str))
+
+    raw_sessions = []
+    for peer, events in buckets.items():
+        current = None
+        for ts, size, direction, t_str in events:
+            if current is None or ts - current['end_ts'] > gap_seconds:
+                if current:
+                    raw_sessions.append(current)
+                current = {
+                    'peer': peer, 'start_ts': ts, 'end_ts': ts,
+                    'start_str': t_str, 'end_str': t_str,
+                    'bytes_tx': 0, 'bytes_rx': 0, 'frames': 0,
+                }
+            current['end_ts'] = ts
+            current['end_str'] = t_str
+            current['frames'] += 1
+            if direction == 'tx':
+                current['bytes_tx'] += size
+            else:
+                current['bytes_rx'] += size
+        if current:
+            raw_sessions.append(current)
+
+    def _build(s: dict) -> dict:
+        dur = max(s['end_ts'] - s['start_ts'], 0.0)
+        total = s['bytes_tx'] + s['bytes_rx']
+        return {
+            'peer_node_id': s['peer'],
+            'started_at': s['start_str'],
+            'ended_at': s['end_str'],
+            'duration_seconds': round(dur, 1),
+            'bytes_tx': s['bytes_tx'],
+            'bytes_rx': s['bytes_rx'],
+            'total_bytes': total,
+            'frame_count': s['frames'],
+            'bps': round(total / dur, 1) if dur >= 1.0 else None,
+        }
+
+    completed = []
+    active = []
+    for s in raw_sessions:
+        if now - s['end_ts'] < gap_seconds:
+            active.append(_build(s))
+        else:
+            completed.append(_build(s))
+
+    completed.sort(key=lambda x: x['ended_at'], reverse=True)
+    active.sort(key=lambda x: x['started_at'])
+    return {'sessions': completed[:max(1, int(limit))], 'active': active}
+
+
 def _build_tombstone_key(scope: str, record_key: str) -> str:
     return f"{scope}:{record_key}"
 

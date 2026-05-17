@@ -2296,6 +2296,142 @@ TRANSMISSION_DASHBOARD_CONTENT = """
 })();
 </script>
 
+<div class="card" id="sync-sessions-card">
+  <h2>Sync Session History</h2>
+  <p class="muted">Each row is one inferred sync burst — a cluster of non-SYNCSTATE frames to the same peer with no gap longer than 90 seconds. Duration, byte totals, and effective throughput are derived from the live transmission log.</p>
+  <div id="sync-sessions-active" style="margin-bottom:14px;"></div>
+  <div id="sync-sessions-table"><p class="muted" style="font-size:0.9em;">Loading&hellip;</p></div>
+  <div id="sync-sessions-status" style="font-size:0.78em;color:var(--muted);margin-top:8px;"></div>
+</div>
+
+<script>
+(function() {
+  function fmtBytes(b) {
+    if (b == null) return '—';
+    b = parseInt(b) || 0;
+    if (b < 1024)        return b + ' B';
+    if (b < 1048576)     return (b / 1024).toFixed(1) + ' KB';
+    return (b / 1048576).toFixed(2) + ' MB';
+  }
+  function fmtDur(sec) {
+    if (sec == null) return '—';
+    sec = parseFloat(sec);
+    if (sec < 60) return sec.toFixed(1) + 's';
+    var m = Math.floor(sec / 60), s = Math.round(sec % 60);
+    if (sec < 3600) return m + 'm ' + s + 's';
+    var h = Math.floor(m / 60); m = m % 60;
+    return h + 'h ' + m + 'm';
+  }
+  function fmtSpeed(bps) {
+    if (bps == null) return '—';
+    bps = parseFloat(bps);
+    if (bps < 1024)    return bps.toFixed(1) + ' B/s';
+    if (bps < 1048576) return (bps / 1024).toFixed(2) + ' KB/s';
+    return (bps / 1048576).toFixed(3) + ' MB/s';
+  }
+  function isoToDate(s) {
+    if (!s) return null;
+    return new Date(s.replace(' ', 'T').replace(/Z?$/, 'Z'));
+  }
+  function relTime(s) {
+    var d = isoToDate(s);
+    if (!d || isNaN(d)) return '';
+    var secs = Math.round((Date.now() - d.getTime()) / 1000);
+    if (secs < 5)    return 'just now';
+    if (secs < 60)   return secs + 's ago';
+    if (secs < 3600) return Math.floor(secs / 60) + 'm ago';
+    return Math.floor(secs / 3600) + 'h ago';
+  }
+  function esc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  var _activeSessions = [];
+  var _timerInterval = null;
+
+  function renderActive() {
+    var el = document.getElementById('sync-sessions-active');
+    if (!_activeSessions.length) { el.innerHTML = ''; return; }
+    var now = Date.now();
+    var html = '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:4px;">';
+    _activeSessions.forEach(function(s) {
+      var startMs = (isoToDate(s.started_at) || new Date()).getTime();
+      var elapsed = ((now - startMs) / 1000);
+      html += '<div style="border:2px solid #2a9d8f;border-radius:8px;padding:10px 14px;background:rgba(42,157,143,0.06);min-width:220px;">';
+      html += '<div style="font-size:0.75em;text-transform:uppercase;letter-spacing:0.06em;color:#2a9d8f;font-weight:700;margin-bottom:4px;">&#9679; Syncing</div>';
+      html += '<div style="font-family:monospace;font-size:0.9em;margin-bottom:4px;">' + esc(s.peer_node_id) + '</div>';
+      html += '<div style="font-size:1.5em;font-weight:700;letter-spacing:0.04em;" class="session-elapsed" data-start="' + (startMs) + '">' + fmtDur(elapsed) + '</div>';
+      html += '<div style="font-size:0.82em;color:var(--muted);margin-top:4px;">' + fmtBytes(s.total_bytes) + ' &middot; ' + s.frame_count + ' frames</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+    el.innerHTML = html;
+  }
+
+  function tickElapsed() {
+    var now = Date.now();
+    document.querySelectorAll('.session-elapsed').forEach(function(el) {
+      var start = parseInt(el.dataset.start) || now;
+      el.textContent = fmtDur((now - start) / 1000);
+    });
+  }
+
+  function renderTable(sessions) {
+    var el = document.getElementById('sync-sessions-table');
+    if (!sessions || !sessions.length) {
+      el.innerHTML = '<p class="muted" style="font-size:0.9em;">No completed sync sessions recorded yet in the last 24 hours.</p>';
+      return;
+    }
+    var html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.88em;">';
+    html += '<thead><tr style="background:var(--table-header-bg);border-bottom:2px solid var(--table-border);">';
+    html += '<th style="padding:7px 8px;text-align:left;">Peer</th>';
+    html += '<th style="padding:7px 8px;text-align:left;">Ended</th>';
+    html += '<th style="padding:7px 8px;text-align:right;">Duration</th>';
+    html += '<th style="padding:7px 8px;text-align:right;">Sent</th>';
+    html += '<th style="padding:7px 8px;text-align:right;">Received</th>';
+    html += '<th style="padding:7px 8px;text-align:right;">Total</th>';
+    html += '<th style="padding:7px 8px;text-align:right;">Speed</th>';
+    html += '<th style="padding:7px 8px;text-align:right;">Frames</th>';
+    html += '</tr></thead><tbody>';
+    sessions.forEach(function(s, i) {
+      var rowBg = i % 2 === 0 ? '' : 'background:var(--table-alt-bg,rgba(0,0,0,0.02));';
+      html += '<tr style="border-bottom:1px solid var(--table-border);' + rowBg + '">';
+      html += '<td style="padding:6px 8px;font-family:monospace;font-size:0.85em;">' + esc(s.peer_node_id) + '</td>';
+      html += '<td style="padding:6px 8px;font-size:0.82em;color:var(--muted);" title="' + esc(s.ended_at) + '">' + esc(relTime(s.ended_at)) + '</td>';
+      html += '<td style="padding:6px 8px;text-align:right;font-weight:600;">' + fmtDur(s.duration_seconds) + '</td>';
+      html += '<td style="padding:6px 8px;text-align:right;">' + fmtBytes(s.bytes_tx) + '</td>';
+      html += '<td style="padding:6px 8px;text-align:right;">' + fmtBytes(s.bytes_rx) + '</td>';
+      html += '<td style="padding:6px 8px;text-align:right;font-weight:600;">' + fmtBytes(s.total_bytes) + '</td>';
+      html += '<td style="padding:6px 8px;text-align:right;color:#2a9d8f;">' + fmtSpeed(s.bps) + '</td>';
+      html += '<td style="padding:6px 8px;text-align:right;color:var(--muted);">' + esc(s.frame_count) + '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
+  }
+
+  function refresh() {
+    fetch('/api/sync/sessions', { headers: { 'Accept': 'application/json' } })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        _activeSessions = data.active || [];
+        renderActive();
+        renderTable(data.sessions || []);
+        document.getElementById('sync-sessions-status').textContent =
+          'Updated ' + new Date().toLocaleTimeString();
+      })
+      .catch(function() {
+        document.getElementById('sync-sessions-status').textContent = 'Refresh failed — retrying\u2026';
+      });
+  }
+
+  refresh();
+  setInterval(refresh, 30000);
+  if (_timerInterval) clearInterval(_timerInterval);
+  _timerInterval = setInterval(tickElapsed, 1000);
+})();
+</script>
+
 <div class="card">
   <h2>Sync Transmission Stats</h2>
   <form method="post" action="{{ url_for('system_transmissions_reset') }}" onsubmit="return confirm('Reset transmission stats history now?');" style="margin:8px 0 14px 0;">
@@ -3617,6 +3753,14 @@ def create_app(runtime_interface=None) -> Flask:
     def api_sync_manual():
       request_manual_sync_trigger()
       return jsonify({"ok": True, "message": "Manual sync requested"})
+
+    @app.get("/api/sync/sessions")
+    @login_required
+    def api_sync_sessions():
+      from db_operations import get_sync_sessions
+      since = min(max(int(request.args.get("since_seconds", 86400)), 300), 604800)
+      data = get_sync_sessions(since_seconds=since)
+      return jsonify(data)
 
     @app.post("/api/sync/force-check")
     @login_required
