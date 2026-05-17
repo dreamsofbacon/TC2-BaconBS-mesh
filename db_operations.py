@@ -1258,6 +1258,55 @@ def get_mismatched_peer_scopes(expected_peer_nodes=None) -> dict:
     return by_peer
 
 
+def get_scopes_to_request_repair(peer_node_id: str, candidate_scopes: list) -> list:
+    """Filter *candidate_scopes* to those where we have <= peer's count.
+
+    Sending HASHREQ only makes sense when we have fewer (or equal) records than
+    the peer — the peer will send its manifest and we can diff to find what we
+    are missing.  When we have *more* records we should be the manifest sender,
+    not the requester; the peer will send HASHREQ after it sees our SYNCSTATE.
+    Requesting in both directions simultaneously causes bidirectional HASHZ
+    storms that saturate the half-duplex LoRa channel.
+
+    Tombstones are always included because deletions can propagate in either
+    direction.  Equal-count-but-different-hash scopes are also included; that
+    case requires a manifest exchange to find differing records.
+    """
+    if not peer_node_id or not candidate_scopes:
+        return list(candidate_scopes)
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT bulletins, mail, channels, zork_saves, profiles, game_scores "
+        "FROM peer_sync_state WHERE peer_node_id = ?",
+        (peer_node_id,),
+    )
+    row = c.fetchone()
+    if row is None:
+        return list(candidate_scopes)
+
+    local = get_local_record_counts()
+    peer_counts = {
+        'bulletins': int(row[0]),
+        'mail':      int(row[1]),
+        'channels':  int(row[2]),
+        'zork_saves': int(row[3]),
+        'profiles':  int(row[4]),
+        'game_scores': int(row[5]),
+    }
+    result = []
+    for scope in candidate_scopes:
+        if scope == 'tombstones':
+            result.append(scope)
+            continue
+        local_count = int(local.get(scope, 0))
+        peer_count = peer_counts.get(scope, 0)
+        if local_count <= peer_count:
+            result.append(scope)
+        # else: we have more — peer will request our manifest via HASHREQ
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Per-peer full-push phase persistence
 # ---------------------------------------------------------------------------

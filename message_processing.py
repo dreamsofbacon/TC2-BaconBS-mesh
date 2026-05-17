@@ -38,6 +38,7 @@ from db_operations import (
     upsert_synced_zork_save,
     apply_synced_zork_save_delete,
     get_mismatched_peer_scopes,
+    get_scopes_to_request_repair,
     get_record_hash_manifest,
     get_sync_progress,
     get_bulletin_by_unique_id,
@@ -648,6 +649,17 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
     requested_scopes = [s for s in scopes if not _is_hashreq_pending(sender_node_id, s)]
     if not requested_scopes:
         logging.debug(f"SYNCSTATE mismatch from {sender_node_id} but all scopes already have in-flight HASHREQ; skipping")
+        return
+    # Only request HASHREQ for scopes where we have <= peer's count.  When we
+    # have MORE records the peer should be the requester (it will see our higher
+    # count in our SYNCSTATE and send HASHREQ to us).  Sending both directions
+    # simultaneously causes bidirectional HASHZ storms on half-duplex LoRa.
+    requested_scopes = get_scopes_to_request_repair(sender_node_id, requested_scopes)
+    if not requested_scopes:
+        logging.debug(
+            f"SYNCSTATE mismatch from {sender_node_id}: local has more records in all scopes; "
+            f"letting peer request our manifest via HASHREQ"
+        )
         return
     # Deprioritize zork_saves: it carries the largest, most chunk-loss-prone
     # payloads and is the least important scope. If anything else is also out
