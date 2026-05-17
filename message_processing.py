@@ -699,11 +699,14 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
     # payloads and is the least important scope. If anything else is also out
     # of sync, repair those first and defer zork_saves to a later cycle so a
     # stuck multi-chunk save can't starve bulletins/mail/channels of airtime.
+    # NOTE: tombstones is always appended alongside zork_saves, so we must
+    # check for non-tombstone data scopes — otherwise zork is deferred forever.
     non_zork = [s for s in requested_scopes if s != 'zork_saves']
-    if non_zork and len(non_zork) != len(requested_scopes):
+    data_non_zork = [s for s in non_zork if s != 'tombstones']
+    if data_non_zork and len(non_zork) != len(requested_scopes):
         logging.info(
             f"Deferring zork_saves repair for {sender_node_id} until other scopes converge "
-            f"(active: {', '.join(non_zork)})"
+            f"(active: {', '.join(data_non_zork)})"
         )
         requested_scopes = non_zork
     logging.info(f"SYNCSTATE mismatch from {sender_node_id}; requesting targeted repair for scopes: {', '.join(requested_scopes)}")
