@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card" style="max-width:760px">
+  <h2>Edit {{ table_title }}</h2>
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-group">
+      <label for="board">board</label>
+      <select id="board" name="board" class="form-control" required>
+        {% for board in bulletin_boards %}
+        <option value="{{ board }}" {% if row['board'] == board %}selected{% endif %}>{{ board }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="sender_short_name">sender_short_name</label>
+      <input type="text" id="sender_short_name" name="sender_short_name" value="{{ row['sender_short_name'] }}" class="form-control" required>
+    </div>
+    <div class="form-group">
+      <label for="date">date</label>
+      <input type="text" id="date" name="date" value="{{ row['date'] }}" class="form-control" required>
+    </div>
+    <div class="form-group">
+      <label for="subject">subject</label>
+      <input type="text" id="subject" name="subject" value="{{ row['subject'] }}" class="form-control" required>
+    </div>
+    <div class="form-group">
+      <label for="content">content</label>
+      <textarea id="content" name="content" class="form-control" required>{{ row['content'] }}</textarea>
+    </div>
+    <div class="form-group">
+      <label for="local_only">local_only</label>
+      <input type="text" id="local_only" name="local_only" value="{{ row['local_only'] }}" class="form-control" required>
+    </div>
+    <div class="row-actions">
+      <button class="btn btn-primary" type="submit">Save Changes</button>
+      <a class="btn" href="{{ url_for('table_list', table=table_name) }}">Back</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

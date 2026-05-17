@@ -5,6 +5,7 @@ import os
 import re
 import time
 import configparser
+from datetime import datetime
 from typing import Optional
 
 user_states = {}
@@ -26,7 +27,7 @@ _MESHTASTIC_MAX_BYTES = 220
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck',)  # 'cck' = compact channel-comment manifest keys
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps
 
 
 def local_capabilities_token() -> str:
@@ -376,11 +377,13 @@ def get_node_short_name(node_id, interface):
 
 def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface, date=None, source_node_id=None, source_timestamp=None):
     header = f"BULLETIN|{board}|{sender_short_name}|{subject}|"
+    _use_epoch = peers_all_support(bbs_nodes, 'epoch')
     if source_node_id and source_timestamp:
-        date_str = str(date) if date else ''
-        footer = f"|{unique_id}|{date_str}|{source_node_id}|{source_timestamp}"
+        date_str = encode_ts_minute(date, _use_epoch) if date else ''
+        src_ts_str = encode_ts_second(source_timestamp, _use_epoch)
+        footer = f"|{unique_id}|{date_str}|{source_node_id}|{src_ts_str}"
     elif date:
-        footer = f"|{unique_id}|{date}"
+        footer = f"|{unique_id}|{encode_ts_minute(date, _use_epoch)}"
     else:
         footer = f"|{unique_id}"
     _send_sync_with_cont(
@@ -395,11 +398,13 @@ def send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, 
                            interface, date=None, source_node_id=None, source_timestamp=None):
     logging.info(f"SERVER SYNC: Syncing new mail message '{subject}' from {sender_short_name} to peers.")
     header = f"MAIL|{sender_id}|{sender_short_name}|{recipient_id}|{subject}|"
+    _use_epoch = peers_all_support(bbs_nodes, 'epoch')
     if source_node_id and source_timestamp:
-        date_str = str(date) if date else ''
-        footer = f"|{unique_id}|{date_str}|{source_node_id}|{source_timestamp}"
+        date_str = encode_ts_minute(date, _use_epoch) if date else ''
+        src_ts_str = encode_ts_second(source_timestamp, _use_epoch)
+        footer = f"|{unique_id}|{date_str}|{source_node_id}|{src_ts_str}"
     elif date:
-        footer = f"|{unique_id}|{date}"
+        footer = f"|{unique_id}|{encode_ts_minute(date, _use_epoch)}"
     else:
         footer = f"|{unique_id}"
     _send_sync_with_cont(
@@ -426,7 +431,9 @@ def send_delete_mail_to_bbs_nodes(unique_id, bbs_nodes, interface):
 def send_delete_zork_save_to_bbs_nodes(user_id, game_id, deleted_at, bbs_nodes, interface):
     if not is_zork_save_sync_enabled():
         return
-    message = f"DELETE_ZORKSAVE|{_b64(str(user_id))}|{_b64(str(game_id))}|{deleted_at}"
+    _use_epoch = peers_all_support(bbs_nodes, 'epoch')
+    deleted_at_wire = encode_ts_second(deleted_at, _use_epoch)
+    message = f"DELETE_ZORKSAVE|{_b64(str(user_id))}|{_b64(str(game_id))}|{deleted_at_wire}"
     logging.info(f"SERVER SYNC: Sending delete zork save sync for user_id={user_id} game_id={game_id}")
     for node_id in bbs_nodes:
         _send_one_sync(message, node_id, interface)
@@ -447,14 +454,128 @@ def compact_channel_manifest_key(full_key: str) -> str:
     return '~' + base64.urlsafe_b64encode(digest).decode('ascii').rstrip('=')
 
 
+# ---------------------------------------------------------------------------
+# Epoch timestamp helpers (PR 2 — 'epoch' capability)
+# ---------------------------------------------------------------------------
+# Wire form:
+#   m<seconds>   - minute-precision timestamp; decodes to "YYYY-MM-DD HH:MM"
+#                  (used for content dates in BULLETIN/MAIL/CHANNELCOMMENT)
+#   s<seconds>   - second-precision timestamp; decodes to "YYYY-MM-DDTHH:MM:SS"
+#                  (used for ISO source_timestamp trailers and *SYNC fields)
+# Distinct prefixes let the receiver's positional parser disambiguate even when
+# multiple optional timestamp fields are present.  Senders emit epoch form
+# only when *all* peers in the call support the 'epoch' capability; legacy
+# peers keep receiving ISO strings byte-for-byte unchanged.
+
+_EPOCH_MIN_PATTERN = re.compile(r'^m\d+$')
+_EPOCH_SEC_PATTERN = re.compile(r'^s\d+$')
+
+
+def _ts_to_epoch_seconds(value) -> Optional[int]:
+    """Best-effort: convert input → epoch seconds int. Returns None on failure."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = str(value).strip()
+    if not s:
+        return None
+    # Already in epoch form?
+    if _EPOCH_MIN_PATTERN.match(s) or _EPOCH_SEC_PATTERN.match(s):
+        return int(s[1:])
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return int(datetime.strptime(s, fmt).timestamp())
+        except ValueError:
+            continue
+    return None
+
+
+def encode_ts_minute(value, use_epoch: bool = False) -> str:
+    """Encode a content-date value for the wire.
+
+    When ``use_epoch`` is True and the value can be parsed, returns
+    ``m<seconds>`` rounded down to the minute (matching ISO ``YYYY-MM-DD HH:MM``
+    precision).  Otherwise returns the original value as a string.
+    """
+    if value is None:
+        return ""
+    if not use_epoch:
+        return str(value)
+    sec = _ts_to_epoch_seconds(value)
+    if sec is None:
+        return str(value)
+    return f"m{(sec // 60) * 60}"
+
+
+def encode_ts_second(value, use_epoch: bool = False) -> str:
+    """Encode a second-precision (ISO with T) timestamp for the wire.
+
+    When ``use_epoch`` is True and the value can be parsed, returns
+    ``s<seconds>``; otherwise returns the original value as a string.
+    """
+    if value is None:
+        return ""
+    if not use_epoch:
+        return str(value)
+    sec = _ts_to_epoch_seconds(value)
+    if sec is None:
+        return str(value)
+    return f"s{sec}"
+
+
+def decode_ts_minute(token: str) -> str:
+    """Decode a wire timestamp token to ``YYYY-MM-DD HH:MM`` if it's epoch form;
+    otherwise return the token unchanged (pass-through for legacy ISO senders).
+    """
+    if token and _EPOCH_MIN_PATTERN.match(token):
+        try:
+            return datetime.fromtimestamp(int(token[1:])).strftime("%Y-%m-%d %H:%M")
+        except (OSError, ValueError, OverflowError):
+            return token
+    return token
+
+
+def decode_ts_second(token: str) -> str:
+    """Decode a wire timestamp token to ``YYYY-MM-DDTHH:MM:SS`` if it's epoch
+    form; otherwise return the token unchanged.
+    """
+    if token and _EPOCH_SEC_PATTERN.match(token):
+        try:
+            return datetime.fromtimestamp(int(token[1:])).strftime("%Y-%m-%dT%H:%M:%S")
+        except (OSError, ValueError, OverflowError):
+            return token
+    return token
+
+
+def peers_all_support(peer_ids, cap: str) -> bool:
+    """True iff every peer in ``peer_ids`` has advertised the given cap via SYNCSTATE.
+
+    Empty / falsy peer set returns False — we never assume support without proof.
+    Resolves ``db_operations.peer_supports`` lazily to avoid circular imports.
+    """
+    if not peer_ids:
+        return False
+    try:
+        from db_operations import peer_supports
+    except Exception:
+        return False
+    try:
+        return all(peer_supports(p, cap) for p in peer_ids)
+    except Exception:
+        return False
+
+
 def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_date, content, unique_id, bbs_nodes, interface, source_node_id=None, source_timestamp=None):
+    _use_epoch = peers_all_support(bbs_nodes, 'epoch')
+    comment_date_wire = encode_ts_minute(comment_date, _use_epoch) if comment_date else (comment_date or "")
     if source_node_id and source_timestamp:
-        footer = f"|{unique_id}|{source_node_id}|{source_timestamp}"
+        footer = f"|{unique_id}|{source_node_id}|{encode_ts_second(source_timestamp, _use_epoch)}"
     else:
         footer = f"|{unique_id}"
-    full_header = f"CHANNELCOMMENT|{channel_key}|{_b64(sender_short_name)}|{comment_date}|"
+    full_header = f"CHANNELCOMMENT|{channel_key}|{_b64(sender_short_name)}|{comment_date_wire}|"
     short_key = compact_channel_manifest_key(channel_key)
-    short_header = f"CHANNELCOMMENT|{short_key}|{_b64(sender_short_name)}|{comment_date}|"
+    short_header = f"CHANNELCOMMENT|{short_key}|{_b64(sender_short_name)}|{comment_date_wire}|"
 
     # 'cck' capability: peer advertises that it prefers compact channel keys,
     # so always send the short header to it (saves 40-90 bytes per frame).
@@ -564,18 +685,21 @@ def _b64(text: str) -> str:
 
 
 def send_profile_to_bbs_nodes(user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio, bbs_nodes, interface):
+    _use_epoch = peers_all_support(bbs_nodes, 'epoch')
     message = (
         f"PROFILESYNC|{user_id}|{_b64(short_name)}|{_b64(long_name)}|"
-        f"{first_seen}|{last_seen}|{int(messages_sent)}|{_b64(bio)}"
+        f"{encode_ts_second(first_seen, _use_epoch)}|{encode_ts_second(last_seen, _use_epoch)}|"
+        f"{int(messages_sent)}|{_b64(bio)}"
     )
     for node_id in bbs_nodes:
         _send_one_sync(message, node_id, interface)
 
 
 def send_game_score_to_bbs_nodes(user_id, game_id, short_name, score, max_score, moves, achieved_at, bbs_nodes, interface):
+    _use_epoch = peers_all_support(bbs_nodes, 'epoch')
     message = (
         f"SCORESYNC|{user_id}|{game_id}|{_b64(short_name)}|"
-        f"{int(score)}|{int(max_score)}|{int(moves)}|{achieved_at}"
+        f"{int(score)}|{int(max_score)}|{int(moves)}|{encode_ts_second(achieved_at, _use_epoch)}"
     )
     for node_id in bbs_nodes:
         _send_one_sync(message, node_id, interface)
@@ -596,11 +720,15 @@ def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nod
     payload_hash = base64.urlsafe_b64encode(hashlib.blake2b(save_data or b"", digest_size=8).digest()).decode("ascii").rstrip("=")
     user_b64 = _b64(str(user_id))
     game_b64 = _b64(str(game_id))
+    _use_epoch = peers_all_support(bbs_nodes, 'epoch')
+    updated_at_wire = encode_ts_second(updated_at, _use_epoch)
     # Deterministic save_id allows retries/re-sync to reuse the same identity.
+    # save_id derives from the *original* updated_at value (not the epoch-encoded
+    # wire form) so the identity is stable regardless of encoding choice.
     save_id_raw = f"{user_id}:{game_id}:{updated_at}:{len(payload_b64)}"
     save_id = base64.urlsafe_b64encode(save_id_raw.encode("utf-8")).decode("ascii").rstrip("=")
 
-    prefix = f"ZORKSAVE|{save_id}|{user_b64}|{game_b64}|{updated_at}|{payload_hash}|"
+    prefix = f"ZORKSAVE|{save_id}|{user_b64}|{game_b64}|{updated_at_wire}|{payload_hash}|"
     # Reserve enough room for chunk index and total chunk counters.
     overhead = len(prefix.encode("utf-8")) + len("999999|999999|".encode("utf-8"))
     available = _MESHTASTIC_MAX_BYTES - overhead
