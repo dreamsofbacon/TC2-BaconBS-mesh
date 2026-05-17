@@ -60,88 +60,91 @@ class ZorkSaveSyncTests(unittest.TestCase):
         return config_path
 
     def test_chunked_zork_save_sync_reassembles_and_persists(self):
-        sender_interface = _DummyInterface()
-        payload = bytes([x % 256 for x in range(2000)])
+        with mock.patch.dict(os.environ, {"BBS_SYNC_ZORK_SAVES": "true"}):
+            sender_interface = _DummyInterface()
+            payload = bytes([x % 256 for x in range(2000)])
 
-        send_zork_save_to_bbs_nodes(
-            user_id="1234",
-            game_id="zork1",
-            save_data=payload,
-            updated_at="2026-03-30 12:00:00",
-            bbs_nodes=["!peer1"],
-            interface=sender_interface,
-            pause_seconds=0,
-        )
-
-        self.assertGreater(len(sender_interface.sent_texts), 1)
-        self.assertTrue(all(m.startswith("ZORKSAVE|") for m in sender_interface.sent_texts))
-        self.assertTrue(all(len(m.encode("utf-8")) <= _MESHTASTIC_MAX_BYTES for m in sender_interface.sent_texts))
-
-        recv_interface = _DummyInterface()
-        for msg in sender_interface.sent_texts:
-            message_processing.process_message(
-                sender_id=1,
-                message=msg,
-                interface=recv_interface,
-                is_sync_message=True,
-                sender_node_id="!peer1",
+            send_zork_save_to_bbs_nodes(
+                user_id="1234",
+                game_id="zork1",
+                save_data=payload,
+                updated_at="2026-03-30 12:00:00",
+                bbs_nodes=["!peer1"],
+                interface=sender_interface,
+                pause_seconds=0,
             )
 
-        restored = db_operations.get_zork_save(1234, "zork1")
-        self.assertEqual(restored, payload)
+            self.assertGreater(len(sender_interface.sent_texts), 1)
+            self.assertTrue(all(m.startswith("ZORKSAVE|") for m in sender_interface.sent_texts))
+            self.assertTrue(all(len(m.encode("utf-8")) <= _MESHTASTIC_MAX_BYTES for m in sender_interface.sent_texts))
+
+            recv_interface = _DummyInterface()
+            for msg in sender_interface.sent_texts:
+                message_processing.process_message(
+                    sender_id=1,
+                    message=msg,
+                    interface=recv_interface,
+                    is_sync_message=True,
+                    sender_node_id="!peer1",
+                )
+
+            restored = db_operations.get_zork_save(1234, "zork1")
+            self.assertEqual(restored, payload)
 
     def test_tampered_zork_chunk_is_rejected_by_payload_hash(self):
-        sender_interface = _DummyInterface()
-        payload = bytes([x % 256 for x in range(1500)])
+        with mock.patch.dict(os.environ, {"BBS_SYNC_ZORK_SAVES": "true"}):
+            sender_interface = _DummyInterface()
+            payload = bytes([x % 256 for x in range(1500)])
 
-        send_zork_save_to_bbs_nodes(
-            user_id="1234",
-            game_id="zork1",
-            save_data=payload,
-            updated_at="2026-03-30 12:01:00",
-            bbs_nodes=["!peer1"],
-            interface=sender_interface,
-            pause_seconds=0,
-        )
+            send_zork_save_to_bbs_nodes(
+                user_id="1234",
+                game_id="zork1",
+                save_data=payload,
+                updated_at="2026-03-30 12:01:00",
+                bbs_nodes=["!peer1"],
+                interface=sender_interface,
+                pause_seconds=0,
+            )
 
-        tampered = list(sender_interface.sent_texts)
-        self.assertGreater(len(tampered), 1)
-        parts = tampered[-1].split("|")
-        self.assertTrue(parts[-1])
-        parts[-1] = ("A" if parts[-1][0] != "A" else "B") + parts[-1][1:]
-        tampered[-1] = "|".join(parts)
+            tampered = list(sender_interface.sent_texts)
+            self.assertGreater(len(tampered), 1)
+            parts = tampered[-1].split("|")
+            self.assertTrue(parts[-1])
+            parts[-1] = ("A" if parts[-1][0] != "A" else "B") + parts[-1][1:]
+            tampered[-1] = "|".join(parts)
 
-        recv_interface = _DummyInterface()
-        for msg in tampered:
+            recv_interface = _DummyInterface()
+            for msg in tampered:
+                message_processing.process_message(
+                    sender_id=1,
+                    message=msg,
+                    interface=recv_interface,
+                    is_sync_message=True,
+                    sender_node_id="!peer1",
+                )
+
+            restored = db_operations.get_zork_save(1234, "zork1")
+            self.assertIsNone(restored)
+
+    def test_delete_zork_save_frame_removes_older_local_save(self):
+        with mock.patch.dict(os.environ, {"BBS_SYNC_ZORK_SAVES": "true"}):
+            db_operations.upsert_synced_zork_save("1234", "zork1", b"save-payload", "2026-03-30 12:00:00")
+            msg = (
+                "DELETE_ZORKSAVE|"
+                f"{base64.b64encode(b'1234').decode('ascii')}|"
+                f"{base64.b64encode(b'zork1').decode('ascii')}|"
+                "2026-03-30 12:05:00"
+            )
+
             message_processing.process_message(
                 sender_id=1,
                 message=msg,
-                interface=recv_interface,
+                interface=_DummyInterface(),
                 is_sync_message=True,
                 sender_node_id="!peer1",
             )
 
-        restored = db_operations.get_zork_save(1234, "zork1")
-        self.assertIsNone(restored)
-
-    def test_delete_zork_save_frame_removes_older_local_save(self):
-        db_operations.upsert_synced_zork_save("1234", "zork1", b"save-payload", "2026-03-30 12:00:00")
-        msg = (
-            "DELETE_ZORKSAVE|"
-            f"{base64.b64encode(b'1234').decode('ascii')}|"
-            f"{base64.b64encode(b'zork1').decode('ascii')}|"
-            "2026-03-30 12:05:00"
-        )
-
-        message_processing.process_message(
-            sender_id=1,
-            message=msg,
-            interface=_DummyInterface(),
-            is_sync_message=True,
-            sender_node_id="!peer1",
-        )
-
-        self.assertIsNone(db_operations.get_zork_save(1234, "zork1"))
+            self.assertIsNone(db_operations.get_zork_save(1234, "zork1"))
 
     def test_stale_delete_zork_save_frame_does_not_remove_newer_local_save(self):
         db_operations.upsert_synced_zork_save("1234", "zork1", b"save-payload", "2026-03-30 12:05:00")

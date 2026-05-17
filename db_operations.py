@@ -602,7 +602,8 @@ def initialize_database():
                     profiles_hash TEXT NOT NULL DEFAULT '',
                     game_scores_hash TEXT NOT NULL DEFAULT '',
                     reported_at TEXT NOT NULL,
-                    phases_complete TEXT NOT NULL DEFAULT ''
+                    phases_complete TEXT NOT NULL DEFAULT '',
+                    tombstones INTEGER NOT NULL DEFAULT -1
                 );''')
     c.execute('''CREATE TABLE IF NOT EXISTS deleted_sync_tombstones (
                     tombstone_key TEXT PRIMARY KEY,
@@ -1072,11 +1073,13 @@ def get_local_record_counts() -> dict:
     else:
         zork_saves_hash = _compact_row_hash(("zork_saves_disabled",))
     profiles_hash = _hash_rows(
-        "SELECT user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio FROM user_profiles ORDER BY user_id"
+        "SELECT user_id, short_name, long_name, bio FROM user_profiles ORDER BY user_id"
     )
     game_scores_hash = _hash_rows(
         "SELECT user_id, game_id, short_name, score, max_score, moves, achieved_at FROM game_scores ORDER BY user_id, game_id"
     )
+    c.execute("SELECT COUNT(*) FROM deleted_sync_tombstones")
+    tombstones = int(c.fetchone()[0])
 
     return {
         'bulletins': bulletins,
@@ -1085,6 +1088,7 @@ def get_local_record_counts() -> dict:
         'zork_saves': zork_saves,
         'profiles': profiles,
         'game_scores': game_scores,
+        'tombstones': tombstones,
         'bulletins_hash': bulletins_hash,
         'mail_hash': mail_hash,
         'channels_hash': channels_hash,
@@ -1097,7 +1101,8 @@ def get_local_record_counts() -> dict:
 def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channels: int, zork_saves: int,
                            profiles: int = 0, game_scores: int = 0,
                            bulletins_hash: str = '', mail_hash: str = '', channels_hash: str = '',
-                           zork_saves_hash: str = '', profiles_hash: str = '', game_scores_hash: str = '') -> None:
+                           zork_saves_hash: str = '', profiles_hash: str = '', game_scores_hash: str = '',
+                           tombstones: int = -1) -> None:
     """Store the latest advertised SYNCSTATE counts for a peer node."""
     if not peer_node_id:
         return
@@ -1107,9 +1112,9 @@ def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channel
         '''INSERT INTO peer_sync_state (
                peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores,
                bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, game_scores_hash,
-               reported_at
+               reported_at, tombstones
            )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(peer_node_id) DO UPDATE SET
                bulletins=excluded.bulletins,
                mail=excluded.mail,
@@ -1123,7 +1128,8 @@ def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channel
                zork_saves_hash=excluded.zork_saves_hash,
                profiles_hash=excluded.profiles_hash,
                game_scores_hash=excluded.game_scores_hash,
-               reported_at=excluded.reported_at''',
+               reported_at=excluded.reported_at,
+               tombstones=excluded.tombstones''',
         (
             peer_node_id,
             int(bulletins),
@@ -1139,6 +1145,7 @@ def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channel
             str(profiles_hash or ''),
             str(game_scores_hash or ''),
             datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            int(tombstones),
         ),
     )
     conn.commit()
@@ -1150,7 +1157,7 @@ def get_peer_sync_states() -> list:
     c = conn.cursor()
     c.execute(
         "SELECT peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores, "
-        "bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, game_scores_hash, reported_at "
+        "bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, game_scores_hash, reported_at, tombstones "
         "FROM peer_sync_state ORDER BY peer_node_id"
     )
     return c.fetchall()
@@ -1398,7 +1405,11 @@ def get_mismatched_peer_scopes(expected_peer_nodes=None) -> dict:
 
         if scopes:
             # Tombstones are only relevant for content scopes where deletion drift exists.
-            if 'bulletins' in scopes or 'mail' in scopes or 'channels' in scopes or 'zork_saves' in scopes:
+            # Skip tombstone reconcile when we know both sides have none (-1 = unknown, include to be safe).
+            peer_tombstones = int(row[14]) if len(row) > 14 and row[14] is not None else -1
+            local_tombstones = int(local.get('tombstones', 0))
+            if ('bulletins' in scopes or 'mail' in scopes or 'channels' in scopes or 'zork_saves' in scopes) and \
+               (local_tombstones > 0 or peer_tombstones != 0):
                 scopes.append('tombstones')
             by_peer[peer] = scopes
 
@@ -1582,6 +1593,8 @@ def _ensure_local_only_columns(cursor) -> None:
         cursor.execute("ALTER TABLE peer_sync_state ADD COLUMN game_scores_hash TEXT NOT NULL DEFAULT ''")
     if 'phases_complete' not in peer_cols:
         cursor.execute("ALTER TABLE peer_sync_state ADD COLUMN phases_complete TEXT NOT NULL DEFAULT ''")
+    if 'tombstones' not in peer_cols:
+        cursor.execute("ALTER TABLE peer_sync_state ADD COLUMN tombstones INTEGER NOT NULL DEFAULT -1")
 
 
 def _dedupe_channels_and_create_unique_index(cursor) -> None:
@@ -2529,7 +2542,7 @@ def get_record_hash_manifest(scope: str) -> dict:
             manifest[f"comment:{row[5]}"] = _compact_row_hash(row)
     elif scope == 'profiles':
         for row in c.execute(
-            "SELECT user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio FROM user_profiles"
+            "SELECT user_id, short_name, long_name, bio FROM user_profiles"
         ):
             key = str(row[0])
             manifest[key] = _compact_row_hash(row)

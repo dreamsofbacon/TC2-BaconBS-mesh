@@ -2739,6 +2739,10 @@ def create_app(runtime_interface=None) -> Flask:
               conn.execute("ALTER TABLE peer_sync_state ADD COLUMN game_scores_hash TEXT NOT NULL DEFAULT ''")
             except Exception:
               pass
+            try:
+              conn.execute("ALTER TABLE peer_sync_state ADD COLUMN tombstones INTEGER NOT NULL DEFAULT -1")
+            except Exception:
+              pass
 
     def get_db_connection() -> sqlite3.Connection:
         conn = sqlite3.connect(app.config["DB_PATH"], timeout=30, factory=ManagedConnection)
