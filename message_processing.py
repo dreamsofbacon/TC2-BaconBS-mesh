@@ -1185,7 +1185,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             apply_channel_comment_expected_content_length(parts[1], expected_length)
         elif message.startswith("SYNCSTATE|"):
             parts = message.split("|")
-            if len(parts) not in (5, 7, 13):
+            if len(parts) not in (5, 7, 13, 14):
                 logging.warning(f"Malformed SYNCSTATE sync message ignored: {message}")
                 return
             try:
@@ -1204,6 +1204,12 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             zork_saves_hash = parts[10] if len(parts) >= 13 else ''
             profiles_hash = parts[11] if len(parts) >= 13 else ''
             game_scores_hash = parts[12] if len(parts) >= 13 else ''
+            tombstones_peer = -1
+            if len(parts) >= 14:
+                try:
+                    tombstones_peer = int(parts[13])
+                except ValueError:
+                    pass
             if sender_node_id:
                 upsert_peer_sync_state(
                     sender_node_id,
@@ -1219,10 +1225,11 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     zork_saves_hash,
                     profiles_hash,
                     game_scores_hash,
+                    tombstones_peer,
                 )
                 logging.info(
                     f"SYNCSTATE recv from {sender_node_id}: "
-                    f"b={bulletins} m={mail} c={channels} z={zork_saves} p={profiles} g={game_scores} | "
+                    f"b={bulletins} m={mail} c={channels} z={zork_saves} p={profiles} g={game_scores} t={tombstones_peer} | "
                     f"bH={bulletins_hash} mH={mail_hash} cH={channels_hash} zH={zork_saves_hash} pH={profiles_hash} gH={game_scores_hash}"
                 )
                 _retry_stale_hash_manifest_buffers(interface)

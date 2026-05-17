@@ -183,7 +183,7 @@ def is_zork_save_sync_enabled() -> bool:
     env_value = os.getenv("BBS_SYNC_ZORK_SAVES")
     if env_value is not None:
         return str(env_value).strip().lower() in ("1", "true", "yes", "on")
-    return _config_bool("sync", "sync_zork_saves", True)
+    return _config_bool("sync", "sync_zork_saves", False)
 
 
 def get_zork_save_sync_notice() -> str:
@@ -445,7 +445,8 @@ def send_sync_state_to_bbs_nodes(counts, bbs_nodes, interface):
         f"{int(counts.get('profiles', 0))}|{int(counts.get('game_scores', 0))}|"
         f"{str(counts.get('bulletins_hash', ''))}|{str(counts.get('mail_hash', ''))}|"
         f"{str(counts.get('channels_hash', ''))}|{str(counts.get('zork_saves_hash', ''))}|"
-        f"{str(counts.get('profiles_hash', ''))}|{str(counts.get('game_scores_hash', ''))}"
+        f"{str(counts.get('profiles_hash', ''))}|{str(counts.get('game_scores_hash', ''))}|"
+        f"{int(counts.get('tombstones', 0))}"
     )
     for node_id in bbs_nodes:
         _send_one_sync(message, node_id, interface)

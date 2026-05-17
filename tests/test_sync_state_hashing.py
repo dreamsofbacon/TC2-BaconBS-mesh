@@ -10,11 +10,13 @@ import utils
 
 class SyncStateHashingTests(unittest.TestCase):
     def setUp(self):
+        os.environ['BBS_SYNC_ZORK_SAVES'] = 'true'
         conn = sqlite3.connect(":memory:")
         db_operations.thread_local.connection = conn
         db_operations.initialize_database()
 
     def tearDown(self):
+        os.environ.pop('BBS_SYNC_ZORK_SAVES', None)
         conn = getattr(db_operations.thread_local, "connection", None)
         if conn is not None:
             conn.close()

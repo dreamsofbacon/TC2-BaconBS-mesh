@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import sys
 import types
@@ -26,6 +27,7 @@ class _DummyInterface:
 
 class HashRepairProtocolTests(unittest.TestCase):
     def setUp(self):
+        os.environ['BBS_SYNC_ZORK_SAVES'] = 'true'
         conn = sqlite3.connect(":memory:")
         db_operations.thread_local.connection = conn
         db_operations.initialize_database()
@@ -37,6 +39,7 @@ class HashRepairProtocolTests(unittest.TestCase):
         message_processing._pending_hashreq.clear()
 
     def tearDown(self):
+        os.environ.pop('BBS_SYNC_ZORK_SAVES', None)
         conn = getattr(db_operations.thread_local, "connection", None)
         if conn is not None:
             conn.close()
