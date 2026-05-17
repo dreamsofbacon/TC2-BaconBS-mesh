@@ -258,3 +258,63 @@ def get_op_log_events(
         }
         for r in rows
     ]
+
+
+# ── Startup backfill ───────────────────────────────────────────────────────────
+
+# Mapping of (scope, materialized_table, uid_column, source_column).
+_BACKFILL_SCOPES = [
+    ('bulletins',        'bulletins',        'unique_id', 'source_node_id'),
+    ('mail',             'mail',             'unique_id', 'source_node_id'),
+    ('channel_comments', 'channel_comments', 'unique_id', 'source_node_id'),
+]
+
+
+def backfill_op_log(cursor, local_node_id: str) -> int:
+    """Idempotent backfill: create op_log upsert events for locally-originated
+    records that predate Phase 2 (or were missed for any reason).
+
+    Called once at startup after the local node ID is established.  Safe to
+    call multiple times — the unique constraint on (origin_node_id, scope,
+    target_uid) prevents duplicate entries.
+
+    Returns the number of new entries created.
+    """
+    if not is_op_log_enabled():
+        return 0
+    if not local_node_id:
+        return 0
+
+    total = 0
+    for scope, table, uid_col, src_col in _BACKFILL_SCOPES:
+        try:
+            # All locally-originated rows not yet in op_log for this scope.
+            rows = cursor.execute(
+                f'''SELECT t.{uid_col}
+                    FROM {table} t
+                    WHERE t.{src_col} = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM op_log o
+                          WHERE o.scope = ? AND o.target_uid = t.{uid_col}
+                            AND o.origin_node_id = ?
+                      )''',
+                (local_node_id, scope, local_node_id),
+            ).fetchall()
+            for (uid,) in rows:
+                append_local_event(
+                    cursor,
+                    origin_node_id=local_node_id,
+                    event_type='upsert',
+                    scope=scope,
+                    target_uid=str(uid),
+                    payload={'backfill': True},
+                )
+                total += 1
+        except Exception as exc:
+            logging.warning('op_log backfill error for %s: %s', scope, exc)
+
+    if total:
+        logging.info('op_log backfill: created %d entries for %s', total, local_node_id)
+    else:
+        logging.debug('op_log backfill: nothing new for %s', local_node_id)
+    return total

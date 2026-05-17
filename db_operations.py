@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from app_paths import resolve_app_path
-from op_log import ensure_op_log_schema, try_dual_write
+from op_log import ensure_op_log_schema, try_dual_write, backfill_op_log as _backfill_op_log
 
 from meshtastic import BROADCAST_NUM
 
@@ -71,6 +71,24 @@ def set_local_node_id(node_id: str) -> None:
 def get_local_node_id() -> Optional[str]:
     """Return this node's ID as set at startup, or None if not yet resolved."""
     return _local_node_id
+
+
+def run_op_log_backfill() -> int:
+    """Backfill op_log with locally-originated records that predate Phase 2.
+
+    Must be called after set_local_node_id() has been resolved.  Safe to call
+    multiple times — idempotent.  Commits the changes and returns the count of
+    new entries created.
+    """
+    nid = _local_node_id
+    if not nid:
+        logging.debug('run_op_log_backfill: local_node_id not set yet, skipping')
+        return 0
+    conn = get_db_connection()
+    c = conn.cursor()
+    count = _backfill_op_log(c, nid)
+    conn.commit()
+    return count
 
 
 class ConnectionEventsLogHandler(logging.Handler):

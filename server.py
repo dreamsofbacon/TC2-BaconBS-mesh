@@ -43,6 +43,7 @@ from db_operations import (
     get_incomplete_record_uids,
     set_local_node_id,
     get_local_node_id,
+    run_op_log_backfill,
 )
 from js8call_integration import JS8CallClient
 from message_processing import (
@@ -229,6 +230,7 @@ def main():
 
     initialize_database()
     install_connection_log_handler()
+    run_op_log_backfill()
 
     def receive_packet(packet, interface):
         on_receive(packet, interface)
