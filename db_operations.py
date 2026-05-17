@@ -1156,6 +1156,153 @@ def get_peer_sync_states() -> list:
     return c.fetchall()
 
 
+def get_sync_progress_data(lookback_seconds: int = 1800) -> dict:
+    """Return peer sync gaps and active repair items for the web admin dashboard."""
+    local = get_local_record_counts()
+    local_counts = {k: local[k] for k in ('bulletins', 'mail', 'channels', 'zork_saves', 'profiles', 'game_scores')}
+
+    _SCOPE_ORDER = ('bulletins', 'mail', 'channels', 'zork_saves', 'profiles', 'game_scores')
+
+    peers = []
+    for row in get_peer_sync_states():
+        peer_id = str(row[0])
+        reported_at = str(row[13]) if len(row) > 13 else ''
+        peer_counts = {
+            'bulletins':    int(row[1] or 0),
+            'mail':         int(row[2] or 0),
+            'channels':     int(row[3] or 0),
+            'zork_saves':   int(row[4] or 0),
+            'profiles':     int(row[5] or 0),
+            'game_scores':  int(row[6] or 0),
+        }
+        gaps = []
+        for scope in _SCOPE_ORDER:
+            local_val = int(local_counts.get(scope, 0))
+            peer_val = int(peer_counts.get(scope, 0))
+            if local_val != peer_val:
+                gaps.append({
+                    'scope': scope,
+                    'local': local_val,
+                    'peer': peer_val,
+                    'delta': local_val - peer_val,
+                })
+        peers.append({
+            'peer_node_id': peer_id,
+            'reported_at': reported_at,
+            'counts': peer_counts,
+            'gaps': gaps,
+        })
+
+    # Find active repair items: unique_ids that appeared in recent inbound HASHMISS frames
+    since_time = (datetime.utcnow() - timedelta(seconds=max(60, int(lookback_seconds)))).isoformat() + 'Z'
+
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+
+    try:
+        c.execute(
+            """SELECT frame_text, destination_node_id, transmission_time
+               FROM sync_transmissions
+               WHERE frame_type IN ('HASHMISS', 'HASHMISS_TOMB')
+                 AND direction = 'rx'
+                 AND transmission_time >= ?
+               ORDER BY id ASC""",
+            (since_time,),
+        )
+        hashmiss_rows = c.fetchall()
+    except Exception:
+        hashmiss_rows = []
+
+    # uid → {scope, peer, last_hashmiss_at, request_count}
+    uid_info: dict = {}
+    for row in hashmiss_rows:
+        parts = str(row['frame_text'] or '').split('|')
+        if len(parts) >= 3:
+            scope = parts[1]
+            uid = parts[2]
+            peer = str(row['destination_node_id'] or '')
+            ts = str(row['transmission_time'] or '')
+            if uid not in uid_info:
+                uid_info[uid] = {'scope': scope, 'peer': peer, 'last_hashmiss_at': ts, 'request_count': 0}
+            uid_info[uid]['request_count'] += 1
+            if ts > uid_info[uid]['last_hashmiss_at']:
+                uid_info[uid]['last_hashmiss_at'] = ts
+
+    active_items = []
+    for uid, info in uid_info.items():
+        scope = info['scope']
+        # Fetch recent outbound frames referencing this uid
+        try:
+            c.execute(
+                """SELECT frame_type, frame_text, transmission_time
+                   FROM sync_transmissions
+                   WHERE direction = 'tx'
+                     AND frame_text LIKE ?
+                     AND transmission_time >= ?
+                   ORDER BY id ASC""",
+                (f'%{uid}%', since_time),
+            )
+            frame_rows = c.fetchall()
+        except Exception:
+            frame_rows = []
+
+        sent_frames = []
+        for fr in frame_rows:
+            ft = str(fr['frame_type'] or '')
+            ft_text = str(fr['frame_text'] or '')
+            ts = str(fr['transmission_time'] or '')
+            offset = None
+            if ft == 'BULLETINCONT' or ft == 'MAILCONT' or ft == 'CHANNELCOMMENTCONT':
+                fparts = ft_text.split('|')
+                if len(fparts) >= 3:
+                    try:
+                        offset = int(fparts[2])
+                    except ValueError:
+                        pass
+            sent_frames.append({'type': ft, 'offset': offset, 'sent_at': ts})
+
+        # Fetch human-readable label from the appropriate table
+        subject = uid[:8]
+        try:
+            if scope == 'bulletins':
+                c.execute("SELECT subject FROM bulletins WHERE unique_id = ? LIMIT 1", (uid,))
+                r = c.fetchone()
+                if r:
+                    subject = str(r[0] or uid[:8])
+            elif scope == 'mail':
+                c.execute("SELECT subject FROM mail WHERE unique_id = ? LIMIT 1", (uid,))
+                r = c.fetchone()
+                if r:
+                    subject = str(r[0] or uid[:8])
+            elif scope == 'channels':
+                c.execute("SELECT content FROM channel_comments WHERE unique_id = ? LIMIT 1", (uid,))
+                r = c.fetchone()
+                if r:
+                    subject = (str(r[0] or '')[:40]) or uid[:8]
+        except Exception:
+            pass
+
+        active_items.append({
+            'scope': scope,
+            'unique_id': uid,
+            'subject': subject,
+            'peer': info['peer'],
+            'last_hashmiss_at': info['last_hashmiss_at'],
+            'request_count': info['request_count'],
+            'sent_frames': sent_frames,
+        })
+
+    # Sort by last_hashmiss_at descending (most recently active first)
+    active_items.sort(key=lambda x: x['last_hashmiss_at'], reverse=True)
+
+    return {
+        'local_counts': local_counts,
+        'peers': peers,
+        'active_items': active_items,
+    }
+
+
 def _get_syncstate_max_age_seconds() -> int:
     raw = str(os.getenv('BBS_SYNCSTATE_MAX_AGE_SECONDS', '1800')).strip()
     try:

@@ -2104,10 +2104,202 @@ CLIENTS_CONTENT = """
 
 
 TRANSMISSION_DASHBOARD_CONTENT = """
-<div class=\"card\">
+<div class="card" id="sync-progress-card">
+  <h2>Current Sync Tasks</h2>
+  <p class="muted">Live view of per-peer record gaps and active content delivery sequences. Refreshes every 10 seconds.</p>
+
+  <div id="sync-progress-status" style="font-size:0.82em;color:var(--muted);margin-bottom:10px;"></div>
+
+  <div id="sync-progress-peers"></div>
+
+  <div id="sync-progress-items">
+    <p class="muted" style="font-size:0.9em;">Loading active repair items&hellip;</p>
+  </div>
+</div>
+
+<script>
+(function() {
+  var SCOPE_LABELS = {
+    bulletins:   'Bulletins',
+    mail:        'Mail',
+    channels:    'Channels',
+    zork_saves:  'Zork Saves',
+    profiles:    'Profiles',
+    game_scores: 'Game Scores',
+  };
+  var SCOPE_ORDER = ['bulletins', 'mail', 'channels', 'zork_saves', 'profiles', 'game_scores'];
+  var FRAME_COLOR = {
+    BULLETIN:          '#2a9d8f',
+    BULLETINCONT:      '#52b3a8',
+    MAIL:              '#457b9d',
+    MAILCONT:          '#6a9dbd',
+    CHANNELCOMMENTCONT:'#e9c46a',
+  };
+
+  function esc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return '';
+    var d = new Date(iso.replace(' ', 'T'));
+    if (isNaN(d)) return iso;
+    return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  }
+
+  function relativeAge(iso) {
+    if (!iso) return '';
+    var d = new Date(iso.replace(' ', 'T').replace(/Z$/, '') + (iso.includes('Z') || iso.includes('+') ? '' : 'Z'));
+    if (isNaN(d)) return iso;
+    var secs = Math.round((Date.now() - d.getTime()) / 1000);
+    if (secs < 5)   return 'just now';
+    if (secs < 60)  return secs + 's ago';
+    if (secs < 3600) return Math.floor(secs/60) + 'm ago';
+    return Math.floor(secs/3600) + 'h ago';
+  }
+
+  function renderPeers(data) {
+    var peers = data.peers || [];
+    var local = data.local_counts || {};
+    if (!peers.length) {
+      document.getElementById('sync-progress-peers').innerHTML =
+        '<p class="muted" style="font-size:0.9em;">No peer sync state recorded yet.</p>';
+      return;
+    }
+    var html = '';
+    peers.forEach(function(peer) {
+      var age = relativeAge(peer.reported_at);
+      var hasGaps = peer.gaps && peer.gaps.length > 0;
+      var headerColor = hasGaps ? '#b45309' : '#166534';
+      var headerBg = hasGaps ? 'rgba(251,191,36,0.08)' : 'rgba(22,163,74,0.07)';
+      html += '<div style="margin-bottom:18px;border:1px solid var(--card-border);border-radius:8px;overflow:hidden;">';
+      html += '<div style="padding:8px 14px;background:' + headerBg + ';border-bottom:1px solid var(--card-border);display:flex;align-items:center;gap:12px;">';
+      html += '<span style="font-family:monospace;font-weight:700;color:' + headerColor + ';">' + esc(peer.peer_node_id) + '</span>';
+      html += '<span style="color:var(--muted);font-size:0.82em;">reported ' + esc(age) + '</span>';
+      if (hasGaps)
+        html += '<span style="margin-left:auto;font-size:0.8em;color:#b45309;font-weight:600;">' + peer.gaps.length + ' scope(s) out of sync</span>';
+      else
+        html += '<span style="margin-left:auto;font-size:0.8em;color:#166534;font-weight:600;">&#10003; All scopes in sync</span>';
+      html += '</div>';
+      html += '<table style="width:100%;border-collapse:collapse;font-size:0.88em;">';
+      html += '<thead><tr style="background:var(--table-header-bg);border-bottom:1px solid var(--table-border);">';
+      html += '<th style="padding:6px 10px;text-align:left;">Scope</th>';
+      html += '<th style="padding:6px 10px;text-align:right;">Local</th>';
+      html += '<th style="padding:6px 10px;text-align:right;">Peer</th>';
+      html += '<th style="padding:6px 10px;">Status</th>';
+      html += '</tr></thead><tbody>';
+      SCOPE_ORDER.forEach(function(scope) {
+        var localVal = parseInt(local[scope] || 0);
+        var peerVal  = parseInt((peer.counts || {})[scope] || 0);
+        var delta = localVal - peerVal;
+        var statusHtml, rowBg;
+        if (delta > 0) {
+          statusHtml = '<span style="color:#b45309;">&darr; Peer missing ' + delta + '</span>';
+          rowBg = 'rgba(251,191,36,0.06)';
+        } else if (delta < 0) {
+          statusHtml = '<span style="color:#1d4ed8;">&uarr; We are behind by ' + Math.abs(delta) + '</span>';
+          rowBg = 'rgba(29,78,216,0.06)';
+        } else {
+          statusHtml = '<span style="color:#166534;">&#10003; In sync</span>';
+          rowBg = '';
+        }
+        html += '<tr style="border-bottom:1px solid var(--table-border);' + (rowBg ? 'background:'+rowBg+';' : '') + '">';
+        html += '<td style="padding:5px 10px;">' + esc(SCOPE_LABELS[scope] || scope) + '</td>';
+        html += '<td style="padding:5px 10px;text-align:right;font-family:monospace;">' + localVal + '</td>';
+        html += '<td style="padding:5px 10px;text-align:right;font-family:monospace;">' + peerVal + '</td>';
+        html += '<td style="padding:5px 10px;">' + statusHtml + '</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table></div>';
+    });
+    document.getElementById('sync-progress-peers').innerHTML = html;
+  }
+
+  function renderActiveItems(data) {
+    var items = data.active_items || [];
+    var container = document.getElementById('sync-progress-items');
+    if (!items.length) {
+      container.innerHTML = '<p class="muted" style="font-size:0.9em;margin-top:6px;">No active repair items in the last 30 minutes.</p>';
+      return;
+    }
+    var html = '<h4 style="margin:14px 0 6px 0;">Active Repair Items <span style="font-weight:normal;font-size:0.82em;color:var(--muted);">(last 30 min)</span></h4>';
+    items.forEach(function(item) {
+      var frames = item.sent_frames || [];
+      // Deduplicate by (type+offset), keeping last seen timestamp
+      var frameMap = {};
+      frames.forEach(function(f) {
+        var key = f.type + '|' + (f.offset !== null && f.offset !== undefined ? f.offset : 'base');
+        if (!frameMap[key] || f.sent_at > frameMap[key].sent_at) frameMap[key] = f;
+      });
+      var dedupedFrames = Object.values(frameMap).sort(function(a, b) {
+        var oa = (a.offset !== null && a.offset !== undefined) ? a.offset : -1;
+        var ob = (b.offset !== null && b.offset !== undefined) ? b.offset : -1;
+        return oa - ob;
+      });
+
+      var scopeColor = {bulletins:'#2a9d8f', mail:'#457b9d', channels:'#e9c46a', zork_saves:'#e63946', profiles:'#6d28d9', game_scores:'#dc2626'}[item.scope] || '#888';
+
+      html += '<div style="margin-bottom:14px;border:1px solid var(--card-border);border-radius:8px;overflow:hidden;">';
+      html += '<div style="padding:8px 14px;background:rgba(0,0,0,0.03);border-bottom:1px solid var(--card-border);display:flex;flex-wrap:wrap;align-items:center;gap:10px;">';
+      html += '<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:' + scopeColor + ';color:#fff;font-size:0.78em;font-weight:700;text-transform:uppercase;">' + esc(item.scope) + '</span>';
+      html += '<span style="font-weight:600;font-size:0.95em;">' + esc(item.subject) + '</span>';
+      html += '<span style="font-family:monospace;font-size:0.78em;color:var(--muted);">' + esc(item.unique_id) + '</span>';
+      html += '<span style="margin-left:auto;font-size:0.82em;color:var(--muted);">peer: <strong>' + esc(item.peer) + '</strong></span>';
+      html += '<span style="font-size:0.82em;color:var(--muted);">' + item.request_count + ' request(s), last ' + esc(relativeAge(item.last_hashmiss_at)) + '</span>';
+      html += '</div>';
+
+      if (dedupedFrames.length) {
+        html += '<div style="padding:10px 14px;">';
+        html += '<div style="font-size:0.8em;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.04em;">Recent outbound frame sequence</div>';
+        html += '<div style="font-family:monospace;font-size:0.88em;display:flex;flex-direction:column;gap:4px;">';
+        dedupedFrames.forEach(function(f) {
+          var color = FRAME_COLOR[f.type] || '#888';
+          var label;
+          if (f.type === 'BULLETIN' || f.type === 'MAIL' || f.type === 'CHANNEL') {
+            label = f.type + ' (base frame, offset 0)';
+          } else if (f.offset !== null && f.offset !== undefined) {
+            label = f.type + '@' + f.offset;
+          } else {
+            label = f.type;
+          }
+          html += '<div style="display:flex;align-items:center;gap:10px;">';
+          html += '<span style="display:inline-block;min-width:8px;height:8px;background:' + color + ';border-radius:50%;flex-shrink:0;"></span>';
+          html += '<span style="color:' + color + ';font-weight:600;min-width:240px;">' + esc(label) + '</span>';
+          html += '<span style="color:var(--muted);font-size:0.9em;">sent ' + esc(fmtTime(f.sent_at)) + '</span>';
+          html += '</div>';
+        });
+        html += '</div></div>';
+      } else {
+        html += '<div style="padding:8px 14px;font-size:0.88em;color:var(--muted);">No outbound frames recorded for this item in this window.</div>';
+      }
+      html += '</div>';
+    });
+    container.innerHTML = html;
+  }
+
+  function refresh() {
+    fetch('/api/sync/progress?lookback_seconds=1800', { headers: { 'Accept': 'application/json' } })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        renderPeers(data);
+        renderActiveItems(data);
+        document.getElementById('sync-progress-status').textContent =
+          'Last updated: ' + new Date().toLocaleTimeString();
+      })
+      .catch(function() {
+        document.getElementById('sync-progress-status').textContent = 'Update failed — retrying\u2026';
+      });
+  }
+
+  refresh();
+  setInterval(refresh, 10000);
+})();
+</script>
+
+<div class="card">
   <h2>Sync Transmission Stats</h2>
-  <form method=\"post\" action=\"{{ url_for('system_transmissions_reset') }}\" onsubmit=\"return confirm('Reset transmission stats history now?');\" style=\"margin:8px 0 14px 0;\">
-    <button type=\"submit\" class=\"btn btn-danger\">Reset Stats</button>
+  <form method="post" action="{{ url_for('system_transmissions_reset') }}" onsubmit="return confirm('Reset transmission stats history now?');" style="margin:8px 0 14px 0;">
+    <button type="submit" class="btn btn-danger">Reset Stats</button>
   </form>
   <p class=\"muted\">Breakdown of sync frames sent and received by this node, with live inbound and outbound panes below for verification.</p>
 
@@ -3505,6 +3697,17 @@ def create_app(runtime_interface=None) -> Flask:
         "entries": serialized,
         "last_id": max((entry["id"] for entry in serialized), default=since_id),
       })
+
+    @app.get("/api/sync/progress")
+    @login_required
+    def api_sync_progress():
+      from db_operations import get_sync_progress_data
+      try:
+        lookback = max(60, min(86400, int(request.args.get("lookback_seconds", "1800"))))
+      except ValueError:
+        lookback = 1800
+      data = get_sync_progress_data(lookback_seconds=lookback)
+      return jsonify(data)
 
     @app.post("/api/reorder/<table>")
     @login_required
