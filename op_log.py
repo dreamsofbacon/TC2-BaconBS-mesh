@@ -288,11 +288,14 @@ def backfill_op_log(cursor, local_node_id: str) -> int:
     total = 0
     for scope, table, uid_col, src_col in _BACKFILL_SCOPES:
         try:
-            # All locally-originated rows not yet in op_log for this scope.
+            # Include records where source_node_id matches local OR is NULL.
+            # NULL means the record predates Phase 1 source tracking; on a given
+            # node those are almost certainly locally-originated records (records
+            # synced from a peer in Phase-1+ have the peer's node_id set).
             rows = cursor.execute(
                 f'''SELECT t.{uid_col}
                     FROM {table} t
-                    WHERE t.{src_col} = ?
+                    WHERE (t.{src_col} = ? OR t.{src_col} IS NULL)
                       AND NOT EXISTS (
                           SELECT 1 FROM op_log o
                           WHERE o.scope = ? AND o.target_uid = t.{uid_col}
