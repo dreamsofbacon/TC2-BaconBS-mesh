@@ -26,7 +26,7 @@ _MESHTASTIC_MAX_BYTES = 220
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ()  # Future: ('cck', 'epoch', 'scc', 'nob64', 'bmgap')
+WIRE_CAPABILITIES: tuple = ('cck',)  # 'cck' = compact channel-comment manifest keys
 
 
 def local_capabilities_token() -> str:
@@ -452,27 +452,56 @@ def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_da
         footer = f"|{unique_id}|{source_node_id}|{source_timestamp}"
     else:
         footer = f"|{unique_id}"
-    header = f"CHANNELCOMMENT|{channel_key}|{_b64(sender_short_name)}|{comment_date}|"
-    # Use compact key if the full key leaves fewer than 8 content bytes in the base packet.
-    # A base packet carrying only 1-7 bytes of content requires multi-packet sequences that
-    # are fragile under radio packet loss — compact key shrinks the header enough to fit
-    # most short comments in a single packet.
+    full_header = f"CHANNELCOMMENT|{channel_key}|{_b64(sender_short_name)}|{comment_date}|"
+    short_key = compact_channel_manifest_key(channel_key)
+    short_header = f"CHANNELCOMMENT|{short_key}|{_b64(sender_short_name)}|{comment_date}|"
+
+    # 'cck' capability: peer advertises that it prefers compact channel keys,
+    # so always send the short header to it (saves 40-90 bytes per frame).
+    # Non-cck peers keep the legacy behaviour: full key when it fits, compact
+    # key only when the full header would crowd content below the minimum
+    # single-packet threshold.
     _MIN_CHANNEL_COMMENT_CONTENT_BYTES = 8
-    if len(header.encode('utf-8')) + len(footer.encode('utf-8')) > _MESHTASTIC_MAX_BYTES - _MIN_CHANNEL_COMMENT_CONTENT_BYTES:
-        # Full channel manifest key leaves too little room; fall back to a compact hash.
-        short_key = compact_channel_manifest_key(channel_key)
-        header = f"CHANNELCOMMENT|{short_key}|{_b64(sender_short_name)}|{comment_date}|"
-        if len(header.encode('utf-8')) + len(footer.encode('utf-8')) > _MESHTASTIC_MAX_BYTES:
-            logging.warning(
-                f"CHANNELCOMMENT header exceeds packet limit even with compact key for uid={unique_id}; skipping"
-            )
-            return
-    _send_sync_with_cont(
-        header, footer, content, unique_id,
-        cont_prefix=f"CHANNELCOMMENTCONT|{unique_id}|",
-        meta_prefix=f"CHANNELCOMMENTMETA|{unique_id}|",
-        bbs_nodes=bbs_nodes, interface=interface,
+    full_too_big = (
+        len(full_header.encode('utf-8')) + len(footer.encode('utf-8'))
+        > _MESHTASTIC_MAX_BYTES - _MIN_CHANNEL_COMMENT_CONTENT_BYTES
     )
+
+    if len(short_header.encode('utf-8')) + len(footer.encode('utf-8')) > _MESHTASTIC_MAX_BYTES:
+        logging.warning(
+            f"CHANNELCOMMENT header exceeds packet limit even with compact key for uid={unique_id}; skipping"
+        )
+        return
+
+    try:
+        from db_operations import peer_supports
+    except Exception:
+        peer_supports = lambda *_a, **_k: False  # noqa: E731 — circular-import safe fallback
+
+    cck_peers = []
+    legacy_peers = []
+    for node_id in bbs_nodes:
+        if peer_supports(node_id, 'cck'):
+            cck_peers.append(node_id)
+        else:
+            legacy_peers.append(node_id)
+
+    if cck_peers:
+        _send_sync_with_cont(
+            short_header, footer, content, unique_id,
+            cont_prefix=f"CHANNELCOMMENTCONT|{unique_id}|",
+            meta_prefix=f"CHANNELCOMMENTMETA|{unique_id}|",
+            bbs_nodes=cck_peers, interface=interface,
+        )
+
+    if legacy_peers:
+        legacy_header = short_header if full_too_big else full_header
+        _send_sync_with_cont(
+            legacy_header, footer, content, unique_id,
+            cont_prefix=f"CHANNELCOMMENTCONT|{unique_id}|",
+            meta_prefix=f"CHANNELCOMMENTMETA|{unique_id}|",
+            bbs_nodes=legacy_peers, interface=interface,
+        )
 
 
 def send_delete_channel_comment_to_bbs_nodes(unique_id, bbs_nodes, interface):
