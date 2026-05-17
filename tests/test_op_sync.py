@@ -234,3 +234,60 @@ class TestHandleEvent:
         # Too few parts — should not raise
         op_sync.handle_event(["EVENT", "bulletins"], "!peer_node", iface)
         op_sync.handle_event(["EVENT", "bulletins", "!p", "bad_seq", "upsert", "uid"], "!peer_node", iface)
+
+
+# ── backfill_op_log ────────────────────────────────────────────────────────────
+
+class TestBackfillOpLog:
+    def setup_method(self):
+        self.conn = _setup_db()
+
+    def teardown_method(self):
+        _teardown_db()
+
+    def test_backfill_creates_entries_for_local_records(self):
+        # Create records normally (dual-write fires because source == local)
+        # Then wipe op_log to simulate pre-Phase-2 state
+        db_operations.add_bulletin("General", "Tester", "S1", "B1", bbs_nodes=[], interface=None)
+        db_operations.add_bulletin("General", "Tester", "S2", "B2", bbs_nodes=[], interface=None)
+        db_operations.add_mail("!local_node", "Alice", "!other", "Sub", "Body", bbs_nodes=[], interface=None)
+        # Wipe op_log to simulate pre-Phase-2 state
+        self.conn.execute("DELETE FROM op_log")
+        self.conn.commit()
+        assert self.conn.execute("SELECT COUNT(*) FROM op_log").fetchone()[0] == 0
+
+        count = db_operations.run_op_log_backfill()
+        assert count == 3
+        assert self.conn.execute("SELECT COUNT(*) FROM op_log").fetchone()[0] == 3
+
+    def test_backfill_is_idempotent(self):
+        db_operations.add_bulletin("General", "T", "S", "B", bbs_nodes=[], interface=None)
+        count1 = db_operations.run_op_log_backfill()
+        count2 = db_operations.run_op_log_backfill()
+        # Second call should find nothing new
+        assert count2 == 0
+
+    def test_backfill_skips_remote_origin_records(self):
+        # Directly insert a bulletin with a foreign source_node_id (simulating a replicated record)
+        import uuid
+        uid = str(uuid.uuid4())
+        self.conn.execute(
+            "INSERT INTO bulletins (unique_id, board, sender_short_name, subject, content, date, source_node_id)"
+            " VALUES (?, 'G', 'Remote', 'Sub', 'Body', '2026-01-01', '!remote_node')",
+            (uid,),
+        )
+        self.conn.commit()
+
+        count = db_operations.run_op_log_backfill()
+        assert count == 0  # remote-origin record must not be backfilled
+
+    def test_backfill_returns_zero_when_op_log_disabled(self):
+        db_operations.add_bulletin("General", "T", "S", "B", bbs_nodes=[], interface=None)
+        self.conn.execute("DELETE FROM op_log")
+        self.conn.commit()
+        os.environ["BBS_OP_LOG_ENABLED"] = "0"
+        try:
+            count = db_operations.run_op_log_backfill()
+        finally:
+            os.environ["BBS_OP_LOG_ENABLED"] = "1"
+        assert count == 0
