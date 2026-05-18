@@ -73,6 +73,7 @@ from utils import (
     is_zork_save_sync_enabled,
     decode_ts_minute, decode_ts_second,
     encode_scope, decode_scope, peers_all_support,
+    encode_text, decode_text,
     _send_one_sync, _MESHTASTIC_MAX_BYTES,
 )
 
@@ -481,8 +482,9 @@ def get_candidate_resolution_snapshot() -> dict:
 
 
 def _send_candidate_response(scope: str, request_id: str, user_id: str, game_id: str, candidate: dict, destination_node_id: str, interface) -> None:
-    user_b64 = base64.b64encode(str(user_id).encode('utf-8')).decode('ascii')
-    game_b64 = base64.b64encode(str(game_id).encode('utf-8')).decode('ascii')
+    _use_plain = peers_all_support([destination_node_id], 'nob64')
+    user_b64 = encode_text(str(user_id), _use_plain)
+    game_b64 = encode_text(str(game_id), _use_plain)
     kind = str(candidate.get('kind', 'missing'))
     updated_at = str(candidate.get('updated_at', '') or '')
     size = int(candidate.get('size', 0) or 0)
@@ -512,11 +514,14 @@ def start_zork_save_best_candidate_resolution(user_id: str, game_id: str, peer_n
         'started_at': now,
         'result': '',
     }
-    user_b64 = base64.b64encode(normalized_user.encode('utf-8')).decode('ascii')
-    game_b64 = base64.b64encode(normalized_game.encode('utf-8')).decode('ascii')
+    user_b64 = normalized_user
+    game_b64 = normalized_game
     for peer_id in sorted(peers):
+        _use_plain = peers_all_support([peer_id], 'nob64')
         _scope_wire = encode_scope('zork_saves', peers_all_support([peer_id], 'scc'))
-        message = f"CANDREQ|{_scope_wire}|{request_id}|{user_b64}|{game_b64}"
+        _u = encode_text(user_b64, _use_plain)
+        _g = encode_text(game_b64, _use_plain)
+        message = f"CANDREQ|{_scope_wire}|{request_id}|{_u}|{_g}"
         _send_one_sync(message, peer_id, interface, pause_seconds=get_hash_repair_pause_seconds())
     if not peers:
         _finalize_candidate_resolution_request(request_id, interface, timed_out=False)
@@ -1085,8 +1090,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed DELETE_ZORKSAVE sync message ignored: {message}")
                 return
             try:
-                user_id = base64.b64decode(parts[1].encode('ascii')).decode('utf-8')
-                game_id = base64.b64decode(parts[2].encode('ascii')).decode('utf-8')
+                user_id = decode_text(parts[1])
+                game_id = decode_text(parts[2])
             except Exception:
                 logging.warning(f"Malformed DELETE_ZORKSAVE payload ignored: {message}")
                 return
@@ -1125,7 +1130,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             channel_key, b64_sender_raw, comment_date, content = hparts
             comment_date = decode_ts_minute(comment_date)
             try:
-                sender_short_name = base64.b64decode(b64_sender_raw.encode('ascii')).decode('utf-8')
+                sender_short_name = decode_text(b64_sender_raw)
             except Exception:
                 logging.warning(f"Malformed CHANNELCOMMENT sender ignored: {message}")
                 return
@@ -1458,8 +1463,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             if scope != 'zork_saves':
                 return
             try:
-                user_id = base64.b64decode(parts[3].encode('ascii')).decode('utf-8')
-                game_id = base64.b64decode(parts[4].encode('ascii')).decode('utf-8')
+                user_id = decode_text(parts[3])
+                game_id = decode_text(parts[4])
             except Exception:
                 logging.warning(f"Malformed CANDREQ payload ignored: {message}")
                 return
@@ -1479,8 +1484,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             if scope != 'zork_saves':
                 return
             try:
-                user_id = base64.b64decode(parts[3].encode('ascii')).decode('utf-8')
-                game_id = base64.b64decode(parts[4].encode('ascii')).decode('utf-8')
+                user_id = decode_text(parts[3])
+                game_id = decode_text(parts[4])
             except Exception:
                 logging.warning(f"Malformed CANDRSP payload ignored: {message}")
                 return
@@ -1507,10 +1512,10 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed PROFILESYNC ignored: {message}")
                 return
             try:
-                short_name = base64.b64decode(parts[2].encode('ascii')).decode('utf-8')
-                long_name = base64.b64decode(parts[3].encode('ascii')).decode('utf-8')
+                short_name = decode_text(parts[2])
+                long_name = decode_text(parts[3])
                 messages_sent = int(parts[6])
-                bio = base64.b64decode(parts[7].encode('ascii')).decode('utf-8')
+                bio = decode_text(parts[7])
             except Exception:
                 logging.warning(f"Malformed PROFILESYNC payload ignored: {message}")
                 return
@@ -1523,7 +1528,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed SCORESYNC ignored: {message}")
                 return
             try:
-                short_name = base64.b64decode(parts[3].encode('ascii')).decode('utf-8')
+                short_name = decode_text(parts[3])
                 score = int(parts[4])
                 max_score = int(parts[5])
                 moves = int(parts[6])
@@ -1543,8 +1548,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 return
             save_id, user_b64, game_b64, csv = parts[1], parts[2], parts[3], parts[4]
             try:
-                user_id = base64.b64decode(user_b64.encode('ascii')).decode('utf-8')
-                game_id = base64.b64decode(game_b64.encode('ascii')).decode('utf-8')
+                user_id = decode_text(user_b64)
+                game_id = decode_text(game_b64)
                 missing = sorted({int(x) for x in csv.split(',') if x.strip() != ''})
             except Exception:
                 logging.warning(f"Malformed ZORKGAP payload ignored: {message}")
@@ -1638,8 +1643,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             if len(buf['chunks']) == buf['total']:
                 try:
                     ordered = ''.join(buf['chunks'][i] for i in range(buf['total']))
-                    user_id = base64.b64decode(buf['user_b64'].encode('ascii')).decode('utf-8')
-                    game_id = base64.b64decode(buf['game_b64'].encode('ascii')).decode('utf-8')
+                    user_id = decode_text(buf['user_b64'])
+                    game_id = decode_text(buf['game_b64'])
                     save_data = base64.b64decode(ordered.encode('ascii'))
                     expected_hash = str(buf.get('payload_hash', '') or '')
                     if expected_hash:
