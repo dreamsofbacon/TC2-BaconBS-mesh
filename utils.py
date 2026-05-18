@@ -27,7 +27,7 @@ _MESHTASTIC_MAX_BYTES = 220
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields
 
 # Single-char scope codes used by the 'scc' wire capability.  Senders gate
 # encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
@@ -469,8 +469,9 @@ def send_delete_zork_save_to_bbs_nodes(user_id, game_id, deleted_at, bbs_nodes, 
     if not is_zork_save_sync_enabled():
         return
     _use_epoch = peers_all_support(bbs_nodes, 'epoch')
+    _use_plain = peers_all_support(bbs_nodes, 'nob64')
     deleted_at_wire = encode_ts_second(deleted_at, _use_epoch)
-    message = f"DELETE_ZORKSAVE|{_b64(str(user_id))}|{_b64(str(game_id))}|{deleted_at_wire}"
+    message = f"DELETE_ZORKSAVE|{encode_text(str(user_id), _use_plain)}|{encode_text(str(game_id), _use_plain)}|{deleted_at_wire}"
     logging.info(f"SERVER SYNC: Sending delete zork save sync for user_id={user_id} game_id={game_id}")
     for node_id in bbs_nodes:
         _send_one_sync(message, node_id, interface)
@@ -605,14 +606,16 @@ def peers_all_support(peer_ids, cap: str) -> bool:
 
 def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_date, content, unique_id, bbs_nodes, interface, source_node_id=None, source_timestamp=None):
     _use_epoch = peers_all_support(bbs_nodes, 'epoch')
+    _use_plain = peers_all_support(bbs_nodes, 'nob64')
     comment_date_wire = encode_ts_minute(comment_date, _use_epoch) if comment_date else (comment_date or "")
     if source_node_id and source_timestamp:
         footer = f"|{unique_id}|{source_node_id}|{encode_ts_second(source_timestamp, _use_epoch)}"
     else:
         footer = f"|{unique_id}"
-    full_header = f"CHANNELCOMMENT|{channel_key}|{_b64(sender_short_name)}|{comment_date_wire}|"
+    _sender_wire = encode_text(sender_short_name, _use_plain)
+    full_header = f"CHANNELCOMMENT|{channel_key}|{_sender_wire}|{comment_date_wire}|"
     short_key = compact_channel_manifest_key(channel_key)
-    short_header = f"CHANNELCOMMENT|{short_key}|{_b64(sender_short_name)}|{comment_date_wire}|"
+    short_header = f"CHANNELCOMMENT|{short_key}|{_sender_wire}|{comment_date_wire}|"
 
     # 'cck' capability: peer advertises that it prefers compact channel keys,
     # so always send the short header to it (saves 40-90 bytes per frame).
@@ -727,12 +730,102 @@ def _b64(text: str) -> str:
     return base64.b64encode((text or "").encode("utf-8")).decode("ascii")
 
 
+# ---------------------------------------------------------------------------
+# PR 4 — 'nob64' wire capability: plain UTF-8 text on the wire instead of
+# base64, distinguished by a leading '~' sentinel.  The '~' char is not in the
+# base64 alphabet, so the decoder can tell new frames from legacy ones with no
+# version field needed.
+#
+# Inside the sentinel-prefixed payload, literal '|' (the wire delimiter) and
+# '\\' (the escape char) are encoded as '\\p' and '\\\\' respectively.  This
+# keeps the encoded form free of unescaped '|' so the outer split-on-pipe
+# parser never mis-segments the frame.
+# ---------------------------------------------------------------------------
+
+def pipe_escape(s: str) -> str:
+    """Escape ``\\`` and ``|`` so the result is safe inside a pipe-delimited frame.
+
+    ``\\`` becomes ``\\\\`` and ``|`` becomes ``\\p``.  Result never contains
+    an unescaped ``|`` character.
+    """
+    if s is None:
+        return ''
+    return str(s).replace('\\', '\\\\').replace('|', '\\p')
+
+
+def pipe_unescape(s: str) -> str:
+    """Reverse :func:`pipe_escape` in a single pass.
+
+    Unknown ``\\X`` sequences (other than ``\\\\`` and ``\\p``) drop the
+    backslash and keep ``X`` so a future codepoint can be added without
+    breaking older receivers.
+    """
+    if s is None:
+        return ''
+    s = str(s)
+    out = []
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if ch == '\\' and i + 1 < n:
+            nxt = s[i + 1]
+            if nxt == 'p':
+                out.append('|')
+            elif nxt == '\\':
+                out.append('\\')
+            else:
+                out.append(nxt)
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return ''.join(out)
+
+
+def encode_text(s, use_plain: bool = False) -> str:
+    """Encode a user-supplied text field for the wire.
+
+    When ``use_plain`` is True returns ``'~' + pipe_escape(s)`` (the new
+    'nob64' form); otherwise returns standard base64 (legacy form).  None and
+    empty inputs always return ``''`` (kept consistent with the legacy
+    ``_b64`` helper which also produced empty output for empty input).
+    """
+    if s is None or s == '':
+        return ''
+    s = str(s)
+    if use_plain:
+        return '~' + pipe_escape(s)
+    return base64.b64encode(s.encode('utf-8')).decode('ascii')
+
+
+def decode_text(token) -> str:
+    """Decode a wire text field, auto-detecting plain vs base64 form.
+
+    A leading ``~`` sentinel marks the new pipe-escaped UTF-8 form; absence
+    means legacy base64.  Empty / None input returns ``''``.  Best-effort:
+    if base64 decoding fails (e.g. token was actually plain but missing the
+    sentinel) the raw token is returned unchanged so an unparseable wire frame
+    still surfaces *something* rather than throwing.
+    """
+    if token is None or token == '':
+        return ''
+    t = str(token)
+    if t.startswith('~'):
+        return pipe_unescape(t[1:])
+    try:
+        return base64.b64decode(t.encode('ascii')).decode('utf-8')
+    except Exception:
+        return t
+
+
 def send_profile_to_bbs_nodes(user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio, bbs_nodes, interface):
     _use_epoch = peers_all_support(bbs_nodes, 'epoch')
+    _use_plain = peers_all_support(bbs_nodes, 'nob64')
     message = (
-        f"PROFILESYNC|{user_id}|{_b64(short_name)}|{_b64(long_name)}|"
+        f"PROFILESYNC|{user_id}|{encode_text(short_name, _use_plain)}|{encode_text(long_name, _use_plain)}|"
         f"{encode_ts_second(first_seen, _use_epoch)}|{encode_ts_second(last_seen, _use_epoch)}|"
-        f"{int(messages_sent)}|{_b64(bio)}"
+        f"{int(messages_sent)}|{encode_text(bio, _use_plain)}"
     )
     for node_id in bbs_nodes:
         _send_one_sync(message, node_id, interface)
@@ -740,8 +833,9 @@ def send_profile_to_bbs_nodes(user_id, short_name, long_name, first_seen, last_s
 
 def send_game_score_to_bbs_nodes(user_id, game_id, short_name, score, max_score, moves, achieved_at, bbs_nodes, interface):
     _use_epoch = peers_all_support(bbs_nodes, 'epoch')
+    _use_plain = peers_all_support(bbs_nodes, 'nob64')
     message = (
-        f"SCORESYNC|{user_id}|{game_id}|{_b64(short_name)}|"
+        f"SCORESYNC|{user_id}|{game_id}|{encode_text(short_name, _use_plain)}|"
         f"{int(score)}|{int(max_score)}|{int(moves)}|{encode_ts_second(achieved_at, _use_epoch)}"
     )
     for node_id in bbs_nodes:
@@ -761,9 +855,10 @@ def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nod
     only_set = set(int(i) for i in only_indices) if only_indices is not None else None
     payload_b64 = base64.b64encode(save_data or b"").decode("ascii")
     payload_hash = base64.urlsafe_b64encode(hashlib.blake2b(save_data or b"", digest_size=8).digest()).decode("ascii").rstrip("=")
-    user_b64 = _b64(str(user_id))
-    game_b64 = _b64(str(game_id))
     _use_epoch = peers_all_support(bbs_nodes, 'epoch')
+    _use_plain = peers_all_support(bbs_nodes, 'nob64')
+    user_b64 = encode_text(str(user_id), _use_plain)
+    game_b64 = encode_text(str(game_id), _use_plain)
     updated_at_wire = encode_ts_second(updated_at, _use_epoch)
     # Deterministic save_id allows retries/re-sync to reuse the same identity.
     # save_id derives from the *original* updated_at value (not the epoch-encoded
