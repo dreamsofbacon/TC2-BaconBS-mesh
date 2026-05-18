@@ -27,7 +27,7 @@ _MESHTASTIC_MAX_BYTES = 220
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding
 
 # Single-char scope codes used by the 'scc' wire capability.  Senders gate
 # encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
@@ -817,6 +817,82 @@ def decode_text(token) -> str:
         return base64.b64decode(t.encode('ascii')).decode('utf-8')
     except Exception:
         return t
+
+
+# ---------------------------------------------------------------------------
+# PR 5 — 'bmgap' wire capability: compact gap-fill encoding.
+#
+# Gap-fill messages (HASHZGAP, ZORKGAP) carry a list of missing chunk indices.
+# Legacy peers receive a raw CSV like "1,3,5,7"; bmgap-capable peers receive
+# whichever of "csv:1,3,5,7" or "bm:<base85-bitmap>" is shorter.  The base85
+# bitmap shines when many indices are missing from a large manifest (each
+# byte covers 8 indices vs CSV which needs 2-7 chars per index).
+# ---------------------------------------------------------------------------
+
+def pack_missing(missing, total, prefer_bitmap: bool = True) -> str:
+    """Encode a missing-indices set for a gap-fill frame.
+
+    When ``prefer_bitmap`` is False (peer doesn't support 'bmgap'), returns
+    a bare CSV with no prefix — identical to the legacy wire form.
+
+    When True, returns ``'bm:' + b85`` or ``'csv:' + csv`` whichever is
+    shorter; both are explicitly prefixed so the receiver can dispatch.
+    """
+    missing_sorted = sorted(int(x) for x in (missing or []))
+    csv = ",".join(str(i) for i in missing_sorted)
+    if not prefer_bitmap:
+        return csv
+    bits = max(int(total or 0), (missing_sorted[-1] + 1) if missing_sorted else 0)
+    if bits <= 0:
+        return "csv:" + csv
+    bm_bytes = bytearray((bits + 7) // 8)
+    for idx in missing_sorted:
+        if 0 <= idx < bits:
+            bm_bytes[idx >> 3] |= 1 << (idx & 7)
+    bm = "bm:" + base64.b85encode(bytes(bm_bytes)).decode('ascii')
+    csv_full = "csv:" + csv
+    return bm if len(bm) < len(csv_full) else csv_full
+
+
+def unpack_missing(token, total: int = 0) -> list:
+    """Decode a gap-fill missing-indices field.
+
+    Accepts the three on-wire forms:
+      * ``'bm:<base85>'`` — bitmap-base85 (new 'bmgap' form)
+      * ``'csv:1,3,5'``   — explicit CSV (new 'bmgap' form)
+      * ``'1,3,5'``       — bare CSV (legacy)
+
+    When ``total`` > 0 indices ≥ total are filtered out.  Returns a sorted
+    list of unique non-negative ints.
+    """
+    if token is None or token == '':
+        return []
+    t = str(token)
+    if t.startswith('bm:'):
+        try:
+            raw = base64.b85decode(t[3:].encode('ascii'))
+        except Exception:
+            return []
+        out = []
+        for byte_idx, b in enumerate(raw):
+            if not b:
+                continue
+            base_idx = byte_idx << 3
+            for bit in range(8):
+                if b & (1 << bit):
+                    idx = base_idx + bit
+                    if total <= 0 or idx < total:
+                        out.append(idx)
+        return sorted(set(out))
+    if t.startswith('csv:'):
+        t = t[4:]
+    try:
+        out = sorted({int(x) for x in t.split(',') if x.strip() != ''})
+    except Exception:
+        return []
+    if total > 0:
+        out = [i for i in out if 0 <= i < total]
+    return out
 
 
 def send_profile_to_bbs_nodes(user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio, bbs_nodes, interface):

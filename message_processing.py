@@ -74,6 +74,7 @@ from utils import (
     decode_ts_minute, decode_ts_second,
     encode_scope, decode_scope, peers_all_support,
     encode_text, decode_text,
+    pack_missing, unpack_missing,
     _send_one_sync, _MESHTASTIC_MAX_BYTES,
 )
 
@@ -220,7 +221,7 @@ def _retry_stale_zork_save_buffers(interface) -> None:
         # Send a ZORKGAP request for only the missing frames.
         user_b64 = str(buf.get('user_b64', ''))
         game_b64 = str(buf.get('game_b64', ''))
-        csv = ",".join(str(i) for i in missing)
+        csv = pack_missing(missing, total, peers_all_support([peer_id], 'bmgap'))
         gap_msg = f"ZORKGAP|{save_id}|{user_b64}|{game_b64}|{csv}"
         if len(gap_msg.encode('utf-8')) > 200:
             # CSV too large to fit; fall back immediately.
@@ -338,7 +339,7 @@ def _retry_stale_hash_manifest_buffers(interface) -> None:
                     buf['updated_at'] = now
                     fallback_to_hashreq = False
                     _scope_wire = encode_scope(scope, peers_all_support([peer_id], 'scc'))
-                    csv = ",".join(str(i) for i in missing)
+                    csv = pack_missing(missing, total, peers_all_support([peer_id], 'bmgap'))
                     gap_msg = f"HASHZGAP|{_scope_wire}|{manifest_id}|{csv}"
                     if len(gap_msg.encode('utf-8')) > 200:
                         gap_msg = ""
@@ -349,7 +350,7 @@ def _retry_stale_hash_manifest_buffers(interface) -> None:
                     gap_msg = ""
             else:
                 _scope_wire = encode_scope(scope, peers_all_support([peer_id], 'scc'))
-                csv = ",".join(str(i) for i in missing)
+                csv = pack_missing(missing, total, peers_all_support([peer_id], 'bmgap'))
                 gap_msg = f"HASHZGAP|{_scope_wire}|{manifest_id}|{csv}"
                 if len(gap_msg.encode('utf-8')) > 200:
                     buf['gap_attempts'] = _HASHZ_GAP_FILL_MAX_ATTEMPTS
@@ -1389,16 +1390,16 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             scope = decode_scope(scope)
             if scope not in _SUPPORTED_HASH_SCOPES:
                 return
-            try:
-                missing = sorted({int(x) for x in csv.split(',') if x.strip() != ''})
-            except Exception:
-                logging.warning(f"Malformed HASHZGAP payload ignored: {message}")
-                return
             cache_key = (sender_node_id, scope, manifest_id)
             with _hash_buffer_lock:
                 entry = _outgoing_hash_manifest_cache.get(cache_key)
                 cached_chunks = list(entry['chunks']) if entry else []
                 total = int(entry['total']) if entry else 0
+            try:
+                missing = unpack_missing(csv, total)
+            except Exception:
+                logging.warning(f"Malformed HASHZGAP payload ignored: {message}")
+                return
             if not entry:
                 logging.info(
                     f"HASHZGAP from {sender_node_id} for unknown manifest scope={scope} "
@@ -1550,7 +1551,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             try:
                 user_id = decode_text(user_b64)
                 game_id = decode_text(game_b64)
-                missing = sorted({int(x) for x in csv.split(',') if x.strip() != ''})
+                missing = unpack_missing(csv, 0)
             except Exception:
                 logging.warning(f"Malformed ZORKGAP payload ignored: {message}")
                 return
