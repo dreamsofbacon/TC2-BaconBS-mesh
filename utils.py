@@ -2,6 +2,7 @@ import logging
 import base64
 import hashlib
 import os
+import random
 import re
 import time
 import configparser
@@ -963,16 +964,24 @@ def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nod
         f"only_indices={sorted(only_set) if only_set is not None else 'all'}"
     )
     sent_count = 0
+    # Per-chunk pause jitter breaks the deterministic half-duplex collision
+    # pattern where chunk_idx=1 was systematically lost because the receiver's
+    # ACK for chunk 0 collided with the sender's transmission of chunk 1 at a
+    # fixed predictable offset.  See _send_hash_manifest_to_peer for the
+    # matching fix on HASHZ.
+    base_pause = pause_seconds if pause_seconds is not None else 0.0
     for idx, chunk in enumerate(chunks):
         if only_set is not None and idx not in only_set:
             continue
         message = f"{prefix}{idx}|{total_chunks}|{chunk}"
+        jitter = random.uniform(0, base_pause) if base_pause > 0 else 0.0
+        effective_pause = base_pause + jitter if pause_seconds is not None else None
         for node_id in bbs_nodes:
             logging.info(
                 f"ZORKSAVE send chunk save_id={save_id} idx={idx}/{total_chunks} "
                 f"frame_bytes={len(message.encode('utf-8'))} -> {node_id}"
             )
-            _send_one_sync(message, node_id, interface, pause_seconds)
+            _send_one_sync(message, node_id, interface, effective_pause)
         sent_count += 1
     logging.info(f"ZORKSAVE send end save_id={save_id} chunks_sent={sent_count}/{total_chunks}")
 

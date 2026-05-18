@@ -858,11 +858,14 @@ def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface)
             'created_at': time.time(),
         }
     for idx, chunk in enumerate(chunks):
-        # Add random jitter so consecutive chunks don't arrive at the receiver
-        # at perfectly predictable intervals. This breaks the half-duplex
-        # collision pattern where certain chunk indices are systematically lost
-        # because the receiver transmits at a predictable offset from chunk 0.
-        jitter = random.uniform(0, chunk_pause) if idx > 0 else 0.0
+        # Add random jitter to EVERY chunk's post-send pause so the gap before
+        # the next chunk varies. Previously chunk 0's pause was un-jittered,
+        # which made chunk 1 arrive at a deterministic offset from chunk 0 and
+        # collide with the half-duplex ACK window -- chunk index 1 was then
+        # consistently lost on every manifest. Apply jitter on chunk 0 as well
+        # (the original intent of "don't jitter the very first send" was
+        # misplaced -- the issue is the gap, not the send).
+        jitter = random.uniform(0, chunk_pause)
         _send_one_sync(f"{prefix}{idx}|{total}|{chunk}", destination_node_id, interface,
                        pause_seconds=chunk_pause + jitter)
 
