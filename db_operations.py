@@ -2877,6 +2877,16 @@ def get_mail_by_unique_id(unique_id: str):
 
 
 def get_channel_by_manifest_key(manifest_key: str):
+    # Compact keys (~XXXXXXXX) are produced when the full base64(name+url) key
+    # would overflow a HASHMISS request frame.  Resolve by scanning channels.
+    if str(manifest_key).startswith('~'):
+        conn = get_db_connection()
+        c = conn.cursor()
+        for row in c.execute("SELECT name, url FROM channels WHERE local_only = 0"):
+            full_key = make_channel_manifest_key(row[0], row[1])
+            if compact_channel_manifest_key(full_key) == manifest_key:
+                return (row[0], row[1])
+        return None
     decoded = decode_channel_manifest_key(manifest_key)
     if not decoded:
         return None
