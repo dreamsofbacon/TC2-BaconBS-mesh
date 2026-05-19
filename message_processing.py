@@ -75,6 +75,7 @@ from utils import (
     encode_scope, decode_scope, peers_all_support,
     encode_text, decode_text,
     pack_missing, unpack_missing,
+    compact_channel_manifest_key,
     _send_one_sync, _MESHTASTIC_MAX_BYTES,
 )
 
@@ -797,12 +798,22 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
         _peer_scc = peers_all_support([sender_node_id], 'scc')
         _scope_wire = encode_scope(scope, _peer_scc)
         _tomb_wire = encode_scope('tombstones', _peer_scc)
+        # For channel non-comment keys, the full base64(name+url) manifest key
+        # can exceed 200 chars for channels with long descriptions.  If the plain
+        # HASHMISS frame would be over the packet cap, substitute the 9-char
+        # compact key (~XXXXXXXX) so the request actually gets transmitted.
+        # The sender will resolve the compact key back to the full channel record.
+        wire_key = key
+        if scope == 'channels' and not str(key).startswith('comment:'):
+            if len(f"HASHMISS|{_scope_wire}|{key}".encode('utf-8')) > _MESHTASTIC_MAX_BYTES:
+                wire_key = compact_channel_manifest_key(key)
+                logging.info(f"Channel key too long for HASHMISS frame; using compact key {wire_key}")
         if scope in ('bulletins', 'mail', 'zork_saves', 'channels') and key not in local and has_sync_tombstone(scope, key):
             logging.info(f"Requesting tombstone replay from {sender_node_id} for {scope}:{key}")
-            _send_one_sync(f"HASHMISS|{_tomb_wire}|{_scope_wire}:{key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+            _send_one_sync(f"HASHMISS|{_tomb_wire}|{_scope_wire}:{wire_key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
         else:
-            logging.info(f"Requesting record from {sender_node_id} scope={scope} key={key}")
-            _send_one_sync(f"HASHMISS|{_scope_wire}|{key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+            logging.info(f"Requesting record from {sender_node_id} scope={scope} key={wire_key}")
+            _send_one_sync(f"HASHMISS|{_scope_wire}|{wire_key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
         pull_sent += 1
 
     # Proactively push records the peer is missing to converge in one cycle.
