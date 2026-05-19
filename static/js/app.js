@@ -131,17 +131,31 @@
 
     var paused = false;
     var interval;
+    var secondsUntilNext = 0;
+
+    function formatCountdown(secs) {
+      if (!secs || secs <= 0) return '--:--';
+      var m = Math.floor(secs / 60);
+      var s = Math.floor(secs % 60);
+      return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+    }
 
     function fetchStatus() {
       if (paused) return;
-      fetch('/api/sync-status', { headers: { 'X-CSRF-Token': BBS._csrfToken || '' } })
-        .then(function(r) { return r.json(); })
+      fetch('/api/sync/status', { headers: { 'X-CSRF-Token': BBS._csrfToken || '' } })
+        .then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
         .then(function(data) {
-          pill.textContent = data.status || 'Sync status unavailable';
-          pill.classList.toggle('active', !!data.active);
+          var inProgress = !!data.in_progress;
+          var pct = Number(data.progress_percent || 0);
+          secondsUntilNext = Number(data.seconds_until_next || 0);
+          var peerStatus = String(data.peer_status_text || 'no peer reports');
+          var left = 'Sync ' + pct + '%';
+          var right = inProgress ? 'running' : (formatCountdown(secondsUntilNext) + ' | ' + peerStatus);
+          pill.textContent = left + ' | ' + right;
+          pill.classList.toggle('active', inProgress);
         })
         .catch(function() {
-          pill.textContent = '⬆ Sync status unavailable';
+          // Keep existing display if a poll fails rather than showing "unavailable".
         });
     }
 
