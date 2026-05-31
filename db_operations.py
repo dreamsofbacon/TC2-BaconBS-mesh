@@ -2809,18 +2809,22 @@ def get_record_hash_manifest(scope: str) -> dict:
             key = str(row[5])
             manifest[key] = _compact_row_hash(row)
     elif scope == 'channels':
+        # Channel records only — comments are a separate sub-scope.
         for row in c.execute(
             "SELECT name, url FROM channels WHERE local_only = 0"
         ):
             key = make_channel_manifest_key(row[0], row[1])
             manifest[key] = _compact_row_hash(row)
+    elif scope == 'channel_comments':
+        # Comments only — keyed by plain UUID (no 'comment:' prefix needed since
+        # the scope already identifies the record type).
         for row in c.execute(
             "SELECT ch.name, ch.url, cc.sender_short_name, cc.date, cc.content, cc.unique_id, "
             "COALESCE(cc.expected_content_length, LENGTH(cc.content)), COALESCE(cc.content_complete, 1), "
             "cc.source_node_id, cc.source_timestamp "
             "FROM channel_comments cc JOIN channels ch ON ch.id = cc.channel_id WHERE ch.local_only = 0"
         ):
-            manifest[f"comment:{row[5]}"] = _compact_row_hash(row)
+            manifest[str(row[5])] = _compact_row_hash(row)
     elif scope == 'profiles':
         for row in c.execute(
             "SELECT user_id, short_name, long_name, bio FROM user_profiles"
