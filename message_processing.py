@@ -119,7 +119,9 @@ _ZORK_SAVE_BUFFER_MAX_AGE_SECONDS = 600
 _ZORK_GAP_FILL_MAX_ATTEMPTS = 3
 # Max HASHZGAP retry rounds before falling back to dropping the buffer and
 # issuing a fresh HASHREQ (which makes the sender start over from scratch).
-_HASHZ_GAP_FILL_MAX_ATTEMPTS = 3
+# Raised from 3 to 6: retrying individual missing chunks is much cheaper than
+# restarting the full manifest exchange, especially on lossy LoRa links.
+_HASHZ_GAP_FILL_MAX_ATTEMPTS = 6
 _peer_hash_manifest_buffers = {}
 _peer_hash_compressed_buffers = {}
 
@@ -151,7 +153,11 @@ _HASH_BUFFER_MAX_AGE_SECONDS = 600
 # would otherwise leave the buffer stuck for ``_HASH_BUFFER_MAX_AGE_SECONDS``
 # (10 minutes) before pruning, during which no retry happens on either side
 # and sync appears stalled.
-_HASH_BUFFER_RETRY_AFTER_SECONDS = 15
+# Raised from 15s to 35s: gives more time for all chunks to arrive before
+# triggering gap-fill. On a 3-node mesh with a 6-chunk manifest, 15s was
+# too aggressive — gap-fills were firing before the last chunks landed,
+# flooding the channel with redundant requests.
+_HASH_BUFFER_RETRY_AFTER_SECONDS = 35
 _recent_hashmiss_requests = {}
 # Per-pass HASHMISS pull/push caps and SYNCSTATE repair TTL are tunable via the
 # [sync] config section (reconcile_max_per_pass, repair_cycle_seconds) or the
