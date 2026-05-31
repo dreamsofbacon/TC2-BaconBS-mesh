@@ -15,6 +15,10 @@ other BBS servers listed in the config.ini file.
 import logging
 import json
 import os
+import sys
+
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 import configparser
 import threading
 import time
@@ -57,6 +61,36 @@ from message_processing import (
 )
 from pubsub import pub
 from utils import send_hash_request_to_bbs_nodes, send_sync_state_to_bbs_nodes, send_have_to_bbs_nodes, select_syncstate_peers_to_notify
+
+# Reconnect signal: set by the consecutive-failure counter in utils.py or by
+# the reader-thread health check when the TCP/serial link is detected dead.
+# The main loop handles it and swaps in a fresh interface without restarting.
+reconnect_needed: threading.Event = threading.Event()
+
+# Short socket send timeout so a dead TCP connection fails fast (5 s) instead
+# of blocking for the library default (~30 s), keeping the main loop responsive.
+_TCP_SEND_TIMEOUT_SECONDS: float = 5.0
+
+
+def _apply_socket_timeout(iface) -> None:
+    """Set a short send timeout on the TCP socket if present."""
+    try:
+        sock = getattr(iface, 'socket', None)
+        if sock is not None:
+            sock.settimeout(_TCP_SEND_TIMEOUT_SECONDS)
+    except Exception:
+        pass
+
+
+def _is_interface_alive(iface) -> bool:
+    """Return False if the meshtastic reader thread has exited (connection dead)."""
+    try:
+        rx = getattr(iface, '_rxThread', None)
+        if rx is not None and not rx.is_alive():
+            return False
+    except Exception:
+        pass
+    return True
 
 # Liveness watchdog: the main loop bumps this on every iteration. A daemon
 # thread restarts the process via os._exit(2) (systemd brings it back) if the
@@ -264,6 +298,7 @@ def main():
     merge_config(system_config, args)
 
     interface = get_interface(system_config)
+    _apply_socket_timeout(interface)
     interface.bbs_nodes = system_config['bbs_nodes']
     interface.allowed_nodes = system_config['allowed_nodes']
     config_path = system_config.get('config_file', 'config.ini')
@@ -450,6 +485,13 @@ def main():
             _last_main_loop_tick = time.time()
             now = time.time()
             force_mismatch_check = False
+
+            # Detect a dead TCP connection via reader-thread health check so we
+            # can reconnect immediately without waiting for send timeouts.
+            if not _is_interface_alive(interface):
+                logging.warning("Radio reader thread has exited — connection lost, triggering reconnect.")
+                reconnect_needed.set()
+
             process_pending_candidate_resolutions(interface)
             # Drive stale-buffer retries (HASHZGAP / ZORKGAP) on a steady tick so
             # a dropped chunk in the middle of a manifest or zork save stream
@@ -707,7 +749,33 @@ def main():
                         t.start()
 
                 next_node_sync_check = now + 5
-            
+
+            # --- Reconnect handling ---
+            if reconnect_needed.is_set():
+                reconnect_needed.clear()
+                from utils import _consecutive_send_failures
+                import utils as _utils
+                _utils._consecutive_send_failures = 0
+                logging.warning("Reconnect signal received — closing dead interface...")
+                try:
+                    interface.close()
+                except Exception:
+                    pass
+                logging.warning("Attempting to reconnect to radio interface...")
+                retry_delay = 5
+                while True:
+                    try:
+                        time.sleep(retry_delay)
+                        interface = get_interface(system_config)
+                        _apply_socket_timeout(interface)
+                        interface.bbs_nodes = system_config['bbs_nodes']
+                        interface.allowed_nodes = system_config['allowed_nodes']
+                        logging.info("Reconnected to radio interface successfully.")
+                        break
+                    except Exception as exc:
+                        logging.warning(f"Reconnect failed: {exc} — retrying in {retry_delay}s...")
+                        retry_delay = min(retry_delay * 2, 60)
+
             time.sleep(1)
 
     except KeyboardInterrupt:

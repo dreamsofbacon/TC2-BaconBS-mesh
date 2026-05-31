@@ -5,9 +5,15 @@ import os
 import random
 import re
 import time
+import threading
 import configparser
 from datetime import datetime
 from typing import Optional
+
+# Consecutive send failure tracking — triggers os._exit so the process can be
+# restarted (by systemd on Linux, or manually on Windows) after a TCP drop.
+_consecutive_send_failures: int = 0
+_MAX_CONSECUTIVE_SEND_FAILURES: int = 10
 
 user_states = {}
 
@@ -986,29 +992,68 @@ def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nod
     logging.info(f"ZORKSAVE send end save_id={save_id} chunks_sent={sent_count}/{total_chunks}")
 
 
+_SEND_THREAD_TIMEOUT_SECONDS: float = 8.0
+
+
 def _send_one_sync(message, destination, interface, pause_seconds=None):
-    """Send a single sync packet directly to destination (no chunking)."""
+    """Send a single sync packet directly to destination (no chunking).
+
+    The meshtastic library blocks for up to 30 s waiting for a radio ack after
+    each send. Running the send in a daemon thread with a hard 8-second join
+    timeout ensures the main loop stays responsive even when the radio link is
+    dead and the ack never arrives.
+    """
+    global _consecutive_send_failures
     if pause_seconds is None:
         pause_seconds = get_sync_pause_seconds()
     msg_len = len(message.encode('utf-8'))
     if msg_len > _MESHTASTIC_MAX_BYTES:
         logging.warning(f"SYNC frame exceeds {_MESHTASTIC_MAX_BYTES} bytes ({msg_len}); dropping frame")
         return
-    try:
-        interface.sendText(
-            text=message,
-            destinationId=destination,
-            wantAck=True,
-            wantResponse=False,
-        )
-        # Log transmission for sync stats (lazy import to avoid circular dependency)
+
+    _result: list = [None]   # True on success, Exception on error
+    def _do_send():
+        try:
+            interface.sendText(
+                text=message,
+                destinationId=destination,
+                wantAck=True,
+                wantResponse=False,
+            )
+            _result[0] = True
+        except Exception as exc:
+            _result[0] = exc
+
+    t = threading.Thread(target=_do_send, daemon=True)
+    t.start()
+    t.join(timeout=_SEND_THREAD_TIMEOUT_SECONDS)
+
+    if t.is_alive():
+        # Send is still blocking — ack never arrived, connection is dead.
+        _consecutive_send_failures += 1
+        logging.info(f"SYNC SEND ERROR: send blocked for >{_SEND_THREAD_TIMEOUT_SECONDS:.0f}s — connection likely dead")
+    elif isinstance(_result[0], Exception):
+        _consecutive_send_failures += 1
+        logging.info(f"SYNC SEND ERROR {_result[0]}")
+    else:
+        _consecutive_send_failures = 0
         try:
             from db_operations import log_sync_transmission
             log_sync_transmission(message, destination, msg_len, is_continuation=False)
         except Exception as e:
             logging.debug(f"Failed to log sync transmission: {e}")
-    except Exception as e:
-        logging.info(f"SYNC SEND ERROR {e}")
+
+    if _consecutive_send_failures >= _MAX_CONSECUTIVE_SEND_FAILURES:
+        logging.warning(
+            f"SYNC SEND ERROR: {_consecutive_send_failures} consecutive failures — signalling reconnect."
+        )
+        _consecutive_send_failures = 0
+        try:
+            import server as _server
+            _server.reconnect_needed.set()
+        except Exception:
+            os._exit(2)  # fallback if import fails
+
     time.sleep(pause_seconds)
 
 

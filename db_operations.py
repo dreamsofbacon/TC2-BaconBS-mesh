@@ -2490,7 +2490,6 @@ def get_mail(recipient_id):
     return c.fetchall()
 
 def get_mail_content(mail_id, recipient_id):
-    # TODO: ensure only recipient can read mail
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(

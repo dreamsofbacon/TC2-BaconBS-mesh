@@ -195,3 +195,6 @@ def get_interface(system_config:dict[str, Any]) -> meshtastic.stream_interface.S
         except meshtastic.mesh_interface.MeshInterface.MeshInterfaceError as e:
             print(f"MeshInterfaceError: {e}. Radio may be hung — retrying in 10 seconds...")
             time.sleep(10)
+        except (ConnectionResetError, ConnectionRefusedError, OSError) as e:
+            print(f"Connection error: {e}. Device may be busy or recovering — retrying in 10 seconds...")
+            time.sleep(10)
