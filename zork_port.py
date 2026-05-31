@@ -219,7 +219,8 @@ def _ensure_story_file(game_id: str = 'zork1') -> tuple[bool, str]:
     try:
         urllib.request.urlretrieve(story_url, story_path)
         return True, story_path
-    except Exception:
+    except Exception as exc:
+        print(f"[zork] Failed to download story file from {story_url}: {exc}")
         return False, story_path
 
 
@@ -344,8 +345,8 @@ def start_zork_session(user_id: int, game_id: str = 'zork1') -> str:
                     time.sleep(0.4)
                     session.process.stdin.write(save_path + "\n")
                     session.process.stdin.flush()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    print(f"[zork] Failed to send restore command for user {user_id}: {exc}")
             restore_output = session.read_output()
             if restore_output:
                 look_output = session.send("look")

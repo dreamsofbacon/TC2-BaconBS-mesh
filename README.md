@@ -1,509 +1,285 @@
-# TC²-BBS Meshtastic Version
+# BaconBS-mesh
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/B0B1OZ22Z)
+A feature-rich, offline-first Bulletin Board System for [Meshtastic](https://meshtastic.org/) mesh radio networks. BaconBS-mesh enables asynchronous communication across low-bandwidth LoRa links with no internet dependency — designed for resilience in the field.
 
-This is the TC²-BBS system integrated with Meshtastic devices. The system includes bulletin boards, mail, channel directory, selective hash-based sync repair across peers, and tombstone-based deletion reconciliation.
+Forked from [TC²-BBS-mesh](https://github.com/TheCommsChannel/TC2-BBS-mesh) with significant protocol and reliability improvements.
 
-### Docker
+---
 
-If you're a Docker user, TC²-BBS Meshtastic is available on Docker Hub!
+## Features
 
-[![Docker HUB](https://icon-icons.com/downloadimage.php?id=151885&root=2530/PNG/128/&file=docker_button_icon_151885.png)](https://hub.docker.com/r/thealhu/tc2-bbs-mesh)
+- **Private Mail** — Send and receive direct messages between mesh nodes
+- **Bulletin Boards** — Post and browse community bulletins across configurable boards
+- **Channel Directory** — Named discussion channels with threaded comments
+- **User Profiles** — Short name, bio, and activity statistics per node
+- **Interactive Games** — Zork I–III, Hitchhiker's Guide to the Galaxy, Enchanter, Planetfall, Starcross (via dfrotz); per-user save states synced across the mesh
+- **JS8Call Bridge** — Optional integration with JS8Call for group, direct, and urgent radio messages
+- **Node Statistics** — View node counts, hardware types, and roles on the mesh
+- **Wall of Shame** — Devices with low battery levels
+- **Fortune Teller** — Random fortunes from a configurable text file
+- **Web Admin Dashboard** — Full moderation interface at `localhost:8081` with real-time sync monitoring, peer hash visualizations, transmission logs, and manual sync controls
 
-## Setup
+---
 
-### Requirements
+## Sync Protocol
 
-- Python 3.x
-- Meshtastic
-- pypubsub
-- **dfrotz** (required for Zork/interactive fiction games): `sudo apt install frotz`
+BaconBS-mesh uses a custom five-phase distributed sync protocol designed for lossy, low-bandwidth LoRa links. All data is eventually consistent across peers with no central server.
 
-### Update and Install Git
-   
-   ```sh
-   sudo apt update
-   sudo apt upgrade
-   sudo apt install git
-   ```
+**Five sync phases (in priority order):**
+1. **Mail** — Direct messages (highest priority; aborts remaining phases on failure)
+2. **Bulletins** — Board posts
+3. **Channels** — Discussion threads and comments
+4. **Profiles** — User metadata
+5. **Game saves** — Zork save files (lowest priority; skipped until other scopes converge)
 
-### Installation
+**How it works:**
+- Nodes periodically broadcast `SYNCSTATE` packets containing per-scope record counts and BLAKE2b hash fingerprints
+- Hash mismatches trigger compressed manifest (`HASHZ`) exchanges using base85 encoding
+- Missing records are requested individually via `HASHMISS`; gap-fill retries handle packet loss
+- Tombstone-based deletion reconciliation propagates deletes across the mesh — removed records are not resurrected when peers reconnect
+- Capability negotiation (`v2:caps`) allows protocol features (compact keys, epoch timestamps, bitmap gap-fill, UTF-8 encoding) to be adopted gracefully across heterogeneous peers
 
-1. Clone the repository:
-   
-   ```sh
-   cd ~
-   git clone https://github.com/dreamsofbacon/TC2-BaconBS-mesh.git
-   cd TC2-BaconBS-mesh
-   ```
+**Reliability features:**
+- Jittered inter-frame spacing prevents LoRa half-duplex collisions
+- Backpressure caps on manifest pulls per cycle
+- Automatic reconnect to the radio interface on TCP/serial connection loss
+- Main-loop watchdog detects and recovers from wedged radio sends
 
-#### Quick Setup (Automated)
+---
 
-Run the appropriate setup script for your system to automatically create a virtual environment and install all dependencies:
+## Requirements
 
-- **Windows (PowerShell):**
-  ```powershell
-  .\setup.ps1
-  ```
+- Python 3.9+
+- A Meshtastic device connected via serial (USB) or TCP (WiFi)
+- `pip install -r requirements.txt` (installs `meshtastic`, `pypubsub`, `flask`)
+- **dfrotz** (optional, required for games): `sudo apt install frotz`
 
-- **Windows (Command Prompt):**
-  ```cmd
-  setup.bat
-  ```
+---
 
-- **macOS and Linux:**
-  ```sh
-  bash setup.sh
-  ```
+## Installation
 
-These scripts will:
-- Create a Python virtual environment
-- Install all dependencies from `requirements.txt`
-- Verify the `meshtastic` module can be imported in that virtual environment
-- Create `config.ini` from `example_config.ini` (if it doesn't exist)
-
-After setup, run the server with the virtual environment Python executable:
-
-- **Windows (PowerShell/CMD):**
-   ```powershell
-   .\.venv\Scripts\python.exe server.py
-   ```
-
-- **macOS and Linux:**
-   ```sh
-   ./venv/bin/python server.py
-   ```
-
-#### Manual Setup
-
-If you prefer manual setup, follow these steps:
-
-2. Set up a Python virtual environment:  
-   
-   ```sh
-   python -m venv venv
-   ```
-
-3. Activate the virtual environment:  
-   
-   - On Windows:  
-   
-   ```sh
-   venv\Scripts\activate  
-   ```
-   
-   - On macOS and Linux:
-   ```sh
-   source venv/bin/activate
-   ```
-
-4. Install the required packages:  
-   
-   ```sh
-   pip install -r requirements.txt
-   ```
-
-5. Rename `example_config.ini`:
-
-   ```sh
-   cp example_config.ini config.ini
-   ```
-
-#### Configuration
-
-6. Set up the configuration in `config.ini`:  
-
-   You'll need to open up the config.ini file in a text editor and make your changes following the instructions below
-   
-   **[interface]**  
-   If using `type = serial` and you have multiple devices connected, you will need to uncomment the `port =` line and enter the port of your device.   
-   
-   Linux Example:  
-   `port = /dev/ttyUSB0`   
-   
-   Windows Example:  
-   `port = COM3`   
-   
-   If using type = tcp you will need to uncomment the hostname = 192.168.x.x line and put in the IP address of your Meshtastic device.  
-   
-   **[sync]**  
-   Enter a list of other BBS nodes you would like to sync messages and bulletins with. Separate each by comma and no spaces as shown in the example below.   
-   You can find the nodeID in the menu under `Radio Configuration > User` for each node, or use this script for getting nodedb data from a device:  
-   
-   [Meshtastic-Python-Examples/print-nodedb.py at main · pdxlocations/Meshtastic-Python-Examples (github.com)](https://github.com/pdxlocations/Meshtastic-Python-Examples/blob/main/print-nodedb.py)  
-   
-   Example Config:  
-   
-   ```ini
-   [interface]  
-   type = serial  
-   # port = /dev/ttyUSB0  
-   # hostname = 192.168.x.x  
-   
-   [sync]  
-   bbs_nodes = !f53f4abc,!f3abc123  
-   # sync_zork_saves = true  
-   ```
-
-   `sync_zork_saves = false` keeps game saves local to that node. Players can still resume on the same node, but their progress will not appear on other synced nodes.
-
-### Sync Model (Current)
-
-Peer consistency uses a layered approach designed for low-bandwidth mesh links:
-
-- Periodic count/hash exchange (`SYNCSTATE`) for `bulletins`, `mail`, `channels`, `profiles`, `game_scores`, and `zork_saves`
-- Per-scope hash manifest repair (`HASHREQ`, `HASHREC`, `HASHEND`, `HASHMISS`) so only mismatched scopes are requested
-- Optional compressed manifest transport (`HASHZ`) controlled by `BBS_HASH_MANIFEST_COMPRESSION=1`
-- Tombstone replay for deletes so removed records do not get resurrected after peers reconnect
-
-Deletion reconciliation details:
-
-- Deleting bulletin/mail records creates tombstones that are synced to peers
-- Re-adding a record with the same unique key clears the matching tombstone
-- During hash reconciliation, if a peer is missing a deleted record, the system requests tombstone replay instead of requesting the deleted record itself
-
-Note: deletes that happened before the tombstone feature was introduced have no historical tombstone entry.
-
-### Sync Performance Tuning
-
-If you want maximum sync speed, use these environment settings on the running `server.py` process.
-
-- `BBS_SYNC_TURBO=1`
-   This enables aggressive defaults for all sync pacing.
-- `BBS_SYNC_PAUSE_SECONDS`
-   Delay between normal sync frames (default `0.75`, turbo default `0.02`).
-- `BBS_HASH_REPAIR_PAUSE_SECONDS`
-   Delay between hash-repair frames (default `0.1`, turbo default `0.0`).
-- `BBS_FULL_SYNC_DELAY_MS`
-   Extra per-record delay in full database sync (default `500`, turbo default `0`).
-
-Example (Linux systemd env file):
+### Linux / Raspberry Pi
 
 ```sh
-BBS_SYNC_TURBO=1
-BBS_SYNC_PAUSE_SECONDS=0.01
-BBS_HASH_REPAIR_PAUSE_SECONDS=0
-BBS_FULL_SYNC_DELAY_MS=0
+sudo apt update && sudo apt install git
+git clone https://github.com/dreamsofbacon/TC2-BaconBS-mesh.git
+cd TC2-BaconBS-mesh
+bash setup.sh
+cp example_config.ini config.ini
 ```
 
-If packet loss increases on your link, back off gradually (for example `BBS_SYNC_PAUSE_SECONDS=0.03` then `0.05`).
-
-### Running the Server
-
-Run the server with the standalone launch script for your OS:
-
-- Windows (PowerShell):
+### Windows
 
 ```powershell
-.\run_server.ps1
+git clone https://github.com/dreamsofbacon/TC2-BaconBS-mesh.git
+cd TC2-BaconBS-mesh
+.\setup.ps1
+copy example_config.ini config.ini
 ```
 
-- Windows (Command Prompt):
+The setup scripts create a Python virtual environment and install all dependencies automatically.
 
-```cmd
-run_server.bat
+---
+
+## Configuration
+
+Edit `config.ini` before running. Key sections:
+
+### Interface
+
+```ini
+[interface]
+type = serial
+# port = /dev/ttyUSB0   # Linux serial
+# port = COM3            # Windows serial
+
+# Or for WiFi-connected devices:
+# type = tcp
+# hostname = 192.168.1.x
 ```
 
-- macOS/Linux:
+### Sync Peers
+
+Add the node IDs of other BaconBS-mesh nodes you want to sync with. Find node IDs in the Meshtastic app under **Radio Configuration > User**, or via the web admin dashboard.
+
+```ini
+[sync]
+bbs_nodes = !f53f4abc,!f3abc123
+```
+
+### Sync Tuning
+
+The default pacing is conservative for busy meshes. On a small network (2–3 nodes), turbo mode dramatically speeds up initial replication:
+
+```ini
+[sync]
+sync_turbo = true   # WARNING: safe for 2–3 nodes only — see note below
+```
+
+> **Turbo mode warning:** The inter-frame pause prevents LoRa packet collisions. With 3+ active BBS peers, turbo can worsen convergence by causing the packet loss it tries to outrun. Only enable on small meshes.
+
+Fine-grained pacing controls (all optional):
+
+```ini
+sync_pause_seconds = 0.75          # delay between TX frames (turbo: 0.02)
+hash_repair_pause_seconds = 0.1    # delay between repair frames (turbo: 0.0)
+hash_chunk_pause_seconds = 1.5     # minimum gap between consecutive HASHZ chunks
+repair_cycle_seconds = 90          # minimum seconds between repair cycles per peer
+reconcile_max_per_pass = 20        # max records pulled/pushed per repair cycle
+sync_interval_minutes = 5          # how often a full P1–P5 sync runs
+```
+
+### Menu Customization
+
+Remove items you don't want to expose to users:
+
+```ini
+[menu]
+main_menu_items = Q, B, U, P, X
+bbs_menu_items = M, B, C, J, X
+utilities_menu_items = S, F, W, G, X
+```
+
+---
+
+## Running
+
+### Server
 
 ```sh
-bash run_server.sh
-```
-
-You can also run directly with venv Python:
-
-```sh
+# Linux (venv)
 ./venv/bin/python server.py
-```
 
-On Windows direct equivalent:
-
-```powershell
+# Windows (venv)
 .\.venv\Scripts\python.exe server.py
+
+# Or use the launch scripts:
+bash run_server.sh        # Linux/macOS
+.\run_server.ps1          # Windows PowerShell
+run_server.bat            # Windows CMD
 ```
 
-### Running the Web Admin GUI (Standalone Moderation)
-
-You can run a standalone web interface to moderate the SQLite database (`bulletins`, `mail`, and `channels`).
-
-Use the standalone launch script for your OS:
-
-- Windows (PowerShell):
-
-```powershell
-.\run_web_admin.ps1
-```
-
-- Windows (Command Prompt):
-
-```cmd
-run_web_admin.bat
-```
-
-- macOS/Linux:
-
-```sh
-bash run_web_admin.sh
-```
-
-Or run directly with venv Python:
+### Web Admin
 
 ```sh
 ./venv/bin/python web_admin.py
 ```
 
-By default it starts on `127.0.0.1:8081`.
+Then open `http://localhost:8081` in your browser. Default credentials: `admin` / `change-me` (change these before exposing to a network).
 
-Set secure credentials and optional host/port before launching:
+Environment overrides:
 
 ```sh
 export BBS_WEBGUI_USER=admin
-export BBS_WEBGUI_PASSWORD=change-this
-export BBS_WEBGUI_SECRET=change-this-session-secret
+export BBS_WEBGUI_PASSWORD=your-password
+export BBS_WEBGUI_SECRET=your-session-secret
 export BBS_WEBGUI_HOST=127.0.0.1
 export BBS_WEBGUI_PORT=8081
-python web_admin.py
 ```
 
-Optional: point to a different DB file.
+---
 
-```sh
-export BBS_DB_PATH=/path/to/bulletins.db
-python web_admin.py
-```
+## Running at Boot (Linux / systemd)
 
-Security note: if you set `BBS_WEBGUI_HOST=0.0.0.0`, place it behind a trusted network/VPN/reverse proxy.
-
-Web moderation supports creating new bulletin posts via the **New Bulletin Post** button in the Bulletins view.
-
-Bulletin board categories for the dropdown are configurable and loaded in this order:
-- `BBS_BULLETIN_BOARDS` environment variable (comma-separated)
-- `[boards]` section in `config.ini` with `bulletin_boards = General,Info,News,Urgent`
-- built-in defaults (`General, Info, News, Urgent`)
-
-You can also edit categories in the web UI under the **Boards** tab. Changes are written to `config.ini` and applied immediately in the running web admin process.
-
-The web admin also includes sync diagnostics under **Settings > Diagnostics** (or use the top nav **Diagnostics** link), including:
-
-- Peer consistency status
-- Mismatch re-sync attempt summary/details
-- Peer-advertised per-scope counts
-
-Example:
-
-```sh
-export BBS_BULLETIN_BOARDS=General,Info,News,Urgent,Events
-```
-
-To reduce lock/corruption risk while `server.py` and `web_admin.py` are both active, the web admin uses SQLite WAL mode, busy timeout, and atomic write transactions.
-
-### Run Web Admin GUI with systemd
-
-The repository includes `bacon-web-admin.service` and an installer script (`install_services.sh`) that prompts for your Linux username and project path, then installs both services.
-
-1. Create an environment file for credentials and bind settings:
-
-```sh
-cat > /home/pi/TC2-BaconBS-mesh/web-admin.env << 'EOF'
-BBS_WEBGUI_USER=admin
-BBS_WEBGUI_PASSWORD=change-this
-BBS_WEBGUI_SECRET=change-this-session-secret
-BBS_WEBGUI_HOST=0.0.0.0
-BBS_WEBGUI_PORT=8081
-# Optional:
-# BBS_DB_PATH=/home/pi/TC2-BaconBS-mesh/bulletins.db
-# BBS_CONFIG_PATH=/home/pi/TC2-BaconBS-mesh/config.ini
-EOF
-```
-
-2. Install both services (recommended):
+The repository includes `mesh-bbs.service`, `bacon-web-admin.service`, and an installer script.
 
 ```sh
 chmod +x install_services.sh
 bash install_services.sh
 ```
 
-For automated installs (no prompts), use:
+Non-interactive:
 
 ```sh
 bash install_services.sh --yes --user "$USER" --dir "$HOME/TC2-BaconBS-mesh"
 ```
 
-This installs and restarts:
-- `mesh-bbs.service`
-- `bacon-web-admin.service`
-
-By default, the web admin service binds to `0.0.0.0:8081` so it is reachable from other devices on your LAN.
-
-## Remote Two-Node Update Automation
-
-For Windows operators updating Linux systemd nodes, the repository includes:
-
-- `scripts/update-two-nodes.ps1` (local orchestrator; uses Posh-SSH)
-- `scripts/remote-node-update.sh` (remote script run on each node)
-- `scripts/node-update-config.json.example` (example config)
-
-### One-time setup
-
-1. Copy `scripts/node-update-config.json.example` to `scripts/node-update-config.json` and set your hostnames/IPs.
-2. Copy `scripts/remote-node-update.sh` to each node (for example `~/remote-node-update.sh`).
-3. On each node:
+**Service controls:**
 
 ```sh
-chmod +x ~/remote-node-update.sh
+sudo systemctl status mesh-bbs.service bacon-web-admin.service
+sudo systemctl restart mesh-bbs.service bacon-web-admin.service
+journalctl -u mesh-bbs.service -f
 ```
 
-### Run updates from Windows
+**If using Zork**, add these to `mesh-bbs.service` so the interpreter is found under systemd:
 
-From the repository root:
+```ini
+Environment="PATH=/usr/games:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="BBS_ZORK_INTERPRETER=/usr/games/dfrotz"
+```
+
+---
+
+## Remote Update (Windows → Linux Nodes)
+
+For operators managing Linux nodes from a Windows machine:
+
+- `scripts/update-two-nodes.ps1` — local orchestrator (requires Posh-SSH)
+- `scripts/remote-node-update.sh` — runs on each node via SSH
+- `scripts/node-update-config.json.example` — configuration template
 
 ```powershell
 .\scripts\update-two-nodes.ps1
 ```
 
-Notes:
+Credentials are stored securely in `%APPDATA%\TC2-BaconBS\node-update-cred.xml` on first run. Use `-ResetCredential` to update them.
 
-- First run prompts for SSH credentials and stores them in `%APPDATA%\TC2-BaconBS\node-update-cred.xml`
-- Use `-ResetCredential` to prompt again if credentials change
-- Remote script performs `git fetch`, `git checkout`, `git pull --ff-only`, then restarts `mesh-bbs.service` and `bacon-web-admin.service`
+---
 
-3. Check status and logs:
+## Radio Configuration
 
-```sh
-sudo systemctl status mesh-bbs.service bacon-web-admin.service
-journalctl -u mesh-bbs.service -u bacon-web-admin.service -f
-```
+The following Meshtastic device roles are confirmed working:
 
-## Smoke Test (No Radio Required)
+- **Client**
+- **Router_Client**
 
-Run a basic mocked integration smoke test for sync parsing and menu input validation:
+Some other roles have been reported to cause the node to stop responding after a short time.
+
+---
+
+## Usage
+
+Send a direct message to the BBS node from any Meshtastic device. Any message triggers the main menu. Navigate by sending the letter shown in brackets — for example, send `B` for `[B]BS`.
+
+---
+
+## Smoke Test
+
+Run a basic integration test (no radio required):
 
 ```sh
 python tests/smoke_test.py
 ```
 
-This test does not require a connected Meshtastic device and is safe to run before deploys.
+---
 
+## Command Line Reference
 
-## Command line arguments
 ```
-$ python server.py --help
+python server.py --help
 
-████████╗ ██████╗██████╗       ██████╗ ██████╗ ███████╗
-╚══██╔══╝██╔════╝╚════██╗      ██╔══██╗██╔══██╗██╔════╝
-   ██║   ██║      █████╔╝█████╗██████╔╝██████╔╝███████╗
-   ██║   ██║     ██╔═══╝ ╚════╝██╔══██╗██╔══██╗╚════██║
-   ██║   ╚██████╗███████╗      ██████╔╝██████╔╝███████║
-   ╚═╝    ╚═════╝╚══════╝      ╚═════╝ ╚═════╝ ╚══════╝
-Meshtastic Version
-
-usage: server.py [-h] [--config CONFIG] [--interface-type {serial,tcp}] [--port PORT] [--host HOST] [--mqtt-topic MQTT_TOPIC]
-
-Meshtastic BBS system
+usage: server.py [-h] [--config CONFIG] [--interface-type {serial,tcp}]
+                 [--port PORT] [--host HOST] [--mqtt-topic MQTT_TOPIC]
 
 options:
-  -h, --help            show this help message and exit
-  --config CONFIG, -c CONFIG
-                        System configuration file
-  --interface-type {serial,tcp}, -i {serial,tcp}
-                        Node interface type
-  --port PORT, -p PORT  Serial port
-  --host HOST           TCP host address
-  --mqtt-topic MQTT_TOPIC, -t MQTT_TOPIC
-                        MQTT topic to subscribe
+  -h, --help                        show this help message and exit
+  --config CONFIG, -c CONFIG        Path to config file
+  --interface-type {serial,tcp}     Interface type
+  --port PORT, -p PORT              Serial port
+  --host HOST                       TCP hostname
+  --mqtt-topic MQTT_TOPIC           MQTT topic to subscribe
 ```
 
+---
 
+## Acknowledgements
 
-## Automatically run at boot
+- [TheCommsChannel](https://github.com/TheCommsChannel) — original TC²-BBS-mesh
+- [Meshtastic](https://github.com/meshtastic) and [pdxlocations](https://github.com/pdxlocations) — Python library and examples
+- [Jordan Sherer](https://bitbucket.org/widefido/js8call) — JS8Call and the TCP API example
 
-Use the installer script to configure and install both systemd services with your username and project path:
-
-```sh
-chmod +x install_services.sh
-bash install_services.sh
-```
-
-Non-interactive variant:
-
-```sh
-bash install_services.sh --yes --user "$USER" --dir "$HOME/TC2-BaconBS-mesh"
-```
-
-If you plan to use Zork, keep these environment lines in `mesh-bbs.service` so the interpreter is found under systemd:
-
-   ```sh
-   Environment="PATH=/usr/games:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-   Environment="BBS_ZORK_INTERPRETER=/usr/games/dfrotz"
-   ```
-
-   Verify the interpreter exists:
-
-   ```sh
-   which dfrotz frotz
-   ls -l /usr/games/dfrotz /usr/games/frotz
-   ```
-
-2. **Service controls**
-
-   ```sh
-   sudo systemctl status mesh-bbs.service bacon-web-admin.service
-   sudo systemctl stop mesh-bbs.service bacon-web-admin.service
-   sudo systemctl restart mesh-bbs.service bacon-web-admin.service
-   ```
-
-3. **Viewing Logs**
-
-   Viewing past logs:
-   ```sh
-   journalctl -u mesh-bbs.service
-   ```
-
-   Viewing live logs:
-   ```sh
-   journalctl -u mesh-bbs.service -f
-   ```
-
-## Radio Configuration
-
-Note: There have been reports of issues with some device roles that may allow the BBS to communicate for a short time, but then the BBS will stop responding to requests. 
-
-The following device roles have been working: 
-- **Client**
-- **Router_Client**
-
-## Features
-
-- **Mail System**: Send and receive mail messages.
-- **Bulletin Boards**: Post and view bulletins on various boards.
-- **Channel Directory**: Add and view channels in the directory.
-- **Channel Threads + Comments**: Channels are grouped by name, posts within a channel can be viewed individually, and users can read/add comments on each post.
-- **Statistics**: View statistics about nodes, hardware, and roles.
-- **Wall of Shame**: View devices with low battery levels.
-- **Fortune Teller**: Get a random fortune. Pulls from the fortunes.txt file. Feel free to edit this file remove or add more if you like.
-
-## Usage
-
-You interact with the BBS by sending direct messages to the node that's connected to the system running the Python script. Sending any message to it will get a response with the main menu.  
-Make selections by sending messages based on the letter or number in brackets - Send M for [M]ail Menu for example.
-
-A video of it in use is available on our YouTube channel:
-
-[![TC²-BBS-Mesh](https://img.youtube.com/vi/d6LhY4HoimU/0.jpg)](https://www.youtube.com/watch?v=d6LhY4HoimU)
-
-## Thanks
-
-**Meshtastic:**
-
-Big thanks to [Meshtastic](https://github.com/meshtastic) and [pdxlocations](https://github.com/pdxlocations) for the great Python examples:
-
-[python/examples at master · meshtastic/python (github.com)](https://github.com/meshtastic/python/tree/master/examples)
-
-[pdxlocations/Meshtastic-Python-Examples (github.com)](https://github.com/pdxlocations/Meshtastic-Python-Examples)
-
-**JS8Call:**
-
-For the JS8Call side of things, big thanks to Jordan Sherer for JS8Call and the [example API Python script](https://bitbucket.org/widefido/js8call/src/js8call/tcp.py)
+---
 
 ## License
 

@@ -122,6 +122,22 @@ _ZORK_GAP_FILL_MAX_ATTEMPTS = 3
 _HASHZ_GAP_FILL_MAX_ATTEMPTS = 3
 _peer_hash_manifest_buffers = {}
 _peer_hash_compressed_buffers = {}
+
+# ---------------------------------------------------------------------------
+# Striped HASSMISS: collect manifests from multiple peers for a brief window
+# before reconciling, then distribute HASSMISS requests round-robin so each
+# peer only handles a fraction of the missing records.  This roughly halves
+# recovery time with 2 peers, thirds it with 3, etc.
+# ---------------------------------------------------------------------------
+# How long (seconds) to wait for additional peer manifests before reconciling.
+# On LoRa timescales (single packets take 1-3 s) a 5 s window comfortably
+# catches both peers' manifests without adding meaningful latency.
+_STRIPE_COLLECT_SECONDS: float = 5.0
+# scope → {peer_id: {key: hash}}  — manifests waiting for the timer to fire
+_pending_stripe_manifests: dict = {}
+# scope → threading.Timer
+_stripe_timers: dict = {}
+_stripe_lock = threading.Lock()
 # Cache of recently-sent HASHZ manifest chunks so we can replay specific
 # indices when a peer asks for gap-fill via HASHZGAP. Keyed by
 # (destination_node_id, scope, manifest_id). Entry shape:
@@ -740,6 +756,145 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
     for scope in requested_scopes:
         send_hash_request_to_bbs_nodes([sender_node_id], interface, scope=scope)
         _mark_hashreq_pending(sender_node_id, scope)
+
+
+def _queue_striped_reconcile(scope: str, sender_node_id: str, manifest: dict, interface) -> None:
+    """Store an incoming manifest and (re)start the collection timer for this scope.
+
+    When the timer fires, all manifests collected within the window are reconciled
+    together with HASSMISS requests striped round-robin across peers.  If only one
+    peer responded before the window closed, behaviour is identical to the original
+    single-peer reconcile.
+    """
+    with _stripe_lock:
+        if scope not in _pending_stripe_manifests:
+            _pending_stripe_manifests[scope] = {}
+        _pending_stripe_manifests[scope][sender_node_id] = manifest
+
+        # Cancel any existing timer so the window resets on each new arrival.
+        existing = _stripe_timers.pop(scope, None)
+        if existing is not None:
+            existing.cancel()
+
+        # Capture interface in closure — avoid late-binding on a mutable var.
+        _iface = interface
+
+        def _fire():
+            with _stripe_lock:
+                manifests = _pending_stripe_manifests.pop(scope, {})
+                _stripe_timers.pop(scope, None)
+            if manifests:
+                _do_striped_reconcile(scope, manifests, _iface)
+
+        t = threading.Timer(_STRIPE_COLLECT_SECONDS, _fire)
+        t.daemon = True
+        t.start()
+        _stripe_timers[scope] = t
+
+
+def _do_striped_reconcile(scope: str, peer_manifests: dict, interface) -> None:
+    """Reconcile missing records across multiple peers with striped HASSMISS.
+
+    peer_manifests: {peer_id: {key: hash}}
+
+    Pull strategy:
+      - Build the union of keys missing locally across all peers
+      - Sort deterministically, then assign round-robin: key[0]→peer[0],
+        key[1]→peer[1], key[2]→peer[0], ...
+      - Each peer only receives HASSMISS for its assigned slice
+
+    Push strategy:
+      - Local-only records are pushed to ALL peers (can't stripe pushes since
+        every peer needs them)
+    """
+    local = get_record_hash_manifest(scope)
+    local_keys = set(local.keys())
+    max_per_pass = get_reconcile_max_per_pass()
+    if scope == 'zork_saves':
+        max_per_pass = 1
+
+    peers = sorted(peer_manifests.keys())  # deterministic ordering
+    n_peers = len(peers)
+
+    # Compute per-peer pull sets and the push set.
+    all_need_from_remote: set = set()
+    push_keys_set: set = set()
+    for peer_id, remote in peer_manifests.items():
+        remote_keys = set(remote.keys())
+        need = (remote_keys - local_keys) | {k for k in (remote_keys & local_keys) if local.get(k) != remote.get(k)}
+        all_need_from_remote |= need
+        differing_shared = {k for k in (remote_keys & local_keys) if local.get(k) != remote.get(k)}
+        push_keys_set |= (local_keys - remote_keys) | differing_shared
+
+    total_pull = len(all_need_from_remote)
+    logging.info(
+        f"Striped reconcile scope={scope} peers={peers} "
+        f"total_pull={total_pull} push={len(push_keys_set)}"
+    )
+
+    # Stripe pull keys round-robin across peers.
+    sorted_pull_keys = sorted(all_need_from_remote)
+    peer_pull_counts = {p: 0 for p in peers}
+    pull_sent_total = 0
+
+    for i, key in enumerate(sorted_pull_keys):
+        if pull_sent_total >= max_per_pass * n_peers:
+            logging.info(
+                f"Striped reconcile pull cap reached ({max_per_pass * n_peers}) "
+                f"for scope={scope}; {total_pull - pull_sent_total} key(s) deferred"
+            )
+            break
+
+        # Assign to the peer whose manifest actually contains this key,
+        # round-robining when multiple peers have it.
+        eligible_peers = [p for p in peers if key in peer_manifests[p]]
+        if not eligible_peers:
+            continue
+        # Pick the eligible peer with the fewest assignments so far.
+        assigned_peer = min(eligible_peers, key=lambda p: peer_pull_counts[p])
+
+        remote = peer_manifests[assigned_peer]
+        local_hash = str(local.get(key, ""))
+        remote_hash = str(remote.get(key, ""))
+        if not _should_send_hashmiss(assigned_peer, scope, key, local_hash, remote_hash):
+            continue
+
+        _peer_scc = peers_all_support([assigned_peer], 'scc')
+        _scope_wire = encode_scope(scope, _peer_scc)
+        _tomb_wire = encode_scope('tombstones', _peer_scc)
+        wire_key = key
+        if scope == 'channels' and not str(key).startswith('comment:'):
+            if len(f"HASHMISS|{_scope_wire}|{key}".encode('utf-8')) > _MESHTASTIC_MAX_BYTES:
+                wire_key = compact_channel_manifest_key(key)
+                logging.info(f"Channel key too long for HASHMISS frame; using compact key {wire_key}")
+
+        if scope in ('bulletins', 'mail', 'zork_saves', 'channels') and key not in local and has_sync_tombstone(scope, key):
+            logging.info(f"Requesting tombstone replay from {assigned_peer} for {scope}:{key}")
+            _send_one_sync(f"HASHMISS|{_tomb_wire}|{_scope_wire}:{wire_key}", assigned_peer, interface,
+                           pause_seconds=get_hash_repair_pause_seconds())
+        else:
+            logging.info(f"Requesting record from {assigned_peer} scope={scope} key={wire_key} (striped {i % n_peers + 1}/{n_peers})")
+            _send_one_sync(f"HASHMISS|{_scope_wire}|{wire_key}", assigned_peer, interface,
+                           pause_seconds=get_hash_repair_pause_seconds())
+
+        peer_pull_counts[assigned_peer] += 1
+        pull_sent_total += 1
+
+    # Push local-only records to ALL peers.
+    push_keys = sorted(push_keys_set)
+    push_sent = 0
+    for key in push_keys:
+        if push_sent >= max_per_pass:
+            logging.info(
+                f"Striped reconcile push cap reached ({max_per_pass}) for scope={scope}; "
+                f"{len(push_keys) - push_sent} key(s) deferred"
+            )
+            break
+        for peer_id in peers:
+            if key not in peer_manifests[peer_id]:
+                logging.info(f"Pushing local-only record to {peer_id} scope={scope} key={key}")
+                _send_requested_record(scope, key, peer_id, interface)
+        push_sent += 1
 
 
 def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> None:
@@ -1384,7 +1539,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                         with _hash_buffer_lock:
                             _peer_hash_manifest_buffers[(sender_node_id, scope)] = normalized
                         _clear_hashreq_pending(sender_node_id, scope)
-                        _reconcile_remote_manifest(scope, sender_node_id, interface)
+                        _queue_striped_reconcile(scope, sender_node_id, normalized, interface)
                 except Exception:
                     logging.warning(f"Malformed HASHZ payload ignored: {message}")
                     _clear_hashreq_pending(sender_node_id, scope)
