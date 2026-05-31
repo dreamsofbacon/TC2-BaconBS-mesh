@@ -992,7 +992,10 @@ def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nod
     logging.info(f"ZORKSAVE send end save_id={save_id} chunks_sent={sent_count}/{total_chunks}")
 
 
-_SEND_THREAD_TIMEOUT_SECONDS: float = 8.0
+# Serial interfaces are slower to ack sends than TCP — raise the hard timeout
+# to 15s so RPi nodes don't falsely declare the connection dead while waiting
+# for a serial Heltec that is just slow under heavy receive load.
+_SEND_THREAD_TIMEOUT_SECONDS: float = float(os.environ.get("BBS_SEND_TIMEOUT_SECONDS", "15"))
 
 
 def _send_one_sync(message, destination, interface, pause_seconds=None):
