@@ -721,16 +721,20 @@ def send_hash_request_to_bbs_nodes(bbs_nodes, interface, scope='all'):
     HASHREQ bursts (e.g. four scopes back-to-back) lose trailing frames on
     LoRa and the peer never replies for the missing scopes.
     """
-    message = f"HASHREQ|{scope}"
+    # When requesting channels, also request the channel_comments sub-scope so
+    # both halves are reconciled together without a separate call.
+    scopes_to_request = [scope]
+    if scope == 'channels':
+        scopes_to_request.append('channel_comments')
+
     pause = max(get_sync_pause_seconds(), get_hash_chunk_pause_seconds())
     for node_id in bbs_nodes:
-        # Per-peer scope-code encoding via 'scc' capability.  The literal
-        # 'all' has no code so it always passes through unchanged.
-        if scope != 'all' and peers_all_support([node_id], 'scc'):
-            per_peer_msg = f"HASHREQ|{encode_scope(scope, True)}"
-        else:
-            per_peer_msg = message
-        _send_one_sync(per_peer_msg, node_id, interface, pause_seconds=pause)
+        for _scope in scopes_to_request:
+            if _scope != 'all' and peers_all_support([node_id], 'scc'):
+                per_peer_msg = f"HASHREQ|{encode_scope(_scope, True)}"
+            else:
+                per_peer_msg = f"HASHREQ|{_scope}"
+            _send_one_sync(per_peer_msg, node_id, interface, pause_seconds=pause)
 
 
 def _b64(text: str) -> str:

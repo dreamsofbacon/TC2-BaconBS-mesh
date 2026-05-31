@@ -146,7 +146,7 @@ _stripe_lock = threading.Lock()
 #   {'chunks': [b64_str, ...], 'total': int, 'created_at': float}
 _outgoing_hash_manifest_cache = {}
 _hash_buffer_lock = threading.RLock()
-_SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "profiles", "game_scores", "zork_saves", "tombstones"]
+_SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "channel_comments", "profiles", "game_scores", "zork_saves", "tombstones"]
 _HASH_BUFFER_MAX_AGE_SECONDS = 600
 # After this many seconds with no new chunk for a HASHZ manifest, drop the
 # partial buffer and re-issue HASHREQ. Without this, a single dropped chunk
@@ -874,7 +874,15 @@ def _do_striped_reconcile(scope: str, peer_manifests: dict, interface) -> None:
                 wire_key = compact_channel_manifest_key(key)
                 logging.info(f"Channel key too long for HASHMISS frame; using compact key {wire_key}")
 
-        if scope in ('bulletins', 'mail', 'zork_saves', 'channels') and key not in local and has_sync_tombstone(scope, key):
+        # Tombstone lookup: channel_comments are stored under the channels scope
+        # with a 'comment:' prefix — translate when checking.
+        _tomb_scope = scope
+        _tomb_key = key
+        if scope == 'channel_comments':
+            _tomb_scope = 'channels'
+            _tomb_key = f"comment:{key}"
+
+        if scope in ('bulletins', 'mail', 'zork_saves', 'channels', 'channel_comments') and key not in local and has_sync_tombstone(_tomb_scope, _tomb_key):
             logging.info(f"Requesting tombstone replay from {assigned_peer} for {scope}:{key}")
             _send_one_sync(f"HASHMISS|{_tomb_wire}|{_scope_wire}:{wire_key}", assigned_peer, interface,
                            pause_seconds=get_hash_repair_pause_seconds())
@@ -969,7 +977,10 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
             if len(f"HASHMISS|{_scope_wire}|{key}".encode('utf-8')) > _MESHTASTIC_MAX_BYTES:
                 wire_key = compact_channel_manifest_key(key)
                 logging.info(f"Channel key too long for HASHMISS frame; using compact key {wire_key}")
-        if scope in ('bulletins', 'mail', 'zork_saves', 'channels') and key not in local and has_sync_tombstone(scope, key):
+        # Tombstone lookup: channel_comments stored under channels scope with 'comment:' prefix.
+        _tomb_scope = 'channels' if scope == 'channel_comments' else scope
+        _tomb_key = f"comment:{key}" if scope == 'channel_comments' else key
+        if scope in ('bulletins', 'mail', 'zork_saves', 'channels', 'channel_comments') and key not in local and has_sync_tombstone(_tomb_scope, _tomb_key):
             logging.info(f"Requesting tombstone replay from {sender_node_id} for {scope}:{key}")
             _send_one_sync(f"HASHMISS|{_tomb_wire}|{_scope_wire}:{wire_key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
         else:
@@ -1065,6 +1076,7 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
             logging.warning(f"Requested mail missing locally for resend key={key}")
     elif scope == 'channels':
         if str(key).startswith('comment:'):
+            # Legacy: old peers still use 'comment:{uuid}' keys in the channels scope.
             unique_id = str(key).split(':', 1)[1]
             row = get_channel_comment_by_unique_id(unique_id)
             if row:
@@ -1084,6 +1096,19 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
                 send_channel_to_bbs_nodes(row[0], row[1], [destination_node_id], interface)
             else:
                 logging.warning(f"Requested channel missing locally for resend key={key}")
+    elif scope == 'channel_comments':
+        # New sub-scope: keys are plain UUIDs (no 'comment:' prefix).
+        row = get_channel_comment_by_unique_id(str(key))
+        if row:
+            logging.info(f"Sending requested channel comment to {destination_node_id} key={key}")
+            send_channel_comment_to_bbs_nodes(
+                make_channel_manifest_key(row[0], row[1]),
+                row[2], row[3], row[4], row[5], [destination_node_id], interface,
+                source_node_id=row[8] if len(row) > 8 else None,
+                source_timestamp=row[9] if len(row) > 9 else None,
+            )
+        else:
+            logging.warning(f"Requested channel comment missing locally for resend key={key}")
     elif scope == 'profiles':
         row = get_profile_by_user_id(key)
         if row:
@@ -1460,6 +1485,12 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             requested = message.split("|", 1)[1].strip().lower() if "|" in message else "all"
             requested = decode_scope(requested) if requested != 'all' else 'all'
             scopes = _SUPPORTED_HASH_SCOPES if requested == 'all' else [requested]
+            # When channels is requested, automatically include the channel_comments
+            # sub-scope so both halves are reconciled in the same exchange.
+            if 'channels' in scopes and 'channel_comments' not in scopes:
+                idx = scopes.index('channels')
+                scopes = list(scopes)
+                scopes.insert(idx + 1, 'channel_comments')
             for scope in scopes:
                 if scope in _SUPPORTED_HASH_SCOPES:
                     _send_hash_manifest_to_peer(scope, sender_node_id, interface)
