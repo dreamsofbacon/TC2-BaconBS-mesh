@@ -530,7 +530,10 @@ def main():
                                 pause_seconds=get_hash_repair_pause_seconds(),
                             )
                 # Re-check sooner when incomplete records are known; back off when all complete.
-                next_incomplete_repair = now + (120 if _repair_targets else 600)
+                # Re-check sooner when incomplete records are known; back off when all complete.
+                # 45s is frequent enough to converge lossy records within a few minutes,
+                # without hammering the channel when the mesh is healthy.
+                next_incomplete_repair = now + (45 if _repair_targets else 600)
 
             # Check/launch sync work frequently so manual triggers feel responsive
             if now >= next_node_sync_check:

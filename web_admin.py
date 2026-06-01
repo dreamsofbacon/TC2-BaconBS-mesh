@@ -4626,7 +4626,14 @@ def create_app(runtime_interface=None) -> Flask:
                 row["_sync_status_text"] = f"{actual}/{expected} chars" if incomplete else ""
                 row["_resolve_scope"] = "bulletins"
                 row["_resolve_key"] = str(row.get("unique_id") or "")
-                # Truncate content for table view — full content shown in expand panel
+                content = str(row.get("content") or "")
+                if len(content) > 200:
+                    row["content"] = content[:200] + "…"
+        elif table == "mail":
+            display_columns = ["sender_short_name", "recipient", "date", "subject", "content"]
+            column_labels["sender_short_name"] = "From"
+            column_labels["recipient"] = "To"
+            for row in rows:
                 content = str(row.get("content") or "")
                 if len(content) > 200:
                     row["content"] = content[:200] + "…"
