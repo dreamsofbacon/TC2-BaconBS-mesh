@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="card">
-  <h2>Comments for {{ channel_name }} (Post #{{ channel_id }})</h2>
-  <p class="text-muted">URL/PSK: {{ channel_url }}</p>
+  <h2>Comments — {{ channel_name }}</h2>
+  <p class="text-muted">{{ channel_url }}</p>
 </div>
 
 <div class="card">
@@ -15,7 +15,7 @@
     </div>
     <div class="form-group">
       <label for="content">Comment</label>
-      <textarea id="content" name="content" class="form-control" required></textarea>
+      <textarea id="content" name="content" class="form-control" rows="4" required></textarea>
     </div>
     <div class="row-actions">
       <button class="btn btn-primary" type="submit">Add Comment</button>
@@ -25,62 +25,55 @@
 </div>
 
 <div class="card">
-  <h3>Existing Comments</h3>
+  <h3>Comments ({{ comments|length }})</h3>
+  {% if comments %}
   <div class="table-scroll-container">
     <table class="data-table">
       <thead>
         <tr>
-          <th>id</th>
-          <th>sender_short_name</th>
-          <th>date</th>
-          <th>content</th>
-          <th>sync_status</th>
-          <th>source_node_id</th>
-          <th>source_timestamp</th>
-          <th>received_at</th>
+          <th>Sender</th>
+          <th>Date</th>
+          <th>Comment</th>
           <th>Actions</th>
         </tr>
       </thead>
       <tbody>
         {% for comment in comments %}
         <tr{% if comment['content_complete'] == 0 %} class="row-incomplete"{% endif %}>
-          <td>{{ comment['id'] }}</td>
-          <td>{{ comment['sender_short_name'] }}</td>
-          <td>{{ comment['date'] }}</td>
-          <td>{{ comment['content'] }}</td>
+          <td style="white-space:nowrap">{{ comment['sender_short_name'] }}</td>
+          <td style="white-space:nowrap">{{ comment['date'] }}</td>
           <td>
+            {{ comment['content'] }}
             {% if comment['content_complete'] == 0 %}
+            <div style="margin-top:4px">
               <strong class="badge badge-error">{{ comment['sync_status'] }}</strong>
               <form method="post" action="{{ url_for('resolve_record') }}" class="inline-form" style="display:inline;margin-left:4px">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="scope" value="channels">
                 <input type="hidden" name="key" value="comment:{{ comment['unique_id'] }}">
                 <input type="hidden" name="redirect_to" value="{{ request.path }}">
-                <button type="submit" class="btn btn-sm">Resolve</button>
+                <button type="submit" class="btn btn-sm" title="Resolve sync conflict">Resolve conflict</button>
               </form>
-            {% else %}
-              <span class="text-muted">{{ comment['sync_status'] }}</span>
+            </div>
             {% endif %}
           </td>
-          <td>{{ comment['source_node_id'] or '' }}</td>
-          <td>{{ comment['source_timestamp'] or '' }}</td>
-          <td>{{ comment['received_at'] or '' }}</td>
           <td>
-            <form method="post" action="{{ url_for('channel_comment_delete', channel_id=channel_id, comment_id=comment['id']) }}"
-                  class="inline-form" onsubmit="return confirm('Delete this comment?');">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button type="submit" class="btn btn-sm btn-danger">Delete</button>
-            </form>
+            <div class="row-actions">
+              <a class="btn btn-sm" href="{{ url_for('channel_comment_edit', channel_id=channel_id, comment_id=comment['id']) }}">Edit</a>
+              <form method="post" action="{{ url_for('channel_comment_delete', channel_id=channel_id, comment_id=comment['id']) }}"
+                    class="inline-form" onsubmit="return confirm('Delete this comment?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+              </form>
+            </div>
           </td>
         </tr>
         {% endfor %}
-        {% if not comments %}
-        <tr>
-          <td colspan="9" class="text-muted empty-state">No comments yet.</td>
-        </tr>
-        {% endif %}
       </tbody>
     </table>
   </div>
+  {% else %}
+  <p class="text-muted empty-state">No comments yet.</p>
+  {% endif %}
 </div>
 {% endblock %}

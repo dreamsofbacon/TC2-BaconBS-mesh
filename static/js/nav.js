@@ -70,10 +70,50 @@
     });
   }
 
+  // ── Tools dropdown ──────────────────────────────────────────
+  function initToolsDropdown() {
+    var toggle = document.getElementById('tools-dropdown-btn');
+    var menu   = document.getElementById('tools-dropdown-menu');
+    if (!toggle || !menu) return;
+
+    function openMenu() {
+      menu.classList.add('open');
+      toggle.setAttribute('aria-expanded', 'true');
+    }
+    function closeMenu() {
+      menu.classList.remove('open');
+      toggle.setAttribute('aria-expanded', 'false');
+    }
+    function toggleMenu() {
+      menu.classList.contains('open') ? closeMenu() : openMenu();
+    }
+
+    toggle.addEventListener('click', function(e) {
+      e.stopPropagation();
+      toggleMenu();
+    });
+
+    // Close when clicking outside
+    document.addEventListener('click', function(e) {
+      if (!toggle.contains(e.target) && !menu.contains(e.target)) {
+        closeMenu();
+      }
+    });
+
+    // Close on Escape
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape' && menu.classList.contains('open')) {
+        closeMenu();
+        toggle.focus();
+      }
+    });
+  }
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initNav);
+    document.addEventListener('DOMContentLoaded', function() { initNav(); initToolsDropdown(); });
   } else {
     initNav();
+    initToolsDropdown();
   }
 
 }());
