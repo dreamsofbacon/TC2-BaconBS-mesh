@@ -25,6 +25,7 @@
     </button>
     <a href="{{ url_for('table_list', table='bulletins') }}" class="nav-brand" aria-label="TC²-BBS Home">TC²-BBS</a>
     <div class="nav-links" role="list">
+      <!-- Content group -->
       <a href="{{ url_for('table_list', table='bulletins') }}"
          class="nav-link{% if request.endpoint == 'table_list' and request.view_args.get('table') == 'bulletins' %} active{% endif %}"
          role="listitem">Bulletins</a>
@@ -34,22 +35,44 @@
       <a href="{{ url_for('table_list', table='mail') }}"
          class="nav-link{% if request.endpoint == 'table_list' and request.view_args.get('table') == 'mail' %} active{% endif %}"
          role="listitem">Mail</a>
+      <span class="nav-sep" aria-hidden="true"></span>
+      <!-- Admin group -->
       <a href="{{ url_for('clients_summary') }}"
          class="nav-link{% if request.endpoint == 'clients_summary' or request.endpoint == 'client_profile' %} active{% endif %}"
          role="listitem">Clients</a>
       <a href="{{ url_for('settings_page') }}"
          class="nav-link{% if request.endpoint == 'settings_page' %} active{% endif %}"
          role="listitem">Settings</a>
-      <a href="{{ url_for('system_transmissions') }}"
-         class="nav-link{% if request.endpoint == 'system_transmissions' %} active{% endif %}"
-         role="listitem">Transmissions</a>
-      <a href="{{ url_for('system_flowchart') }}"
-         class="nav-link{% if request.endpoint == 'system_flowchart' %} active{% endif %}"
-         role="listitem">Docs</a>
-      <a href="{{ url_for('meshtastic_device') }}"
-         class="nav-link{% if request.endpoint == 'meshtastic_device' %} active{% endif %}"
-         role="listitem">Meshtastic</a>
-      <a href="{{ url_for('mesh_ui_index') }}" class="nav-link" target="_blank" rel="noopener noreferrer" role="listitem">Mesh UI ↗</a>
+      <span class="nav-sep" aria-hidden="true"></span>
+      <!-- Tools dropdown -->
+      {% set tools_active = request.endpoint in ['system_transmissions', 'system_flowchart', 'meshtastic_device'] %}
+      <div class="nav-dropdown" id="tools-dropdown">
+        <button class="nav-link nav-dropdown-toggle{% if tools_active %} active{% endif %}"
+                id="tools-dropdown-btn"
+                type="button"
+                aria-haspopup="true"
+                aria-expanded="false"
+                aria-controls="tools-dropdown-menu">
+          Tools
+          <svg viewBox="0 0 10 6" fill="currentColor" width="9" height="9" aria-hidden="true" style="opacity:0.6"><path d="M1 1l4 4 4-4"/></svg>
+        </button>
+        <div class="nav-dropdown-menu" id="tools-dropdown-menu" role="menu">
+          <a href="{{ url_for('system_transmissions') }}"
+             class="nav-dropdown-item{% if request.endpoint == 'system_transmissions' %} active{% endif %}"
+             role="menuitem">Transmissions</a>
+          <a href="{{ url_for('system_flowchart') }}"
+             class="nav-dropdown-item{% if request.endpoint == 'system_flowchart' %} active{% endif %}"
+             role="menuitem">Docs</a>
+          <a href="{{ url_for('meshtastic_device') }}"
+             class="nav-dropdown-item{% if request.endpoint == 'meshtastic_device' %} active{% endif %}"
+             role="menuitem">Meshtastic</a>
+          <a href="{{ url_for('mesh_ui_index') }}"
+             class="nav-dropdown-item"
+             role="menuitem"
+             target="_blank"
+             rel="noopener noreferrer">Mesh UI ↗</a>
+        </div>
+      </div>
     </div>
     <div class="nav-right">
       <span class="version-chip" title="Running version">{{ app_version_display }}</span>

@@ -109,7 +109,7 @@ h1,h2,h3,h4,h5 { margin-top: 0; }
   align-items: center;
   gap: 2px;
   flex: 1;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .nav-link {
@@ -131,6 +131,61 @@ h1,h2,h3,h4,h5 { margin-top: 0; }
 }
 .nav-link svg { width: 15px; height: 15px; flex-shrink: 0; opacity: 0.75; }
 .nav-link:hover svg, .nav-link.active svg { opacity: 1; }
+
+/* ── Nav dropdown (Tools menu) ───────────────────────────────── */
+.nav-dropdown {
+  position: relative;
+}
+.nav-dropdown-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: inherit;
+  font-family: inherit;
+}
+.nav-dropdown-menu {
+  display: none;
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  min-width: 170px;
+  z-index: 500;
+  padding: 6px;
+}
+.nav-dropdown-menu.open { display: block; }
+.nav-dropdown-item {
+  display: block;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  font-size: 0.88rem;
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: background var(--transition), color var(--transition);
+  white-space: nowrap;
+}
+.nav-dropdown-item:hover,
+.nav-dropdown-item.active {
+  background: var(--surface-3);
+  color: var(--text);
+  text-decoration: none;
+}
+
+/* Thin vertical divider between nav link groups */
+.nav-sep {
+  display: block;
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
 
 .nav-right {
   margin-left: auto;
@@ -449,7 +504,9 @@ details.card .card-body { padding: 0 20px 18px; border-top: 1px solid var(--bord
 .btn-primary:hover  { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--accent-fg); }
 .btn-danger   { background: var(--error);    border-color: var(--error);    color: #fff; }
 .btn-danger:hover   { opacity: 0.9; }
-.btn-success  { background: var(--success);  border-color: var(--success);  color: var(--success-fg); }
+/* Use white text on success buttons — success-fg is designed for text-on-surface,
+   not for text on a filled success-colored button background. */
+.btn-success  { background: var(--success);  border-color: var(--success);  color: #fff; }
 .btn-sm, .btn-small { padding: 4px 8px; font-size: 0.78rem; }
 .btn-icon { padding: 6px; }
 .btn-icon svg { width: 16px; height: 16px; }
@@ -544,6 +601,29 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 }
 
 .table-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+
+/* Toolbar inner layout — actions row sits below the title and stretches full width */
+.table-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+.table-search-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 220px;
+}
+.table-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
 
 /* Table scroll container */
 .table-scroll {
@@ -688,7 +768,33 @@ body[data-density="comfortable"] table td { padding: 10px 12px; }
 }
 
 /* Row actions */
-.row-actions { display: flex; gap: 5px; flex-wrap: wrap; }
+.row-actions { display: flex; gap: 5px; flex-wrap: wrap; align-items: flex-start; }
+/* Prevent inline forms from stretching full-width inside flex containers */
+.inline-form { display: contents; }
+
+/* Single-line clipping for text columns — full content in expand panel */
+td[data-col="content"],
+td[data-col="url"],
+td[data-col="subject"],
+td[data-col="sender_short_name"],
+td[data-col="name"] {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+td[data-col="content"]  { max-width: 300px; }
+td[data-col="url"]      { max-width: 280px; }
+td[data-col="subject"]  { max-width: 180px; }
+td[data-col="name"]     { max-width: 180px; }
+
+/* Pin-width columns */
+.col-actions,
+td[data-col="board"],
+td[data-col="date"],
+td[data-col="sync_status"] {
+  white-space: nowrap;
+  width: 1%;
+}
 
 /* ── Muted text / badges ─────────────────────────────────────── */
 .muted { color: var(--text-muted); font-size: 0.85em; }

@@ -32,9 +32,10 @@ TABLE_CONFIG = {
     },
     "channels": {
         "title": "Channels",
-      "columns": ["id", "name", "url", "local_only"],
-      "editable": ["name", "url", "local_only"],
-      "searchable": ["name", "url", "local_only"],
+        "columns": ["id", "name", "url", "local_only"],
+        "column_labels": {"url": "Description"},
+        "editable": ["name", "url", "local_only"],
+        "searchable": ["name", "url", "local_only"],
     },
 }
 
@@ -4613,18 +4614,22 @@ def create_app(runtime_interface=None) -> Flask:
             rows = [dict(row) for row in cursor.fetchall()]
 
         display_columns = list(cfg["columns"])
+        column_labels = dict(cfg.get("column_labels", {}))
         if table == "bulletins":
-            display_columns = ["id", "mesh_id", "board", "sender_short_name", "date", "subject", "sync_status", "content", "local_only", "unique_id"]
+            display_columns = ["board", "sender_short_name", "date", "subject", "sync_status", "content"]
             for row in rows:
                 expected = int(row.get("_expected_content_length") or len(str(row.get("content") or "")))
                 actual = len(str(row.get("content") or ""))
                 incomplete = int(row.get("_content_complete") or 0) == 0
-                row["mesh_id"] = str(row.get("unique_id") or "")[:12]
                 row["sync_status"] = "Incomplete" if incomplete else "OK"
                 row["_sync_incomplete"] = incomplete
                 row["_sync_status_text"] = f"{actual}/{expected} chars" if incomplete else ""
                 row["_resolve_scope"] = "bulletins"
                 row["_resolve_key"] = str(row.get("unique_id") or "")
+                # Truncate content for table view — full content shown in expand panel
+                content = str(row.get("content") or "")
+                if len(content) > 200:
+                    row["content"] = content[:200] + "…"
 
         return render_template(
             "table_list.html",
@@ -4633,6 +4638,7 @@ def create_app(runtime_interface=None) -> Flask:
             table_title=cfg["title"],
             table_name=table,
             display_columns=display_columns,
+            column_labels=column_labels,
             rows=rows,
             search_query=search_query,
             db_path=app.config["DB_PATH"],
@@ -4771,6 +4777,46 @@ def create_app(runtime_interface=None) -> Flask:
         )
       flash("Comment deleted.", "success")
       return redirect(url_for("channel_comments", channel_id=channel_id))
+
+    @app.route("/channels/<int:channel_id>/comments/<int:comment_id>/edit", methods=["GET", "POST"])
+    @login_required
+    def channel_comment_edit(channel_id: int, comment_id: int):
+      with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, url FROM channels WHERE id = ?", (channel_id,))
+        channel = cursor.fetchone()
+        if channel is None:
+          flash("Channel not found.", "error")
+          return redirect(url_for("table_list", table="channels"))
+        cursor.execute(
+          "SELECT id, sender_short_name, date, content FROM channel_comments WHERE id = ? AND channel_id = ?",
+          (comment_id, channel_id)
+        )
+        comment = cursor.fetchone()
+        if comment is None:
+          flash("Comment not found.", "error")
+          return redirect(url_for("channel_comments", channel_id=channel_id))
+
+      if request.method == "POST":
+        new_content = request.form.get("content", "").strip()
+        if not new_content:
+          flash("Content cannot be empty.", "error")
+        else:
+          execute_write(
+            "UPDATE channel_comments SET content = ? WHERE id = ? AND channel_id = ?",
+            (new_content, comment_id, channel_id)
+          )
+          flash("Comment updated.", "success")
+          return redirect(url_for("channel_comments", channel_id=channel_id))
+
+      return render_template(
+        "channel_comment_edit.html",
+        title="Edit Comment",
+        show_nav=True,
+        channel_id=channel_id,
+        channel_name=channel["name"],
+        comment=dict(comment),
+      )
 
     @app.route("/<table>/<int:row_id>/edit", methods=["GET", "POST"])
     @login_required
