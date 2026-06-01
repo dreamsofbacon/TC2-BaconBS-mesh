@@ -786,6 +786,8 @@ td[data-col="content"]  { max-width: 300px; }
 td[data-col="url"]      { max-width: 280px; }
 td[data-col="subject"]  { max-width: 180px; }
 td[data-col="name"]     { max-width: 180px; }
+td[data-col="recipient"],
+td[data-col="sender_short_name"] { white-space: nowrap; width: 1%; }
 
 /* Pin-width columns */
 .col-actions,

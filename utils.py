@@ -1113,6 +1113,9 @@ def _send_sync_with_cont(header, footer, content, unique_id, cont_prefix, bbs_no
         chunk, remaining = _take_prefix_within_bytes(remaining, max_cont)
         # Format: BULLETINCONT|uid|<char_offset>|<chunk>
         cont_msg = cont_prefix + str(content_char_offset) + "|" + chunk
+        # Jitter each continuation packet's pause so repeated retries don't
+        # land at the same timing and hit the same LoRa half-duplex loss window.
+        jitter = random.uniform(0.0, pause_seconds * 0.4)
         for node_id in bbs_nodes:
-            _send_one_sync(cont_msg, node_id, interface, pause_seconds)
+            _send_one_sync(cont_msg, node_id, interface, pause_seconds + jitter)
         content_char_offset += len(chunk)
