@@ -435,6 +435,7 @@ def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, uniqu
         cont_prefix=f"BULLETINCONT|{unique_id}|",
         meta_prefix=f"BULLETINMETA|{unique_id}|",
         bbs_nodes=bbs_nodes, interface=interface,
+        pause_seconds=get_sync_pause_seconds(),
     )
 
 
@@ -456,6 +457,7 @@ def send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, 
         cont_prefix=f"MAILCONT|{unique_id}|",
         meta_prefix=f"MAILMETA|{unique_id}|",
         bbs_nodes=bbs_nodes, interface=interface,
+        pause_seconds=get_sync_pause_seconds(),
     )
 
 
@@ -660,6 +662,7 @@ def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_da
             cont_prefix=f"CHANNELCOMMENTCONT|{unique_id}|",
             meta_prefix=f"CHANNELCOMMENTMETA|{unique_id}|",
             bbs_nodes=cck_peers, interface=interface,
+            pause_seconds=get_sync_pause_seconds(),
         )
 
     if legacy_peers:
@@ -669,6 +672,7 @@ def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_da
             cont_prefix=f"CHANNELCOMMENTCONT|{unique_id}|",
             meta_prefix=f"CHANNELCOMMENTMETA|{unique_id}|",
             bbs_nodes=legacy_peers, interface=interface,
+            pause_seconds=get_sync_pause_seconds(),
         )
 
 
