@@ -37,6 +37,10 @@ class HashRepairProtocolTests(unittest.TestCase):
         message_processing._recent_hashmiss_requests.clear()
         message_processing._recent_syncstate_repairs.clear()
         message_processing._pending_hashreq.clear()
+        # Reconcile synchronously (no 5s stripe-collect timer) for deterministic asserts.
+        message_processing._STRIPE_COLLECT_SECONDS = 0
+        message_processing._pending_stripe_manifests.clear()
+        message_processing._stripe_timers.clear()
 
     def tearDown(self):
         os.environ.pop('BBS_SYNC_ZORK_SAVES', None)
@@ -236,23 +240,35 @@ class HashRepairProtocolTests(unittest.TestCase):
 
         self.assertIn("CHANNEL|Tech|mesh://tech", iface.sent_texts)
 
-    def test_hashmiss_channels_resends_requested_channel_comment(self):
+    def test_hashmiss_channel_comments_resends_requested_channel_comment(self):
         channel_id = db_operations.add_channel("Tech", "mesh://tech")
         comment_unique_id = db_operations.add_channel_comment(channel_id, "CALL", "Mesh comment body")
-        manifest = db_operations.get_record_hash_manifest("channels")
-        comment_key = f"comment:{comment_unique_id}"
-        self.assertIn(comment_key, manifest)
-        iface = _DummyInterface()
+        # After the scope split, comments live in the 'channel_comments' manifest
+        # keyed by the bare uid (no 'comment:' prefix).
+        manifest = db_operations.get_record_hash_manifest("channel_comments")
+        self.assertIn(comment_unique_id, manifest)
 
+        # New scope path: HASHMISS|channel_comments|<uid>
+        iface = _DummyInterface()
         message_processing.process_message(
             sender_id=1,
-            message=f"HASHMISS|channels|{comment_key}",
+            message=f"HASHMISS|channel_comments|{comment_unique_id}",
             interface=iface,
             is_sync_message=True,
             sender_node_id="!peer1",
         )
-
         self.assertTrue(any(m.startswith("CHANNELCOMMENT|") for m in iface.sent_texts))
+
+        # Legacy path still resolves: HASHMISS|channels|comment:<uid>
+        iface2 = _DummyInterface()
+        message_processing.process_message(
+            sender_id=1,
+            message=f"HASHMISS|channels|comment:{comment_unique_id}",
+            interface=iface2,
+            is_sync_message=True,
+            sender_node_id="!peer1",
+        )
+        self.assertTrue(any(m.startswith("CHANNELCOMMENT|") for m in iface2.sent_texts))
 
     def test_hashreq_tombstones_emits_manifest_and_end(self):
         db_operations.add_bulletin("General", "CALL", "Subject", "Body", [], None, unique_id="uid-del-a")
