@@ -72,7 +72,7 @@ from utils import (
     get_reconcile_max_per_pass,
     is_zork_save_sync_enabled,
     decode_ts_minute, decode_ts_second,
-    encode_scope, decode_scope, peers_all_support,
+    encode_scope, decode_scope, decode_uid, peers_all_support,
     encode_text, decode_text,
     pack_missing, unpack_missing,
     compact_channel_manifest_key,
@@ -134,7 +134,9 @@ _peer_hash_compressed_buffers = {}
 # How long (seconds) to wait for additional peer manifests before reconciling.
 # On LoRa timescales (single packets take 1-3 s) a 5 s window comfortably
 # catches both peers' manifests without adding meaningful latency.
-_STRIPE_COLLECT_SECONDS: float = 5.0
+# Set BBS_STRIPE_COLLECT_SECONDS=0 to reconcile synchronously on each manifest
+# (no batching) — used by tests for deterministic behaviour.
+_STRIPE_COLLECT_SECONDS: float = float(os.environ.get("BBS_STRIPE_COLLECT_SECONDS", "5"))
 # scope → {peer_id: {key: hash}}  — manifests waiting for the timer to fire
 _pending_stripe_manifests: dict = {}
 # scope → threading.Timer
@@ -772,6 +774,13 @@ def _queue_striped_reconcile(scope: str, sender_node_id: str, manifest: dict, in
     peer responded before the window closed, behaviour is identical to the original
     single-peer reconcile.
     """
+    # Zero collection window → reconcile synchronously (no batching). Keeps the
+    # single-peer path deterministic for tests and lets operators opt out of the
+    # collect-and-stripe delay.
+    if _STRIPE_COLLECT_SECONDS <= 0:
+        _do_striped_reconcile(scope, {sender_node_id: manifest}, interface)
+        return
+
     with _stripe_lock:
         if scope not in _pending_stripe_manifests:
             _pending_stripe_manifests[scope] = {}
@@ -1348,10 +1357,10 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 except ValueError:
                     logging.warning(f"Malformed BULLETINCONT offset ignored: {message}")
                     return
-                append_bulletin_content(parts[1], offset, parts[3])
+                append_bulletin_content(decode_uid(parts[1]), offset, parts[3])
             else:
                 # Legacy format without offset — blind append
-                append_bulletin_content(parts[1], None, parts[2])
+                append_bulletin_content(decode_uid(parts[1]), None, parts[2])
         elif message.startswith("BULLETINMETA|"):
             parts = message.split("|", 2)
             if len(parts) != 3 or not parts[1]:
@@ -1362,7 +1371,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             except ValueError:
                 logging.warning(f"Malformed BULLETINMETA length ignored: {message}")
                 return
-            apply_bulletin_expected_content_length(parts[1], expected_length)
+            apply_bulletin_expected_content_length(decode_uid(parts[1]), expected_length)
         elif message.startswith("MAILCONT|"):
             parts = message.split("|", 3)
             if len(parts) < 3 or not parts[1]:
@@ -1374,10 +1383,10 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 except ValueError:
                     logging.warning(f"Malformed MAILCONT offset ignored: {message}")
                     return
-                append_mail_content(parts[1], offset, parts[3])
+                append_mail_content(decode_uid(parts[1]), offset, parts[3])
             else:
                 # Legacy format without offset — blind append
-                append_mail_content(parts[1], None, parts[2])
+                append_mail_content(decode_uid(parts[1]), None, parts[2])
         elif message.startswith("MAILMETA|"):
             parts = message.split("|", 2)
             if len(parts) != 3 or not parts[1]:
@@ -1388,7 +1397,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             except ValueError:
                 logging.warning(f"Malformed MAILMETA length ignored: {message}")
                 return
-            apply_mail_expected_content_length(parts[1], expected_length)
+            apply_mail_expected_content_length(decode_uid(parts[1]), expected_length)
         elif message.startswith("CHANNELCOMMENTCONT|"):
             parts = message.split("|", 3)
             if len(parts) < 3 or not parts[1]:
@@ -1400,9 +1409,9 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 except ValueError:
                     logging.warning(f"Malformed CHANNELCOMMENTCONT offset ignored: {message}")
                     return
-                append_channel_comment_content(parts[1], offset, parts[3])
+                append_channel_comment_content(decode_uid(parts[1]), offset, parts[3])
             else:
-                append_channel_comment_content(parts[1], None, parts[2])
+                append_channel_comment_content(decode_uid(parts[1]), None, parts[2])
         elif message.startswith("CHANNELCOMMENTMETA|"):
             parts = message.split("|", 2)
             if len(parts) != 3 or not parts[1]:
@@ -1413,7 +1422,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             except ValueError:
                 logging.warning(f"Malformed CHANNELCOMMENTMETA length ignored: {message}")
                 return
-            apply_channel_comment_expected_content_length(parts[1], expected_length)
+            apply_channel_comment_expected_content_length(decode_uid(parts[1]), expected_length)
         elif message.startswith("SYNCSTATE|"):
             parts = message.split("|")
             # 5,7,13,14 = legacy variants; 15 = v2+ (trailing vN:caps token).

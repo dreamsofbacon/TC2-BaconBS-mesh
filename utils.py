@@ -34,7 +34,7 @@ _MESHTASTIC_MAX_BYTES = 220
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames
 
 # Single-char scope codes used by the 'scc' wire capability.  Senders gate
 # encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
@@ -72,6 +72,52 @@ def decode_scope(token: str) -> str:
     if not token:
         return token or ''
     return CODE_TO_SCOPE.get(token, token)
+
+
+# ---------------------------------------------------------------------------
+# 'cuid' wire capability: compact UUIDs on the wire.
+#
+# A canonical UUID is 36 chars ("550e8400-e29b-41d4-a716-446655440000").
+# Encoding its 16 raw bytes as unpadded URL-safe base64 yields 22 chars; a
+# leading '*' sentinel marks the compacted form, for 23 chars total — saving
+# 13 bytes everywhere a unique_id appears on the wire (CONT/META frames repeat
+# it, so multi-packet records save 13B per frame).
+#
+# The '*' sentinel is not a hex digit, not in the URL-safe base64 alphabet, and
+# not the pipe delimiter, so it is unambiguous. unique_ids that are NOT valid
+# UUIDs (legacy / externally-sourced rows) are sent verbatim — decode is a
+# lossless round-trip to the canonical lowercase-hyphenated form, so the
+# manifest/DB key never drifts.
+# ---------------------------------------------------------------------------
+_CUID_SENTINEL = '*'
+
+
+def encode_uid(uid: str, use_cuid: bool = False) -> str:
+    """Compact a canonical UUID to ``*<base64>`` when ``use_cuid`` and *uid* is
+    a valid UUID; otherwise return *uid* unchanged."""
+    if not use_cuid or not uid:
+        return uid or ''
+    try:
+        import uuid as _uuid
+        raw = _uuid.UUID(str(uid)).bytes
+    except (ValueError, AttributeError, TypeError):
+        return uid  # not a UUID — send verbatim
+    return _CUID_SENTINEL + base64.urlsafe_b64encode(raw).rstrip(b'=').decode('ascii')
+
+
+def decode_uid(token: str) -> str:
+    """Expand a ``*<base64>`` compact UUID back to canonical form; pass any
+    other token through unchanged (legacy full-UUID and non-UUID senders)."""
+    if not token or not token.startswith(_CUID_SENTINEL):
+        return token or ''
+    body = token[1:]
+    try:
+        import uuid as _uuid
+        padded = body + '=' * (-len(body) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode('ascii'))
+        return str(_uuid.UUID(bytes=raw))
+    except (ValueError, AttributeError, TypeError):
+        return token  # malformed — leave as-is rather than corrupt the key
 
 
 def local_capabilities_token() -> str:
@@ -430,10 +476,12 @@ def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, uniqu
         footer = f"|{unique_id}|{encode_ts_minute(date, _use_epoch)}"
     else:
         footer = f"|{unique_id}"
+    # Compact the uid in the repeated CONT/META frames when peers support 'cuid'.
+    _wire_uid = encode_uid(unique_id, peers_all_support(bbs_nodes, 'cuid'))
     _send_sync_with_cont(
         header, footer, content, unique_id,
-        cont_prefix=f"BULLETINCONT|{unique_id}|",
-        meta_prefix=f"BULLETINMETA|{unique_id}|",
+        cont_prefix=f"BULLETINCONT|{_wire_uid}|",
+        meta_prefix=f"BULLETINMETA|{_wire_uid}|",
         bbs_nodes=bbs_nodes, interface=interface,
         pause_seconds=get_sync_pause_seconds(),
     )
@@ -452,10 +500,11 @@ def send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, 
         footer = f"|{unique_id}|{encode_ts_minute(date, _use_epoch)}"
     else:
         footer = f"|{unique_id}"
+    _wire_uid = encode_uid(unique_id, peers_all_support(bbs_nodes, 'cuid'))
     _send_sync_with_cont(
         header, footer, content, unique_id,
-        cont_prefix=f"MAILCONT|{unique_id}|",
-        meta_prefix=f"MAILMETA|{unique_id}|",
+        cont_prefix=f"MAILCONT|{_wire_uid}|",
+        meta_prefix=f"MAILMETA|{_wire_uid}|",
         bbs_nodes=bbs_nodes, interface=interface,
         pause_seconds=get_sync_pause_seconds(),
     )
@@ -657,20 +706,22 @@ def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_da
             legacy_peers.append(node_id)
 
     if cck_peers:
+        _cck_uid = encode_uid(unique_id, peers_all_support(cck_peers, 'cuid'))
         _send_sync_with_cont(
             short_header, footer, content, unique_id,
-            cont_prefix=f"CHANNELCOMMENTCONT|{unique_id}|",
-            meta_prefix=f"CHANNELCOMMENTMETA|{unique_id}|",
+            cont_prefix=f"CHANNELCOMMENTCONT|{_cck_uid}|",
+            meta_prefix=f"CHANNELCOMMENTMETA|{_cck_uid}|",
             bbs_nodes=cck_peers, interface=interface,
             pause_seconds=get_sync_pause_seconds(),
         )
 
     if legacy_peers:
         legacy_header = short_header if full_too_big else full_header
+        _legacy_uid = encode_uid(unique_id, peers_all_support(legacy_peers, 'cuid'))
         _send_sync_with_cont(
             legacy_header, footer, content, unique_id,
-            cont_prefix=f"CHANNELCOMMENTCONT|{unique_id}|",
-            meta_prefix=f"CHANNELCOMMENTMETA|{unique_id}|",
+            cont_prefix=f"CHANNELCOMMENTCONT|{_legacy_uid}|",
+            meta_prefix=f"CHANNELCOMMENTMETA|{_legacy_uid}|",
             bbs_nodes=legacy_peers, interface=interface,
             pause_seconds=get_sync_pause_seconds(),
         )
