@@ -161,6 +161,13 @@ _HASH_BUFFER_MAX_AGE_SECONDS = 600
 # flooding the channel with redundant requests.
 _HASH_BUFFER_RETRY_AFTER_SECONDS = 35
 _recent_hashmiss_requests = {}
+# Peer-AGNOSTIC in-flight record-request guard. Keyed by (scope, key) with no
+# peer id, so once we ask ANY peer for a record we don't also ask the others
+# for the same record until it arrives or the TTL lapses. This is what stops
+# the "both peers answer the same HASHMISS → record received twice" duplicate.
+# Retry-on-loss is preserved: after the TTL the guard expires and the next
+# reconcile may pick a different peer.
+_inflight_record_requests: dict = {}
 # Per-pass HASHMISS pull/push caps and SYNCSTATE repair TTL are tunable via the
 # [sync] config section (reconcile_max_per_pass, repair_cycle_seconds) or the
 # corresponding BBS_* environment variables. Turbo mode lifts these defaults.
@@ -668,6 +675,27 @@ def _should_send_hashmiss(sender_node_id: str, scope: str, key: str, local_hash:
     return True
 
 
+def _should_request_record(scope: str, key: str) -> bool:
+    """Peer-agnostic guard: return True (and mark in-flight) only if no request
+    for this (scope, key) has gone to ANY peer within the TTL. Prevents pulling
+    the same missing record from multiple peers, which otherwise returns the
+    record once per peer that has it."""
+    now = time.time()
+    ttl = _get_hashmiss_request_ttl_seconds()
+    if ttl <= 0:
+        return True
+    # Opportunistic prune so the dict can't grow unbounded.
+    stale = [k for k, ts in _inflight_record_requests.items() if now - float(ts) > ttl]
+    for k in stale:
+        _inflight_record_requests.pop(k, None)
+    sig = (str(scope), str(key))
+    last = _inflight_record_requests.get(sig)
+    if last is not None and (now - float(last)) < ttl:
+        return False
+    _inflight_record_requests[sig] = now
+    return True
+
+
 def _mark_hashreq_pending(peer_id: str, scope: str) -> None:
     _pending_hashreq[(str(peer_id), str(scope))] = time.time()
 
@@ -873,6 +901,9 @@ def _do_striped_reconcile(scope: str, peer_manifests: dict, interface) -> None:
         remote_hash = str(remote.get(key, ""))
         if not _should_send_hashmiss(assigned_peer, scope, key, local_hash, remote_hash):
             continue
+        # Peer-agnostic: skip if this record is already in-flight from any peer.
+        if not _should_request_record(scope, key):
+            continue
 
         _peer_scc = peers_all_support([assigned_peer], 'scc')
         _scope_wire = encode_scope(scope, _peer_scc)
@@ -972,6 +1003,9 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
         local_hash = str(local.get(key, ""))
         remote_hash = str(remote.get(key, ""))
         if not _should_send_hashmiss(sender_node_id, scope, key, local_hash, remote_hash):
+            continue
+        # Peer-agnostic: skip if this record is already in-flight from any peer.
+        if not _should_request_record(scope, key):
             continue
         _peer_scc = peers_all_support([sender_node_id], 'scc')
         _scope_wire = encode_scope(scope, _peer_scc)
