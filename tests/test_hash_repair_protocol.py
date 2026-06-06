@@ -35,6 +35,7 @@ class HashRepairProtocolTests(unittest.TestCase):
         message_processing._peer_hash_manifest_buffers.clear()
         message_processing._peer_hash_compressed_buffers.clear()
         message_processing._recent_hashmiss_requests.clear()
+        message_processing._inflight_record_requests.clear()
         message_processing._recent_syncstate_repairs.clear()
         message_processing._pending_hashreq.clear()
         # Reconcile synchronously (no 5s stripe-collect timer) for deterministic asserts.
@@ -392,6 +393,42 @@ class HashRepairProtocolTests(unittest.TestCase):
         )
 
         self.assertIn("HASHMISS|bulletins|uid-remote-z", iface.sent_texts)
+
+    def test_same_record_not_requested_from_multiple_peers(self):
+        """Peer-agnostic guard: when two peers advertise the same missing record,
+        we send exactly ONE HASHMISS, not one per peer (no duplicate responses)."""
+        import json, zlib, base64
+
+        def _hashz(peer_mid):
+            manifest = {"uid-dup": "deadbeef"}
+            payload = json.dumps(manifest, separators=(",", ":")).encode("utf-8")
+            b64 = base64.urlsafe_b64encode(zlib.compress(payload, level=6)).decode("ascii")
+            return f"HASHZ|bulletins|{peer_mid}|0|1|{b64}"
+
+        iface = _DummyInterface()
+        # Peer A advertises the missing record → one HASHMISS expected.
+        message_processing.process_message(
+            sender_id=1, message=_hashz("midA"), interface=iface,
+            is_sync_message=True, sender_node_id="!peerA",
+        )
+        # Peer B advertises the SAME missing record moments later → suppressed.
+        message_processing.process_message(
+            sender_id=2, message=_hashz("midB"), interface=iface,
+            is_sync_message=True, sender_node_id="!peerB",
+        )
+
+        hashmiss = [m for m in iface.sent_texts if m == "HASHMISS|bulletins|uid-dup"]
+        self.assertEqual(len(hashmiss), 1, f"expected exactly 1 HASHMISS, got {hashmiss}")
+
+    def test_record_request_guard_expires_after_ttl(self):
+        import time as _t
+        message_processing._inflight_record_requests.clear()
+        self.assertTrue(message_processing._should_request_record("bulletins", "k1"))
+        self.assertFalse(message_processing._should_request_record("bulletins", "k1"))
+        # Force the recorded timestamp into the past beyond the TTL.
+        ttl = message_processing._get_hashmiss_request_ttl_seconds()
+        message_processing._inflight_record_requests[("bulletins", "k1")] = _t.time() - ttl - 1
+        self.assertTrue(message_processing._should_request_record("bulletins", "k1"))
 
     def test_syncstate_mismatch_triggers_immediate_hash_requests(self):
         iface = _DummyInterface()

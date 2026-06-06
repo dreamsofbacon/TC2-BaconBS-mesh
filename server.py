@@ -20,6 +20,7 @@ import sys
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 import configparser
+import random
 import threading
 import time
 from datetime import datetime, timezone
@@ -517,18 +518,29 @@ def main():
                 _repair_peers = set(getattr(interface, 'bbs_nodes', []) or [])
                 if _repair_targets and _repair_peers:
                     from utils import _send_one_sync, get_hash_repair_pause_seconds
-                    logging.info(
-                        f"Incomplete-content repair: requesting {len(_repair_targets)} record(s) "
-                        f"from {len(_repair_peers)} peer(s)"
-                    )
+                    from message_processing import _should_request_record
+                    _peer_pool = sorted(_repair_peers)
+                    _sent = 0
                     for _scope, _uid in _repair_targets:
-                        for _peer in sorted(_repair_peers):
-                            _send_one_sync(
-                                f"HASHMISS|{_scope}|{_uid}",
-                                _peer,
-                                interface,
-                                pause_seconds=get_hash_repair_pause_seconds(),
-                            )
+                        # Peer-agnostic guard: skip if reconcile already asked for
+                        # this record recently. Ask ONE randomly-chosen peer rather
+                        # than every peer — over successive cycles the random pick
+                        # still covers all peers, but each cycle sends one request
+                        # instead of N (no more "received once per peer" dupes).
+                        if not _should_request_record(_scope, _uid):
+                            continue
+                        _peer = random.choice(_peer_pool)
+                        _send_one_sync(
+                            f"HASHMISS|{_scope}|{_uid}",
+                            _peer,
+                            interface,
+                            pause_seconds=get_hash_repair_pause_seconds(),
+                        )
+                        _sent += 1
+                    if _sent:
+                        logging.info(
+                            f"Incomplete-content repair: requested {_sent} record(s), one peer each"
+                        )
                 # Re-check sooner when incomplete records are known; back off when all complete.
                 # Re-check sooner when incomplete records are known; back off when all complete.
                 # 45s is frequent enough to converge lossy records within a few minutes,
