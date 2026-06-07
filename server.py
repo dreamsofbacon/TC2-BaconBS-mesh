@@ -333,6 +333,12 @@ def main():
         next_diagnostics_write = 0.0
         next_node_sync_check = 0.0
         next_incomplete_repair = 0.0
+        # DB maintenance: prune unbounded tables + WAL checkpoint on a slow cadence,
+        # VACUUM even less often. First pass deferred so startup isn't slowed.
+        from db_operations import get_maintenance_config, run_db_maintenance
+        _maint_cfg = get_maintenance_config()
+        next_maintenance = time.time() + 300.0  # first pass 5 min after start
+        next_vacuum = time.time() + max(1, _maint_cfg['vacuum_interval_hours']) * 3600.0
         # Empty on startup — receivers use unique_id idempotency, so re-syncing is safe
         mail_synced_nodes: set = set()       # P1: direct mail
         bulletins_synced_nodes: set = set()  # P2: bulletin board posts
@@ -505,6 +511,25 @@ def main():
                 write_runtime_diagnostics_snapshot(interface, system_config)
                 sync_progress = get_sync_progress()
                 next_diagnostics_write = now + (5 if sync_progress.get('in_progress') else 30)
+
+            # Periodic DB maintenance: keep unbounded tables + WAL bounded so an
+            # unattended node never fills the SD card. Only runs when idle so it
+            # never competes with an active sync burst. VACUUM on a slower cadence.
+            if now >= next_maintenance and not get_sync_progress().get('in_progress'):
+                do_vacuum = now >= next_vacuum
+                try:
+                    _m = run_db_maintenance(do_vacuum=do_vacuum)
+                    if any(v for k, v in _m.items() if k.endswith('_deleted')) or _m.get('vacuumed'):
+                        logging.info(
+                            f"DB maintenance: sync_tx-{_m['sync_transmissions_deleted']} "
+                            f"op_log-{_m['op_log_deleted']} sessions-{_m['sync_session_history_deleted']} "
+                            f"tombstones-{_m['tombstones_deleted']} vacuum={_m['vacuumed']}"
+                        )
+                except Exception as exc:
+                    logging.warning(f"DB maintenance pass failed: {exc}")
+                if do_vacuum:
+                    next_vacuum = now + max(1, _maint_cfg['vacuum_interval_hours']) * 3600.0
+                next_maintenance = now + max(1, _maint_cfg['interval_minutes']) * 60.0
 
             # Periodic scan: request repair of records whose content arrived truncated.
             # Only runs when not actively syncing so it doesn't pile on top of a flood.
