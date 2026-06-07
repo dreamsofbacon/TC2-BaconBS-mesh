@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import sqlite3
+import time
 import uuid
 import secrets
 import configparser
@@ -2793,6 +2794,12 @@ def create_app(runtime_interface=None) -> Flask:
     app.config["BULLETIN_BOARDS"] = load_bulletin_boards(app.config["CONFIG_PATH"])
     app.config["RUNTIME_UPDATES_ENABLED"] = runtime_interface is not None
     app.config["DISPLAY_VERSION"] = get_display_version()
+    # Cache-bust static assets per deploy: derive a token from the version string
+    # (changes on every release), falling back to process start time. Appended as
+    # ?v=... to CSS/JS links so browsers fetch fresh assets after an update
+    # instead of serving stale cached copies.
+    import re as _re
+    app.config["ASSET_VERSION"] = _re.sub(r'[^A-Za-z0-9]', '', app.config["DISPLAY_VERSION"]) or str(int(time.time()))
     _mesh_ui_dist_env = os.getenv("BBS_MESH_UI_DIST_PATH", "")
     app.config["MESH_UI_DIST_PATH"] = resolve_app_path(_mesh_ui_dist_env if _mesh_ui_dist_env else None, "meshtastic-web-dist")
 
@@ -2800,6 +2807,7 @@ def create_app(runtime_interface=None) -> Flask:
     def inject_global_template_values():
       return {
         "app_version_display": app.config.get("DISPLAY_VERSION", "unknown"),
+        "asset_version": app.config.get("ASSET_VERSION", "0"),
         "csrf_token": get_csrf_token(),
       }
 
