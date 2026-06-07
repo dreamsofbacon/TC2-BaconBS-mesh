@@ -166,6 +166,14 @@ def perform_ai_chat(prompt: str) -> Tuple[str, str]:
         key = _config_raw('gateway', 'ai_api_key')
         if key:
             headers["Authorization"] = f"Bearer {key}"
+    elif dialect == 'nomad':
+        # Project N.O.M.A.D proxies Ollama under its own /api/ollama/ prefix;
+        # response shape is identical to Ollama ({message:{content}}).
+        url = f"{base}/api/ollama/chat"
+        payload = {"model": model, "messages": messages, "stream": False}
+        key = _config_raw('gateway', 'ai_api_key')
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
     else:  # ollama
         url = f"{base}/api/chat"
         payload = {"model": model, "messages": messages, "stream": False}

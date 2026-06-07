@@ -132,6 +132,37 @@ class GatewayDispatchTests(unittest.TestCase):
         self.assertEqual(status, "200")
         self.assertIn("sky is blue", body)
 
+    def test_ai_relay_nomad_dialect_uses_ollama_path(self):
+        iface = _Iface(allowed=["!user"])
+        ai_cfg = {
+            ('gateway', 'ai_base_url'): 'https://ai.bmcse.com',
+            ('gateway', 'ai_dialect'): 'nomad',
+            ('gateway', 'ai_model'): 'qwen2.5:3b',
+            ('gateway', 'ai_system_prompt'): '',
+        }
+        captured = {}
+
+        def _fake_urlopen(req, timeout=None):
+            captured['url'] = req.full_url
+            resp = io.BytesIO(json.dumps({"message": {"content": "Hello there!"}, "done": True}).encode())
+            resp.__enter__ = lambda *_: resp
+            resp.__exit__ = lambda *_: False
+            return resp
+
+        with patch.object(gateway, "is_gateway_enabled", lambda: True), \
+             patch.object(gateway, "_config_raw", lambda s, o: ai_cfg.get((s, o))), \
+             patch.object(gateway, "_max_response_bytes", lambda: 800), \
+             patch("urllib.request.urlopen", _fake_urlopen):
+            message_processing.process_message(
+                sender_id=1, message="APIREQ|rn|!user|r|ai\x1fhi",
+                interface=iface, is_sync_message=True, sender_node_id="!user",
+            )
+            _drain_threads()
+        self.assertEqual(captured['url'], "https://ai.bmcse.com/api/ollama/chat")
+        status, body = _join_apiresp(iface.sent_texts, "rn")
+        self.assertEqual(status, "200")
+        self.assertIn("Hello there", body)
+
     def test_unauthorized_requester_rejected(self):
         iface = _Iface(allowed=["!someone_else"])
         with patch.object(gateway, "is_gateway_enabled", lambda: True):
