@@ -136,6 +136,82 @@
   </form>
 </div>
 
+<div class="card" id="gateway" style="max-width:800px">
+  <h2>API Gateway / Project Nomad</h2>
+  <p class="text-muted">
+    When enabled, this internet-connected node fulfills API requests from offline
+    mesh peers — a generic HTTP GET to an allowed host, or an AI prompt relayed to
+    a locally-hosted Project Nomad (Ollama / OpenAI-compatible) endpoint. Only
+    nodes in the Urgent-board allow-list may use the gateway. Add <code>A</code> to
+    the Utilities menu items to expose it to users.
+  </p>
+  <form method="post" action="{{ url_for('settings_page') }}#gateway">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="gateway">
+    <div class="form-group">
+      <label>
+        <input type="checkbox" name="gateway_enabled" value="1" {% if gateway.enabled %}checked{% endif %}>
+        Enable this node as an API gateway
+      </label>
+    </div>
+
+    <h3>Project Nomad AI</h3>
+    <div class="form-group">
+      <label for="gateway_ai_base_url">Project Nomad URL (base)</label>
+      <input type="text" id="gateway_ai_base_url" name="gateway_ai_base_url" class="form-control"
+             placeholder="http://nomad.local:11434" value="{{ gateway.ai_base_url }}">
+      <p class="text-muted">Ollama default port is 11434. For an OpenAI-compatible server, use its host (the <code>/v1</code> path is added automatically).</p>
+    </div>
+    <div class="form-group">
+      <label for="gateway_ai_dialect">API dialect</label>
+      <select id="gateway_ai_dialect" name="gateway_ai_dialect" class="form-control" style="width:auto">
+        <option value="ollama" {% if gateway.ai_dialect == 'ollama' %}selected{% endif %}>Ollama</option>
+        <option value="openai" {% if gateway.ai_dialect == 'openai' %}selected{% endif %}>OpenAI-compatible</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="gateway_ai_model">Model</label>
+      <input type="text" id="gateway_ai_model" name="gateway_ai_model" class="form-control"
+             placeholder="llama3.2" value="{{ gateway.ai_model }}">
+    </div>
+    <div class="form-group">
+      <label for="gateway_ai_system_prompt">System prompt (optional)</label>
+      <textarea id="gateway_ai_system_prompt" name="gateway_ai_system_prompt" class="form-control"
+                placeholder="You are a concise assistant on an off-grid mesh. Keep replies short.">{{ gateway.ai_system_prompt }}</textarea>
+    </div>
+
+    <hr style="margin:1.5rem 0">
+    <h3>HTTP proxy &amp; limits</h3>
+    <div class="form-group">
+      <label for="gateway_allowed_hosts">Allowed HTTP hosts (comma separated)</label>
+      <input type="text" id="gateway_allowed_hosts" name="gateway_allowed_hosts" class="form-control"
+             placeholder="wttr.in,api.example.com" value="{{ gateway.allowed_hosts }}">
+      <p class="text-muted">Outbound HTTP GET is restricted to these hosts. Private/loopback addresses are always blocked.</p>
+    </div>
+    <div class="form-group">
+      <label for="gateway_allowed_schemes">Allowed schemes</label>
+      <input type="text" id="gateway_allowed_schemes" name="gateway_allowed_schemes" class="form-control"
+             style="width:200px" value="{{ gateway.allowed_schemes }}">
+    </div>
+    <div class="form-group">
+      <label for="gateway_request_timeout">Request timeout (seconds)</label>
+      <input type="number" id="gateway_request_timeout" name="gateway_request_timeout" class="form-control"
+             style="width:120px" min="1" value="{{ gateway.request_timeout }}">
+    </div>
+    <div class="form-group">
+      <label for="gateway_max_response_bytes">Max response bytes</label>
+      <input type="number" id="gateway_max_response_bytes" name="gateway_max_response_bytes" class="form-control"
+             style="width:120px" min="64" value="{{ gateway.max_response_bytes }}">
+    </div>
+    <div class="form-group">
+      <label for="gateway_rate_limit_per_node">Rate limit (requests/min/node)</label>
+      <input type="number" id="gateway_rate_limit_per_node" name="gateway_rate_limit_per_node" class="form-control"
+             style="width:120px" min="0" value="{{ gateway.rate_limit_per_node }}">
+    </div>
+    <button class="btn btn-primary" type="submit">Save Gateway Settings</button>
+  </form>
+</div>
+
 <div class="card" id="admin" style="max-width:600px">
   <h2>Admin Credentials</h2>
   <p class="text-muted">Change the username and password for the web admin interface.</p>
