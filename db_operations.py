@@ -923,6 +923,151 @@ def prune_old_sync_transmissions(max_rows: int = 10000) -> None:
         logging.debug(f"Failed to prune sync transmissions: {e}")
 
 
+def prune_op_log(max_rows: int = 20000) -> int:
+    """Keep the op_log bounded by retaining only the newest ``max_rows`` events.
+
+    Safe because the op_log is an *optimization* layer (HAVE/WANT/EVENT discovery)
+    layered on top of the authoritative hash-repair sync (SYNCSTATE/HASHZ), which
+    reconciles the actual records regardless of op_log contents. Seq allocation
+    lives in op_log_state (never pruned), so dropping old op_log rows never
+    disturbs monotonic seq assignment. Returns rows deleted."""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM op_log")
+        total = int(c.fetchone()[0])
+        if total <= max_rows:
+            return 0
+        # rowid is insertion order; keep the newest max_rows.
+        c.execute(
+            "DELETE FROM op_log WHERE rowid NOT IN ("
+            "SELECT rowid FROM op_log ORDER BY rowid DESC LIMIT ?)",
+            (max_rows,),
+        )
+        conn.commit()
+        return total - max_rows
+    except Exception as e:
+        logging.debug(f"Failed to prune op_log: {e}")
+        return 0
+
+
+def prune_sync_session_history(max_rows: int = 2000) -> int:
+    """Keep sync_session_history bounded; returns rows deleted."""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM sync_session_history WHERE id NOT IN ("
+            "SELECT id FROM sync_session_history ORDER BY id DESC LIMIT ?)",
+            (max_rows,),
+        )
+        deleted = c.rowcount if c.rowcount and c.rowcount > 0 else 0
+        conn.commit()
+        return deleted
+    except Exception as e:
+        logging.debug(f"Failed to prune sync_session_history: {e}")
+        return 0
+
+
+def prune_expired_tombstones(max_age_days: int = 30) -> int:
+    """Delete tombstones older than ``max_age_days``.
+
+    A floor age (default 30 days) ensures deletes have ample time to propagate to
+    slow/offline peers before the tombstone is forgotten — otherwise a deleted
+    record could be resurrected by a peer that never saw the delete. Returns rows
+    deleted."""
+    if max_age_days <= 0:
+        return 0
+    try:
+        cutoff = (datetime.now() - timedelta(days=int(max_age_days))).strftime('%Y-%m-%d %H:%M:%S')
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("DELETE FROM deleted_sync_tombstones WHERE deleted_at < ?", (cutoff,))
+        deleted = c.rowcount if c.rowcount and c.rowcount > 0 else 0
+        conn.commit()
+        return deleted
+    except Exception as e:
+        logging.debug(f"Failed to prune tombstones: {e}")
+        return 0
+
+
+def checkpoint_wal() -> None:
+    """Truncate the WAL file so it can't grow unbounded between checkpoints."""
+    try:
+        conn = get_db_connection()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        conn.commit()
+    except Exception as e:
+        logging.debug(f"WAL checkpoint failed: {e}")
+
+
+def vacuum_database() -> None:
+    """Reclaim free pages so the DB file shrinks after large prunes. Heavier op —
+    callers should run this on a slow cadence (e.g. daily) when idle."""
+    try:
+        conn = get_db_connection()
+        conn.execute("VACUUM;")
+        conn.commit()
+    except Exception as e:
+        logging.debug(f"VACUUM failed: {e}")
+
+
+_cached_maintenance_cfg: Optional[dict] = None
+
+
+def get_maintenance_config() -> dict:
+    """Read the [maintenance] config section once, with sensible defaults."""
+    global _cached_maintenance_cfg
+    if _cached_maintenance_cfg is None:
+        cfg = configparser.ConfigParser()
+        cfg.read(get_config_path())
+        g = lambda opt, d: cfg.getint('maintenance', opt, fallback=d)  # noqa: E731
+        _cached_maintenance_cfg = {
+            'interval_minutes': g('maintenance_interval_minutes', 60),
+            'sync_transmissions_max_rows': g('sync_transmissions_max_rows', 10000),
+            'op_log_max_rows': g('op_log_max_rows', 20000),
+            'sync_session_history_max_rows': g('sync_session_history_max_rows', 2000),
+            'tombstone_max_age_days': g('tombstone_max_age_days', 30),
+            'vacuum_interval_hours': g('vacuum_interval_hours', 24),
+        }
+    return _cached_maintenance_cfg
+
+
+def run_db_maintenance(do_vacuum: bool = False) -> dict:
+    """Run one periodic maintenance pass: prune unbounded tables, checkpoint WAL,
+    optionally VACUUM. Returns a summary dict for logging. Best-effort; each step
+    swallows its own errors so a single failure can't abort the rest."""
+    cfg = get_maintenance_config()
+    summary = {
+        'sync_transmissions_deleted': 0,
+        'op_log_deleted': 0,
+        'sync_session_history_deleted': 0,
+        'tombstones_deleted': 0,
+        'vacuumed': False,
+    }
+    before = None
+    try:
+        conn = get_db_connection()
+        before = int(conn.execute("SELECT COUNT(*) FROM sync_transmissions").fetchone()[0])
+    except Exception:
+        before = None
+    prune_old_sync_transmissions(cfg['sync_transmissions_max_rows'])
+    if before is not None:
+        try:
+            after = int(get_db_connection().execute("SELECT COUNT(*) FROM sync_transmissions").fetchone()[0])
+            summary['sync_transmissions_deleted'] = max(0, before - after)
+        except Exception:
+            pass
+    summary['op_log_deleted'] = prune_op_log(cfg['op_log_max_rows'])
+    summary['sync_session_history_deleted'] = prune_sync_session_history(cfg['sync_session_history_max_rows'])
+    summary['tombstones_deleted'] = prune_expired_tombstones(cfg['tombstone_max_age_days'])
+    checkpoint_wal()
+    if do_vacuum:
+        vacuum_database()
+        summary['vacuumed'] = True
+    return summary
+
+
 def clear_sync_transmissions() -> None:
     """Clear all rows from sync_transmissions for manual stats reset."""
     try:
