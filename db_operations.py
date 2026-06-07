@@ -1432,6 +1432,58 @@ def _clear_peer_caps_cache() -> None:
     _peer_caps_cache.clear()
 
 
+def merge_relayed_peer_state(peer_node_id: str, counts: dict, age_seconds: float) -> bool:
+    """Merge a gossiped (relayed) peer sync-state into peer_sync_state.
+
+    A neighbour told us what IT last heard about ``peer_node_id`` — counts plus
+    how long ago it heard them (``age_seconds``). We translate that age into our
+    own clock (observed_at = now - age) to sidestep cross-node clock skew, and
+    only adopt it when it is STRICTLY FRESHER than what we already know for that
+    peer. This makes mismatch detection mesh-aware (e.g. learning a peer we
+    can't directly hear is ahead on zork) without ever clobbering fresher
+    first-hand SYNCSTATE knowledge. Returns True if the row was updated.
+
+    proto_v is left at 0 so the existing caps for that peer are preserved — a
+    relay carries no authoritative capability information.
+    """
+    if not peer_node_id:
+        return False
+    try:
+        age = max(0.0, float(age_seconds))
+    except (TypeError, ValueError):
+        return False
+    observed_dt = datetime.now() - timedelta(seconds=age)
+    observed_at = observed_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT reported_at FROM peer_sync_state WHERE peer_node_id = ?", (peer_node_id,))
+    row = c.fetchone()
+    if row and row[0]:
+        try:
+            existing_dt = datetime.strptime(str(row[0]), '%Y-%m-%d %H:%M:%S')
+            if existing_dt >= observed_dt:
+                return False  # we already have equal-or-fresher first-hand/relayed knowledge
+        except ValueError:
+            pass  # unparseable existing timestamp → treat relay as fresher
+
+    upsert_peer_sync_state(
+        peer_node_id,
+        int(counts.get('bulletins', 0)), int(counts.get('mail', 0)),
+        int(counts.get('channels', 0)), int(counts.get('zork_saves', 0)),
+        int(counts.get('profiles', 0)), int(counts.get('game_scores', 0)),
+        bulletins_hash='', mail_hash='', channels_hash='',
+        zork_saves_hash='', profiles_hash='', game_scores_hash='',
+        tombstones=int(counts.get('tombstones', -1)),
+        proto_v=0, caps='',
+    )
+    # upsert_peer_sync_state stamps reported_at=now(); rewrite it to the derived
+    # observation time so freshness comparisons stay honest across future relays.
+    c.execute("UPDATE peer_sync_state SET reported_at = ? WHERE peer_node_id = ?", (observed_at, peer_node_id))
+    conn.commit()
+    return True
+
+
 def get_peer_sync_states() -> list:
     """Return peer-advertised record counts for diagnostics."""
     conn = get_db_connection()

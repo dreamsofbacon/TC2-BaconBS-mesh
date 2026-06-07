@@ -1918,6 +1918,36 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     logging.warning(f"Malformed ZORKSAVE payload ignored: {message}")
                 finally:
                     _zork_save_chunk_buffers.pop(key, None)
+        elif message.startswith("PEERGOSSIP|"):
+            # 'pgos': a neighbour relays what it last heard about ANOTHER peer's
+            # sync state, so we become aware of (and can detect drift against)
+            # peers we can't hear directly — including zork_saves.
+            # Wire: PEERGOSSIP|<peer_id>|b|m|c|z|p|g|t|<age_secs>
+            parts = message.split("|")
+            if len(parts) != 10 or not parts[1]:
+                logging.warning(f"Malformed PEERGOSSIP ignored: {message}")
+                return
+            relayed_peer = parts[1]
+            try:
+                from db_operations import get_local_node_id, merge_relayed_peer_state
+                # Never let a relay overwrite our own authoritative state.
+                if relayed_peer == (get_local_node_id() or ''):
+                    return
+                counts = {
+                    'bulletins': int(parts[2]), 'mail': int(parts[3]),
+                    'channels': int(parts[4]), 'zork_saves': int(parts[5]),
+                    'profiles': int(parts[6]), 'game_scores': int(parts[7]),
+                    'tombstones': int(parts[8]),
+                }
+                age = int(parts[9])
+            except (ValueError, TypeError):
+                logging.warning(f"Invalid PEERGOSSIP values ignored: {message}")
+                return
+            if merge_relayed_peer_state(relayed_peer, counts, age):
+                logging.info(
+                    f"PEERGOSSIP from {sender_node_id}: learned fresher state for {relayed_peer} "
+                    f"(z={counts['zork_saves']} b={counts['bulletins']} m={counts['mail']} c={counts['channels']}, age={age}s)"
+                )
         elif message.startswith("HAVE|"):
             # Phase-2 op-log discovery: peer advertises its event heads per scope.
             if not sender_node_id:
@@ -2098,7 +2128,7 @@ def on_receive(packet, interface):
                                    "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
                                    "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|", "HASHZGAP|",
-                                   "HAVE|", "WANT|", "EVENT|"])
+                                   "HAVE|", "WANT|", "EVENT|", "PEERGOSSIP|"])
 
             msg_type = "sync" if is_sync_message else "user"
             sync_frame = message_string.split("|", 1)[0] if is_sync_message and "|" in message_string else (message_string[:24] if is_sync_message else "")
