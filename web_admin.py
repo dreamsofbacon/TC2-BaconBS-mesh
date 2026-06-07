@@ -3038,7 +3038,9 @@ def create_app(runtime_interface=None) -> Flask:
                   "allowed_hosts", "allowed_schemes"):
         config.set("gateway", key, form.get(f"gateway_{key}", "").strip())
       dialect = form.get("gateway_ai_dialect", "ollama").strip().lower()
-      config.set("gateway", "ai_dialect", "openai" if dialect == "openai" else "ollama")
+      if dialect not in ("ollama", "openai", "nomad"):
+        dialect = "ollama"
+      config.set("gateway", "ai_dialect", dialect)
       # Numeric fields (clamped to sane minimums; fall back on bad input).
       for key, default, minimum in (("request_timeout", 20, 1),
                                     ("max_response_bytes", 800, 64),

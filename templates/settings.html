@@ -165,8 +165,9 @@
     <div class="form-group">
       <label for="gateway_ai_dialect">API dialect</label>
       <select id="gateway_ai_dialect" name="gateway_ai_dialect" class="form-control" style="width:auto">
-        <option value="ollama" {% if gateway.ai_dialect == 'ollama' %}selected{% endif %}>Ollama</option>
-        <option value="openai" {% if gateway.ai_dialect == 'openai' %}selected{% endif %}>OpenAI-compatible</option>
+        <option value="nomad" {% if gateway.ai_dialect == 'nomad' %}selected{% endif %}>Project N.O.M.A.D (/api/ollama/chat)</option>
+        <option value="ollama" {% if gateway.ai_dialect == 'ollama' %}selected{% endif %}>Ollama (/api/chat)</option>
+        <option value="openai" {% if gateway.ai_dialect == 'openai' %}selected{% endif %}>OpenAI-compatible (/v1)</option>
       </select>
     </div>
     <div class="form-group">
