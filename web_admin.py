@@ -178,6 +178,24 @@ def load_sync_settings(config_path: str) -> tuple[list[str], list[str], int, boo
   return bbs_nodes, allowed_nodes, sync_interval_minutes, sync_zork_saves
 
 
+def load_gateway_settings(config_path: str) -> dict:
+  """Read the [gateway] section for the web-admin form (with defaults)."""
+  config = read_config_file(config_path)
+  g = lambda opt, d="": config.get("gateway", opt, fallback=d).strip()  # noqa: E731
+  return {
+    "enabled": _parse_bool_setting(config.get("gateway", "enabled", fallback="false"), False),
+    "ai_base_url": g("ai_base_url"),
+    "ai_dialect": g("ai_dialect", "ollama") or "ollama",
+    "ai_model": g("ai_model", "llama3.2"),
+    "ai_system_prompt": g("ai_system_prompt"),
+    "allowed_hosts": g("allowed_hosts"),
+    "allowed_schemes": g("allowed_schemes", "https") or "https",
+    "request_timeout": g("request_timeout", "20") or "20",
+    "max_response_bytes": g("max_response_bytes", "800") or "800",
+    "rate_limit_per_node": g("rate_limit_per_node", "5") or "5",
+  }
+
+
 def _parse_bool_setting(raw_value: Optional[str], default: bool = False) -> bool:
   if raw_value is None:
     return default
@@ -3006,6 +3024,33 @@ def create_app(runtime_interface=None) -> Flask:
       config.set("boards", "bulletin_boards", ",".join(boards))
       write_config_file(config, app.config["CONFIG_PATH"])
 
+    def save_gateway_settings(form) -> None:
+      """Persist the [gateway] section from the web-admin form. Hot-reloads:
+      gateway.py + local_capabilities_token read config fresh on every call, so
+      no restart is needed for the change (incl. enabling the apigw capability)."""
+      config = read_config_file(app.config["CONFIG_PATH"])
+      if not config.has_section("gateway"):
+        config.add_section("gateway")
+      enabled = _parse_bool_setting(form.get("gateway_enabled", ""), False)
+      config.set("gateway", "enabled", "true" if enabled else "false")
+      # Free-text / list fields.
+      for key in ("ai_base_url", "ai_model", "ai_system_prompt",
+                  "allowed_hosts", "allowed_schemes"):
+        config.set("gateway", key, form.get(f"gateway_{key}", "").strip())
+      dialect = form.get("gateway_ai_dialect", "ollama").strip().lower()
+      config.set("gateway", "ai_dialect", "openai" if dialect == "openai" else "ollama")
+      # Numeric fields (clamped to sane minimums; fall back on bad input).
+      for key, default, minimum in (("request_timeout", 20, 1),
+                                    ("max_response_bytes", 800, 64),
+                                    ("rate_limit_per_node", 5, 0)):
+        raw = form.get(f"gateway_{key}", "").strip()
+        try:
+          val = max(minimum, int(raw))
+        except ValueError:
+          val = default
+        config.set("gateway", key, str(val))
+      write_config_file(config, app.config["CONFIG_PATH"])
+
     def save_admin_credentials(username, password) -> None:
       config = read_config_file(app.config["CONFIG_PATH"])
       if not config.has_section("admin"):
@@ -3528,10 +3573,12 @@ def create_app(runtime_interface=None) -> Flask:
       sync_speed_settings = load_sync_speed_settings(app.config["CONFIG_PATH"])
       sync_runtime_settings = get_sync_runtime_settings()
       diagnostics = build_settings_diagnostics()
+      gateway_settings = load_gateway_settings(app.config["CONFIG_PATH"])
       return render_template(
         "settings.html",
         title="Settings",
         show_nav=True,
+        gateway=gateway_settings,
         boards_text=",".join(app.config["BULLETIN_BOARDS"]),
         env_override=bool(os.getenv("BBS_BULLETIN_BOARDS", "").strip()),
         bbs_nodes_text="\n".join(bbs_nodes),
@@ -3739,6 +3786,11 @@ def create_app(runtime_interface=None) -> Flask:
           wipe_database_contents()
           flash("Local database wiped.", "success")
           return redirect(url_for("settings_page") + "#danger")
+
+        if section == "gateway":
+          save_gateway_settings(request.form)
+          flash("API gateway settings saved.", "success")
+          return redirect(url_for("settings_page") + "#gateway")
 
         if section == "admin":
           changed = update_admin_settings(
