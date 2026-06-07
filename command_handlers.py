@@ -305,7 +305,7 @@ def handle_apigw_command(sender_id, interface):
         send_message("API gateway: your node is not on the allow-list.", sender_id, interface)
         handle_help_command(sender_id, interface, 'utilities')
         return
-    menu = ("🌐 API Gateway\n[1] Ask the AI\n[2] HTTP GET (allowed hosts)\n[0] Exit\n"
+    menu = ("🌐 API Gateway\n[1] Ask Project Nomad\n[2] HTTP GET (allowed hosts)\n[0] Exit\n"
             "Send a number:")
     send_message(menu, sender_id, interface)
     update_user_state(sender_id, {'command': 'APIGW', 'step': 1})
@@ -326,7 +326,7 @@ def _apigw_submit(sender_id, interface, kind, payload, label):
             send_message(f"{prefix}{body}", sender_id, interface)
         gateway.handle_apireq(rid, node_id, kind, payload,
                               getattr(interface, 'allowed_nodes', None), _reply)
-        send_message(f"Asked the {label}… reply will arrive shortly.", sender_id, interface)
+        send_message(f"Asked {label}… reply will arrive shortly.", sender_id, interface)
         update_user_state(sender_id, None)
         return
 
@@ -357,7 +357,7 @@ def handle_apigw_steps(sender_id, message, interface):
     if step == 1:
         if choice == '1':
             update_user_state(sender_id, {'command': 'APIGW', 'step': 2, 'mode': 'ai'})
-            send_message("Type your question for the AI:", sender_id, interface)
+            send_message("Type your question for Project Nomad:", sender_id, interface)
         elif choice == '2':
             update_user_state(sender_id, {'command': 'APIGW', 'step': 2, 'mode': 'http'})
             send_message("Enter the URL to GET (must be an allowed host):", sender_id, interface)
@@ -373,7 +373,7 @@ def handle_apigw_steps(sender_id, message, interface):
         handle_help_command(sender_id, interface, 'utilities')
         return
     if mode == 'ai':
-        _apigw_submit(sender_id, interface, 'r', f"ai{US}{choice}", "AI")
+        _apigw_submit(sender_id, interface, 'r', f"ai{US}{choice}", "Project Nomad")
     else:
         _apigw_submit(sender_id, interface, 'h', f"GET{US}{choice}{US}", "HTTP")
 
