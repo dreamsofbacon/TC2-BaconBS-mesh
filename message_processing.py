@@ -23,6 +23,7 @@ from command_handlers import (
     handle_games_command, handle_games_steps,
     handle_scoreboard_command, handle_scoreboard_steps,
     handle_profile_command, handle_profile_steps,
+    handle_apigw_command, handle_apigw_steps,
 )
 from db_operations import (
     add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel,
@@ -76,6 +77,7 @@ from utils import (
     encode_text, decode_text,
     pack_missing, unpack_missing,
     compact_channel_manifest_key,
+    send_api_response, pop_api_request,
     _send_one_sync, _MESHTASTIC_MAX_BYTES,
 )
 
@@ -102,6 +104,7 @@ utilities_menu_handlers = {
     "w": handle_wall_of_shame_command,
     "g": handle_games_command,
     "z": handle_games_command,  # legacy alias
+    "a": handle_apigw_command,
     "x": handle_help_command
 }
 
@@ -161,6 +164,11 @@ _HASH_BUFFER_MAX_AGE_SECONDS = 600
 # flooding the channel with redundant requests.
 _HASH_BUFFER_RETRY_AFTER_SECONDS = 35
 _recent_hashmiss_requests = {}
+# Transient API-gateway response reassembly buffers, keyed by request id (rid) →
+# {'status', 'expected', 'parts': {offset: chunk}}. In-memory only (responses are
+# not DB records); guarded by a lock (radio thread writes, sweep reads).
+_apigw_response_buffers: dict = {}
+_apigw_buffers_lock = threading.Lock()
 # Peer-AGNOSTIC in-flight record-request guard. Keyed by (scope, key) with no
 # peer id, so once we ask ANY peer for a record we don't also ask the others
 # for the same record until it arrives or the TTL lapses. This is what stops
@@ -694,6 +702,35 @@ def _should_request_record(scope: str, key: str) -> bool:
         return False
     _inflight_record_requests[sig] = now
     return True
+
+
+def _apigw_apply_chunk(rid, offset, chunk, status=None, expected=None):
+    """Accumulate an API-response chunk by absolute char offset. Returns
+    (status, body) once the assembled length reaches the expected total, else
+    None. Mirrors the bulletin CONT reassembly but in transient memory."""
+    with _apigw_buffers_lock:
+        buf = _apigw_response_buffers.setdefault(rid, {'status': '', 'expected': None, 'parts': {}})
+        if status is not None:
+            buf['status'] = status
+        if expected is not None:
+            buf['expected'] = int(expected)
+        buf['parts'][int(offset)] = chunk
+        assembled_len = sum(len(c) for c in buf['parts'].values())
+        if buf['expected'] is not None and assembled_len >= buf['expected']:
+            body = ''.join(buf['parts'][o] for o in sorted(buf['parts']))
+            st = buf['status']
+            _apigw_response_buffers.pop(rid, None)
+            return (st, body)
+    return None
+
+
+def _deliver_api_response(rid, status, body, interface):
+    """Resolve a completed API response to the waiting user and DM it."""
+    sender_id = pop_api_request(rid)
+    if sender_id is None:
+        return  # no waiter (already timed out / unknown rid)
+    prefix = "" if str(status) in ("200", "OK") else f"[{status}] "
+    send_message(f"{prefix}{body}", sender_id, interface)
 
 
 def _mark_hashreq_pending(peer_id: str, scope: str) -> None:
@@ -1918,6 +1955,72 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     logging.warning(f"Malformed ZORKSAVE payload ignored: {message}")
                 finally:
                     _zork_save_chunk_buffers.pop(key, None)
+        elif message.startswith("APIREQ|"):
+            # Gateway side: a peer asks us to make an outbound call. Validate +
+            # dispatch off-thread; reply via APIRESP back to the requester.
+            import gateway
+            if not gateway.is_gateway_enabled():
+                return
+            parts = message.split("|", 4)
+            if len(parts) != 5 or not parts[1]:
+                logging.warning(f"Malformed APIREQ ignored: {message}")
+                return
+            rid, requester_id, kind, payload = parts[1], parts[2], parts[3], parts[4]
+            logging.info(f"APIREQ from {sender_node_id}: rid={rid} kind={kind}")
+            _allowed = getattr(interface, 'allowed_nodes', None)
+            _dest = sender_node_id
+            gateway.handle_apireq(
+                rid, requester_id, kind, payload, _allowed,
+                reply_fn=lambda status, body: send_api_response(rid, status, body, _dest, interface),
+            )
+        elif message.startswith("APIRESP|"):
+            # Requester side: first (or only) frame of a response. Header carries
+            # the total length so single-packet responses complete immediately.
+            parts = message.split("|", 4)
+            if len(parts) < 4 or not parts[1]:
+                logging.warning(f"Malformed APIRESP ignored: {message}")
+                return
+            rid, status = parts[1], parts[2]
+            try:
+                expected = int(parts[3])
+            except ValueError:
+                logging.warning(f"Malformed APIRESP length ignored: {message}")
+                return
+            first_chunk = parts[4] if len(parts) == 5 else ""
+            done = _apigw_apply_chunk(rid, 0, first_chunk, status=status, expected=expected)
+            if done is not None:
+                _deliver_api_response(rid, done[0], done[1], interface)
+        elif message.startswith("APIRESPMETA|"):
+            parts = message.split("|", 2)
+            if len(parts) != 3 or not parts[1]:
+                return
+            try:
+                expected = int(parts[2])
+            except ValueError:
+                return
+            # META only confirms expected length (offset 0 already holds the
+            # header chunk); check for completion.
+            done = None
+            with _apigw_buffers_lock:
+                buf = _apigw_response_buffers.get(parts[1])
+                if buf is not None:
+                    buf['expected'] = expected
+                    if sum(len(c) for c in buf['parts'].values()) >= expected:
+                        done = (buf['status'], ''.join(buf['parts'][o] for o in sorted(buf['parts'])))
+                        _apigw_response_buffers.pop(parts[1], None)
+            if done is not None:
+                _deliver_api_response(parts[1], done[0], done[1], interface)
+        elif message.startswith("APIRESPCONT|"):
+            parts = message.split("|", 3)
+            if len(parts) != 4 or not parts[1]:
+                return
+            try:
+                offset = int(parts[2])
+            except ValueError:
+                return
+            done = _apigw_apply_chunk(parts[1], offset, parts[3])
+            if done is not None:
+                _deliver_api_response(parts[1], done[0], done[1], interface)
         elif message.startswith("PEERGOSSIP|"):
             # 'pgos': a neighbour relays what it last heard about ANOTHER peer's
             # sync state, so we become aware of (and can detect drift against)
@@ -2021,6 +2124,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                         '2': 'f',
                         '3': 'w',
                         '4': 'g',
+                        '5': 'a',
                         '0': 'x',
                     }
                     message_lower = number_alias.get(message_lower, message_lower)
@@ -2101,6 +2205,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     handle_scoreboard_steps(sender_id, message, interface)
                 elif command == 'PROFILE':
                     handle_profile_steps(sender_id, message, interface)
+                elif command == 'APIGW':
+                    handle_apigw_steps(sender_id, message, interface)
                 else:
                     handle_help_command(sender_id, interface)
             else:
@@ -2128,7 +2234,8 @@ def on_receive(packet, interface):
                                    "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
                                    "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|", "HASHZGAP|",
-                                   "HAVE|", "WANT|", "EVENT|", "PEERGOSSIP|"])
+                                   "HAVE|", "WANT|", "EVENT|", "PEERGOSSIP|",
+                                   "APIREQ|", "APIRESP|", "APIRESPCONT|", "APIRESPMETA|"])
 
             msg_type = "sync" if is_sync_message else "user"
             sync_frame = message_string.split("|", 1)[0] if is_sync_message and "|" in message_string else (message_string[:24] if is_sync_message else "")
