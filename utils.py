@@ -34,7 +34,7 @@ _MESHTASTIC_MAX_BYTES = 220
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state)
 
 # Single-char scope codes used by the 'scc' wire capability.  Senders gate
 # encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
@@ -747,6 +747,56 @@ def send_sync_state_to_bbs_nodes(counts, bbs_nodes, interface):
     )
     for node_id in bbs_nodes:
         _send_one_sync(message, node_id, interface)
+
+
+def build_peer_gossip_frames(local_node_id: str, recipient_id: str):
+    """Build PEERGOSSIP frames relaying what we know about OTHER peers.
+
+    Wire format: ``PEERGOSSIP|<peer_id>|b|m|c|z|p|g|t|<age_secs>``
+    where age_secs is how long ago we last heard that peer's SYNCSTATE. The
+    recipient translates age into its own clock so this works across unsynced
+    node clocks. We never relay the recipient's own state back to it, nor our
+    own (that travels via SYNCSTATE). One frame per known peer; each is a
+    self-contained single packet.
+    """
+    frames = []
+    try:
+        from db_operations import get_peer_sync_states
+        from datetime import datetime as _dt
+        rows = get_peer_sync_states()
+    except Exception:
+        return frames
+    now = _dt.now()
+    for row in rows:
+        peer_id = str(row[0])
+        if not peer_id or peer_id == recipient_id or peer_id == local_node_id:
+            continue
+        try:
+            reported_at = str(row[13]) if len(row) > 13 else ''
+            age = 0
+            if reported_at:
+                age = max(0, int((now - _dt.strptime(reported_at, '%Y-%m-%d %H:%M:%S')).total_seconds()))
+            tomb = int(row[14]) if len(row) > 14 and row[14] is not None else -1
+            frame = (
+                f"PEERGOSSIP|{peer_id}|{int(row[1] or 0)}|{int(row[2] or 0)}|"
+                f"{int(row[3] or 0)}|{int(row[4] or 0)}|{int(row[5] or 0)}|"
+                f"{int(row[6] or 0)}|{tomb}|{age}"
+            )
+        except (ValueError, TypeError, IndexError):
+            continue
+        frames.append(frame)
+    return frames
+
+
+def send_peer_gossip_to_bbs_nodes(local_node_id: str, bbs_nodes, interface) -> None:
+    """Relay known peer sync-states to each pgos-capable peer (one hop per cycle)."""
+    if not local_node_id or not bbs_nodes:
+        return
+    for node_id in bbs_nodes:
+        if not peers_all_support([node_id], 'pgos'):
+            continue
+        for frame in build_peer_gossip_frames(local_node_id, node_id):
+            _send_one_sync(frame, node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
 
 
 def send_have_to_bbs_nodes(local_node_id: str, bbs_nodes, interface) -> None:
