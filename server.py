@@ -339,6 +339,10 @@ def main():
         _maint_cfg = get_maintenance_config()
         next_maintenance = time.time() + 300.0  # first pass 5 min after start
         next_vacuum = time.time() + max(1, _maint_cfg['vacuum_interval_hours']) * 3600.0
+        # How long a requester waits for an API-gateway reply before timing out:
+        # the gateway's own request_timeout plus generous mesh round-trip slack.
+        from utils import _config_int as _cfg_int
+        _apigw_wait_timeout = _cfg_int('gateway', 'request_timeout', 20) + 90
         # Empty on startup — receivers use unique_id idempotency, so re-syncing is safe
         mail_synced_nodes: set = set()       # P1: direct mail
         bulletins_synced_nodes: set = set()  # P2: bulletin board posts
@@ -530,6 +534,15 @@ def main():
                 if do_vacuum:
                     next_vacuum = now + max(1, _maint_cfg['vacuum_interval_hours']) * 3600.0
                 next_maintenance = now + max(1, _maint_cfg['interval_minutes']) * 60.0
+
+            # Expire API-gateway requests that never got a response (gateway
+            # offline or response lost on the lossy link) and tell the waiting user.
+            try:
+                from utils import expire_api_requests, send_message as _send_user_msg
+                for _rid, _uid in expire_api_requests(_apigw_wait_timeout):
+                    _send_user_msg("No gateway response (timed out). Try again later.", _uid, interface)
+            except Exception:
+                pass
 
             # Periodic scan: request repair of records whose content arrived truncated.
             # Only runs when not actively syncing so it doesn't pile on top of a flood.

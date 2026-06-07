@@ -19,7 +19,8 @@ from db_operations import (
 from utils import (
     get_node_id_from_num, get_node_info,
     get_node_short_name, get_user_state, get_zork_save_sync_notice, send_message,
-    update_user_state
+    update_user_state,
+    select_gateway_peer, send_api_request, register_api_request,
 )
 from zork_port import (
     GAMES,
@@ -91,6 +92,7 @@ def build_menu(items, menu_name):
             'F': "[2] Fortune",
             'W': "[3] Wall of Shame",
             'G': "[4] Games",
+            'A': "[5] API Gateway",
             'X': "[0] Exit",
         }
         menu_str = f"{menu_name}\n"
@@ -284,6 +286,96 @@ def handle_hall_of_fame_command(sender_id, interface):
 def handle_zork_command(sender_id, interface):
     """Legacy entry point – redirects to the games menu."""
     handle_games_command(sender_id, interface)
+
+
+# ── API gateway (apigw) — user-facing ────────────────────────────────────────
+
+def _apigw_authorized(sender_id, interface) -> bool:
+    """Reuse the urgent-board allow-list: only listed nodes may use a gateway.
+    Empty allow-list = open (matches existing allow_list semantics)."""
+    node_id = get_node_id_from_num(sender_id, interface)
+    allowed = getattr(interface, 'allowed_nodes', None)
+    if allowed and node_id not in allowed:
+        return False
+    return True
+
+
+def handle_apigw_command(sender_id, interface):
+    if not _apigw_authorized(sender_id, interface):
+        send_message("API gateway: your node is not on the allow-list.", sender_id, interface)
+        handle_help_command(sender_id, interface, 'utilities')
+        return
+    menu = ("🌐 API Gateway\n[1] Ask the AI\n[2] HTTP GET (allowed hosts)\n[0] Exit\n"
+            "Send a number:")
+    send_message(menu, sender_id, interface)
+    update_user_state(sender_id, {'command': 'APIGW', 'step': 1})
+
+
+def _apigw_submit(sender_id, interface, kind, payload, label):
+    """Dispatch a composed request: fulfill locally if this node is a gateway,
+    otherwise forward to a gateway peer. Response returns asynchronously."""
+    import gateway
+    import uuid as _uuid
+    node_id = get_node_id_from_num(sender_id, interface)
+    rid = _uuid.uuid4().hex[:6]
+
+    if gateway.is_gateway_enabled():
+        # Local fast path: no mesh round-trip; DM the result straight back.
+        def _reply(status, body):
+            prefix = "" if str(status) in ("200", "OK") else f"[{status}] "
+            send_message(f"{prefix}{body}", sender_id, interface)
+        gateway.handle_apireq(rid, node_id, kind, payload,
+                              getattr(interface, 'allowed_nodes', None), _reply)
+        send_message(f"Asked the {label}… reply will arrive shortly.", sender_id, interface)
+        update_user_state(sender_id, None)
+        return
+
+    peer = select_gateway_peer(interface)
+    if not peer:
+        send_message("No internet gateway is reachable on the mesh right now.", sender_id, interface)
+        update_user_state(sender_id, None)
+        return
+    register_api_request(rid, sender_id)
+    if not send_api_request(rid, node_id, kind, payload, peer, interface):
+        from utils import pop_api_request
+        pop_api_request(rid)
+        send_message("Request too long for one packet — please shorten it.", sender_id, interface)
+        update_user_state(sender_id, None)
+        return
+    send_message(f"Sent to gateway {peer} via {label}… waiting for reply.", sender_id, interface)
+    update_user_state(sender_id, None)  # response/timeout delivered asynchronously
+
+
+def handle_apigw_steps(sender_id, message, interface):
+    choice = message.strip()
+    state = get_user_state(sender_id) or {}
+    step = state.get('step', 1)
+    if choice.lower() in ('x', '0', 'exit'):
+        handle_help_command(sender_id, interface, 'utilities')
+        return
+
+    if step == 1:
+        if choice == '1':
+            update_user_state(sender_id, {'command': 'APIGW', 'step': 2, 'mode': 'ai'})
+            send_message("Type your question for the AI:", sender_id, interface)
+        elif choice == '2':
+            update_user_state(sender_id, {'command': 'APIGW', 'step': 2, 'mode': 'http'})
+            send_message("Enter the URL to GET (must be an allowed host):", sender_id, interface)
+        else:
+            send_message("Send 1, 2, or 0 to exit.", sender_id, interface)
+        return
+
+    # step 2 — the composed input
+    US = "\x1f"
+    mode = state.get('mode', 'ai')
+    if not choice:
+        send_message("Empty input — cancelled.", sender_id, interface)
+        handle_help_command(sender_id, interface, 'utilities')
+        return
+    if mode == 'ai':
+        _apigw_submit(sender_id, interface, 'r', f"ai{US}{choice}", "AI")
+    else:
+        _apigw_submit(sender_id, interface, 'h', f"GET{US}{choice}{US}", "HTTP")
 
 
 def handle_scoreboard_command(sender_id, interface):

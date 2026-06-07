@@ -121,8 +121,17 @@ def decode_uid(token: str) -> str:
 
 
 def local_capabilities_token() -> str:
-    """Return the ``vN:cap1,cap2`` token to append to outbound SYNCSTATE frames."""
-    return f"v{WIRE_PROTOCOL_VERSION}:{','.join(WIRE_CAPABILITIES)}"
+    """Return the ``vN:cap1,cap2`` token to append to outbound SYNCSTATE frames.
+
+    The static WIRE_CAPABILITIES are always advertised. ``apigw`` is advertised
+    only when this node is configured as an API gateway ([gateway] enabled), so
+    peers route APIREQ only to nodes that can actually fulfill them. It is kept
+    out of the static tuple so the advertisement is config-driven (and so the
+    static-tuple is a stable, testable constant)."""
+    caps = list(WIRE_CAPABILITIES)
+    if _config_bool('gateway', 'enabled', False):
+        caps.append('apigw')
+    return f"v{WIRE_PROTOCOL_VERSION}:{','.join(caps)}"
 
 
 def parse_capabilities_token(token: str) -> tuple:
@@ -797,6 +806,79 @@ def send_peer_gossip_to_bbs_nodes(local_node_id: str, bbs_nodes, interface) -> N
             continue
         for frame in build_peer_gossip_frames(local_node_id, node_id):
             _send_one_sync(frame, node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+
+
+# ── API gateway (apigw) ──────────────────────────────────────────────────────
+
+# Pending API requests awaiting a response, keyed by request id (rid) →
+# {'sender_id': <waiting user node>, 'created_at': ts}. Shared between the
+# command handler (registers on submit) and message_processing (resolves on
+# response / timeout sweep). Lives here in utils to avoid an import cycle.
+_apigw_lock = threading.Lock()
+_apigw_pending: dict = {}
+
+
+def register_api_request(rid: str, sender_id) -> None:
+    with _apigw_lock:
+        _apigw_pending[rid] = {'sender_id': sender_id, 'created_at': time.time()}
+
+
+def pop_api_request(rid: str):
+    """Return the waiting user's node id for *rid* (and clear it), or None."""
+    with _apigw_lock:
+        entry = _apigw_pending.pop(rid, None)
+    return entry['sender_id'] if entry else None
+
+
+def expire_api_requests(timeout_sec: float) -> list:
+    """Remove and return [(rid, sender_id), ...] for requests older than timeout."""
+    now = time.time()
+    out = []
+    with _apigw_lock:
+        stale = [r for r, e in _apigw_pending.items() if now - e['created_at'] > timeout_sec]
+        for rid in stale:
+            out.append((rid, _apigw_pending.pop(rid)['sender_id']))
+    return out
+
+
+def select_gateway_peer(interface):
+    """Return the first peer in bbs_nodes that advertises the 'apigw' capability,
+    or None if no gateway is reachable."""
+    for peer in (getattr(interface, 'bbs_nodes', []) or []):
+        if peers_all_support([peer], 'apigw'):
+            return peer
+    return None
+
+
+def send_api_request(rid, requester_id, kind, payload, gateway_node_id, interface):
+    """Send a single-packet APIREQ to a gateway peer. Returns False (and sends
+    nothing) if the request exceeds one LoRa packet — callers should surface a
+    'request too long' message. (Response chunking is handled separately; API
+    requests are short by design — a URL or a prompt.)"""
+    frame = f"APIREQ|{rid}|{requester_id}|{kind}|{payload}"
+    if len(frame.encode('utf-8')) > _MESHTASTIC_MAX_BYTES:
+        return False
+    _send_one_sync(frame, gateway_node_id, interface, pause_seconds=get_sync_pause_seconds())
+    return True
+
+
+def send_api_response(rid, status, body, dest_node_id, interface):
+    """Send an APIRESP back to the requester, chunked via the shared CONT/META
+    machinery (responses routinely exceed one packet)."""
+    content = str(body or "")
+    # Total length goes in the header so the receiver knows the expected size even
+    # for a single-packet response (which carries no META frame).
+    _send_sync_with_cont(
+        header=f"APIRESP|{rid}|{status}|{len(content)}|",
+        footer="",
+        content=content,
+        unique_id=rid,
+        cont_prefix=f"APIRESPCONT|{rid}|",
+        meta_prefix=f"APIRESPMETA|{rid}|",
+        bbs_nodes=[dest_node_id],
+        interface=interface,
+        pause_seconds=get_sync_pause_seconds(),
+    )
 
 
 def send_have_to_bbs_nodes(local_node_id: str, bbs_nodes, interface) -> None:
