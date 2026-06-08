@@ -335,7 +335,7 @@ def _apigw_submit(sender_id, interface, kind, payload, label):
         send_message("No internet gateway is reachable on the mesh right now.", sender_id, interface)
         update_user_state(sender_id, None)
         return
-    register_api_request(rid, sender_id)
+    register_api_request(rid, sender_id, gateway_node_id=peer)
     if not send_api_request(rid, node_id, kind, payload, peer, interface):
         from utils import pop_api_request
         pop_api_request(rid)
