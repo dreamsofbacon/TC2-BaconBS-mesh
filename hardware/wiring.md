@@ -52,14 +52,20 @@ TPS22918/AP2281) on each subsystem's supply, so they're fully off during sleep:
 periodic puller. See `power-budget.md`.)
 
 ### 4) Power / solar
+The **RAK19007 has an onboard solar connector (P1)** plus the LiPo connector
+(P2), so the WisBlock base can charge the battery from a panel directly — a
+separate **CN3065 is likely unnecessary** (VERIFY the RAK19007's accepted solar
+input range against your panel):
 ```
-  6V 1–2W panel ──► CN3065 solar charger ──► LiPo (1000–2000 mAh)
-                                              │
-                                              ├─► XIAO VBAT/5V in (runs controller)
-                                              └─► switched rails ─► radio, SD
+  6V panel ──► RAK19007 P1 (solar in) ──► onboard charger ──► LiPo on P2
+                                                               │
+                                                               ├─► XIAO (runs controller)
+                                                               └─► GPIO-switched rails ─► radio, SD
 ```
-The CN3065 manages solar→battery charging and idles at <3 µA with no sun. The
-controller runs from the LiPo; the radio/SD draw from GPIO-switched rails.
+If you'd rather not route power through the RAK base (or its solar input doesn't
+suit your panel), fall back to a **CN3065** charger between the panel and LiPo
+(idles <3 µA with no sun). Either way the controller runs from the LiPo and the
+radio/SD hang off GPIO load switches.
 
 ---
 
@@ -81,8 +87,8 @@ cache, before building the solar unit.
 | 1 | RAK19007 WisBlock Base (USB-C) | $9.99 | power/charge/USB |
 | 1 | **Seeed XIAO nRF52840** | ~$10 | controller, ~5 µA sleep |
 | 1 | microSD SPI breakout (3.3 V) + microSD card | $5–8 | the cache store |
-| 1 | **CN3065 solar LiPo charger** | $3–5 | solar→battery |
-| 1 | **Solar panel, 6 V, 1–2 W** | $8–15 | match connector to CN3065 |
+| 1 | **Solar panel, 6 V, 1–2 W** | $8–15 | wire to RAK19007 P1 (solar in) |
+| (opt) | CN3065 solar LiPo charger | $3–5 | only if not using the RAK's onboard solar input |
 | 1 | LiPo, 1000–2000 mAh, JST-PH 2.0 | $8–12 | check polarity! |
 | 2 | Load switch (TPS22918 / AP2281) or P-MOSFET + parts | $2–4 | radio + SD gating |
 | 1 | Antenna + IPEX→SMA pigtail for your band | $4–8 | |

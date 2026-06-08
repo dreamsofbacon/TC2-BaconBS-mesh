@@ -44,9 +44,12 @@ freshness can be relaxed — **30–60 min is a sensible default** and buys larg
 autonomy headroom. Make it a config value (`SLEEP_SECONDS`) so you can tune it.
 
 ## Solar sizing
-- **Charger:** CN3065 mini solar LiPo charger (input 4.4–6 V, up to 500 mA; idle
-  drain <3 µA). Pulls 80–100 mA even in weak light — comfortably more than the
-  ~1–2 mA average draw above.
+- **Charger:** the **RAK19007 has an onboard solar input (P1)** + LiPo charger,
+  so a panel can charge the battery directly through the WisBlock base — no
+  separate charger needed (verify the accepted input range for your panel). If
+  you don't use it, a **CN3065** mini solar LiPo charger (input 4.4–6 V, idle
+  <3 µA) is the drop-in alternative; it pulls 80–100 mA even in weak light —
+  comfortably more than the ~1–2 mA average draw above.
 - **Panel:** a **6 V, 1–2 W** panel (≈ 160–330 mA peak in full sun). Even a few
   hours of decent light per day replaces a full day's consumption many times over.
 - **Battery:** 1× LiPo, **1000–2000 mAh**, JST-PH 2.0. The battery is really a
