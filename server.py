@@ -538,6 +538,19 @@ def main():
                         )
                 except Exception as exc:
                     logging.warning(f"DB maintenance pass failed: {exc}")
+                # Enforce the optional GUI-set DB size cap (0 = disabled). Deletes
+                # the oldest content via the tombstoned delete path so the prune
+                # propagates to every node — including the Pico cache — identically.
+                try:
+                    from db_operations import enforce_db_size_cap
+                    _cap = enforce_db_size_cap(getattr(interface, 'bbs_nodes', []) or [], interface)
+                    if _cap.get('deleted'):
+                        logging.info(
+                            f"DB size cap: deleted {_cap['deleted']} oldest record(s); "
+                            f"on-disk now {_cap['size_bytes']} bytes"
+                        )
+                except Exception as exc:
+                    logging.warning(f"DB size-cap pass failed: {exc}")
                 if do_vacuum:
                     next_vacuum = now + max(1, _maint_cfg['vacuum_interval_hours']) * 3600.0
                 next_maintenance = now + max(1, _maint_cfg['interval_minutes']) * 60.0
