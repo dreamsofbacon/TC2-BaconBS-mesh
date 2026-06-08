@@ -179,6 +179,14 @@ def load_sync_settings(config_path: str) -> tuple[list[str], list[str], int, boo
   return bbs_nodes, allowed_nodes, sync_interval_minutes, sync_zork_saves
 
 
+def load_storage_settings(config_path: str) -> dict:
+  """Read the [maintenance] storage cap for the web-admin form."""
+  config = read_config_file(config_path)
+  return {
+    "max_db_size_mb": config.get("maintenance", "max_db_size_mb", fallback="0").strip() or "0",
+  }
+
+
 def load_gateway_settings(config_path: str) -> dict:
   """Read the [gateway] section for the web-admin form (with defaults)."""
   config = read_config_file(config_path)
@@ -3035,6 +3043,20 @@ def create_app(runtime_interface=None) -> Flask:
       config.set("boards", "bulletin_boards", ",".join(boards))
       write_config_file(config, app.config["CONFIG_PATH"])
 
+    def save_storage_settings(form) -> None:
+      """Persist [maintenance] max_db_size_mb. Read fresh by the server each
+      maintenance pass, so the change hot-reloads (no restart needed)."""
+      config = read_config_file(app.config["CONFIG_PATH"])
+      if not config.has_section("maintenance"):
+        config.add_section("maintenance")
+      raw = form.get("max_db_size_mb", "").strip()
+      try:
+        val = max(0, int(raw))
+      except ValueError:
+        val = 0
+      config.set("maintenance", "max_db_size_mb", str(val))
+      write_config_file(config, app.config["CONFIG_PATH"])
+
     def save_gateway_settings(form) -> None:
       """Persist the [gateway] section from the web-admin form. Hot-reloads:
       gateway.py + local_capabilities_token read config fresh on every call, so
@@ -3624,11 +3646,13 @@ def create_app(runtime_interface=None) -> Flask:
       sync_runtime_settings = get_sync_runtime_settings()
       diagnostics = build_settings_diagnostics()
       gateway_settings = load_gateway_settings(app.config["CONFIG_PATH"])
+      storage_settings = load_storage_settings(app.config["CONFIG_PATH"])
       return render_template(
         "settings.html",
         title="Settings",
         show_nav=True,
         gateway=gateway_settings,
+        storage=storage_settings,
         boards_text=",".join(app.config["BULLETIN_BOARDS"]),
         env_override=bool(os.getenv("BBS_BULLETIN_BOARDS", "").strip()),
         bbs_nodes_text="\n".join(bbs_nodes),
@@ -3841,6 +3865,11 @@ def create_app(runtime_interface=None) -> Flask:
           save_gateway_settings(request.form)
           flash("API gateway settings saved.", "success")
           return redirect(url_for("settings_page") + "#gateway")
+
+        if section == "storage":
+          save_storage_settings(request.form)
+          flash("Storage cap saved. 0 disables it; otherwise the oldest content is pruned mesh-wide to stay under the cap.", "success")
+          return redirect(url_for("settings_page") + "#storage")
 
         if section == "admin":
           changed = update_admin_settings(

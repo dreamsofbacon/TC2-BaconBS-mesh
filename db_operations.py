@@ -1171,6 +1171,108 @@ def run_db_maintenance(do_vacuum: bool = False) -> dict:
     return summary
 
 
+def _db_total_bytes() -> int:
+    """On-disk footprint of the SQLite DB: the file plus its -wal/-shm sidecars."""
+    path = get_database_path()
+    total = 0
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            total += os.path.getsize(path + suffix)
+        except OSError:
+            pass
+    return total
+
+
+def read_max_db_size_mb() -> int:
+    """Read [maintenance] max_db_size_mb fresh so a GUI change hot-reloads.
+    0 (default) disables the size cap."""
+    try:
+        cfg = configparser.ConfigParser()
+        cfg.read(get_config_path())
+        return max(0, cfg.getint('maintenance', 'max_db_size_mb', fallback=0))
+    except Exception:
+        return 0
+
+
+def enforce_db_size_cap(bbs_nodes, interface, max_mb=None, keep_floor=20, max_deletes=100) -> dict:
+    """Keep the on-disk database under a configurable megabyte cap by deleting the
+    OLDEST content (bulletins/mail/channel_comments) across scopes when over.
+
+    Deletes go through the normal tombstoned delete path, so they propagate to
+    peers (and the Pico cache) as DELETE_* frames — meaning every node prunes the
+    *same* records the *same* way. Bounded to ``max_deletes`` per pass to avoid a
+    DELETE-frame storm; successive maintenance passes converge. ``keep_floor``
+    newest records per scope are never deleted, so a board is never emptied.
+
+    A cap of 0/None disables it (the default). Returns a summary dict."""
+    if max_mb is None:
+        max_mb = read_max_db_size_mb()
+    summary = {'enabled': bool(max_mb and max_mb > 0), 'over': False, 'deleted': 0, 'size_bytes': 0}
+    if not max_mb or max_mb <= 0:
+        return summary
+    target = int(max_mb) * 1024 * 1024
+    try:
+        checkpoint_wal()
+    except Exception:
+        pass
+    size = _db_total_bytes()
+    summary['size_bytes'] = size
+    if size <= target:
+        return summary
+    summary['over'] = True
+    keep = max(0, int(keep_floor))
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        total_rows = 0
+        for tbl in ('bulletins', 'mail', 'channel_comments'):
+            try:
+                total_rows += int(c.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0])
+            except Exception:
+                pass
+        avg = max(1, size // max(1, total_rows))
+        want = min(int(max_deletes), max(1, int((size - target) * 1.05) // avg + 1))
+
+        def oldest_excluding_newest(table, extra=""):
+            rows = c.execute(
+                f"SELECT unique_id, date{extra} FROM {table} ORDER BY date ASC, id ASC"
+            ).fetchall()
+            cut = len(rows) - keep
+            return rows[:cut] if cut > 0 else []
+
+        candidates = []  # (date, scope, uid, recipient_or_None)
+        for uid, date in oldest_excluding_newest('bulletins'):
+            candidates.append((date or '', 'bulletins', uid, None))
+        for uid, date, recipient in oldest_excluding_newest('mail', ", recipient"):
+            candidates.append((date or '', 'mail', uid, recipient))
+        for uid, date in oldest_excluding_newest('channel_comments'):
+            candidates.append((date or '', 'channel_comments', uid, None))
+        candidates.sort(key=lambda x: (x[0], x[2]))  # oldest first
+        to_delete = candidates[:want]
+
+        for date, scope, uid, recipient in to_delete:
+            try:
+                if scope == 'bulletins':
+                    delete_bulletin(uid, bbs_nodes, interface)
+                elif scope == 'mail':
+                    delete_mail(uid, recipient, bbs_nodes, interface)
+                else:
+                    delete_channel_comment(uid, bbs_nodes, interface)
+                summary['deleted'] += 1
+            except Exception as e:
+                logging.debug(f"size-cap delete failed for {scope}/{uid}: {e}")
+        if summary['deleted']:
+            try:
+                vacuum_database()
+                checkpoint_wal()
+            except Exception:
+                pass
+            summary['size_bytes'] = _db_total_bytes()
+    except Exception as exc:
+        logging.warning(f"enforce_db_size_cap failed: {exc}")
+    return summary
+
+
 def clear_sync_transmissions() -> None:
     """Clear all rows from sync_transmissions for manual stats reset."""
     try:
