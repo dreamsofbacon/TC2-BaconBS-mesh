@@ -1,103 +1,109 @@
-# Pico cache node — wiring & bill of materials
+# Wiring & bill of materials — solar cache node
 
-**Hardware decision:** build target is **RAK4631 + RAK19007 WisBlock base**;
-bench bring-up is on the **Heltec V3** you already own. Connecting board is
-**hand-wired protoboard first**, KiCad PCB later. Case is `case.scad` (OpenSCAD).
+**Hardware decisions:**
+- **Controller:** **Seeed XIAO nRF52840** (~5 µA sleep) running our CircuitPython
+  cache code — *not* a Pico (the RP2040 sleeps at ~1 mA, too thirsty for solar).
+  Bench bring-up can use an Adafruit Feather nRF52840 (easier wiring, plug-in
+  LiPo) — same code, different pin names.
+- **Radio:** RAK4631 + RAK19007 WisBlock base (low idle, USB-C + LiPo charging).
+  Bench bring-up on the **Heltec V3** you already own.
+- **Power:** solar via a CN3065 charger → LiPo; the radio and SD are **switched
+  off during sleep** by GPIO load switches.
+- **Board:** hand-wired protoboard first, KiCad PCB later. Case: `case.scad`.
 
-Three things connect to the Pico in both setups:
-1. the Meshtastic **radio** over a 3-wire UART,
-2. a **microSD** card over SPI (the local cache), and
-3. **power**.
-
-> Pins marked **VERIFY** depend on the exact board revision / your Meshtastic
-> Serial-module config — confirm against the board pinout before soldering.
+> Pins marked **VERIFY** depend on board revision / Meshtastic Serial config —
+> confirm against the actual pinout before soldering. XIAO CircuitPython pin
+> names (`board.TX`, `board.D2`, …) are used below.
 
 ---
 
-## 1) Bench setup — Heltec V3 + Pico + microSD
+## Connections (XIAO nRF52840 controller)
 
-### UART: Pico ⇄ Heltec (crossed)
-| Pico (CircuitPython) | Heltec V3 | Notes |
+### 1) UART: controller ⇄ radio (crossed)
+| XIAO nRF52840 | Radio (RAK19007 IO header / Heltec GPIO) | Notes |
 |---|---|---|
-| `GP0` (UART0 TX) | Serial RXD GPIO **(VERIFY)** | pick a free Heltec GPIO, e.g. 19 or 45–48 |
-| `GP1` (UART0 RX) | Serial TXD GPIO **(VERIFY)** | crossed: Heltec TX → Pico RX |
-| `GND` | `GND` | common ground is mandatory |
+| `TX` (D6) | UART **RX** (VERIFY) | crossed |
+| `RX` (D7) | UART **TX** (VERIFY) | crossed |
+| `GND` | `GND` | mandatory common ground |
 
-On the Heltec, in Meshtastic set **Serial module**: `enabled=true`,
-`mode=PROTO`, `baud=115200`, `rxd`/`txd` = the two GPIOs you wired.
+Set the radio's Meshtastic **Serial module**: `enabled=true`, `mode=PROTO`,
+`baud=115200`, `rxd`/`txd` = the pins you wired.
 
-### microSD over SPI (Pico SPI0)
-| Pico | SD breakout | Notes |
+### 2) microSD over SPI (the cache)
+| XIAO | SD breakout (3.3 V) | Notes |
 |---|---|---|
-| `GP2` | SCK / CLK | |
-| `GP3` | MOSI / DI | |
-| `GP4` | MISO / DO | |
-| `GP5` | CS | any free GPIO; set in `config.py` later |
-| `3V3(OUT)` | VCC (3.3 V) | use a 3.3 V SD breakout, not a 5 V one |
+| `SCK` (D8) | SCK/CLK | |
+| `MOSI` (D10) | MOSI/DI | |
+| `MISO` (D9) | MISO/DO | |
+| `D1` | CS | any free GPIO; set in `config.py` |
+| via `SD_EN` switch | VCC (3.3 V) | **powered through a load switch**, not direct |
 | `GND` | GND | |
 
-### Power (bench)
-Each board on its own USB cable. Easiest while developing; no battery yet.
+### 3) Power gating (key to the µA sleep)
+A GPIO drives a **high-side load switch** (P-MOSFET or a load-switch IC like
+TPS22918/AP2281) on each subsystem's supply, so they're fully off during sleep:
+| XIAO GPIO | Switches | When high/low |
+|---|---|---|
+| `D2` → `RADIO_EN` | radio supply rail | on only during the sync window |
+| `D3` → `SD_EN` | microSD VCC | on only while syncing/reading |
+
+`code.py` already toggles `RADIO_EN` with a boot delay; add the same pattern for
+`SD_EN`. (Cutting radio power means it reboots/rejoins each wake — fine for a
+periodic puller. See `power-budget.md`.)
+
+### 4) Power / solar
+```
+  6V 1–2W panel ──► CN3065 solar charger ──► LiPo (1000–2000 mAh)
+                                              │
+                                              ├─► XIAO VBAT/5V in (runs controller)
+                                              └─► switched rails ─► radio, SD
+```
+The CN3065 manages solar→battery charging and idles at <3 µA with no sun. The
+controller runs from the LiPo; the radio/SD draw from GPIO-switched rails.
 
 ---
 
-## 2) Build target — RAK4631 / RAK19007 + Pico + microSD
-
-The RAK19007 base board gives you **USB-C + LiPo charging + a 3.3 V rail** for
-free, so the Pico and SD run off the RAK's battery and you don't need a separate
-regulator or (thanks to the nRF52's µA idle) a radio power-gate.
-
-### UART: Pico ⇄ RAK19007 IO header (crossed)
-The nRF52 `Serial1` TX/RX appear on the WisBlock **IO** header. **VERIFY** the
-exact pins against the RAK19007 pinout, then:
-| Pico | RAK19007 IO header | Notes |
-|---|---|---|
-| `GP0` (TX) | UART **RX** pin (VERIFY) | crossed |
-| `GP1` (RX) | UART **TX** pin (VERIFY) | crossed |
-| `VSYS` | `3V3` out (VERIFY pin) | power the Pico from the RAK rail |
-| `GND` | `GND` | |
-
-In Meshtastic on the RAK, set the **Serial module** the same way
-(`PROTO`, `115200`) on the IO-header UART pins.
-
-### microSD
-Same Pico SPI wiring as the bench table above (GP2–GP5 + 3V3 + GND).
-
-### Power (build)
-LiPo → RAK19007 JST **PHR-2 (2 mm)** battery connector; charge over the
-RAK's USB-C. The Pico draws from the RAK 3.3 V rail. Keep the radio always-on
-(no MOSFET) and only deep-sleep the Pico — simplest and lowest-friction.
+## Bench bring-up (use what you have)
+Wire a **Feather nRF52840** (or even a Pico just to prove the protocol — power
+doesn't matter on the bench) to the **Heltec V3** over the same crossed UART, plus
+the SD over SPI. No solar/load-switches needed on the bench. Confirm
+`learn_node_num()` returns the radio's node number, then a real sync into the
+cache, before building the solar unit.
 
 ---
 
 ## Bill of materials
 
-### Build (RAK target)
+### Solar build
 | Qty | Part | ~Price | Notes |
 |---|---|---|---|
-| 1 | RAK4631 WisBlock Core (nRF52840 + SX1262, your region's MHz) | $15–20 | Meshtastic-supported |
-| 1 | RAK19007 WisBlock Base Board (2nd gen, USB-C) | $9.99 | power/charge/USB |
-| 1 | Raspberry Pi Pico (or Pico 2 — more RAM) | $4–6 | not Pico W |
-| 1 | microSD SPI breakout (3.3 V) + microSD card (≥1 GB) | $5–8 | the cache store |
-| 1 | LiPo battery, JST-PH 2.0, e.g. 1000–2000 mAh | $8–12 | check polarity! |
-| 1 | Antenna + pigtail (IPEX→SMA) for your band | $4–8 | match 868/915 MHz |
+| 1 | RAK4631 WisBlock Core (your band's MHz) | $15–20 | Meshtastic radio |
+| 1 | RAK19007 WisBlock Base (USB-C) | $9.99 | power/charge/USB |
+| 1 | **Seeed XIAO nRF52840** | ~$10 | controller, ~5 µA sleep |
+| 1 | microSD SPI breakout (3.3 V) + microSD card | $5–8 | the cache store |
+| 1 | **CN3065 solar LiPo charger** | $3–5 | solar→battery |
+| 1 | **Solar panel, 6 V, 1–2 W** | $8–15 | match connector to CN3065 |
+| 1 | LiPo, 1000–2000 mAh, JST-PH 2.0 | $8–12 | check polarity! |
+| 2 | Load switch (TPS22918 / AP2281) or P-MOSFET + parts | $2–4 | radio + SD gating |
+| 1 | Antenna + IPEX→SMA pigtail for your band | $4–8 | |
 | — | Protoboard, headers, wire, M2/M2.5 screws + standoffs | $5 | |
 
-### Bench (use what you have)
+### Bench (mostly owned)
 | Qty | Part | Notes |
 |---|---|---|
-| 1 | Heltec V3 (already owned) | bench radio |
-| 1 | Pico + microSD breakout + card | same as build |
+| 1 | Heltec V3 | bench radio |
+| 1 | Feather nRF52840 (or Pico) + microSD breakout + card | controller + cache |
 | — | Jumper wires | |
 
 ---
 
-## Bring-up order (no custom board needed yet)
-1. Flash CircuitPython to the Pico; copy `pico_node/` files; wire SD only →
-   confirm it mounts and the cache reads/writes.
-2. Add the UART to the Heltec; set the Serial module to PROTO → confirm
-   `learn_node_num()` returns the Pico's node number (proves framing works).
-3. Add the Pico's node ID to the gateway and bring up **gateway subscriber
-   mode** (the pending live change) → watch a real sync populate the SD cache.
-4. Once the wiring is proven on protoboard, spin the KiCad PCB and print the
-   `case.scad` enclosure (verify the VERIFY dimensions first).
+## Bring-up order
+1. CircuitPython on the controller; copy `pico_node/` files; wire **SD only** →
+   confirm the cache mounts and reads/writes on the SD card.
+2. Add the crossed UART to the radio; set Serial module to PROTO →
+   `learn_node_num()` returns the radio's node number (framing works).
+3. Add the controller's node ID to the gateway's **Subscriber Nodes**
+   (Settings → Subscriber Nodes) → watch a real sync fill the SD cache.
+4. Add the load switches + CN3065 + panel + LiPo; measure sleep current; tune
+   `SLEEP_SECONDS` to your solar budget (see `power-budget.md`).
+5. Once proven on protoboard, spin the KiCad PCB and print `case.scad`.

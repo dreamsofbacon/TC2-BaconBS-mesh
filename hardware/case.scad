@@ -28,9 +28,16 @@ part_gap    = 6.0;          // space between the two boards
 rak_l = 60.0; rak_w = 30.0; rak_pcb = 1.6;
 rak_comp_h = 12.0;          // tallest stuff above the RAK PCB (core module + USB) VERIFY
 
-// Raspberry Pi Pico: 51.0 x 21.0 mm, 1.0 mm PCB.
-pico_l = 51.0; pico_w = 21.0; pico_pcb = 1.0;
-pico_comp_h = 6.0;          // headers / components above the Pico PCB VERIFY
+// Controller — Seeed XIAO nRF52840: ~21.0 x 17.5 mm. (For an Adafruit Feather
+// nRF52840 use ~51 x 23 mm instead.) Named pico_* for back-compat with refs below.
+pico_l = 21.0; pico_w = 17.5; pico_pcb = 1.2;
+pico_comp_h = 5.0;          // components/headers above the controller PCB VERIFY
+
+// Battery + CN3065 charger bay. A 1000–2000 mAh LiPo is sizable (~50x35x6 mm and
+// up) — set this so the case reserves room beside/under the boards. Increase
+// inner_w / inner_h via these if your battery is larger. VERIFY to your cells.
+batt_l = 52.0; batt_w = 35.0; batt_h = 7.0;
+reserve_battery = true;     // add a battery bay alongside the boards
 
 // ---- Standoffs / mounting --------------------------------------------------
 standoff_h  = 4.0;          // PCB sits this high off the floor (room for pins underneath)
@@ -52,9 +59,11 @@ lid_lip       = 3.0;        // how far the lid lip drops inside the tray
 // ============================================================================
 // Derived inner cavity
 // ============================================================================
-inner_l = max(rak_l, pico_l) + 2*board_clear;
-inner_w = rak_w + part_gap + pico_w + 2*board_clear;
-inner_h = standoff_h + max(rak_pcb + rak_comp_h, pico_pcb + pico_comp_h) + 2.0;
+inner_l = max(max(rak_l, pico_l), reserve_battery ? batt_l : 0) + 2*board_clear;
+inner_w = rak_w + part_gap + pico_w + 2*board_clear
+          + (reserve_battery ? part_gap + batt_w : 0);
+inner_h = max(standoff_h + max(rak_pcb + rak_comp_h, pico_pcb + pico_comp_h) + 2.0,
+              reserve_battery ? batt_h + 1.0 : 0);
 
 outer_l = inner_l + 2*wall;
 outer_w = inner_w + 2*wall;
