@@ -191,6 +191,7 @@ def load_gateway_settings(config_path: str) -> dict:
     "ai_system_prompt": g("ai_system_prompt"),
     "allowed_hosts": g("allowed_hosts"),
     "allowed_schemes": g("allowed_schemes", "https") or "https",
+    "allowed_nodes": g("allowed_nodes"),
     "request_timeout": g("request_timeout", "20") or "20",
     "max_response_bytes": g("max_response_bytes", "800") or "800",
     "rate_limit_per_node": g("rate_limit_per_node", "5") or "5",
@@ -3043,7 +3044,7 @@ def create_app(runtime_interface=None) -> Flask:
       config.set("gateway", "enabled", "true" if enabled else "false")
       # Free-text / list fields.
       for key in ("ai_base_url", "ai_model", "ai_system_prompt",
-                  "allowed_hosts", "allowed_schemes"):
+                  "allowed_hosts", "allowed_schemes", "allowed_nodes"):
         config.set("gateway", key, form.get(f"gateway_{key}", "").strip())
       dialect = form.get("gateway_ai_dialect", "ollama").strip().lower()
       if dialect not in ("ollama", "openai", "nomad"):
