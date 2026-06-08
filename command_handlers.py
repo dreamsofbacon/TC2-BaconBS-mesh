@@ -291,13 +291,12 @@ def handle_zork_command(sender_id, interface):
 # ── API gateway (apigw) — user-facing ────────────────────────────────────────
 
 def _apigw_authorized(sender_id, interface) -> bool:
-    """Reuse the urgent-board allow-list: only listed nodes may use a gateway.
-    Empty allow-list = open (matches existing allow_list semantics)."""
+    """Whether this node may use a gateway. Honours the gateway-specific
+    [gateway] allowed_nodes lock-down when set, otherwise falls back to the
+    general [allow_list] (empty = open)."""
+    import gateway
     node_id = get_node_id_from_num(sender_id, interface)
-    allowed = getattr(interface, 'allowed_nodes', None)
-    if allowed and node_id not in allowed:
-        return False
-    return True
+    return gateway.is_requester_authorized(node_id, getattr(interface, 'allowed_nodes', None))
 
 
 def handle_apigw_command(sender_id, interface):
