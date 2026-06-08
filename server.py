@@ -343,6 +343,11 @@ def main():
         # the gateway's own request_timeout plus generous mesh round-trip slack.
         from utils import _config_int as _cfg_int
         _apigw_wait_timeout = _cfg_int('gateway', 'request_timeout', 20) + 90
+        # Per-record incomplete-repair attempt counts. After several failed repair
+        # cycles a record's partial content is reset so a fresh, self-consistent
+        # resend can rebuild it (breaks the misaligned-chunk-boundary deadlock).
+        _incomplete_attempts: dict = {}
+        _INCOMPLETE_RESET_AFTER = 4  # ~3 min at the 45s repair cadence
         # Empty on startup — receivers use unique_id idempotency, so re-syncing is safe
         mail_synced_nodes: set = set()       # P1: direct mail
         bulletins_synced_nodes: set = set()  # P2: bulletin board posts
@@ -554,12 +559,25 @@ def main():
                     for uid in _incomplete.get(scope, [])
                 ]
                 _repair_peers = set(getattr(interface, 'bbs_nodes', []) or [])
+                # Prune attempt counters for records that are no longer incomplete.
+                _still = {(s, u) for s in ('bulletins', 'mail', 'channels') for u in _incomplete.get(s, [])}
+                for _k in [k for k in _incomplete_attempts if k not in _still]:
+                    _incomplete_attempts.pop(_k, None)
                 if _repair_targets and _repair_peers:
                     from utils import _send_one_sync, get_hash_repair_pause_seconds
                     from message_processing import _should_request_record
+                    from db_operations import reset_incomplete_record
                     _peer_pool = sorted(_repair_peers)
                     _sent = 0
                     for _scope, _uid in _repair_targets:
+                        # If a record has resisted several repair cycles, its partial
+                        # content is likely a boundary-misaligned dead end — reset it
+                        # so the next full resend rebuilds it cleanly from offset 0.
+                        _attempts = _incomplete_attempts.get((_scope, _uid), 0) + 1
+                        _incomplete_attempts[(_scope, _uid)] = _attempts
+                        if _attempts >= _INCOMPLETE_RESET_AFTER:
+                            reset_incomplete_record(_scope, _uid)
+                            _incomplete_attempts[(_scope, _uid)] = 0
                         # Peer-agnostic guard: skip if reconcile already asked for
                         # this record recently. Ask ONE randomly-chosen peer rather
                         # than every peer — over successive cycles the random pick
