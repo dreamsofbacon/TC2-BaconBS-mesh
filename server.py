@@ -563,12 +563,17 @@ def main():
             # any responses queued while we were offline. Cheap no-op unless a
             # peer advertises 'apimb'.
             if now >= next_api_poll:
+                _polled = 0
                 try:
                     from utils import send_api_poll
-                    send_api_poll(get_local_node_id(), interface)
+                    _polled = send_api_poll(get_local_node_id(), interface)
                 except Exception:
                     pass
-                next_api_poll = now + _API_POLL_INTERVAL
+                # If no poll went out yet (e.g. peer caps not learned since a
+                # restart, so 'apimb' isn't visible), retry soon instead of
+                # waiting a full interval; back off to the steady cadence once a
+                # poll actually fires.
+                next_api_poll = now + (_API_POLL_INTERVAL if _polled else 30.0)
 
             # Expire API-gateway requests that never got a response (gateway
             # offline or response lost on the lossy link) and tell the waiting user.
