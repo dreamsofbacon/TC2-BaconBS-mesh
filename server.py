@@ -540,6 +540,23 @@ def main():
                     next_vacuum = now + max(1, _maint_cfg['vacuum_interval_hours']) * 3600.0
                 next_maintenance = now + max(1, _maint_cfg['interval_minutes']) * 60.0
 
+            # Requester side (Phase 3): nudge the gateway to refill any dropped
+            # response chunks before the request times out, so multi-packet AI
+            # replies survive a lossy link. Runs every tick; internally rate-
+            # limited per-rid by age + cooldown.
+            try:
+                from message_processing import request_pending_api_gaps
+                request_pending_api_gaps(interface)
+            except Exception:
+                pass
+
+            # Gateway side: drop retained responses we no longer need to refill.
+            try:
+                from utils import expire_sent_api_responses
+                expire_sent_api_responses(_apigw_wait_timeout)
+            except Exception:
+                pass
+
             # Expire API-gateway requests that never got a response (gateway
             # offline or response lost on the lossy link) and tell the waiting user.
             try:

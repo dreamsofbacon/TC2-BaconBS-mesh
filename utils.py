@@ -131,6 +131,7 @@ def local_capabilities_token() -> str:
     caps = list(WIRE_CAPABILITIES)
     if _config_bool('gateway', 'enabled', False):
         caps.append('apigw')
+        caps.append('apigf')  # gateway can serve per-rid response gap-fill (Phase 3)
     return f"v{WIRE_PROTOCOL_VERSION}:{','.join(caps)}"
 
 
@@ -818,9 +819,14 @@ _apigw_lock = threading.Lock()
 _apigw_pending: dict = {}
 
 
-def register_api_request(rid: str, sender_id) -> None:
+def register_api_request(rid: str, sender_id, gateway_node_id=None) -> None:
     with _apigw_lock:
-        _apigw_pending[rid] = {'sender_id': sender_id, 'created_at': time.time()}
+        _apigw_pending[rid] = {
+            'sender_id': sender_id,
+            'created_at': time.time(),
+            'gateway': gateway_node_id,
+            'last_gap_req': 0.0,
+        }
 
 
 def pop_api_request(rid: str):
@@ -828,6 +834,28 @@ def pop_api_request(rid: str):
     with _apigw_lock:
         entry = _apigw_pending.pop(rid, None)
     return entry['sender_id'] if entry else None
+
+
+def get_api_request(rid: str):
+    """Return a shallow copy of the pending entry for *rid* (or None) without
+    clearing it — used by the gap-fill sweep to find the gateway peer."""
+    with _apigw_lock:
+        entry = _apigw_pending.get(rid)
+        return dict(entry) if entry else None
+
+
+def list_pending_api_requests() -> list:
+    """Snapshot [(rid, entry_copy), ...] of outstanding requests for the sweep."""
+    with _apigw_lock:
+        return [(rid, dict(e)) for rid, e in _apigw_pending.items()]
+
+
+def mark_api_gap_request(rid: str) -> None:
+    """Record that we just asked the gateway to refill *rid* (cooldown clock)."""
+    with _apigw_lock:
+        e = _apigw_pending.get(rid)
+        if e is not None:
+            e['last_gap_req'] = time.time()
 
 
 def expire_api_requests(timeout_sec: float) -> list:
@@ -839,6 +867,89 @@ def expire_api_requests(timeout_sec: float) -> list:
         for rid in stale:
             out.append((rid, _apigw_pending.pop(rid)['sender_id']))
     return out
+
+
+# --- Gateway side: retain sent responses briefly so we can refill dropped
+# --- chunks when a requester sends APIRESPGAP (Phase 3 reliability). -------
+_apigw_sent: dict = {}  # rid -> {'status', 'body', 'dest', 'created_at'}
+
+
+def _retain_sent_api_response(rid, status, body, dest_node_id) -> None:
+    with _apigw_lock:
+        _apigw_sent[rid] = {
+            'status': str(status),
+            'body': str(body or ""),
+            'dest': dest_node_id,
+            'created_at': time.time(),
+        }
+
+
+def expire_sent_api_responses(ttl_sec: float) -> int:
+    """Drop retained responses older than ttl. Returns count removed."""
+    now = time.time()
+    with _apigw_lock:
+        stale = [r for r, e in _apigw_sent.items() if now - e['created_at'] > ttl_sec]
+        for rid in stale:
+            _apigw_sent.pop(rid, None)
+    return len(stale)
+
+
+def _parse_gap_ranges(spec: str, total: int) -> list:
+    """Parse an APIRESPGAP range spec into [(start, end), ...] clamped to total.
+    '*' (or empty) means the whole body. Ranges are 'start-end' (end exclusive),
+    comma-separated."""
+    spec = (spec or "").strip()
+    if spec in ("", "*"):
+        return [(0, total)]
+    out = []
+    for tok in spec.split(","):
+        tok = tok.strip()
+        if "-" not in tok:
+            continue
+        a, _, b = tok.partition("-")
+        try:
+            start, end = int(a), int(b)
+        except ValueError:
+            continue
+        start = max(0, min(start, total))
+        end = max(start, min(end, total))
+        if end > start:
+            out.append((start, end))
+    return out
+
+
+def resend_api_response_ranges(rid, range_spec, interface) -> bool:
+    """Gateway side: re-send the requested byte ranges of a retained response as
+    APIRESPCONT frames (offset 0 range re-sends the APIRESP header too, so a lost
+    header is recoverable). Returns False if the rid is no longer retained."""
+    with _apigw_lock:
+        entry = _apigw_sent.get(rid)
+        snap = dict(entry) if entry else None
+    if not snap:
+        return False
+    body = snap['body']
+    total = len(body)
+    ranges = _parse_gap_ranges(range_spec, total)
+    if not ranges:
+        return False
+    pause = get_sync_pause_seconds()
+    for start, end in ranges:
+        chunk = body[start:end]
+        if start == 0:
+            # Re-send the header frame (carries status + total length).
+            _send_one_sync(
+                f"APIRESP|{rid}|{snap['status']}|{total}|{chunk}",
+                snap['dest'], interface, pause_seconds=pause,
+            )
+        else:
+            _send_one_sync(
+                f"APIRESPCONT|{rid}|{start}|{chunk}",
+                snap['dest'], interface, pause_seconds=pause,
+            )
+    # Always (re)send META so the requester knows the authoritative total length
+    # even if the original header frame is the one that was lost.
+    _send_one_sync(f"APIRESPMETA|{rid}|{total}", snap['dest'], interface, pause_seconds=pause)
+    return True
 
 
 def select_gateway_peer(interface):
@@ -866,6 +977,9 @@ def send_api_response(rid, status, body, dest_node_id, interface):
     """Send an APIRESP back to the requester, chunked via the shared CONT/META
     machinery (responses routinely exceed one packet)."""
     content = str(body or "")
+    # Retain the full response briefly so we can refill dropped chunks if the
+    # requester sends APIRESPGAP (Phase 3). Cleared by expire_sent_api_responses.
+    _retain_sent_api_response(rid, status, content, dest_node_id)
     # Total length goes in the header so the receiver knows the expected size even
     # for a single-packet response (which carries no META frame).
     _send_sync_with_cont(

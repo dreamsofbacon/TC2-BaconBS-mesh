@@ -258,5 +258,113 @@ class TimeoutTests(unittest.TestCase):
         self.assertIsNotNone(utils.pop_api_request("new"))
 
 
+class GapFillTests(unittest.TestCase):
+    def setUp(self):
+        message_processing._apigw_response_buffers.clear()
+        utils._apigw_pending.clear()
+        utils._apigw_sent.clear()
+
+    def test_cap_apigf_advertised_with_gateway(self):
+        with patch.object(utils, "_config_bool", lambda s, o, d: True):
+            self.assertIn("apigf", utils.local_capabilities_token())
+        with patch.object(utils, "_config_bool", lambda s, o, d: False):
+            self.assertNotIn("apigf", utils.local_capabilities_token())
+
+    def test_compute_response_gaps(self):
+        f = message_processing._compute_response_gaps
+        # offset 0 chunk "AAAAA" (0-5), missing 5-10, chunk at 10 "CCCCC" (10-15), expected 20
+        gaps = f({0: "AAAAA", 10: "CCCCC"}, 20)
+        self.assertEqual(gaps, [(5, 10), (15, 20)])
+        # no gaps
+        self.assertEqual(f({0: "AAAAA", 5: "BBBBB"}, 10), [])
+        # nothing received
+        self.assertEqual(f({}, 12), [(0, 12)])
+
+    def test_parse_gap_ranges(self):
+        f = utils._parse_gap_ranges
+        self.assertEqual(f("*", 20), [(0, 20)])
+        self.assertEqual(f("", 20), [(0, 20)])
+        self.assertEqual(f("5-10,15-20", 20), [(5, 10), (15, 20)])
+        self.assertEqual(f("18-99", 20), [(18, 20)])  # clamped
+
+    def test_resend_ranges_from_retained(self):
+        iface = _Iface()
+        utils._retain_sent_api_response("rR", "200", "AAAAABBBBBCCCCC", "!user")
+        ok = utils.resend_api_response_ranges("rR", "5-10", iface)
+        self.assertTrue(ok)
+        # should emit a CONT at offset 5 with "BBBBB" plus a META
+        conts = [t for _, t in iface.sent_texts if t.startswith("APIRESPCONT|rR|5|")]
+        self.assertTrue(any("BBBBB" in t for t in conts))
+        self.assertTrue(any(t == "APIRESPMETA|rR|15" for _, t in iface.sent_texts))
+
+    def test_resend_offset_zero_resends_header(self):
+        iface = _Iface()
+        utils._retain_sent_api_response("rH", "200", "HELLOWORLD", "!user")
+        utils.resend_api_response_ranges("rH", "*", iface)
+        self.assertTrue(any(t.startswith("APIRESP|rH|200|10|HELLOWORLD")
+                            for _, t in iface.sent_texts))
+
+    def test_resend_unknown_rid_returns_false(self):
+        iface = _Iface()
+        self.assertFalse(utils.resend_api_response_ranges("nope", "*", iface))
+
+    def test_gap_request_sweep_targets_apigf_gateway(self):
+        iface = _Iface()
+        # Requester is waiting on rid rG via gateway !gw; got header+tail but a hole.
+        utils.register_api_request("rG", 99, gateway_node_id="!gw")
+        message_processing._apigw_apply_chunk("rG", 0, "AAAAA", status="200",
+                                              expected=15, source="!gw")
+        message_processing._apigw_apply_chunk("rG", 10, "CCCCC", source="!gw")
+        # Age the buffer past max_age.
+        message_processing._apigw_response_buffers["rG"]['created_at'] -= 100
+        with patch("db_operations.peer_supports", lambda p, c: c == "apigf"):
+            sent = message_processing.request_pending_api_gaps(iface)
+        self.assertEqual(sent, 1)
+        gap_frames = [t for d, t in iface.sent_texts if d == "!gw" and t.startswith("APIRESPGAP|rG|")]
+        self.assertTrue(gap_frames)
+        self.assertIn("5-10", gap_frames[0])
+
+    def test_gap_sweep_skips_non_apigf_gateway(self):
+        iface = _Iface()
+        utils.register_api_request("rN", 1, gateway_node_id="!old")
+        message_processing._apigw_apply_chunk("rN", 0, "AA", status="200",
+                                              expected=10, source="!old")
+        message_processing._apigw_response_buffers["rN"]['created_at'] -= 100
+        with patch("db_operations.peer_supports", lambda p, c: False):
+            sent = message_processing.request_pending_api_gaps(iface)
+        self.assertEqual(sent, 0)
+        self.assertEqual(iface.sent_texts, [])
+
+    def test_end_to_end_gap_recovery(self):
+        """Drop the middle chunk; APIRESPGAP refill completes the delivery."""
+        gw = _Iface()           # gateway node
+        req = _Iface()          # requester node
+        # Gateway sends a 3-part response but we only deliver header + tail to req.
+        utils.register_api_request("rE", 55, gateway_node_id="!gw")
+        utils._retain_sent_api_response("rE", "200", "AAAAABBBBBCCCCC", "!req")
+        # Requester receives header (0-5) and tail (10-15) — middle lost.
+        message_processing.process_message(sender_id=1, message="APIRESP|rE|200|15|AAAAA",
+                                           interface=req, is_sync_message=True, sender_node_id="!gw")
+        message_processing.process_message(sender_id=1, message="APIRESPCONT|rE|10|CCCCC",
+                                           interface=req, is_sync_message=True, sender_node_id="!gw")
+        self.assertFalse(any(d == 55 for d, _ in req.sent_texts))  # not delivered yet
+        # Age + sweep → requester asks gateway to refill 5-10.
+        message_processing._apigw_response_buffers["rE"]['created_at'] -= 100
+        with patch("db_operations.peer_supports", lambda p, c: c == "apigf"):
+            message_processing.request_pending_api_gaps(req)
+        gap = [t for d, t in req.sent_texts if t.startswith("APIRESPGAP|rE|")][0]
+        spec = gap.split("|", 2)[2]
+        # Gateway handles the refill against its retained copy.
+        message_processing.process_message(sender_id=2, message=f"APIRESPGAP|rE|{spec}",
+                                           interface=gw, is_sync_message=True, sender_node_id="!req")
+        # Feed the gateway's refilled frames back into the requester.
+        for _dest, t in gw.sent_texts:
+            message_processing.process_message(sender_id=1, message=t,
+                                               interface=req, is_sync_message=True, sender_node_id="!gw")
+        delivered = [t for d, t in req.sent_texts if d == 55]
+        self.assertTrue(delivered)
+        self.assertIn("AAAAABBBBBCCCCC", delivered[-1])
+
+
 if __name__ == "__main__":
     unittest.main()
