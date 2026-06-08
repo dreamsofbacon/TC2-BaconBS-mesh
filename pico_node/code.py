@@ -35,6 +35,40 @@ except ImportError:
     alarm = None
 
 
+def _set_pin(name, value):
+    """Drive a load-switch enable pin (None = no switch / always on)."""
+    if not name:
+        return None
+    pin = digitalio.DigitalInOut(getattr(board, name))
+    pin.direction = digitalio.Direction.OUTPUT
+    pin.value = bool(value)
+    return pin
+
+
+def _mount_sd():
+    """Power + mount the microSD at /sd. Returns the SPI bus so it can be deinit'd."""
+    import storage
+    import sdcardio
+    _set_pin(getattr(config, "SD_EN", None), True)
+    time.sleep(0.2)
+    spi = busio.SPI(getattr(board, config.SD_SCK), getattr(board, config.SD_MOSI),
+                    getattr(board, config.SD_MISO))
+    sd = sdcardio.SDCard(spi, getattr(board, config.SD_CS))
+    storage.mount(storage.VfsFat(sd), "/sd")
+    return spi
+
+
+def _unmount_sd(spi):
+    import storage
+    try:
+        storage.umount("/sd")
+    except Exception:
+        pass
+    if spi is not None:
+        spi.deinit()
+    _set_pin(getattr(config, "SD_EN", None), False)
+
+
 def _make_uart():
     return busio.UART(getattr(board, config.UART_TX), getattr(board, config.UART_RX),
                       baudrate=config.UART_BAUD, timeout=0.1)
@@ -74,6 +108,7 @@ def _send_text(uart, dest_num, text, pkt_id):
 
 
 def run_once():
+    spi_sd = _mount_sd()
     cache = store_mod.CacheStore(config.CACHE_PATH, max_records=config.MAX_RECORDS).load()
     client = syncclient.SyncClient(cache)
 
@@ -117,6 +152,7 @@ def run_once():
     _radio_power(False)
     print("sync wake complete: bulletins=%d mail=%d channels=%d" % (
         cache.count("bulletins"), cache.count("mail"), cache.count("channels")))
+    _unmount_sd(spi_sd)
 
 
 def deep_sleep(seconds):

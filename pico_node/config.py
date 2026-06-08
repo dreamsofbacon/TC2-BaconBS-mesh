@@ -1,32 +1,38 @@
-"""Pico node configuration — edit these for your wiring and gateway.
+"""Cache-node configuration — edit for your wiring and gateway.
 
-Copy onto the Pico's CIRCUITPY drive alongside code.py and the modules.
-All values are plain constants — no special tooling needed to change them.
+Copy onto the controller's CIRCUITPY drive alongside code.py and the modules.
+This code runs on any CircuitPython board; the build target is a Seeed XIAO
+nRF52840 (~5 uA sleep) for solar operation. The folder is named pico_node for
+historical reasons — a Pico works for bench bring-up but sleeps ~200x heavier.
+Pin names below are XIAO nRF52840 board attributes; change them for your board.
 """
 
 # --- Peers -----------------------------------------------------------------
-# The BBS node we send WANT/HASHMISS re-requests to (your bbs.local gateway).
-# We also passively sync from any peer whose HAVE broadcasts we hear.
+# The BBS node(s) we pull from (must list us in their [sync] subscriber_nodes).
 GATEWAY_NODE_ID = "!0408b778"
 
 # --- Local cache -----------------------------------------------------------
-# Where the bounded read-cache lives. Use the SD mount point in a real build,
-# e.g. "/sd/bbs". Each scope is capped at MAX_RECORDS (oldest pruned).
-CACHE_PATH = "/sd/bbs"
-MAX_RECORDS = 300
+CACHE_PATH = "/sd/bbs"     # SD mount point
+MAX_RECORDS = 300          # per-scope cap (oldest pruned) — device storage safety net
 
 # --- UART wiring to the Meshtastic radio -----------------------------------
-# Pin names are board attributes (e.g. "GP0"/"GP1" on a Pico).
-# Wire: Pico TX -> radio RX, Pico RX -> radio TX, GND <-> GND.
-UART_TX = "GP0"
-UART_RX = "GP1"
+# Wire: controller TX -> radio RX, controller RX -> radio TX, GND <-> GND.
+UART_TX = "TX"             # XIAO D6
+UART_RX = "RX"             # XIAO D7
 UART_BAUD = 115200
 
-# Optional GPIO driving a load switch / MOSFET to cut radio power between wakes.
-RADIO_EN = None            # e.g. "GP2"; None = radio always powered
-RADIO_BOOT_SECONDS = 3.0   # time for the radio to boot after power-on
+# --- microSD over SPI ------------------------------------------------------
+SD_SCK = "SCK"             # XIAO D8
+SD_MOSI = "MOSI"           # XIAO D10
+SD_MISO = "MISO"           # XIAO D9
+SD_CS = "D1"
 
-# --- Duty cycle ------------------------------------------------------------
-SLEEP_SECONDS = 600        # deep sleep between wakes (10 min)
-SYNC_SECONDS = 60          # listen/sync window each wake (long enough to catch a HAVE)
+# --- Power gating (drives high-side load switches) -------------------------
+RADIO_EN = "D2"            # switches the radio supply; None = always powered
+SD_EN = "D3"               # switches the microSD supply; None = always powered
+RADIO_BOOT_SECONDS = 15.0  # radio reboot/rejoin time after power-on (gated radio)
+
+# --- Duty cycle (the main power knob — see hardware/power-budget.md) --------
+SLEEP_SECONDS = 1800       # deep sleep between wakes (30 min) — solar-friendly default
+SYNC_SECONDS = 60          # listen/sync window each wake
 SEND_GAP_SECONDS = 1.5     # spacing between our outgoing frames

@@ -3,19 +3,24 @@
 Physical design for the Phase 4 low-power cache node (see `../pico_node/`).
 
 ## Decisions
-- **Radio:** build target **RAK4631 + RAK19007** (nRF52840, far better battery
-  life; the base board provides USB-C + LiPo charging). Bench bring-up on the
-  **Heltec V3** already on hand.
-- **Connecting board:** hand-wired **protoboard first**, then a KiCad PCB once
-  the wiring is proven.
-- **Case:** parametric **OpenSCAD** (`case.scad`) — variables for board sizes,
-  standoffs, and port cutouts; export STL and print.
+- **Goal:** a **solar-powered, mostly-sleeping** cache node. Low power is the
+  top priority.
+- **Controller:** **Seeed XIAO nRF52840** (~5 µA sleep) running our CircuitPython
+  code — *not* a Pico (RP2040 sleeps at ~1 mA, ~200× worse — too thirsty for
+  solar). Bench bring-up can use a Feather nRF52840 (or a Pico, power aside).
+- **Radio:** **RAK4631 + RAK19007** (low idle, USB-C + LiPo charging). Bench on
+  the **Heltec V3** already on hand.
+- **Power:** solar via a **CN3065** charger → LiPo; radio + SD switched off
+  during sleep by GPIO load switches. See `power-budget.md`.
+- **Connecting board:** hand-wired **protoboard first**, then a KiCad PCB.
+- **Case:** parametric **OpenSCAD** (`case.scad`).
 
 ## Files
 | File | What |
 |---|---|
-| `wiring.md` | Pin-by-pin UART + SPI(SD) + power wiring for both the Heltec bench and the RAK build, plus the bill of materials and bring-up order. |
-| `case.scad` | Parametric enclosure (tray + lid) holding the RAK19007 and the Pico side-by-side, with USB-C and antenna cutouts. |
+| `wiring.md` | Pin-by-pin UART + SPI(SD) + power-gating + solar wiring (XIAO nRF52840 + RAK, plus Heltec bench), BOM, and bring-up order. |
+| `power-budget.md` | Component currents, duty-cycle math, the wake-interval ↔ autonomy table, and solar panel/battery sizing. |
+| `case.scad` | Parametric enclosure (tray + lid) holding the RAK19007 + controller side-by-side with a battery bay, USB-C and antenna cutouts. |
 
 ## Using the case
 1. Install [OpenSCAD](https://openscad.org/) (free).
