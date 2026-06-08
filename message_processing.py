@@ -743,11 +743,19 @@ def _compute_response_gaps(parts: dict, expected: int) -> list:
     return gaps
 
 
-def request_pending_api_gaps(interface, max_age=12.0, cooldown=10.0):
+def request_pending_api_gaps(interface, max_age=12.0, cooldown=10.0, no_response_age=45.0):
     """Requester side sweep (driven by the main loop): for each outstanding API
     request whose response is missing or incomplete, ask the gateway to refill
     the gaps via APIRESPGAP. Only targets gateways advertising 'apigf'. Returns
-    the number of gap requests sent."""
+    the number of gap requests sent.
+
+    Two distinct timeouts:
+    - ``max_age``: once we hold a *partial* response, how long a hole may sit
+      before we ask the gateway to refill it (short — packets are in flight).
+    - ``no_response_age``: when *nothing* has arrived yet, how long to wait
+      before asking for a full resend. Must exceed the gateway's processing
+      time (e.g. an AI call), otherwise every request emits a wasteful full
+      resend before the gateway has even produced an answer."""
     from utils import (list_pending_api_requests, mark_api_gap_request,
                        _send_one_sync, get_sync_pause_seconds)
     from db_operations import peer_supports
@@ -773,8 +781,10 @@ def request_pending_api_gaps(interface, max_age=12.0, cooldown=10.0):
         if now - float(entry.get('last_gap_req', 0.0)) < cooldown:
             continue
         if buf_snap is None:
-            # No response at all yet — only nudge once the request has aged.
-            if now - float(entry.get('created_at', now)) < max_age:
+            # No response at all yet — wait long enough for the gateway to finish
+            # its work (AI call, HTTP fetch) before asking for a full resend, so
+            # we don't burn airtime nudging a gateway that's still computing.
+            if now - float(entry.get('created_at', now)) < no_response_age:
                 continue
             spec = "*"  # resend everything (header may have been the lost frame)
         else:
