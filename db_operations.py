@@ -558,6 +558,21 @@ def initialize_database():
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, game_id)
                 );''')
+    # Phase 2 store-and-forward: a gateway persists API responses here keyed by
+    # the requester node so an intermittently-connected node (e.g. a sleeping
+    # Pico) can retrieve them later via APIPOLL. Not synced between BBS nodes.
+    c.execute('''CREATE TABLE IF NOT EXISTS api_mailbox (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    rid TEXT NOT NULL,
+                    requester_node_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT '200',
+                    body TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    delivered INTEGER NOT NULL DEFAULT 0,
+                    delivered_at TEXT
+                );''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_api_mailbox_node
+                    ON api_mailbox (requester_node_id, delivered);''')
     c.execute('''CREATE TABLE IF NOT EXISTS user_profiles (
                     user_id TEXT PRIMARY KEY,
                     short_name TEXT NOT NULL DEFAULT '',
@@ -1012,6 +1027,89 @@ def vacuum_database() -> None:
         logging.debug(f"VACUUM failed: {e}")
 
 
+def enqueue_api_response(rid: str, requester_node_id: str, status, body) -> int:
+    """Gateway side (Phase 2): persist an API response for later retrieval via
+    APIPOLL. Returns the new row id (0 on failure)."""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO api_mailbox (rid, requester_node_id, status, body, created_at, delivered) "
+            "VALUES (?, ?, ?, ?, ?, 0)",
+            (str(rid), str(requester_node_id), str(status), str(body or ""),
+             datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+        )
+        conn.commit()
+        return int(c.lastrowid or 0)
+    except Exception as e:
+        logging.debug(f"Failed to enqueue api_mailbox entry: {e}")
+        return 0
+
+
+def fetch_undelivered_api_responses(requester_node_id: str, limit: int = 10) -> list:
+    """Return [{'id','rid','status','body'}, ...] of undelivered responses queued
+    for *requester_node_id*, oldest first."""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "SELECT id, rid, status, body FROM api_mailbox "
+            "WHERE requester_node_id = ? AND delivered = 0 ORDER BY id ASC LIMIT ?",
+            (str(requester_node_id), int(limit)),
+        )
+        return [{'id': r[0], 'rid': r[1], 'status': r[2], 'body': r[3]} for r in c.fetchall()]
+    except Exception as e:
+        logging.debug(f"Failed to fetch api_mailbox entries: {e}")
+        return []
+
+
+def mark_api_responses_delivered(ids) -> int:
+    """Mark mailbox rows delivered after a successful flush. Returns rows updated."""
+    ids = [int(i) for i in (ids or [])]
+    if not ids:
+        return 0
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.executemany(
+            "UPDATE api_mailbox SET delivered = 1, delivered_at = ? WHERE id = ?",
+            [(now, i) for i in ids],
+        )
+        conn.commit()
+        return c.rowcount if c.rowcount and c.rowcount > 0 else len(ids)
+    except Exception as e:
+        logging.debug(f"Failed to mark api_mailbox delivered: {e}")
+        return 0
+
+
+def prune_api_mailbox(max_age_days: int = 7, max_rows: int = 5000) -> int:
+    """Bound the api_mailbox: drop delivered entries older than max_age_days, and
+    cap total rows to max_rows (oldest first). Returns rows deleted."""
+    deleted = 0
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        if max_age_days and max_age_days > 0:
+            cutoff = (datetime.now() - timedelta(days=int(max_age_days))).strftime('%Y-%m-%d %H:%M:%S')
+            c.execute(
+                "DELETE FROM api_mailbox WHERE delivered = 1 AND COALESCE(delivered_at, created_at) < ?",
+                (cutoff,),
+            )
+            deleted += c.rowcount if c.rowcount and c.rowcount > 0 else 0
+        if max_rows and max_rows > 0:
+            c.execute(
+                "DELETE FROM api_mailbox WHERE id NOT IN ("
+                "SELECT id FROM api_mailbox ORDER BY id DESC LIMIT ?)",
+                (int(max_rows),),
+            )
+            deleted += c.rowcount if c.rowcount and c.rowcount > 0 else 0
+        conn.commit()
+    except Exception as e:
+        logging.debug(f"Failed to prune api_mailbox: {e}")
+    return deleted
+
+
 _cached_maintenance_cfg: Optional[dict] = None
 
 
@@ -1029,6 +1127,8 @@ def get_maintenance_config() -> dict:
             'sync_session_history_max_rows': g('sync_session_history_max_rows', 2000),
             'tombstone_max_age_days': g('tombstone_max_age_days', 30),
             'vacuum_interval_hours': g('vacuum_interval_hours', 24),
+            'api_mailbox_max_age_days': g('api_mailbox_max_age_days', 7),
+            'api_mailbox_max_rows': g('api_mailbox_max_rows', 5000),
         }
     return _cached_maintenance_cfg
 
@@ -1043,6 +1143,7 @@ def run_db_maintenance(do_vacuum: bool = False) -> dict:
         'op_log_deleted': 0,
         'sync_session_history_deleted': 0,
         'tombstones_deleted': 0,
+        'api_mailbox_deleted': 0,
         'vacuumed': False,
     }
     before = None
@@ -1061,6 +1162,8 @@ def run_db_maintenance(do_vacuum: bool = False) -> dict:
     summary['op_log_deleted'] = prune_op_log(cfg['op_log_max_rows'])
     summary['sync_session_history_deleted'] = prune_sync_session_history(cfg['sync_session_history_max_rows'])
     summary['tombstones_deleted'] = prune_expired_tombstones(cfg['tombstone_max_age_days'])
+    summary['api_mailbox_deleted'] = prune_api_mailbox(
+        cfg.get('api_mailbox_max_age_days', 7), cfg.get('api_mailbox_max_rows', 5000))
     checkpoint_wal()
     if do_vacuum:
         vacuum_database()

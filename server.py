@@ -348,6 +348,8 @@ def main():
         # resend can rebuild it (breaks the misaligned-chunk-boundary deadlock).
         _incomplete_attempts: dict = {}
         _INCOMPLETE_RESET_AFTER = 4  # ~3 min at the 45s repair cadence
+        next_api_poll = 0.0  # poll gateway mailboxes on first tick, then periodically
+        _API_POLL_INTERVAL = 300.0
         # Empty on startup — receivers use unique_id idempotency, so re-syncing is safe
         mail_synced_nodes: set = set()       # P1: direct mail
         bulletins_synced_nodes: set = set()  # P2: bulletin board posts
@@ -556,6 +558,17 @@ def main():
                 expire_sent_api_responses(_apigw_wait_timeout)
             except Exception:
                 pass
+
+            # Requester side (Phase 2): periodically poll gateway mailboxes for
+            # any responses queued while we were offline. Cheap no-op unless a
+            # peer advertises 'apimb'.
+            if now >= next_api_poll:
+                try:
+                    from utils import send_api_poll
+                    send_api_poll(get_local_node_id(), interface)
+                except Exception:
+                    pass
+                next_api_poll = now + _API_POLL_INTERVAL
 
             # Expire API-gateway requests that never got a response (gateway
             # offline or response lost on the lossy link) and tell the waiting user.
