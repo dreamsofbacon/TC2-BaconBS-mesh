@@ -2040,6 +2040,39 @@ def get_incomplete_record_uids() -> dict:
     }
 
 
+def reset_incomplete_record(scope: str, uid: str) -> bool:
+    """Last-resort heal for a record stuck incomplete: clear its partial content
+    and any buffered (possibly boundary-misaligned) continuations, so the next
+    full resend from a single peer rebuilds it cleanly from offset 0 with
+    self-consistent chunk boundaries. expected_content_length is preserved so
+    completion is still detectable. Returns True if a row was reset.
+
+    This breaks the deadlock where continuations from senders with different
+    chunk boundaries leave a permanent middle gap that no single frame fills."""
+    table_map = {'bulletins': 'bulletins', 'mail': 'mail', 'channels': 'channel_comments'}
+    buffer_map = {
+        'bulletins': _pending_bulletin_continuations,
+        'mail': _pending_mail_continuations,
+        'channels': _pending_channel_comment_continuations,
+    }
+    table = table_map.get(scope)
+    if not table:
+        return False
+    real_uid = uid[len('comment:'):] if uid.startswith('comment:') else uid
+    buffer_map[scope].pop(str(real_uid), None)  # drop misaligned buffered chunks
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        f"UPDATE {table} SET content = '', content_complete = 0 WHERE unique_id = ? AND COALESCE(content_complete, 1) = 0",
+        (str(real_uid),),
+    )
+    changed = c.rowcount and c.rowcount > 0
+    conn.commit()
+    if changed:
+        logging.info(f"Reset stuck incomplete {scope} record {real_uid} for clean rebuild")
+    return bool(changed)
+
+
 def _ensure_local_only_columns(cursor) -> None:
     """Backfill schema changes on existing deployments."""
     cursor.execute("PRAGMA table_info(bulletins)")
