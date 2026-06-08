@@ -132,6 +132,22 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("Peer Hash Graph", page)
         self.assertIn("Resolve Save by Best Candidate", page)
 
+    def test_diagnostics_shows_db_size_and_mailbox_depth(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        # Seed a mailbox entry (one pending) so the depth indicator is non-zero.
+        db_operations.initialize_database()
+        db_operations.enqueue_api_response("rid1", "!node", "200", "hello world")
+
+        page = client.get("/settings").get_data(as_text=True)
+        self.assertIn("Database size:", page)
+        self.assertIn("WAL:", page)
+        self.assertIn("Total on disk:", page)
+        self.assertIn("API mailbox:", page)
+        self.assertIn("1 stored (1 pending delivery)", page)
+
     def test_admin_password_change_persists_across_app_restart(self):
         app = create_app()
         client = app.test_client()

@@ -1802,6 +1802,8 @@ SETTINGS_CONTENT = """
   <h3>Database</h3>
   <p><strong>App version:</strong> {{ diagnostics.app_version }}</p>
   <p><strong>Path:</strong> <code>{{ diagnostics.db_path }}</code></p>
+  <p><strong>Database size:</strong> {{ diagnostics.db_size }} &nbsp;|&nbsp; <strong>WAL:</strong> {{ diagnostics.wal_size }} &nbsp;|&nbsp; <strong>Total on disk:</strong> {{ diagnostics.db_total_size }}</p>
+  <p><strong>API mailbox:</strong> {{ diagnostics.api_mailbox_count }} stored ({{ diagnostics.api_mailbox_pending }} pending delivery)</p>
   <p><strong>Bulletins:</strong> {{ diagnostics.bulletins_count }}</p>
   <p><strong>Mail:</strong> {{ diagnostics.mail_count }}</p>
   <p><strong>Channels:</strong> {{ diagnostics.channels_count }}</p>
@@ -3334,15 +3336,44 @@ def create_app(runtime_interface=None) -> Flask:
         "mismatch_retry_summary": "None",
         "mismatch_retry_details": "",
         "db_path": app.config["DB_PATH"],
+        "db_size": "Unknown",
+        "wal_size": "Unknown",
+        "db_total_size": "Unknown",
         "bulletins_count": "Unknown",
         "mail_count": "Unknown",
         "channels_count": "Unknown",
         "zork_saves_count": "Unknown",
         "game_scores_count": "Unknown",
         "connection_events_count": "Unknown",
+        "api_mailbox_count": "Unknown",
+        "api_mailbox_pending": "Unknown",
         "last_connection_event": "None",
         "error": "",
       }
+
+      # On-disk footprint: the SQLite file plus its WAL/SHM sidecars. Lets an
+      # operator watch growth on an unattended node before the SD card fills.
+      def _fmt_bytes(n):
+        try:
+          n = float(n)
+        except (TypeError, ValueError):
+          return "Unknown"
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+          if n < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+          n /= 1024
+        return f"{n:.1f} TB"
+
+      try:
+        _db_path = app.config["DB_PATH"]
+        _db_bytes = os.path.getsize(_db_path) if os.path.exists(_db_path) else 0
+        _wal_bytes = os.path.getsize(_db_path + "-wal") if os.path.exists(_db_path + "-wal") else 0
+        _shm_bytes = os.path.getsize(_db_path + "-shm") if os.path.exists(_db_path + "-shm") else 0
+        diagnostics["db_size"] = _fmt_bytes(_db_bytes)
+        diagnostics["wal_size"] = _fmt_bytes(_wal_bytes)
+        diagnostics["db_total_size"] = _fmt_bytes(_db_bytes + _wal_bytes + _shm_bytes)
+      except Exception:
+        pass
 
       interface = get_runtime_interface()
       snapshot = {}
@@ -3439,6 +3470,14 @@ def create_app(runtime_interface=None) -> Flask:
           diagnostics["game_scores_count"] = str(cursor.fetchone()[0])
           cursor.execute("SELECT COUNT(*) FROM connection_events")
           diagnostics["connection_events_count"] = str(cursor.fetchone()[0])
+          try:
+            cursor.execute("SELECT COUNT(*), COALESCE(SUM(CASE WHEN delivered=0 THEN 1 ELSE 0 END),0) FROM api_mailbox")
+            _mb = cursor.fetchone()
+            diagnostics["api_mailbox_count"] = str(_mb[0])
+            diagnostics["api_mailbox_pending"] = str(_mb[1])
+          except Exception:
+            diagnostics["api_mailbox_count"] = "0"
+            diagnostics["api_mailbox_pending"] = "0"
           cursor.execute(
             "SELECT tombstone_key, deleted_at FROM deleted_sync_tombstones WHERE tombstone_key LIKE 'zork_saves:%' ORDER BY deleted_at DESC, tombstone_key ASC LIMIT 10"
           )
