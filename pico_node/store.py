@@ -15,7 +15,7 @@ Pure Python (os + json only); runs on CircuitPython and under CPython tests.
 import os
 import json
 
-SCOPES = ("bulletins", "mail")
+SCOPES = ("bulletins", "mail", "channels")
 
 
 class CacheStore:

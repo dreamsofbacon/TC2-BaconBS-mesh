@@ -1,64 +1,60 @@
-# Pico BBS Gateway Client (Phase 4 — feasibility spike)
+# Pico BBS Cache Node (Phase 4)
 
-A low-power **CircuitPython** mesh client for a Raspberry Pi Pico. It does **not**
-run the sync engine or a database. It wakes periodically, talks to an attached
-Meshtastic radio over UART, sends queued API/AI requests to the BBS gateway,
-polls the gateway mailbox for replies, then deep-sleeps. The CPython gateway
-needs only one small change (see *Gateway integration* below).
+A low-power **CircuitPython** mesh node for a Raspberry Pi Pico that keeps a
+**local copy of the BBS** (bulletins / mail / channels) on an SD card and serves
+it instantly, online or off. It stays current over the mesh by speaking the
+**same `HAVE` / `WANT` / `EVENT` op_log discovery protocol the full nodes use** —
+as a pull-only *subscriber*.
 
-This is the **spike**: the hard, hardware-independent part — hand-rolled
-Meshtastic protobuf-over-UART framing + the chunked-response reassembly — is
-implemented here and covered by `tests/test_pico_node.py` (runs on your PC, no
-hardware). The remaining work is on-hardware bring-up.
+It deliberately does **not** run SQLite, the sync engine, or the HASHZ
+hash-repair layer (none of which fit a microcontroller). Instead it pulls each
+record it's missing with a `HASHMISS` and parses the record frame the owner
+sends back — exactly how the full nodes fetch a missing record. The trade-off:
+no automatic hash-repair self-heal, so a record whose reply is permanently lost
+(and later pruned from the gateway's op_log) is re-requested on the next wake
+via the outstanding-HASHMISS list; a true gap needs a re-snapshot.
+
+The hard, hardware-independent core is implemented **and fully host-tested**
+(`tests/test_pico_*.py`, 51 tests, run on your PC — no hardware). What remains
+is on-hardware bring-up plus one gateway-side change.
 
 ---
 
-## Your two questions
+## Hardware
 
-### How do I connect the node?
-
-You need **two boards**: a Meshtastic radio (the RF + Meshtastic firmware) and
-the Pico (your CircuitPython logic). They are different MCUs — Meshtastic
-firmware can't run on a Pico, and CircuitPython can't run on the radio — so the
-Pico is a *companion* wired to the radio over a 3-wire serial (UART) link:
+### Two boards, wired over UART (not USB)
+Meshtastic firmware and CircuitPython can't share one MCU, so the Pico is a
+companion to a Meshtastic radio, wired over a 3-wire UART:
 
 ```
-   Raspberry Pi Pico                 Meshtastic radio (e.g. Heltec V3)
-   ----------------                  --------------------------------
-   GP0 (UART TX) ───────────────────► RX  (Serial module RXD pin)
-   GP1 (UART RX) ◄─────────────────── TX  (Serial module TXD pin)
-   GND          ─────────────────────  GND
-   (GP2 optional) ──► MOSFET/load switch ──► radio VCC   (power gating, optional)
+Raspberry Pi Pico              Meshtastic radio (e.g. Heltec V3)
+GP0 (UART TX) ───────────────►  RXD  (Serial-module pin you pick)
+GP1 (UART RX) ◄───────────────  TXD  (Serial-module pin you pick)
+GND           ────────────────  GND
+(GP2 optional ► MOSFET ► radio VCC, to power-gate the radio between wakes)
 ```
+TX/RX **crossed**, common ground, both 3.3 V (no level shifter). On the radio:
+Meshtastic **Serial module**, `mode = PROTO`, `baud = 115200`, `rxd`/`txd` set
+to the GPIOs you wired.
 
-- TX→RX and RX→TX are **crossed** (the classic UART gotcha).
-- Common ground is required.
-- Both run at **3.3 V logic** — no level shifter needed for Pico ↔ ESP32/nRF52.
+### SD card — yes (this design)
+Unlike a thin relay, this node stores data, so it needs writable storage. Use a
+small **SD card over SPI**; it's durable, large, and avoids wearing the Pico's
+internal flash. The cache footprint is bounded (see below), so a tiny card is
+plenty. Mount it (e.g. at `/sd`) and point `CACHE_PATH` there.
 
-On the **radio**, enable Meshtastic's **Serial module** and set it to **PROTO**
-mode on the UART pins you wired, baud **115200**. PROTO mode streams the binary
-`ToRadio`/`FromRadio` protobufs this client speaks. (Config → Module Config →
-Serial: `enabled=true`, `mode=PROTO`, `rxd`/`txd` = your pins, `baud=115200`.)
+### Recommended parts
+- Radio: a **Heltec V3** flashed with Meshtastic (same as your other nodes).
+- Controller: a **Raspberry Pi Pico** / **Pico 2** (not a Pico W — no Wi-Fi needed).
+- An **SD breakout** (SPI) + a microSD card; jumper wires; later a LiPo + load switch.
 
-Recommended starter hardware (uses what you already have):
-- **Radio:** a Heltec V3 flashed with Meshtastic (same as your other nodes).
-  For the *lowest* sleep current later, an nRF52 board (RAK4631 / Wio-WM1110)
-  is better, but a Heltec is fine for bring-up.
-- **Controller:** a **Raspberry Pi Pico** (RP2040) or **Pico 2** (RP2350 — more
-  RAM, nicer for buffers). Plain Pico is fine; you do **not** need a Pico W
-  (the whole point is operating without Wi-Fi).
-- A couple of jumper wires; later a LiPo + load switch for true field power.
+---
 
-### Do I need an SD card?
-
-**No.** The Pico has onboard flash that CircuitPython exposes as the `CIRCUITPY`
-drive; that holds `code.py` and the few modules here. This node keeps **no
-database** — at most a tiny flat file for a request queue — so there's nothing
-that needs an SD card. (One CircuitPython quirk: a program can't write to the
-`CIRCUITPY` flash while it's also mounted over USB. For a headless field node
-that's not an issue; if you want runtime-writable state while developing, either
-use the `nvm` byte store or remount the FS writable in code. For this spike we
-keep requests in `config.py`, so no writes are needed.)
+## How it handles database size
+The cache is **capped, prune-oldest**: each scope keeps at most `MAX_RECORDS`
+of the newest items (by date); older ones are dropped. So the on-card footprint
+has a hard ceiling no matter how long the node runs. The gateway side is bounded
+too (Phase 0 prunes `op_log` and `api_mailbox`). No unbounded growth on either end.
 
 ---
 
@@ -66,43 +62,40 @@ keep requests in `config.py`, so no writes are needed.)
 
 | File | Runs on | Purpose |
 |------|---------|---------|
-| `minipb.py` | Pico + PC | Minimal protobuf (varint/fixed32/bytes/submessage). |
-| `meshtastic_link.py` | Pico + PC | Meshtastic stream framing + ToRadio/FromRadio for text. |
-| `wire.py` | Pico + PC | BBS frame builders + chunked APIRESP reassembly + gap-fill. |
-| `code.py` | Pico only | Wake → send → poll → listen → deep-sleep loop (imports `board`). |
-| `config.py` | Pico only | Your wiring, gateway node ID, duty cycle, prompts. |
+| `store.py` | Pico + PC | Bounded SD cache: capped records, board filter, op_log watermarks, JSON persistence. |
+| `opsync.py` | Pico + PC | HAVE→WANT, EVENT→watermark+HASHMISS, deletes. |
+| `records.py` | Pico + PC | Parse BULLETIN/MAIL/CHANNELCOMMENT (+ CONT/META chunking, base64 sender). |
+| `syncclient.py` | Pico + PC | Glue: routes a frame to the right handler, upserts records, tracks outstanding HASHMISS. |
+| `meshtastic_link.py` | Pico + PC | Meshtastic stream framing + ToRadio/FromRadio text. |
+| `minipb.py` | Pico + PC | Minimal protobuf. |
+| `wire.py` | Pico + PC | node-id math + (optional) API/AI request helpers. |
+| `code.py` | Pico only | Wake → learn node num → re-request → sync window → save → deep-sleep. |
+| `config.py` | Pico only | Wiring, gateway ID, cache path/cap, duty cycle. |
 
-## Flashing / install
+## Install
+1. Flash **CircuitPython 9.x** to the Pico (hold BOOTSEL, drag the `.uf2`).
+2. Copy `store.py`, `opsync.py`, `records.py`, `syncclient.py`,
+   `meshtastic_link.py`, `minipb.py`, `wire.py`, `config.py`, `code.py` to the
+   `CIRCUITPY` drive. (Skip `README.md` and `__pycache__`.)
+3. Wire and mount the SD card; set `CACHE_PATH` (e.g. `/sd/bbs`).
+4. Edit `config.py`: `GATEWAY_NODE_ID`, `UART_TX`/`UART_RX`, duty cycle.
+5. Watch the serial console for the `sync wake complete: ...` line.
 
-1. Install **CircuitPython 9.x** on the Pico (drag the UF2 while holding BOOTSEL).
-2. Copy `minipb.py`, `meshtastic_link.py`, `wire.py`, `config.py`, and `code.py`
-   onto the `CIRCUITPY` drive.
-3. Edit `config.py`: set `GATEWAY_NODE_ID` to your gateway's node ID
-   (`!0408b778`), the `UART_TX`/`UART_RX` pins, and add a prompt to
-   `QUEUED_PROMPTS` to test.
-4. Open the serial console (e.g. `screen`/Mu/Thonny) to watch `REPLY ...` output.
+## Gateway integration (the one live-side change, do when hardware is ready)
+For the gateway to answer this non-bbs node's `WANT`/`HASHMISS`, the Pico must be
+in the gateway's `bbs_nodes`. But a plain `bbs_nodes` entry would also make the
+gateway try to *push-sync and hash-repair to* the Pico, which can't reciprocate
+(no HASHZ) — causing perpetual "mismatch" churn. So the gateway needs a
+lightweight **subscriber mode**: answer a listed peer's pull requests
+(WANT/HASHMISS, HAVE broadcasts) but exclude it from the push-sync and
+mismatch-repair loops. Authorize it with the existing gateway allow-list. This
+is the next live change and needs a deploy + sign-off — held until hardware.
 
-## Gateway integration (one change, do when hardware is ready)
-
-Today the gateway only processes `APIREQ`/`APIPOLL` from nodes in its
-`bbs_nodes` sync list; a direct DM from a non-bbs node (the Pico) goes down the
-*user/menu* path where those frames aren't handled (`message_processing.on_receive`,
-the `to_id == my_node_num` branch). To let the Pico talk to the gateway directly,
-route `API*` frames in that direct-message branch through the gateway handlers,
-authorized via the **gateway lock-down allow-list** already built
-(`gateway.is_requester_authorized`). That keeps access controlled — add the
-Pico's node ID to **Settings → API Gateway → Allowed requester nodes**.
-
-The reply path needs no change: the gateway already sends `APIRESP` to whoever
-asked, and persists it to the mailbox for `APIPOLL` retrieval (Phase 2), so a
-Pico that slept through the immediate reply still gets it on its next wake.
-
-## What's proven vs. what's next
-
-- **Proven (host tests):** protobuf encode/decode, stream (de)framing incl.
-  resync across split/garbage reads, text ToRadio build + FromRadio parse,
-  node-id math, chunked APIRESP reassembly, and gap-spec computation.
-- **Next (on hardware):** Serial-module PROTO bring-up on the radio; confirm
-  `want_config` returns our node number; a real round-trip to the gateway;
-  power-gating + deep-sleep current measurement; then a small request-queue file
-  and a button/display.
+## Proven vs. next
+- **Proven (51 host tests):** protobuf + framing, op_log HAVE/WANT/EVENT,
+  BULLETIN/MAIL/CHANNELCOMMENT parsing incl. chunk reassembly and base64 sender,
+  bounded cache + watermarks + persistence, and the full SyncClient round-trip
+  (HAVE→WANT, EVENT→HASHMISS→record→cached, deletes, re-request).
+- **Next (on hardware):** Serial-module PROTO bring-up; confirm `want_config`
+  returns our node number; gateway subscriber mode; a real multi-record sync
+  over the air; power-gating + deep-sleep current; then a reader UI for the cache.
