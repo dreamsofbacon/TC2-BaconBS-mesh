@@ -335,6 +335,40 @@ class GapFillTests(unittest.TestCase):
         self.assertEqual(sent, 0)
         self.assertEqual(iface.sent_texts, [])
 
+    def test_no_premature_gap_while_gateway_still_working(self):
+        """With no response yet, a request aged past the short partial-fill
+        timeout but within no_response_age must NOT emit a full resend (the
+        gateway may still be computing, e.g. an AI call)."""
+        iface = _Iface()
+        utils.register_api_request("rW", 5, gateway_node_id="!gw")
+        # Age 20s: > max_age (12) but < no_response_age (45).
+        utils._apigw_pending["rW"]['created_at'] -= 20
+        with patch("db_operations.peer_supports", lambda p, c: c == "apigf"):
+            sent = message_processing.request_pending_api_gaps(iface)
+        self.assertEqual(sent, 0)
+        self.assertEqual(iface.sent_texts, [])
+        # Age past no_response_age → now it asks for a full resend.
+        utils._apigw_pending["rW"]['created_at'] -= 40  # total 60s
+        with patch("db_operations.peer_supports", lambda p, c: c == "apigf"):
+            sent = message_processing.request_pending_api_gaps(iface)
+        self.assertEqual(sent, 1)
+        self.assertTrue(any(t == "APIRESPGAP|rW|*" for _, t in iface.sent_texts))
+
+    def test_partial_response_hole_uses_short_timeout(self):
+        """A *partial* response with a hole is refilled at the short max_age,
+        not the long no_response_age."""
+        iface = _Iface()
+        utils.register_api_request("rPart", 6, gateway_node_id="!gw")
+        message_processing._apigw_apply_chunk("rPart", 0, "AAAAA", status="200",
+                                              expected=15, source="!gw")
+        message_processing._apigw_apply_chunk("rPart", 10, "CCCCC", source="!gw")
+        # Age 20s: past max_age (12) though well under no_response_age (45).
+        message_processing._apigw_response_buffers["rPart"]['created_at'] -= 20
+        with patch("db_operations.peer_supports", lambda p, c: c == "apigf"):
+            sent = message_processing.request_pending_api_gaps(iface)
+        self.assertEqual(sent, 1)
+        self.assertTrue(any("5-10" in t for _, t in iface.sent_texts))
+
     def test_end_to_end_gap_recovery(self):
         """Drop the middle chunk; APIRESPGAP refill completes the delivery."""
         gw = _Iface()           # gateway node
