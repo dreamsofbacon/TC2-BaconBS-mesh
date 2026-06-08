@@ -93,6 +93,24 @@ class GatewayValidationTests(unittest.TestCase):
             self.assertTrue(gateway._rate_ok("!n"))
             self.assertFalse(gateway._rate_ok("!n"))
 
+    def test_auth_open_when_no_lists(self):
+        with patch.object(gateway, "gateway_allowed_nodes", lambda: []):
+            self.assertTrue(gateway.is_requester_authorized("!anyone", None))
+            self.assertTrue(gateway.is_requester_authorized("!anyone", []))
+
+    def test_auth_falls_back_to_general_allowlist(self):
+        with patch.object(gateway, "gateway_allowed_nodes", lambda: []):
+            self.assertTrue(gateway.is_requester_authorized("!u", ["!u", "!v"]))
+            self.assertFalse(gateway.is_requester_authorized("!x", ["!u", "!v"]))
+
+    def test_auth_gateway_list_overrides_general(self):
+        # When the gateway-specific list is set it is authoritative: a node in the
+        # general allow-list but NOT the gateway list is rejected, and vice versa.
+        with patch.object(gateway, "gateway_allowed_nodes", lambda: ["!hand"]):
+            self.assertTrue(gateway.is_requester_authorized("!hand", []))
+            self.assertTrue(gateway.is_requester_authorized("!hand", ["!other"]))
+            self.assertFalse(gateway.is_requester_authorized("!other", ["!other"]))
+
 
 class GatewayDispatchTests(unittest.TestCase):
     def setUp(self):
