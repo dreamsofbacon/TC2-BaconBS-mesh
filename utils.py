@@ -132,6 +132,7 @@ def local_capabilities_token() -> str:
     if _config_bool('gateway', 'enabled', False):
         caps.append('apigw')
         caps.append('apigf')  # gateway can serve per-rid response gap-fill (Phase 3)
+        caps.append('apimb')  # gateway offers store-and-forward mailbox via APIPOLL (Phase 2)
     return f"v{WIRE_PROTOCOL_VERSION}:{','.join(caps)}"
 
 
@@ -892,6 +893,21 @@ def expire_sent_api_responses(ttl_sec: float) -> int:
         for rid in stale:
             _apigw_sent.pop(rid, None)
     return len(stale)
+
+
+def send_api_poll(local_node_id, interface) -> int:
+    """Requester side (Phase 2): ask every gateway peer that offers a store-and-
+    forward mailbox ('apimb') to flush any responses queued for us. Returns the
+    number of polls sent. Cheap to call on startup / after a reconnect."""
+    if not local_node_id:
+        return 0
+    sent = 0
+    for peer in (getattr(interface, 'bbs_nodes', []) or []):
+        if peers_all_support([peer], 'apimb'):
+            _send_one_sync(f"APIPOLL|{local_node_id}", peer, interface,
+                           pause_seconds=get_sync_pause_seconds())
+            sent += 1
+    return sent
 
 
 def _parse_gap_ranges(spec: str, total: int) -> list:
