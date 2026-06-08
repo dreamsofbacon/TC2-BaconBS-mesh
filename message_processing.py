@@ -704,16 +704,20 @@ def _should_request_record(scope: str, key: str) -> bool:
     return True
 
 
-def _apigw_apply_chunk(rid, offset, chunk, status=None, expected=None):
+def _apigw_apply_chunk(rid, offset, chunk, status=None, expected=None, source=None):
     """Accumulate an API-response chunk by absolute char offset. Returns
     (status, body) once the assembled length reaches the expected total, else
     None. Mirrors the bulletin CONT reassembly but in transient memory."""
     with _apigw_buffers_lock:
-        buf = _apigw_response_buffers.setdefault(rid, {'status': '', 'expected': None, 'parts': {}})
+        buf = _apigw_response_buffers.setdefault(
+            rid, {'status': '', 'expected': None, 'parts': {}, 'source': None, 'created_at': time.time()}
+        )
         if status is not None:
             buf['status'] = status
         if expected is not None:
             buf['expected'] = int(expected)
+        if source is not None:
+            buf['source'] = source
         buf['parts'][int(offset)] = chunk
         assembled_len = sum(len(c) for c in buf['parts'].values())
         if buf['expected'] is not None and assembled_len >= buf['expected']:
@@ -722,6 +726,73 @@ def _apigw_apply_chunk(rid, offset, chunk, status=None, expected=None):
             _apigw_response_buffers.pop(rid, None)
             return (st, body)
     return None
+
+
+def _compute_response_gaps(parts: dict, expected: int) -> list:
+    """Given received {offset: chunk} and the expected total length, return the
+    list of missing (start, end) byte ranges (end exclusive). Assumes contiguous
+    chunks laid at their offsets; any uncovered span is a gap to refill."""
+    gaps = []
+    cursor = 0
+    for off in sorted(parts):
+        if off > cursor:
+            gaps.append((cursor, off))  # hole before this chunk
+        cursor = max(cursor, off + len(parts[off]))
+    if cursor < expected:
+        gaps.append((cursor, expected))  # trailing tail never arrived
+    return gaps
+
+
+def request_pending_api_gaps(interface, max_age=12.0, cooldown=10.0):
+    """Requester side sweep (driven by the main loop): for each outstanding API
+    request whose response is missing or incomplete, ask the gateway to refill
+    the gaps via APIRESPGAP. Only targets gateways advertising 'apigf'. Returns
+    the number of gap requests sent."""
+    from utils import (list_pending_api_requests, mark_api_gap_request,
+                       _send_one_sync, get_sync_pause_seconds)
+    from db_operations import peer_supports
+    now = time.time()
+    sent = 0
+    for rid, entry in list_pending_api_requests():
+        gateway = entry.get('gateway')
+        # Locate any partial buffer (it may carry the live gateway source).
+        with _apigw_buffers_lock:
+            buf = _apigw_response_buffers.get(rid)
+            buf_snap = None
+            if buf is not None:
+                buf_snap = {
+                    'expected': buf.get('expected'),
+                    'parts': dict(buf.get('parts', {})),
+                    'source': buf.get('source'),
+                    'created_at': buf.get('created_at', entry.get('created_at', now)),
+                }
+        target = (buf_snap or {}).get('source') or gateway
+        if not target or not peer_supports(target, 'apigf'):
+            continue
+        # Respect a per-request cooldown so we don't spam refill requests.
+        if now - float(entry.get('last_gap_req', 0.0)) < cooldown:
+            continue
+        if buf_snap is None:
+            # No response at all yet — only nudge once the request has aged.
+            if now - float(entry.get('created_at', now)) < max_age:
+                continue
+            spec = "*"  # resend everything (header may have been the lost frame)
+        else:
+            if now - float(buf_snap['created_at']) < max_age:
+                continue
+            expected = buf_snap['expected']
+            if not expected:
+                spec = "*"  # never learned the total length; ask for a full resend
+            else:
+                gaps = _compute_response_gaps(buf_snap['parts'], int(expected))
+                if not gaps:
+                    continue
+                spec = ",".join(f"{a}-{b}" for a, b in gaps)
+        _send_one_sync(f"APIRESPGAP|{rid}|{spec}", target, interface,
+                       pause_seconds=get_sync_pause_seconds())
+        mark_api_gap_request(rid)
+        sent += 1
+    return sent
 
 
 def _deliver_api_response(rid, status, body, interface):
@@ -1987,7 +2058,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed APIRESP length ignored: {message}")
                 return
             first_chunk = parts[4] if len(parts) == 5 else ""
-            done = _apigw_apply_chunk(rid, 0, first_chunk, status=status, expected=expected)
+            done = _apigw_apply_chunk(rid, 0, first_chunk, status=status,
+                                      expected=expected, source=sender_node_id)
             if done is not None:
                 _deliver_api_response(rid, done[0], done[1], interface)
         elif message.startswith("APIRESPMETA|"):
@@ -2018,9 +2090,22 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 offset = int(parts[2])
             except ValueError:
                 return
-            done = _apigw_apply_chunk(parts[1], offset, parts[3])
+            done = _apigw_apply_chunk(parts[1], offset, parts[3], source=sender_node_id)
             if done is not None:
                 _deliver_api_response(parts[1], done[0], done[1], interface)
+        elif message.startswith("APIRESPGAP|"):
+            # Gateway side: a requester is missing part of a response it asked
+            # for. Re-send the requested byte ranges from our retained copy.
+            parts = message.split("|", 2)
+            if len(parts) < 2 or not parts[1]:
+                return
+            rid = parts[1]
+            spec = parts[2] if len(parts) == 3 else "*"
+            from utils import resend_api_response_ranges
+            if resend_api_response_ranges(rid, spec, interface):
+                logging.info(f"APIRESPGAP refill for rid={rid} ranges={spec} to {sender_node_id}")
+            else:
+                logging.info(f"APIRESPGAP for unknown/expired rid={rid} from {sender_node_id}")
         elif message.startswith("PEERGOSSIP|"):
             # 'pgos': a neighbour relays what it last heard about ANOTHER peer's
             # sync state, so we become aware of (and can detect drift against)
@@ -2235,7 +2320,8 @@ def on_receive(packet, interface):
                                    "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|", "HASHZGAP|",
                                    "HAVE|", "WANT|", "EVENT|", "PEERGOSSIP|",
-                                   "APIREQ|", "APIRESP|", "APIRESPCONT|", "APIRESPMETA|"])
+                                   "APIREQ|", "APIRESP|", "APIRESPCONT|", "APIRESPMETA|",
+                                   "APIRESPGAP|"])
 
             msg_type = "sync" if is_sync_message else "user"
             sync_frame = message_string.split("|", 1)[0] if is_sync_message and "|" in message_string else (message_string[:24] if is_sync_message else "")
