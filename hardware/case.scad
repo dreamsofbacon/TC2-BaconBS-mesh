@@ -1,104 +1,118 @@
 // ============================================================================
-// TC2-BaconBS Pico cache node — parametric enclosure
+// TC2-BaconBS solar cache node — parametric enclosure (hardened)
 // ----------------------------------------------------------------------------
-// Holds a RAK19007 WisBlock base board (with RAK4631 core) and a Raspberry Pi
-// Pico side-by-side in a tray, with a snap/screw lid, USB-C and antenna
-// cutouts. Everything is driven by the variables below — print a test, check
-// fit, tweak the numbers. Dimensions marked "VERIFY" should be confirmed
-// against the board you actually have (calipers or datasheet) before printing
-// the final.
+// Holds three things side by side in a tray with a vented screw-down lid:
+//   1. RAK19007 WisBlock base (60 x 30 mm) carrying the RAK4631 radio core
+//   2. a CARRIER protoboard/PCB that the XIAO nRF52840 + microSD breakout +
+//      load switches solder onto (the XIAO itself has NO mounting holes, so it
+//      is never screwed down directly — it rides the carrier)
+//   3. a LiPo battery bay
 //
-// Render: set SHOW to "tray", "lid", or "both".
-// Export each part to its own STL (set SHOW, then F6 -> export).
+// Mounting is by CORNER-NEST, not screw holes: each board drops into a set of
+// corner locators and rests on support pillars; the lid presses down to retain
+// it. This is deliberately independent of exact mounting-hole coordinates
+// (which for the RAK19007 live only in datasheet figures) and tolerant of board
+// variation. Optional M1.2 screw posts for the RAK are noted but off by default.
+//
+// CONFIRMED dims: RAK19007 60x30 mm; XIAO nRF52840 21.0x17.8x3.5 mm.
+// VERIFY before final print: component heights, the carrier size you actually
+// build, and the USB-C / antenna positions on your RAK (edge + offset).
+//
+// Render: set SHOW; F6; export tray and lid separately.
 // ============================================================================
 
 SHOW = "both";              // "tray" | "lid" | "both"
-$fn = 48;                   // curve smoothness
+$fn = 48;
 
-// ---- Global shell ----------------------------------------------------------
-wall        = 2.0;          // side wall thickness
-floor_t     = 2.0;          // tray floor thickness
-lid_t       = 2.0;          // lid top thickness
-gap         = 0.4;          // print clearance between mating parts
-board_clear = 1.0;          // clearance around each PCB inside the tray
-part_gap    = 6.0;          // space between the two boards
+// ---- Shell -----------------------------------------------------------------
+wall        = 2.0;
+floor_t     = 2.0;
+lid_t       = 2.0;
+fit         = 0.4;          // clearance around each board in its nest
+part_gap    = 5.0;          // space between adjacent boards
+edge_clear  = 1.5;          // gap from cavity wall to outermost board
 
-// ---- Boards (L x W x PCB-thickness, mm) ------------------------------------
-// RAK19007 base board: datasheet says 60 x 30 mm. VERIFY thickness/components.
-rak_l = 60.0; rak_w = 30.0; rak_pcb = 1.6;
-rak_comp_h = 12.0;          // tallest stuff above the RAK PCB (core module + USB) VERIFY
+// ---- Boards: [length_x, width_y, pcb_thickness, components_above] ----------
+// RAK19007 base + RAK4631 core: 60 x 30 confirmed; core+USB stack height VERIFY.
+rak     = [60.0, 30.0, 1.6, 12.0];
+// Carrier protoboard (you build this): default a half-size perfboard. Set to
+// whatever you use. Must be big enough for XIAO (21x18) + SD breakout + 2 load
+// switches + wiring. Component height ~ XIAO 3.5 + SD breakout/headers.
+carrier = [50.0, 25.0, 1.6, 12.0];
+// LiPo bay: 1000-2000 mAh cell. VERIFY to your battery (these get large!).
+batt    = [55.0, 38.0, 9.0];
 
-// Controller — Seeed XIAO nRF52840: ~21.0 x 17.5 mm. (For an Adafruit Feather
-// nRF52840 use ~51 x 23 mm instead.) Named pico_* for back-compat with refs below.
-pico_l = 21.0; pico_w = 17.5; pico_pcb = 1.2;
-pico_comp_h = 5.0;          // components/headers above the controller PCB VERIFY
+// ---- Nest mounting ---------------------------------------------------------
+standoff_h   = 4.0;         // board floats this high (room for pins/solder underneath)
+support_od   = 4.0;         // support-pillar diameter
+support_inset = 4.0;        // pillar inset from each board corner
+locator      = 3.0;         // corner-locator post footprint (mm square)
+capture      = 1.5;         // how far locators rise above the PCB top to box it in
 
-// Battery + CN3065 charger bay. A 1000–2000 mAh LiPo is sizable (~50x35x6 mm and
-// up) — set this so the case reserves room beside/under the boards. Increase
-// inner_w / inner_h via these if your battery is larger. VERIFY to your cells.
-batt_l = 52.0; batt_w = 35.0; batt_h = 7.0;
-reserve_battery = true;     // add a battery bay alongside the boards
-
-// ---- Standoffs / mounting --------------------------------------------------
-standoff_h  = 4.0;          // PCB sits this high off the floor (room for pins underneath)
-standoff_od = 5.0;          // standoff outer diameter
-screw_d     = 2.2;          // pilot hole for an M2 self-tapping screw (VERIFY hole pattern!)
-hole_inset  = 3.0;          // mounting-hole inset from each PCB corner (VERIFY per board)
-
-// ---- Port cutouts ----------------------------------------------------------
-// USB-C on the RAK19007 is on one short (30 mm) end. Cutout in that wall.
-usbc_w = 10.0; usbc_h = 4.0; usbc_z = standoff_h + rak_pcb;   // bottom of port above floor
-antenna_d = 7.0;            // SMA bulkhead / antenna hole diameter (VERIFY)
-antenna_z = standoff_h + 6; // antenna hole height up the wall
+// ---- Ports (VERIFY edge + offset against your RAK) -------------------------
+// USB-C sits on a 30 mm SHORT end of the RAK -> a wall running along Y. Default:
+// left wall (-X), centred on the RAK's width.
+usbc_w = 10.0; usbc_h = 4.0;
+antenna_d = 7.0;            // SMA bulkhead hole (IPEX->SMA pigtail from the core)
 
 // ---- Lid fixing ------------------------------------------------------------
-lid_screw_d   = 2.6;        // M2.5 clearance through the lid
-lid_boss_od   = 7.0;        // screw boss diameter in the tray corners
-lid_lip       = 3.0;        // how far the lid lip drops inside the tray
+lid_screw_d = 2.6;          // M2.5 clearance through the lid
+boss_od     = 7.0;          // corner screw boss in the tray
+boss_pilot  = 2.2;          // M2.5 self-tap pilot in the boss
+lid_lip     = 3.0;
 
 // ============================================================================
-// Derived inner cavity
+// Layout: RAK (front), carrier (middle), battery (back) along +Y
 // ============================================================================
-inner_l = max(max(rak_l, pico_l), reserve_battery ? batt_l : 0) + 2*board_clear;
-inner_w = rak_w + part_gap + pico_w + 2*board_clear
-          + (reserve_battery ? part_gap + batt_w : 0);
-inner_h = max(standoff_h + max(rak_pcb + rak_comp_h, pico_pcb + pico_comp_h) + 2.0,
-              reserve_battery ? batt_h + 1.0 : 0);
+inner_l = max(rak[0], carrier[0], batt[0]) + 2*edge_clear;
+inner_w = rak[1] + part_gap + carrier[1] + part_gap + batt[1] + 2*edge_clear;
+board_stack_h = standoff_h + max(rak[2]+rak[3], carrier[2]+carrier[3]) + 2.0;
+inner_h = max(board_stack_h, batt[2] + 1.0);
 
 outer_l = inner_l + 2*wall;
 outer_w = inner_w + 2*wall;
 outer_h = floor_t + inner_h;
 
-// Board origins (front-left corner of each PCB, in inner coordinates)
-rak_x  = board_clear + (inner_l - 2*board_clear - rak_l)/2;
-rak_y  = board_clear;
-pico_x = board_clear + (inner_l - 2*board_clear - pico_l)/2;
-pico_y = board_clear + rak_w + part_gap;
+// board origins (front-left corner, in inner coords)
+function centre_x(l) = edge_clear + (inner_l - 2*edge_clear - l)/2;
+rak_o     = [centre_x(rak[0]),     edge_clear];
+carrier_o = [centre_x(carrier[0]), edge_clear + rak[1] + part_gap];
+batt_o    = [centre_x(batt[0]),    edge_clear + rak[1] + part_gap + carrier[1] + part_gap];
 
 // ============================================================================
-// Helpers
+// Modules
 // ============================================================================
-module standoff(x, y) {
-    translate([x, y, floor_t])
-        difference() {
-            cylinder(h = standoff_h, d = standoff_od);
-            translate([0,0,-0.1]) cylinder(h = standoff_h + 0.2, d = screw_d);
-        }
+// Support pillar (under the board) at absolute inner coords.
+module pillar(x, y) {
+    translate([wall+x, wall+y, floor_t]) cylinder(h = standoff_h, d = support_od);
 }
 
-// Four standoffs at a board's mounting-hole corners.
-module board_standoffs(ox, oy, l, w) {
-    for (dx = [hole_inset, l - hole_inset])
-        for (dy = [hole_inset, w - hole_inset])
-            standoff(wall + ox + dx, wall + oy + dy);
+// One corner-locator post just OUTSIDE a board corner; its inner corner touches
+// the board corner so the board nests against it. sx/sy = +/-1 corner direction.
+module locator_post(bx, by, h) {
+    translate([wall+bx, wall+by, floor_t]) cube([locator, locator, h]);
 }
 
-module lid_boss(x, y) {
-    translate([x, y, floor_t])
-        difference() {
-            cylinder(h = inner_h, d = lid_boss_od);
-            translate([0,0, inner_h - 8]) cylinder(h = 8.1, d = screw_d);
-        }
+// Nest a board: 4 support pillars + 4 corner locators. board = [l,w,pcb,comp].
+module nest(o, board) {
+    l = board[0]; w = board[1]; pcb = board[2];
+    h = standoff_h + pcb + capture;
+    // support pillars (inset corners)
+    for (dx = [support_inset, l - support_inset])
+        for (dy = [support_inset, w - support_inset])
+            pillar(o[0] + dx, o[1] + dy);
+    // corner locators, placed diagonally outside each corner
+    locator_post(o[0] - locator,     o[1] - locator,     h); // BL
+    locator_post(o[0] + l,           o[1] - locator,     h); // BR
+    locator_post(o[0] - locator,     o[1] + w,           h); // TL
+    locator_post(o[0] + l,           o[1] + w,           h); // TR
+}
+
+module corner_boss(x, y) {
+    translate([x, y, floor_t]) difference() {
+        cylinder(h = inner_h, d = boss_od);
+        translate([0,0, inner_h - 8]) cylinder(h = 8.1, d = boss_pilot);
+    }
 }
 
 // ============================================================================
@@ -106,54 +120,46 @@ module lid_boss(x, y) {
 // ============================================================================
 module tray() {
     difference() {
-        // outer shell
         cube([outer_l, outer_w, outer_h]);
-        // inner cavity
-        translate([wall, wall, floor_t])
-            cube([inner_l, inner_w, inner_h + 1]);
-        // USB-C cutout in the front wall (RAK USB end, -Y side, over the RAK board)
-        translate([wall + rak_x + rak_l/2 - usbc_w/2, -0.1, floor_t + usbc_z])
-            cube([usbc_w, wall + 0.2, usbc_h]);
-        // antenna hole in the left wall
-        translate([-0.1, wall + rak_y + rak_w/2, floor_t + antenna_z])
+        translate([wall, wall, floor_t]) cube([inner_l, inner_w, inner_h + 1]);
+        // USB-C: left wall (-X), at the RAK, centred on RAK width.
+        translate([-0.1, wall + rak_o[1] + rak[1]/2 - usbc_w/2, floor_t + standoff_h + rak[2]])
+            cube([wall + 0.2, usbc_w, usbc_h]);
+        // Antenna: right wall (+X) near the RAK core. VERIFY position.
+        translate([outer_l - wall - 0.1, wall + rak_o[1] + rak[1]/2, floor_t + standoff_h + 6])
             rotate([0,90,0]) cylinder(h = wall + 0.2, d = antenna_d);
     }
-    // mounting standoffs
-    board_standoffs(rak_x,  rak_y,  rak_l,  rak_w);
-    board_standoffs(pico_x, pico_y, pico_l, pico_w);
+    nest(rak_o, rak);
+    nest(carrier_o, carrier);
+    // battery bay is just reserved empty volume (held by foam/strap); no nest.
     // lid screw bosses in the four corners
-    lid_boss(wall + lid_boss_od/2,            wall + lid_boss_od/2);
-    lid_boss(outer_l - wall - lid_boss_od/2,  wall + lid_boss_od/2);
-    lid_boss(wall + lid_boss_od/2,            outer_w - wall - lid_boss_od/2);
-    lid_boss(outer_l - wall - lid_boss_od/2,  outer_w - wall - lid_boss_od/2);
+    corner_boss(wall + boss_od/2,            wall + boss_od/2);
+    corner_boss(outer_l - wall - boss_od/2,  wall + boss_od/2);
+    corner_boss(wall + boss_od/2,            outer_w - wall - boss_od/2);
+    corner_boss(outer_l - wall - boss_od/2,  outer_w - wall - boss_od/2);
 }
 
 // ============================================================================
-// Lid (printed separately, flipped)
+// Lid
 // ============================================================================
 module lid() {
     difference() {
         union() {
-            // top plate
             cube([outer_l, outer_w, lid_t]);
-            // lip that drops into the cavity
-            translate([wall + gap, wall + gap, -lid_lip])
-                cube([inner_l - 2*gap, inner_w - 2*gap, lid_lip]);
+            translate([wall + fit, wall + fit, -lid_lip])
+                cube([inner_l - 2*fit, inner_w - 2*fit, lid_lip]);
         }
-        // screw clearance holes over the four bosses
-        for (cx = [wall + lid_boss_od/2, outer_l - wall - lid_boss_od/2])
-            for (cy = [wall + lid_boss_od/2, outer_w - wall - lid_boss_od/2])
+        for (cx = [wall + boss_od/2, outer_l - wall - boss_od/2])
+            for (cy = [wall + boss_od/2, outer_w - wall - boss_od/2])
                 translate([cx, cy, -lid_lip - 0.1])
                     cylinder(h = lid_t + lid_lip + 0.2, d = lid_screw_d);
-        // vent slots
-        for (i = [-2:2])
-            translate([outer_l/2 + i*5 - 1, outer_w*0.30, -0.1])
-                cube([2, outer_w*0.40, lid_t + 0.2]);
+        // vent slots over the boards
+        for (i = [-3:3])
+            translate([outer_l/2 + i*5 - 1, outer_w*0.25, -0.1])
+                cube([2, outer_w*0.45, lid_t + 0.2]);
     }
 }
 
-// ============================================================================
-// Assembly preview
 // ============================================================================
 if (SHOW == "tray" || SHOW == "both") tray();
 if (SHOW == "lid"  || SHOW == "both")

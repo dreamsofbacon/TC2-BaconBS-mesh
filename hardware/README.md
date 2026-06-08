@@ -20,7 +20,7 @@ Physical design for the Phase 4 low-power cache node (see `../pico_node/`).
 |---|---|
 | `wiring.md` | Pin-by-pin UART + SPI(SD) + power-gating + solar wiring (XIAO nRF52840 + RAK, plus Heltec bench), BOM, and bring-up order. |
 | `power-budget.md` | Component currents, duty-cycle math, the wake-interval ↔ autonomy table, and solar panel/battery sizing. |
-| `case.scad` | Parametric enclosure (tray + lid) holding the RAK19007 + controller side-by-side with a battery bay, USB-C and antenna cutouts. |
+| `case.scad` | Parametric enclosure (tray + lid), ~67 × 110 × 22 mm. Corner-nest mounting (no reliance on exact hole coordinates) for the RAK19007 + a carrier protoboard (the XIAO has no holes, so it solders to the carrier) + a LiPo bay, with USB-C and antenna cutouts. |
 
 ## Using the case
 1. Install [OpenSCAD](https://openscad.org/) (free).
@@ -31,6 +31,11 @@ Physical design for the Phase 4 low-power cache node (see `../pico_node/`).
    change is a one-line edit — no remodeling.
 
 ## Status
-Design + BOM drafted. Next physical steps are gated on parts (RAK) and on the
+Design + BOM drafted; case dimensions hardened against confirmed board specs
+(RAK19007 60×30, XIAO 21×17.8, M1.2 RAK fasteners, RAK19007 onboard solar
+input). The case still needs a **render + test print** to validate fit — it
+hasn't been rendered here (no OpenSCAD on the build machine). Remaining VERIFY
+items: component heights, your actual carrier-board size, and the USB-C/antenna
+positions on your RAK. Next physical steps are gated on parts and on the
 **gateway subscriber-mode** software change (lets the node actually sync). The
 whole device-side stack is already host-tested in `../pico_node/`.
