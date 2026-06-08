@@ -58,6 +58,28 @@ def _rate_limit_per_node() -> int:
     return _config_int('gateway', 'rate_limit_per_node', 5)
 
 
+def gateway_allowed_nodes() -> list:
+    """Gateway-specific requester allow-list ([gateway] allowed_nodes). When set,
+    it RESTRICTS who may use this gateway to exactly these node IDs — independent
+    of the general [allow_list]. Empty = no gateway-specific restriction."""
+    return _csv('gateway', 'allowed_nodes', '')
+
+
+def is_requester_authorized(requester_id, fallback_allowed=None) -> bool:
+    """Decide whether *requester_id* may use this gateway.
+
+    - If [gateway] allowed_nodes is set, it is authoritative: only those nodes
+      are allowed (lock-down mode, configurable from the web GUI).
+    - Otherwise fall back to the general [allow_list] (fallback_allowed): any
+      allowed node may use the gateway (the current open default).
+    - If both are empty, the gateway is open to all."""
+    gw = gateway_allowed_nodes()
+    effective = gw if gw else list(fallback_allowed or [])
+    if effective and requester_id not in effective:
+        return False
+    return True
+
+
 # ── Validation / safety ──────────────────────────────────────────────────────
 
 def _host_is_private(host: str) -> bool:
@@ -205,7 +227,7 @@ def handle_apireq(rid: str, requester_id: str, kind: str, payload: str,
     APIRESP over the mesh or a local DM. Returns immediately; the call runs off
     the radio/main thread.
     """
-    if allowed_nodes and requester_id not in allowed_nodes:
+    if not is_requester_authorized(requester_id, allowed_nodes):
         reply_fn("ERR", "not authorized to use this gateway")
         return
     if not _rate_ok(requester_id):

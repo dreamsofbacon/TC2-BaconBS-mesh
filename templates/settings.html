@@ -141,9 +141,10 @@
   <p class="text-muted">
     When enabled, this internet-connected node fulfills API requests from offline
     mesh peers — a generic HTTP GET to an allowed host, or an AI prompt relayed to
-    a locally-hosted Project Nomad (Ollama / OpenAI-compatible) endpoint. Only
-    nodes in the Urgent-board allow-list may use the gateway. Add <code>A</code> to
-    the Utilities menu items to expose it to users.
+    a locally-hosted Project Nomad (Ollama / OpenAI-compatible) endpoint. By
+    default any node in the general allow-list may use the gateway; set an
+    "Allowed requester nodes" list below to lock it down to specific nodes. Add
+    <code>A</code> to the Utilities menu items to expose it to users.
   </p>
   <form method="post" action="{{ url_for('settings_page') }}#gateway">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -153,6 +154,20 @@
         <input type="checkbox" name="gateway_enabled" value="1" {% if gateway.enabled %}checked{% endif %}>
         Enable this node as an API gateway
       </label>
+    </div>
+
+    <hr style="margin:1.5rem 0">
+    <h3>Access control</h3>
+    <div class="form-group">
+      <label for="gateway_allowed_nodes">Allowed requester nodes (comma separated)</label>
+      <input type="text" id="gateway_allowed_nodes" name="gateway_allowed_nodes" class="form-control"
+             placeholder="!04058ac8,!04059140" value="{{ gateway.allowed_nodes }}">
+      <p class="text-muted">
+        Lock the gateway down to these node IDs only. <strong>Leave blank to allow any
+        node in the general allow-list</strong> (the current open behaviour). When set,
+        this list overrides the general allow-list for gateway access — only these nodes
+        may issue API/AI requests.
+      </p>
     </div>
 
     <h3>Project Nomad AI</h3>
