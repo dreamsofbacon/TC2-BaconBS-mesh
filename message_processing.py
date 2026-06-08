@@ -2040,10 +2040,38 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             logging.info(f"APIREQ from {sender_node_id}: rid={rid} kind={kind}")
             _allowed = getattr(interface, 'allowed_nodes', None)
             _dest = sender_node_id
+
+            def _reply(status, body, _rid=rid, _dest=_dest):
+                # Persist for store-and-forward retrieval (Phase 2) so a node that
+                # was asleep when we answered can still fetch it via APIPOLL, then
+                # send immediately (best-effort) for nodes that are listening.
+                try:
+                    from db_operations import enqueue_api_response
+                    enqueue_api_response(_rid, _dest, status, body)
+                except Exception:
+                    pass
+                send_api_response(_rid, status, body, _dest, interface)
+
             gateway.handle_apireq(
-                rid, requester_id, kind, payload, _allowed,
-                reply_fn=lambda status, body: send_api_response(rid, status, body, _dest, interface),
+                rid, requester_id, kind, payload, _allowed, reply_fn=_reply,
             )
+        elif message.startswith("APIPOLL|"):
+            # Gateway side (Phase 2): an intermittently-connected node asks for any
+            # responses we queued for it while it was offline. Flush undelivered.
+            parts = message.split("|", 1)
+            poll_node = parts[1] if len(parts) == 2 and parts[1] else sender_node_id
+            try:
+                from db_operations import (fetch_undelivered_api_responses,
+                                           mark_api_responses_delivered)
+                pending = fetch_undelivered_api_responses(poll_node)
+                for entry in pending:
+                    send_api_response(entry['rid'], entry['status'], entry['body'],
+                                      poll_node, interface)
+                if pending:
+                    mark_api_responses_delivered([e['id'] for e in pending])
+                    logging.info(f"APIPOLL flushed {len(pending)} response(s) to {poll_node}")
+            except Exception as exc:
+                logging.warning(f"APIPOLL handling failed: {exc}")
         elif message.startswith("APIRESP|"):
             # Requester side: first (or only) frame of a response. Header carries
             # the total length so single-packet responses complete immediately.
@@ -2321,7 +2349,7 @@ def on_receive(packet, interface):
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|", "HASHZGAP|",
                                    "HAVE|", "WANT|", "EVENT|", "PEERGOSSIP|",
                                    "APIREQ|", "APIRESP|", "APIRESPCONT|", "APIRESPMETA|",
-                                   "APIRESPGAP|"])
+                                   "APIRESPGAP|", "APIPOLL|"])
 
             msg_type = "sync" if is_sync_message else "user"
             sync_frame = message_string.split("|", 1)[0] if is_sync_message and "|" in message_string else (message_string[:24] if is_sync_message else "")
