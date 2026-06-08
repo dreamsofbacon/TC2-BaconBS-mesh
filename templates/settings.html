@@ -273,6 +273,33 @@
   </form>
 </div>
 
+<div class="card" id="storage" style="max-width:600px">
+  <h2>Storage / Database Size Cap</h2>
+  <p class="text-muted">
+    Keep the database under a size limit on long-running unattended nodes. When
+    the on-disk database (including the WAL) exceeds the cap, the <strong>oldest</strong>
+    content is deleted to bring it back under — bulletins, channel comments, and
+    mail. These deletions propagate over the mesh like any other delete, so every
+    node (including a Pico cache node) prunes the same records the same way.
+    <strong>0 disables the cap</strong> (keep everything — the default).
+  </p>
+  <p class="text-muted">Current on-disk size: <strong>{{ diagnostics.db_total_size }}</strong>
+    (DB {{ diagnostics.db_size }} + WAL {{ diagnostics.wal_size }}).</p>
+  <form method="post" action="{{ url_for('settings_page') }}#storage">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="storage">
+    <div class="form-group">
+      <label for="max_db_size_mb">Max database size (MB, 0 = unlimited)</label>
+      <input type="number" id="max_db_size_mb" name="max_db_size_mb" class="form-control"
+             style="width:160px" min="0" value="{{ storage.max_db_size_mb }}">
+      <p class="text-muted">Enforced hourly during maintenance. The newest 20 records per
+        type are always kept, so a board is never emptied. Trimming is gradual (bounded per
+        pass) to avoid a burst of delete traffic.</p>
+    </div>
+    <button class="btn" type="submit">Save storage cap</button>
+  </form>
+</div>
+
 <div class="card" id="diagnostics" style="max-width:900px">
   <h2>Diagnostics</h2>
   <p class="text-muted">Quick runtime and BBS status details for troubleshooting.</p>
