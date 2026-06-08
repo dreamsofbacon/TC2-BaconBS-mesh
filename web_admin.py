@@ -187,6 +187,14 @@ def load_storage_settings(config_path: str) -> dict:
   }
 
 
+def load_subscriber_settings(config_path: str) -> dict:
+  """Read the [sync] subscriber_nodes (pull-only nodes, e.g. a Pico cache)."""
+  config = read_config_file(config_path)
+  raw = config.get("sync", "subscriber_nodes", fallback="").strip()
+  nodes = [n.strip() for n in raw.split(",") if n.strip()]
+  return {"subscriber_nodes_text": "\n".join(nodes)}
+
+
 def load_gateway_settings(config_path: str) -> dict:
   """Read the [gateway] section for the web-admin form (with defaults)."""
   config = read_config_file(config_path)
@@ -3043,6 +3051,18 @@ def create_app(runtime_interface=None) -> Flask:
       config.set("boards", "bulletin_boards", ",".join(boards))
       write_config_file(config, app.config["CONFIG_PATH"])
 
+    def save_subscriber_settings(form) -> None:
+      """Persist [sync] subscriber_nodes — node IDs the gateway answers pull
+      requests for (WANT/HASHMISS) without push-syncing to them. Read fresh by
+      the server's peer-list refresh, so it hot-reloads."""
+      config = read_config_file(app.config["CONFIG_PATH"])
+      if not config.has_section("sync"):
+        config.add_section("sync")
+      raw = form.get("subscriber_nodes", "")
+      nodes = [n.strip() for n in raw.replace("\r", "\n").replace(",", "\n").split("\n") if n.strip()]
+      config.set("sync", "subscriber_nodes", ",".join(nodes))
+      write_config_file(config, app.config["CONFIG_PATH"])
+
     def save_storage_settings(form) -> None:
       """Persist [maintenance] max_db_size_mb. Read fresh by the server each
       maintenance pass, so the change hot-reloads (no restart needed)."""
@@ -3647,12 +3667,14 @@ def create_app(runtime_interface=None) -> Flask:
       diagnostics = build_settings_diagnostics()
       gateway_settings = load_gateway_settings(app.config["CONFIG_PATH"])
       storage_settings = load_storage_settings(app.config["CONFIG_PATH"])
+      subscriber_settings = load_subscriber_settings(app.config["CONFIG_PATH"])
       return render_template(
         "settings.html",
         title="Settings",
         show_nav=True,
         gateway=gateway_settings,
         storage=storage_settings,
+        subscribers=subscriber_settings,
         boards_text=",".join(app.config["BULLETIN_BOARDS"]),
         env_override=bool(os.getenv("BBS_BULLETIN_BOARDS", "").strip()),
         bbs_nodes_text="\n".join(bbs_nodes),
@@ -3865,6 +3887,11 @@ def create_app(runtime_interface=None) -> Flask:
           save_gateway_settings(request.form)
           flash("API gateway settings saved.", "success")
           return redirect(url_for("settings_page") + "#gateway")
+
+        if section == "subscribers":
+          save_subscriber_settings(request.form)
+          flash("Subscriber nodes saved. These nodes can pull (WANT/HASHMISS) but are not push-synced to.", "success")
+          return redirect(url_for("settings_page") + "#subscribers")
 
         if section == "storage":
           save_storage_settings(request.form)
