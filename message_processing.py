@@ -2389,6 +2389,15 @@ def on_receive(packet, interface):
                 else:
                     log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "drop", "Ignored non-sync from BBS node")
                     logging.info("Ignoring non-sync message from known BBS node")
+            elif (sender_node_id in getattr(interface, 'subscriber_nodes', []) or []
+                  ) and message_string.startswith(("WANT|", "HASHMISS|")):
+                # Pull-only subscriber (e.g. a Pico cache node): answer its op_log
+                # WANT / record HASHMISS, but nothing that would let it push to us.
+                # It is intentionally NOT in bbs_nodes, so the push/hash-repair
+                # loops never target it — no reconcile churn.
+                log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "subscriber",
+                                     f"Answered subscriber pull ({sync_frame})")
+                process_message(sender_id, message_string, interface, is_sync_message=True, sender_node_id=sender_node_id)
             elif to_id is not None and to_id != 0 and to_id != 255 and to_id == interface.myInfo.my_node_num:
                 log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "direct", "Accepted direct message")
                 process_message(sender_id, message_string, interface, is_sync_message=False, sender_node_id=sender_node_id)
