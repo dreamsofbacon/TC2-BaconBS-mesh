@@ -202,10 +202,18 @@ def refresh_peer_lists_from_config(config_path: str, interface, system_config: d
     allowed_nodes = cfg.get('allow_list', 'allowed_nodes', fallback='').split(',')
     allowed_nodes = [node.strip() for node in allowed_nodes if node.strip()]
 
+    # Pull-only subscribers (e.g. a Pico cache node): we answer their WANT/HASHMISS
+    # but never push-sync or hash-repair TO them (they can't reciprocate). Kept in
+    # a separate list from bbs_nodes precisely so the push/repair loops skip them.
+    subscriber_nodes = cfg.get('sync', 'subscriber_nodes', fallback='').split(',')
+    subscriber_nodes = [node.strip() for node in subscriber_nodes if node.strip()]
+
     interface.bbs_nodes = bbs_nodes
     interface.allowed_nodes = allowed_nodes
+    interface.subscriber_nodes = subscriber_nodes
     system_config['bbs_nodes'] = bbs_nodes
     system_config['allowed_nodes'] = allowed_nodes
+    system_config['subscriber_nodes'] = subscriber_nodes
 
 
 def write_runtime_diagnostics_snapshot(interface, system_config: dict) -> None:

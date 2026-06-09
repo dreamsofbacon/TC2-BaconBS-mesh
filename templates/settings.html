@@ -273,6 +273,27 @@
   </form>
 </div>
 
+<div class="card" id="subscribers" style="max-width:600px">
+  <h2>Subscriber Nodes (cache clients)</h2>
+  <p class="text-muted">
+    Node IDs of <strong>pull-only</strong> clients — e.g. a low-power Pico cache
+    node. This gateway will answer their sync requests (<code>WANT</code> /
+    <code>HASHMISS</code>) but will <strong>not</strong> push-sync or hash-repair
+    to them, so they never cause reconcile churn. Put cache nodes here, <em>not</em>
+    in the BBS sync-peers list. One node ID per line (or comma-separated).
+  </p>
+  <form method="post" action="{{ url_for('settings_page') }}#subscribers">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="subscribers">
+    <div class="form-group">
+      <label for="subscriber_nodes">Subscriber node IDs</label>
+      <textarea id="subscriber_nodes" name="subscriber_nodes" class="form-control"
+                rows="3" placeholder="!a1b2c3d4">{{ subscribers.subscriber_nodes_text }}</textarea>
+    </div>
+    <button class="btn" type="submit">Save subscriber nodes</button>
+  </form>
+</div>
+
 <div class="card" id="storage" style="max-width:600px">
   <h2>Storage / Database Size Cap</h2>
   <p class="text-muted">
