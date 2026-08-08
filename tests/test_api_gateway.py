@@ -231,6 +231,7 @@ class GatewayDispatchTests(unittest.TestCase):
         self.assertEqual(messages[0]['content'], 'Be accurate and practical.')
         self.assertIn('150 characters', messages[1]['content'])
         self.assertIn('160 UTF-8 bytes', messages[1]['content'])
+        self.assertIn('Emojis are welcome', messages[1]['content'])
         self.assertEqual(messages[-1], {'role': 'user', 'content': 'space weather'})
 
         status, body = _join_apiresp(iface.sent_texts, "nb")

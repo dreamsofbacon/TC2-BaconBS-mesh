@@ -204,9 +204,10 @@ def _nomad_delivery_instruction(max_characters: int, max_bytes: int) -> str:
         "Mesh delivery constraint (this overrides earlier length guidance): "
         f"return one concise plain-text reply of at most {max_characters} "
         f"characters and {max_bytes} UTF-8 bytes. Both limits are hard. Answer "
-        "directly, use ASCII where practical, and omit Markdown headings, "
-        "tables, preambles, and follow-up offers. End with a complete sentence; "
-        "when everything will not fit, keep only the essential answer."
+        "directly. Emojis are welcome when they add clear meaning, but use them "
+        "sparingly because they consume multiple UTF-8 bytes. Omit Markdown "
+        "headings, tables, preambles, and follow-up offers. End with a complete "
+        "sentence; when everything will not fit, keep only the essential answer."
     )
 
 

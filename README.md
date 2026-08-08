@@ -183,6 +183,7 @@ Project Nomad can format each answer to a 150-character limit while also
 respecting the active radio's safe single-message ceiling: 160 UTF-8 bytes on
 MeshCore or 220 on Meshtastic. The gateway adds both limits to Nomad's system
 instructions and enforces them at a sentence or word break if the model overruns.
+Useful emojis remain allowed and are counted against the UTF-8 byte ceiling.
 
 ```ini
 [gateway]
