@@ -64,6 +64,7 @@ too (Phase 0 prunes `op_log` and `api_mailbox`). No unbounded growth on either e
 |------|---------|---------|
 | `store.py` | Pico + PC | Bounded SD cache: capped records, board filter, op_log watermarks, JSON persistence. |
 | `opsync.py` | Pico + PC | HAVE→WANT, EVENT→watermark+HASHMISS, deletes. |
+| `fragment_assembly.py` | Pico + PC | Shared Unicode-offset reassembly, overlap validation, gap detection, and conflict state. |
 | `records.py` | Pico + PC | Parse BULLETIN/MAIL/CHANNELCOMMENT (+ CONT/META chunking, base64 sender). |
 | `syncclient.py` | Pico + PC | Glue: routes a frame to the right handler, upserts records, tracks outstanding HASHMISS. |
 | `meshtastic_link.py` | Pico + PC | Meshtastic stream framing + ToRadio/FromRadio text. |
@@ -74,9 +75,9 @@ too (Phase 0 prunes `op_log` and `api_mailbox`). No unbounded growth on either e
 
 ## Install
 1. Flash **CircuitPython 9.x** to the Pico (hold BOOTSEL, drag the `.uf2`).
-2. Copy `store.py`, `opsync.py`, `records.py`, `syncclient.py`,
-   `meshtastic_link.py`, `minipb.py`, `wire.py`, `config.py`, `code.py` to the
-   `CIRCUITPY` drive. (Skip `README.md` and `__pycache__`.)
+2. Copy `store.py`, `opsync.py`, `fragment_assembly.py`, `records.py`,
+   `syncclient.py`, `meshtastic_link.py`, `minipb.py`, `wire.py`, `config.py`,
+   `code.py` to the `CIRCUITPY` drive. (Skip `README.md` and `__pycache__`.)
 3. Wire and mount the SD card; set `CACHE_PATH` (e.g. `/sd/bbs`).
 4. Edit `config.py`: `GATEWAY_NODE_ID`, `UART_TX`/`UART_RX`, duty cycle.
 5. Watch the serial console for the `sync wake complete: ...` line.
@@ -92,10 +93,11 @@ mismatch-repair loops. Authorize it with the existing gateway allow-list. This
 is the next live change and needs a deploy + sign-off — held until hardware.
 
 ## Proven vs. next
-- **Proven (51 host tests):** protobuf + framing, op_log HAVE/WANT/EVENT,
-  BULLETIN/MAIL/CHANNELCOMMENT parsing incl. chunk reassembly and base64 sender,
-  bounded cache + watermarks + persistence, and the full SyncClient round-trip
-  (HAVE→WANT, EVENT→HASHMISS→record→cached, deletes, re-request).
+- **Proven by host tests:** protobuf + framing, op_log HAVE/WANT/EVENT,
+  BULLETIN/MAIL/CHANNELCOMMENT parsing including loss-tolerant Fragment
+  Assembly and base64 sender, bounded cache + watermarks + persistence, and the
+  full SyncClient round-trip (HAVE→WANT, EVENT→HASHMISS→record→cached, deletes,
+  conflict rejection, and re-request).
 - **Next (on hardware):** Serial-module PROTO bring-up; confirm `want_config`
   returns our node number; gateway subscriber mode; a real multi-record sync
   over the air; power-gating + deep-sleep current; then a reader UI for the cache.

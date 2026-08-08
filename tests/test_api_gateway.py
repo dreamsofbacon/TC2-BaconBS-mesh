@@ -387,6 +387,22 @@ class RequesterReassemblyTests(unittest.TestCase):
         self.assertTrue(delivered)
         self.assertIn("AAAAABBBBBCCCCC", delivered[-1])
 
+    def test_unicode_character_offsets_reassemble_emoji(self):
+        iface = _Iface()
+        utils.register_api_request("rEmoji", 8)
+        message_processing.process_message(
+            sender_id=1, message="APIRESP|rEmoji|200|4|A🙂B",
+            interface=iface, is_sync_message=True, sender_node_id="!gw",
+        )
+        message_processing.process_message(
+            sender_id=1, message="APIRESPCONT|rEmoji|3|C",
+            interface=iface, is_sync_message=True, sender_node_id="!gw",
+        )
+
+        delivered = [text for destination, text in iface.sent_texts if destination == 8]
+        self.assertTrue(delivered)
+        self.assertIn("A🙂BC", delivered[-1])
+
     def test_error_status_prefixed(self):
         iface = _Iface()
         utils.register_api_request("rC", 9)
@@ -440,6 +456,61 @@ class GapFillTests(unittest.TestCase):
         # nothing received
         self.assertEqual(f({}, 12), [(0, 12)])
 
+    def test_meta_does_not_false_complete_matching_overlaps_with_a_tail_gap(self):
+        iface = _Iface()
+        utils.register_api_request("rOverlap", 77, gateway_node_id="!gw")
+        message_processing.process_message(
+            sender_id=1, message="APIRESPCONT|rOverlap|0|ABCDE",
+            interface=iface, is_sync_message=True, sender_node_id="!gw",
+        )
+        message_processing.process_message(
+            sender_id=1, message="APIRESPCONT|rOverlap|3|DEFGH",
+            interface=iface, is_sync_message=True, sender_node_id="!gw",
+        )
+        message_processing.process_message(
+            sender_id=1, message="APIRESPMETA|rOverlap|10",
+            interface=iface, is_sync_message=True, sender_node_id="!gw",
+        )
+
+        self.assertFalse(any(destination == 77 for destination, _ in iface.sent_texts))
+        message_processing._apigw_response_buffers["rOverlap"]["created_at"] -= 100
+        with patch("db_operations.peer_supports", lambda peer, capability: capability == "apigf"):
+            sent = message_processing.request_pending_api_gaps(iface)
+        self.assertEqual(sent, 1)
+        self.assertTrue(any(text == "APIRESPGAP|rOverlap|8-10" for _, text in iface.sent_texts))
+
+    def test_conflicting_overlap_is_rejected_then_full_resend_repairs_response(self):
+        iface = _Iface()
+        utils.register_api_request("rConflict", 78, gateway_node_id="!gw")
+        message_processing.process_message(
+            sender_id=1, message="APIRESP|rConflict|200|10|ABCDE",
+            interface=iface, is_sync_message=True, sender_node_id="!gw",
+        )
+        message_processing.process_message(
+            sender_id=1, message="APIRESPCONT|rConflict|3|XX",
+            interface=iface, is_sync_message=True, sender_node_id="!gw",
+        )
+
+        self.assertFalse(any(destination == 78 for destination, _ in iface.sent_texts))
+        message_processing._apigw_response_buffers["rConflict"]["created_at"] -= 100
+        with patch("db_operations.peer_supports", lambda peer, capability: capability == "apigf"):
+            sent = message_processing.request_pending_api_gaps(iface)
+        self.assertEqual(sent, 1)
+        self.assertTrue(any(text == "APIRESPGAP|rConflict|*" for _, text in iface.sent_texts))
+
+        # A full resend begins a clean repair generation.
+        message_processing.process_message(
+            sender_id=1, message="APIRESP|rConflict|200|10|VWXYZ",
+            interface=iface, is_sync_message=True, sender_node_id="!gw",
+        )
+        message_processing.process_message(
+            sender_id=1, message="APIRESPCONT|rConflict|5|12345",
+            interface=iface, is_sync_message=True, sender_node_id="!gw",
+        )
+        delivered = [text for destination, text in iface.sent_texts if destination == 78]
+        self.assertTrue(delivered)
+        self.assertIn("VWXYZ12345", delivered[-1])
+
     def test_parse_gap_ranges(self):
         f = utils._parse_gap_ranges
         self.assertEqual(f("*", 20), [(0, 20)])
@@ -463,6 +534,26 @@ class GapFillTests(unittest.TestCase):
         utils.resend_api_response_ranges("rH", "*", iface)
         self.assertTrue(any(t.startswith("APIRESP|rH|200|10|HELLOWORLD")
                             for _, t in iface.sent_texts))
+
+    def test_full_resend_is_rechunked_to_the_transport_byte_limit(self):
+        iface = _Iface(max_text_bytes=60)
+        body = "A🙂BCDEF" * 30
+        utils._retain_sent_api_response("rSized", "200", body, "!user")
+
+        self.assertTrue(utils.resend_api_response_ranges("rSized", "*", iface))
+
+        response_frames = [
+            (destination, text) for destination, text in iface.sent_texts
+            if text.startswith(("APIRESP|rSized|", "APIRESPCONT|rSized|"))
+        ]
+        self.assertTrue(response_frames)
+        self.assertTrue(all(
+            len(text.encode("utf-8")) <= iface.max_text_bytes
+            for _, text in response_frames
+        ))
+        status, reassembled = _join_apiresp(response_frames, "rSized")
+        self.assertEqual(status, "200")
+        self.assertEqual(reassembled, body)
 
     def test_resend_unknown_rid_returns_false(self):
         iface = _Iface()

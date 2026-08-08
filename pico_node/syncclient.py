@@ -23,6 +23,12 @@ _DELETE_PREFIXES = (
     ("DELETE_CHANNELCOMMENT|", "channels"),
 )
 
+_CACHE_TO_SYNC_SCOPE = {
+    "bulletins": "bulletins",
+    "mail": "mail",
+    "channels": "channel_comments",
+}
+
 
 class SyncClient:
     def __init__(self, store):
@@ -55,7 +61,14 @@ class SyncClient:
             self.store.upsert(scope, record)
             if complete:
                 self._clear_awaiting(record.get("unique_id"))
-        return []
+        repairs = []
+        for cache_scope, uid in self._ra.pop_repairs():
+            sync_scope = _CACHE_TO_SYNC_SCOPE.get(cache_scope, cache_scope)
+            self._awaiting.setdefault(sync_scope, set()).add(uid)
+            frame = opsync.build_hashmiss(sync_scope, uid)
+            if frame not in repairs:
+                repairs.append(frame)
+        return repairs
 
     def _clear_awaiting(self, uid):
         for uids in self._awaiting.values():

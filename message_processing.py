@@ -11,6 +11,7 @@ import uuid
 import threading
 
 from meshtastic import BROADCAST_NUM
+from pico_node.fragment_assembly import CONFLICT, INVALID, FragmentAssembly
 
 from command_handlers import (
     handle_mail_command, handle_bulletin_command, handle_help_command, handle_stats_command, handle_fortune_command,
@@ -164,9 +165,9 @@ _HASH_BUFFER_MAX_AGE_SECONDS = 600
 # flooding the channel with redundant requests.
 _HASH_BUFFER_RETRY_AFTER_SECONDS = 35
 _recent_hashmiss_requests = {}
-# Transient API-gateway response reassembly buffers, keyed by request id (rid) →
-# {'status', 'expected', 'parts': {offset: chunk}}. In-memory only (responses are
-# not DB records); guarded by a lock (radio thread writes, sweep reads).
+# Transient API-gateway response buffers, keyed by request id (rid). Each keeps
+# status/source metadata beside one FragmentAssembly. In-memory only (responses
+# are not DB records); guarded by a lock (radio thread writes, sweep reads).
 _apigw_response_buffers: dict = {}
 _apigw_buffers_lock = threading.Lock()
 # Peer-AGNOSTIC in-flight record-request guard. Keyed by (scope, key) with no
@@ -704,24 +705,46 @@ def _should_request_record(scope: str, key: str) -> bool:
     return True
 
 
-def _apigw_apply_chunk(rid, offset, chunk, status=None, expected=None, source=None):
-    """Accumulate an API-response chunk by absolute char offset. Returns
-    (status, body) once the assembled length reaches the expected total, else
-    None. Mirrors the bulletin CONT reassembly but in transient memory."""
+def _apigw_apply_chunk(rid, offset=None, chunk=None, status=None, expected=None, source=None):
+    """Apply one API-response Fragment and return a completed response, if any.
+
+    A full APIRESP header starts a clean generation after a Conflicting
+    Overlap.  Continuations and META frames otherwise share the same strict
+    Unicode-character coverage rules as every other Fragment Assembly.
+    """
     with _apigw_buffers_lock:
         buf = _apigw_response_buffers.setdefault(
-            rid, {'status': '', 'expected': None, 'parts': {}, 'source': None, 'created_at': time.time()}
+            rid, {
+                'status': '',
+                'assembly': FragmentAssembly(),
+                'source': None,
+                'created_at': time.time(),
+            }
         )
+        assembly = buf['assembly']
+        if (assembly.repair_required and offset == 0 and chunk is not None
+                and status is not None and expected is not None):
+            assembly.reset()
+            buf['created_at'] = time.time()
         if status is not None:
             buf['status'] = status
-        if expected is not None:
-            buf['expected'] = int(expected)
         if source is not None:
             buf['source'] = source
-        buf['parts'][int(offset)] = chunk
-        assembled_len = sum(len(c) for c in buf['parts'].values())
-        if buf['expected'] is not None and assembled_len >= buf['expected']:
-            body = ''.join(buf['parts'][o] for o in sorted(buf['parts']))
+        outcome = assembly.accept(offset=offset, text=chunk, expected=expected)
+        if outcome == CONFLICT:
+            # Make the next maintenance sweep request a full resend immediately.
+            buf['created_at'] = 0.0
+            logging.warning(
+                f"Rejected conflicting API response Fragment rid={rid}; full repair required"
+            )
+            return None
+        if outcome == INVALID:
+            logging.warning(
+                f"Rejected invalid API response Fragment rid={rid}; issue={assembly.last_issue}"
+            )
+            return None
+        body = assembly.complete_text()
+        if body is not None:
             st = buf['status']
             _apigw_response_buffers.pop(rid, None)
             return (st, body)
@@ -730,17 +753,13 @@ def _apigw_apply_chunk(rid, offset, chunk, status=None, expected=None, source=No
 
 def _compute_response_gaps(parts: dict, expected: int) -> list:
     """Given received {offset: chunk} and the expected total length, return the
-    list of missing (start, end) byte ranges (end exclusive). Assumes contiguous
-    chunks laid at their offsets; any uncovered span is a gap to refill."""
-    gaps = []
-    cursor = 0
+    list of missing (start, end) Unicode character ranges (end exclusive)."""
+    assembly = FragmentAssembly()
     for off in sorted(parts):
-        if off > cursor:
-            gaps.append((cursor, off))  # hole before this chunk
-        cursor = max(cursor, off + len(parts[off]))
-    if cursor < expected:
-        gaps.append((cursor, expected))  # trailing tail never arrived
-    return gaps
+        assembly.accept(int(off), str(parts[off]))
+    assembly.accept(expected=int(expected))
+    gaps = assembly.gaps()
+    return [(0, int(expected))] if gaps is None else gaps
 
 
 def request_pending_api_gaps(interface, max_age=12.0, cooldown=10.0, no_response_age=45.0):
@@ -768,9 +787,11 @@ def request_pending_api_gaps(interface, max_age=12.0, cooldown=10.0, no_response
             buf = _apigw_response_buffers.get(rid)
             buf_snap = None
             if buf is not None:
+                assembly = buf['assembly']
                 buf_snap = {
-                    'expected': buf.get('expected'),
-                    'parts': dict(buf.get('parts', {})),
+                    'expected': assembly.expected,
+                    'gaps': assembly.gaps(),
+                    'repair_required': assembly.repair_required,
                     'source': buf.get('source'),
                     'created_at': buf.get('created_at', entry.get('created_at', now)),
                 }
@@ -791,10 +812,10 @@ def request_pending_api_gaps(interface, max_age=12.0, cooldown=10.0, no_response
             if now - float(buf_snap['created_at']) < max_age:
                 continue
             expected = buf_snap['expected']
-            if not expected:
-                spec = "*"  # never learned the total length; ask for a full resend
+            if buf_snap['repair_required'] or expected is None:
+                spec = "*"  # unknown total or conflict; ask for a full resend
             else:
-                gaps = _compute_response_gaps(buf_snap['parts'], int(expected))
+                gaps = buf_snap['gaps']
                 if not gaps:
                     continue
                 spec = ",".join(f"{a}-{b}" for a, b in gaps)
@@ -2109,16 +2130,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 expected = int(parts[2])
             except ValueError:
                 return
-            # META only confirms expected length (offset 0 already holds the
-            # header chunk); check for completion.
-            done = None
-            with _apigw_buffers_lock:
-                buf = _apigw_response_buffers.get(parts[1])
-                if buf is not None:
-                    buf['expected'] = expected
-                    if sum(len(c) for c in buf['parts'].values()) >= expected:
-                        done = (buf['status'], ''.join(buf['parts'][o] for o in sorted(buf['parts'])))
-                        _apigw_response_buffers.pop(parts[1], None)
+            # META declares the character length without adding a Fragment.
+            done = _apigw_apply_chunk(parts[1], expected=expected, source=sender_node_id)
             if done is not None:
                 _deliver_api_response(parts[1], done[0], done[1], interface)
         elif message.startswith("APIRESPCONT|"):
@@ -2134,7 +2147,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 _deliver_api_response(parts[1], done[0], done[1], interface)
         elif message.startswith("APIRESPGAP|"):
             # Gateway side: a requester is missing part of a response it asked
-            # for. Re-send the requested byte ranges from our retained copy.
+            # for. Re-send the requested character ranges from our retained copy.
             parts = message.split("|", 2)
             if len(parts) < 2 or not parts[1]:
                 return

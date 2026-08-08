@@ -925,9 +925,11 @@ def send_api_poll(local_node_id, interface) -> int:
 
 
 def _parse_gap_ranges(spec: str, total: int) -> list:
-    """Parse an APIRESPGAP range spec into [(start, end), ...] clamped to total.
-    '*' (or empty) means the whole body. Ranges are 'start-end' (end exclusive),
-    comma-separated."""
+    """Parse APIRESPGAP Unicode character ranges, clamped to total length.
+
+    ``*`` (or empty) means the whole body. Ranges are ``start-end`` with an
+    exclusive end, comma-separated.
+    """
     spec = (spec or "").strip()
     if spec in ("", "*"):
         return [(0, total)]
@@ -948,10 +950,47 @@ def _parse_gap_ranges(spec: str, total: int) -> list:
     return out
 
 
+def _send_api_response_range(rid, status, body, total, start, end, destination,
+                             interface, pause) -> bool:
+    """Send one requested character range in transport-sized wire Fragments."""
+    max_bytes = get_max_text_bytes(interface)
+    position = start
+
+    if start == 0:
+        prefix = f"APIRESP|{rid}|{status}|{total}|"
+        budget = max_bytes - len(prefix.encode('utf-8'))
+        if budget < 0:
+            logging.warning("API response repair header exceeds packet limit")
+            return False
+        chunk, _ = _take_prefix_within_bytes(body[position:end], budget)
+        if position < end and not chunk:
+            logging.warning("API response repair header leaves no room for content")
+            return False
+        _send_one_sync(prefix + chunk, destination, interface, pause_seconds=pause)
+        position += len(chunk)
+
+    while position < end:
+        prefix = f"APIRESPCONT|{rid}|{position}|"
+        budget = max_bytes - len(prefix.encode('utf-8'))
+        if budget <= 0:
+            logging.warning("API response repair continuation prefix exceeds packet limit")
+            return False
+        chunk, _ = _take_prefix_within_bytes(body[position:end], budget)
+        if not chunk:
+            logging.warning("API response repair could not fit the next character")
+            return False
+        _send_one_sync(prefix + chunk, destination, interface, pause_seconds=pause)
+        position += len(chunk)
+    return True
+
+
 def resend_api_response_ranges(rid, range_spec, interface) -> bool:
-    """Gateway side: re-send the requested byte ranges of a retained response as
-    APIRESPCONT frames (offset 0 range re-sends the APIRESP header too, so a lost
-    header is recoverable). Returns False if the rid is no longer retained."""
+    """Re-send requested character ranges from a retained gateway response.
+
+    Every repair Fragment is fitted independently to the active transport's
+    UTF-8 byte ceiling.  A range beginning at zero re-sends the APIRESP header,
+    making a lost header and a conflict-triggered full replay recoverable.
+    """
     with _apigw_lock:
         entry = _apigw_sent.get(rid)
         snap = dict(entry) if entry else None
@@ -964,18 +1003,10 @@ def resend_api_response_ranges(rid, range_spec, interface) -> bool:
         return False
     pause = get_sync_pause_seconds()
     for start, end in ranges:
-        chunk = body[start:end]
-        if start == 0:
-            # Re-send the header frame (carries status + total length).
-            _send_one_sync(
-                f"APIRESP|{rid}|{snap['status']}|{total}|{chunk}",
-                snap['dest'], interface, pause_seconds=pause,
-            )
-        else:
-            _send_one_sync(
-                f"APIRESPCONT|{rid}|{start}|{chunk}",
-                snap['dest'], interface, pause_seconds=pause,
-            )
+        if not _send_api_response_range(
+                rid, snap['status'], body, total, start, end, snap['dest'],
+                interface, pause):
+            return False
     # Always (re)send META so the requester knows the authoritative total length
     # even if the original header frame is the one that was lost.
     _send_one_sync(f"APIRESPMETA|{rid}|{total}", snap['dest'], interface, pause_seconds=pause)

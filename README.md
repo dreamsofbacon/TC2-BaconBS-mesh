@@ -177,6 +177,22 @@ reconcile_max_per_pass = 20        # max records pulled/pushed per repair cycle
 sync_interval_minutes = 5          # how often a full P1–P5 sync runs
 ```
 
+### Loss-Tolerant Fragment Assembly
+
+Gateway replies and multi-packet BBS records now share one Fragment Assembly
+module across the server and Pico adapters. Completion requires continuous
+coverage from character offset `0` through the declared length; overlapping
+Fragment lengths are never added together as a shortcut.
+
+- Exact duplicates and matching overlaps are idempotent.
+- Matching overlaps may safely extend the verified text.
+- Conflicting overlaps are rejected without overwriting accepted content.
+- Gateway conflicts request a transport-sized full `APIRESPGAP` replay.
+- Database conflicts mark the record incomplete for the existing `HASHMISS`
+  repair cycle; Pico conflicts issue their own `HASHMISS`.
+- Offsets and repair ranges count Unicode characters. UTF-8 bytes are used only
+  to fit each individual radio frame, so emoji remain safe.
+
 ### Project Nomad Reply Sizing
 
 Project Nomad can format each answer to a 150-character limit while also

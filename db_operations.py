@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from app_paths import resolve_app_path
 from op_log import ensure_op_log_schema, try_dual_write, backfill_op_log as _backfill_op_log
+from pico_node.fragment_assembly import CONFLICT, INVALID, FragmentAssembly
 
 from meshtastic import BROADCAST_NUM
 
@@ -139,12 +140,27 @@ def _prune_pending_continuations(buffer_store: dict) -> None:
         buffer_store.pop(unique_id, None)
 
 
-def _queue_pending_continuation(buffer_store: dict, unique_id: str, char_offset: int, chunk: str) -> None:
+def _queue_pending_continuation(buffer_store: dict, unique_id: str, char_offset: int, chunk: str) -> str:
     with _pending_continuation_lock:
         _prune_pending_continuations(buffer_store)
         payload = buffer_store.setdefault(str(unique_id), {'updated_at': time.time(), 'chunks': {}})
         payload['updated_at'] = time.time()
+        if payload.get('repair_required'):
+            return 'conflict'
+        assembly = FragmentAssembly()
+        for offset in sorted(payload.get('chunks', {})):
+            outcome = assembly.accept(int(offset), str(payload['chunks'][offset]))
+            if outcome == CONFLICT:
+                payload['repair_required'] = True
+                return 'conflict'
+        outcome = assembly.accept(int(char_offset), str(chunk))
+        if outcome == CONFLICT:
+            payload['repair_required'] = True
+            return 'conflict'
+        if outcome == INVALID:
+            return 'invalid'
         payload['chunks'][int(char_offset)] = str(chunk)
+        return 'queued'
 
 
 def _queue_pending_expected_length(buffer_store: dict, unique_id: str, expected_length: int) -> None:
@@ -180,21 +196,23 @@ def _content_complete_flag(content: str, expected_length: Optional[int]) -> int:
     return 1 if len(str(content or '')) >= normalized_expected else 0
 
 
-def _flush_pending_continuations(buffer_store: dict, unique_id: str, current_content: str) -> tuple[str, bool]:
+def _flush_pending_continuations(buffer_store: dict, unique_id: str, current_content: str) -> tuple[str, bool, bool]:
     changed = False
+    conflicted = False
     while True:
         with _pending_continuation_lock:
             _prune_pending_continuations(buffer_store)
             payload = buffer_store.get(str(unique_id))
             if not payload:
-                return current_content, changed
+                return current_content, changed, conflicted
+            conflicted = conflicted or bool(payload.get('repair_required'))
             ready_offset = None
             for offset in sorted(payload.get('chunks', {}).keys()):
                 if int(offset) <= len(current_content):
                     ready_offset = int(offset)
                     break
             if ready_offset is None:
-                return current_content, changed
+                return current_content, changed, conflicted
             chunk = payload['chunks'].pop(ready_offset)
             payload['updated_at'] = time.time()
             if not payload['chunks']:
@@ -204,6 +222,8 @@ def _flush_pending_continuations(buffer_store: dict, unique_id: str, current_con
         if status == 'applied':
             current_content = new_content
             changed = True
+        elif status == 'conflict':
+            conflicted = True
 
 
 def _merge_continuation_content(current_content: str, char_offset: Optional[int], additional_content: str) -> tuple[str, str]:
@@ -212,42 +232,89 @@ def _merge_continuation_content(current_content: str, char_offset: Optional[int]
         return new_content, 'applied' if new_content != current_content else 'duplicate'
     if char_offset > len(current_content):
         return current_content, 'gap'
-    overlap = current_content[char_offset:char_offset + len(additional_content)]
-    if overlap == additional_content and len(current_content) >= (char_offset + len(additional_content)):
-        return current_content, 'duplicate'
-    suffix = current_content[char_offset + len(additional_content):]
-    return current_content[:char_offset] + additional_content + suffix, 'applied'
+    assembly = FragmentAssembly()
+    assembly.accept(0, current_content)
+    outcome = assembly.accept(char_offset, additional_content)
+    if outcome == CONFLICT:
+        return current_content, 'conflict'
+    if outcome == INVALID:
+        return current_content, 'invalid'
+    merged = assembly.prefix()
+    return merged, 'applied' if merged != current_content else 'duplicate'
 
 
 def _apply_continuation_update(table_name: str, unique_id: str, char_offset: Optional[int], additional_content: str,
-                               buffer_store: dict, label: str) -> None:
+                               buffer_store: dict, label: str) -> str:
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(f"SELECT content, expected_content_length FROM {table_name} WHERE unique_id = ?", (unique_id,))
     row = c.fetchone()
     if row is None:
         if char_offset is not None:
-            _queue_pending_continuation(buffer_store, unique_id, char_offset, additional_content)
+            queued = _queue_pending_continuation(
+                buffer_store, unique_id, char_offset, additional_content
+            )
+            if queued == 'conflict':
+                logging.warning(
+                    f"Rejected conflicting buffered {label} Fragment unique_id={unique_id} "
+                    f"offset={char_offset}; full repair required"
+                )
+                return 'conflict'
+            if queued == 'invalid':
+                return 'invalid'
             logging.info(f"Buffered {label} continuation before base record unique_id={unique_id} offset={char_offset}")
         else:
             logging.warning(f"{label.upper()}CONT received for unknown unique_id={unique_id}; ignored")
-        return
+        return 'gap' if char_offset is not None else 'invalid'
 
     current_content = str(row[0] or '')
     expected_length = row[1] if len(row) > 1 else None
     new_content, status = _merge_continuation_content(current_content, char_offset, additional_content)
     if status == 'gap' and char_offset is not None:
-        _queue_pending_continuation(buffer_store, unique_id, char_offset, additional_content)
+        queued = _queue_pending_continuation(
+            buffer_store, unique_id, char_offset, additional_content
+        )
+        if queued == 'conflict':
+            c.execute(
+                f"UPDATE {table_name} SET content_complete = 0 WHERE unique_id = ?",
+                (unique_id,),
+            )
+            conn.commit()
+            logging.warning(
+                f"Rejected conflicting buffered {label} Fragment unique_id={unique_id} "
+                f"offset={char_offset}; record marked incomplete for full repair"
+            )
+            return 'conflict'
+        if queued == 'invalid':
+            return 'invalid'
         logging.info(
             f"Buffered out-of-order {label} continuation unique_id={unique_id}; offset {char_offset}, have {len(current_content)}"
         )
-        return
+        return 'gap'
+    if status == 'conflict':
+        c.execute(
+            f"UPDATE {table_name} SET content_complete = 0 WHERE unique_id = ?",
+            (unique_id,),
+        )
+        conn.commit()
+        logging.warning(
+            f"Rejected conflicting {label} Fragment unique_id={unique_id} offset={char_offset}; "
+            "record marked incomplete for full repair"
+        )
+        return 'conflict'
+    if status == 'invalid':
+        logging.warning(
+            f"Rejected invalid {label} Fragment unique_id={unique_id} offset={char_offset}"
+        )
+        return 'invalid'
 
     current_content = new_content
-    current_content, flushed = _flush_pending_continuations(buffer_store, unique_id, current_content)
+    current_content, flushed, flush_conflict = _flush_pending_continuations(
+        buffer_store, unique_id, current_content
+    )
     if status == 'duplicate' and not flushed:
         logging.info(f"Duplicate {label} continuation ignored for unique_id={unique_id} offset={char_offset}")
-        return
+        return 'duplicate'
 
     normalized_expected_length = _normalize_expected_content_length(current_content, expected_length)
     c.execute(
@@ -255,12 +322,18 @@ def _apply_continuation_update(table_name: str, unique_id: str, char_offset: Opt
         (
             current_content,
             normalized_expected_length,
-            _content_complete_flag(current_content, normalized_expected_length),
+            0 if flush_conflict else _content_complete_flag(current_content, normalized_expected_length),
             unique_id,
         ),
     )
     conn.commit()
+    if flush_conflict:
+        logging.warning(
+            f"Rejected conflicting buffered {label} Fragment unique_id={unique_id}; "
+            "record marked incomplete for full repair"
+        )
     logging.info(f"Applied continuation content to {label} unique_id={unique_id}")
+    return 'conflict' if flush_conflict else status
 
 
 def flush_pending_bulletin_continuations(unique_id: str) -> None:
@@ -278,7 +351,10 @@ def flush_pending_channel_comment_continuations(unique_id: str) -> None:
 def _apply_expected_content_length(table_name: str, unique_id: str, expected_length: int, pending_store: dict, label: str) -> None:
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute(f"SELECT content FROM {table_name} WHERE unique_id = ?", (unique_id,))
+    c.execute(
+        f"SELECT content, content_complete FROM {table_name} WHERE unique_id = ?",
+        (unique_id,),
+    )
     row = c.fetchone()
     normalized_expected = max(0, int(expected_length))
     if row is None:
@@ -287,12 +363,13 @@ def _apply_expected_content_length(table_name: str, unique_id: str, expected_len
         return
 
     current_content = str(row[0] or '')
+    was_complete = int(row[1] or 0) if len(row) > 1 else 1
     normalized_expected = _normalize_expected_content_length(current_content, normalized_expected)
     c.execute(
         f"UPDATE {table_name} SET expected_content_length = ?, content_complete = ? WHERE unique_id = ?",
         (
             normalized_expected,
-            _content_complete_flag(current_content, normalized_expected),
+            0 if not was_complete else _content_complete_flag(current_content, normalized_expected),
             unique_id,
         ),
     )
@@ -2506,7 +2583,17 @@ def add_channel_comment(channel_id, sender_short_name, content, bbs_nodes=None, 
             existing_expected_length = row[2] if len(row) > 2 else None
             merged_content, status = _merge_continuation_content(existing_content, 0, content)
             normalized_expected_length = _normalize_expected_content_length(merged_content, existing_expected_length)
-            if status != 'duplicate':
+            if status == 'conflict':
+                c.execute(
+                    "UPDATE channel_comments SET content_complete = 0 WHERE id = ?",
+                    (existing_id,),
+                )
+                conn.commit()
+                logging.warning(
+                    f"Rejected conflicting channel comment base Fragment unique_id={unique_id}; "
+                    "record marked incomplete for full repair"
+                )
+            elif status != 'duplicate':
                 c.execute(
                     "UPDATE channel_comments SET channel_id = ?, sender_short_name = ?, date = ?, content = ?, expected_content_length = ?, content_complete = ? WHERE id = ?",
                     (
@@ -2527,7 +2614,8 @@ def add_channel_comment(channel_id, sender_short_name, content, bbs_nodes=None, 
                     (source_node_id, source_timestamp, existing_id),
                 )
                 conn.commit()
-            _flush_pending_expected_content_length('channel_comments', unique_id, _pending_channel_comment_expected_lengths, 'channel comment')
+            if status != 'conflict':
+                _flush_pending_expected_content_length('channel_comments', unique_id, _pending_channel_comment_expected_lengths, 'channel comment')
             clear_sync_tombstone('channels', f"comment:{unique_id}")
             return unique_id
 
@@ -2631,8 +2719,8 @@ def delete_channel_comment(unique_id, bbs_nodes, interface):
         send_delete_channel_comment_to_bbs_nodes(str(unique_id), bbs_nodes, interface)
 
 
-def append_channel_comment_content(unique_id: str, char_offset: Optional[int], additional_content: str) -> None:
-    _apply_continuation_update('channel_comments', unique_id, char_offset, additional_content, _pending_channel_comment_continuations, 'channel comment')
+def append_channel_comment_content(unique_id: str, char_offset: Optional[int], additional_content: str) -> str:
+    return _apply_continuation_update('channel_comments', unique_id, char_offset, additional_content, _pending_channel_comment_continuations, 'channel comment')
 
 
 
@@ -2662,7 +2750,17 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
             merged_content, status = _merge_continuation_content(existing_content, 0, content)
             merged_local_only = 1 if (local_only and existing_local_only) else 0
             normalized_expected_length = _normalize_expected_content_length(merged_content, existing_expected_length)
-            if status != 'duplicate' or merged_local_only != existing_local_only:
+            if status == 'conflict':
+                c.execute(
+                    "UPDATE bulletins SET local_only = ?, content_complete = 0 WHERE id = ?",
+                    (merged_local_only, existing_id),
+                )
+                conn.commit()
+                logging.warning(
+                    f"Rejected conflicting bulletin base Fragment unique_id={unique_id}; "
+                    "record marked incomplete for full repair"
+                )
+            elif status != 'duplicate' or merged_local_only != existing_local_only:
                 c.execute(
                     "UPDATE bulletins SET board = ?, sender_short_name = ?, subject = ?, content = ?, local_only = ?, expected_content_length = ?, content_complete = ? WHERE id = ?",
                     (
@@ -2684,7 +2782,8 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
                     (source_node_id, source_timestamp, existing_id),
                 )
                 conn.commit()
-            _flush_pending_expected_content_length('bulletins', unique_id, _pending_bulletin_expected_lengths, 'bulletin')
+            if status != 'conflict':
+                _flush_pending_expected_content_length('bulletins', unique_id, _pending_bulletin_expected_lengths, 'bulletin')
             clear_sync_tombstone('bulletins', str(unique_id))
             return unique_id
     c.execute(
@@ -2824,16 +2923,15 @@ def delete_bulletin(unique_id, bbs_nodes, interface):
     send_delete_bulletin_to_bbs_nodes(unique_id, bbs_nodes, interface)
 
 
-def append_bulletin_content(unique_id: str, char_offset: Optional[int], additional_content: str) -> None:
+def append_bulletin_content(unique_id: str, char_offset: Optional[int], additional_content: str) -> str:
     """Append a continuation chunk to an existing bulletin's content.
 
     char_offset is the expected current length of the stored content before
-    this chunk is applied. When retransmissions overlap content already stored,
-    the overlapping slice is rewritten in place so a replayed repair pass can
-    heal truncated records without deleting the row first. Pass None to skip
-    the offset guard (legacy/test usage).
+    this chunk is applied. Matching retransmission overlaps are idempotent;
+    Conflicting Overlaps are rejected and mark the record for full repair.
+    Pass None to skip the offset guard (legacy/test usage).
     """
-    _apply_continuation_update('bulletins', unique_id, char_offset, additional_content, _pending_bulletin_continuations, 'bulletin')
+    return _apply_continuation_update('bulletins', unique_id, char_offset, additional_content, _pending_bulletin_continuations, 'bulletin')
 
 def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_nodes, interface, unique_id=None, date=None, source_node_id=None, source_timestamp=None):
     conn = get_db_connection()
@@ -2856,7 +2954,17 @@ def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_n
             existing_expected_length = row[2] if len(row) > 2 else None
             merged_content, status = _merge_continuation_content(existing_content, 0, content)
             normalized_expected_length = _normalize_expected_content_length(merged_content, existing_expected_length)
-            if status != 'duplicate':
+            if status == 'conflict':
+                c.execute(
+                    "UPDATE mail SET content_complete = 0 WHERE id = ?",
+                    (existing_id,),
+                )
+                conn.commit()
+                logging.warning(
+                    f"Rejected conflicting mail base Fragment unique_id={unique_id}; "
+                    "record marked incomplete for full repair"
+                )
+            elif status != 'duplicate':
                 c.execute(
                     "UPDATE mail SET sender = ?, sender_short_name = ?, recipient = ?, subject = ?, content = ?, expected_content_length = ?, content_complete = ? WHERE id = ?",
                     (
@@ -2878,7 +2986,8 @@ def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_n
                     (source_node_id, source_timestamp, existing_id),
                 )
                 conn.commit()
-            _flush_pending_expected_content_length('mail', unique_id, _pending_mail_expected_lengths, 'mail')
+            if status != 'conflict':
+                _flush_pending_expected_content_length('mail', unique_id, _pending_mail_expected_lengths, 'mail')
             clear_sync_tombstone('mail', str(unique_id))
             return unique_id
     c.execute(
@@ -2961,12 +3070,12 @@ def delete_mail(unique_id, recipient_id, bbs_nodes, interface):
         raise
 
 
-def append_mail_content(unique_id: str, char_offset: Optional[int], additional_content: str) -> None:
+def append_mail_content(unique_id: str, char_offset: Optional[int], additional_content: str) -> str:
     """Append a continuation chunk to an existing mail message's content.
 
     See append_bulletin_content for char_offset semantics.
     """
-    _apply_continuation_update('mail', unique_id, char_offset, additional_content, _pending_mail_continuations, 'mail')
+    return _apply_continuation_update('mail', unique_id, char_offset, additional_content, _pending_mail_continuations, 'mail')
 
 
 def get_sender_id_by_mail_id(mail_id):
