@@ -205,6 +205,10 @@ def load_gateway_settings(config_path: str) -> dict:
     "ai_dialect": g("ai_dialect", "ollama") or "ollama",
     "ai_model": g("ai_model", "llama3.2"),
     "ai_system_prompt": g("ai_system_prompt"),
+    "nomad_single_message": _parse_bool_setting(
+      config.get("gateway", "nomad_single_message", fallback="true"), True
+    ),
+    "nomad_max_characters": g("nomad_max_characters", "150") or "150",
     "allowed_hosts": g("allowed_hosts"),
     "allowed_schemes": g("allowed_schemes", "https") or "https",
     "allowed_nodes": g("allowed_nodes"),
@@ -3086,6 +3090,13 @@ def create_app(runtime_interface=None) -> Flask:
         config.add_section("gateway")
       enabled = _parse_bool_setting(form.get("gateway_enabled", ""), False)
       config.set("gateway", "enabled", "true" if enabled else "false")
+      nomad_single_message = _parse_bool_setting(
+        form.get("gateway_nomad_single_message", ""), False
+      )
+      config.set(
+        "gateway", "nomad_single_message",
+        "true" if nomad_single_message else "false",
+      )
       # Free-text / list fields.
       for key in ("ai_base_url", "ai_model", "ai_system_prompt",
                   "allowed_hosts", "allowed_schemes", "allowed_nodes"):
@@ -3096,6 +3107,7 @@ def create_app(runtime_interface=None) -> Flask:
       config.set("gateway", "ai_dialect", dialect)
       # Numeric fields (clamped to sane minimums; fall back on bad input).
       for key, default, minimum in (("request_timeout", 20, 1),
+                                    ("nomad_max_characters", 150, 1),
                                     ("max_response_bytes", 800, 64),
                                     ("rate_limit_per_node", 5, 0)):
         raw = form.get(f"gateway_{key}", "").strip()

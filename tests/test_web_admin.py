@@ -131,6 +131,42 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("test-version", page)
         self.assertIn("Peer Hash Graph", page)
         self.assertIn("Resolve Save by Best Candidate", page)
+        self.assertIn("Fit each Project Nomad answer into one radio message", page)
+
+    def test_gateway_settings_save_nomad_single_message_mode(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        save_response = self.post_with_csrf(
+            client,
+            "/settings",
+            data={
+                "settings_section": "gateway",
+                "gateway_enabled": "1",
+                "gateway_nomad_single_message": "1",
+                "gateway_ai_base_url": "https://nomad.example",
+                "gateway_ai_dialect": "nomad",
+                "gateway_ai_model": "gemma4:12b",
+                "gateway_ai_system_prompt": "Be concise.",
+                "gateway_nomad_max_characters": "150",
+                "gateway_allowed_hosts": "wttr.in",
+                "gateway_allowed_schemes": "https",
+                "gateway_allowed_nodes": "!node1",
+                "gateway_request_timeout": "30",
+                "gateway_max_response_bytes": "1200",
+                "gateway_rate_limit_per_node": "4",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(save_response.status_code, 200)
+
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertTrue(config.getboolean("gateway", "nomad_single_message"))
+        self.assertEqual(config.getint("gateway", "nomad_max_characters"), 150)
+        self.assertEqual(config.get("gateway", "ai_dialect"), "nomad")
+        self.assertEqual(config.getint("gateway", "max_response_bytes"), 1200)
 
     def test_diagnostics_shows_db_size_and_mailbox_depth(self):
         app = create_app()

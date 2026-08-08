@@ -2064,6 +2064,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
 
             gateway.handle_apireq(
                 rid, requester_id, kind, payload, _allowed, reply_fn=_reply,
+                response_max_bytes=get_max_text_bytes(interface),
             )
         elif message.startswith("APIPOLL|"):
             # Gateway side (Phase 2): an intermittently-connected node asks for any

@@ -177,6 +177,28 @@ reconcile_max_per_pass = 20        # max records pulled/pushed per repair cycle
 sync_interval_minutes = 5          # how often a full P1–P5 sync runs
 ```
 
+### Project Nomad Reply Sizing
+
+Project Nomad can format each answer to a 150-character limit while also
+respecting the active radio's safe single-message ceiling: 160 UTF-8 bytes on
+MeshCore or 220 on Meshtastic. The gateway adds both limits to Nomad's system
+instructions and enforces them at a sentence or word break if the model overruns.
+
+```ini
+[gateway]
+enabled = true
+ai_base_url = http://nomad.local:8080
+ai_dialect = nomad
+ai_model = gemma4:12b
+nomad_single_message = true
+nomad_max_characters = 150
+max_response_bytes = 800
+```
+
+Turn `nomad_single_message` off to retain multi-message AI answers up to
+`max_response_bytes`. This option affects Project Nomad only; Ollama and
+OpenAI-compatible relays retain their existing response behavior.
+
 ### Menu Customization
 
 Remove items you don't want to expose to users:

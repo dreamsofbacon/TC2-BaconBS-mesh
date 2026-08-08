@@ -20,14 +20,16 @@ if "meshtastic" not in sys.modules:
 import db_operations
 import message_processing
 import gateway
+import command_handlers
 import utils
 
 
 class _Iface:
-    def __init__(self, allowed=None, bbs_nodes=None):
+    def __init__(self, allowed=None, bbs_nodes=None, max_text_bytes=220):
         self.sent_texts = []
         self.bbs_nodes = bbs_nodes or []
         self.allowed_nodes = allowed or []
+        self.max_text_bytes = max_text_bytes
 
     def sendText(self, text, destinationId, wantAck, wantResponse):
         self.sent_texts.append((destinationId, text))
@@ -92,6 +94,14 @@ class GatewayValidationTests(unittest.TestCase):
             self.assertTrue(gateway._rate_ok("!n"))
             self.assertTrue(gateway._rate_ok("!n"))
             self.assertFalse(gateway._rate_ok("!n"))
+
+    def test_http_response_cap_is_exact_and_utf8_safe(self):
+        resp = io.BytesIO(("🙂" * 100).encode('utf-8'))
+        with patch.object(gateway, "_max_response_bytes", lambda: 64):
+            body = gateway._read_capped(resp)
+        self.assertLessEqual(len(body.encode('utf-8')), 64)
+        self.assertTrue(body.endswith("…"))
+        self.assertNotIn("�", body)
 
     def test_auth_open_when_no_lists(self):
         with patch.object(gateway, "gateway_allowed_nodes", lambda: []):
@@ -176,10 +186,106 @@ class GatewayDispatchTests(unittest.TestCase):
                 interface=iface, is_sync_message=True, sender_node_id="!user",
             )
             _drain_threads()
-        self.assertEqual(captured['url'], "https://ai.bmcse.com/api/ollama/chat")
+        self.assertEqual(captured['url'], "https://ai.bmcse.com/api/ollama/chat/")
         status, body = _join_apiresp(iface.sent_texts, "rn")
         self.assertEqual(status, "200")
         self.assertIn("Hello there", body)
+
+    def test_nomad_reply_uses_active_transport_single_message_budget(self):
+        iface = _Iface(allowed=["!user"], max_text_bytes=160)
+        ai_cfg = {
+            ('gateway', 'ai_base_url'): 'https://ai.bmcse.com',
+            ('gateway', 'ai_dialect'): 'nomad',
+            ('gateway', 'ai_model'): 'gemma4:12b',
+            ('gateway', 'ai_system_prompt'): 'Be accurate and practical.',
+        }
+        essential = (
+            "A solar flare can disrupt radio propagation; keep transmissions "
+            "brief and retry later."
+        )
+        long_reply = essential + " " + ("Extra context 🙂 should be omitted. " * 20)
+        captured = {}
+
+        def _fake_urlopen(req, timeout=None):
+            captured['payload'] = json.loads(req.data.decode('utf-8'))
+            resp = io.BytesIO(json.dumps({
+                "message": {"content": long_reply}, "done": True,
+            }).encode())
+            resp.__enter__ = lambda *_: resp
+            resp.__exit__ = lambda *_: False
+            return resp
+
+        with patch.object(gateway, "is_gateway_enabled", lambda: True), \
+             patch.object(gateway, "_config_raw", lambda s, o: ai_cfg.get((s, o))), \
+             patch.object(gateway, "_max_response_bytes", lambda: 1200), \
+             patch.object(gateway, "_nomad_single_message_enabled", lambda: True), \
+             patch.object(gateway, "_nomad_max_characters", lambda: 150), \
+             patch("urllib.request.urlopen", _fake_urlopen):
+            message_processing.process_message(
+                sender_id=1, message="APIREQ|nb|!user|r|ai\x1fspace weather",
+                interface=iface, is_sync_message=True, sender_node_id="!user",
+            )
+            _drain_threads()
+
+        messages = captured['payload']['messages']
+        self.assertEqual(messages[0]['content'], 'Be accurate and practical.')
+        self.assertIn('150 characters', messages[1]['content'])
+        self.assertIn('160 UTF-8 bytes', messages[1]['content'])
+        self.assertEqual(messages[-1], {'role': 'user', 'content': 'space weather'})
+
+        status, body = _join_apiresp(iface.sent_texts, "nb")
+        self.assertEqual(status, "200")
+        self.assertLessEqual(len(body), 150)
+        self.assertLessEqual(len(body.encode('utf-8')), 160)
+        self.assertTrue(body.startswith(essential))
+        self.assertTrue(body.endswith("…"))
+
+    def test_nomad_single_message_mode_can_be_disabled(self):
+        ai_cfg = {
+            ('gateway', 'ai_base_url'): 'https://ai.bmcse.com',
+            ('gateway', 'ai_dialect'): 'nomad',
+            ('gateway', 'ai_model'): 'gemma4:12b',
+            ('gateway', 'ai_system_prompt'): '',
+        }
+        long_reply = "x" * 300
+        captured = {}
+
+        def _fake_urlopen(req, timeout=None):
+            captured['payload'] = json.loads(req.data.decode('utf-8'))
+            resp = io.BytesIO(json.dumps({
+                "message": {"content": long_reply}, "done": True,
+            }).encode())
+            resp.__enter__ = lambda *_: resp
+            resp.__exit__ = lambda *_: False
+            return resp
+
+        with patch.object(gateway, "_config_raw", lambda s, o: ai_cfg.get((s, o))), \
+             patch.object(gateway, "_max_response_bytes", lambda: 800), \
+             patch.object(gateway, "_nomad_single_message_enabled", lambda: False), \
+             patch("urllib.request.urlopen", _fake_urlopen):
+            status, body = gateway.perform_ai_chat("expand", response_max_bytes=160)
+
+        self.assertEqual(status, "200")
+        self.assertEqual(body, long_reply)
+        self.assertEqual(captured['payload']['messages'], [
+            {'role': 'user', 'content': 'expand'},
+        ])
+
+    def test_reply_budget_clipping_is_utf8_safe_and_includes_suffix(self):
+        reply = gateway._fit_reply_to_budget(
+            "🙂" * 100, 160, max_characters=150,
+        )
+        self.assertLessEqual(len(reply), 150)
+        self.assertLessEqual(len(reply.encode('utf-8')), 160)
+        self.assertTrue(reply.endswith("…"))
+        self.assertNotIn("�", reply)
+
+        ascii_reply = gateway._fit_reply_to_budget(
+            "plain words " * 100, 220, max_characters=150,
+        )
+        self.assertLessEqual(len(ascii_reply), 150)
+        self.assertLessEqual(len(ascii_reply.encode('utf-8')), 220)
+        self.assertTrue(ascii_reply.endswith("…"))
 
     def test_unauthorized_requester_rejected(self):
         iface = _Iface(allowed=["!someone_else"])
@@ -202,6 +308,41 @@ class GatewayDispatchTests(unittest.TestCase):
             )
             _drain_threads()
         self.assertEqual(iface.sent_texts, [])
+
+
+class LocalGatewaySubmissionTests(unittest.TestCase):
+    def test_local_nomad_submission_passes_transport_budget(self):
+        iface = _Iface(allowed=["!user"], max_text_bytes=160)
+        captured = {}
+
+        def _fake_handle(rid, requester_id, kind, payload, allowed, reply_fn,
+                         response_max_bytes=None):
+            captured.update({
+                'requester_id': requester_id,
+                'kind': kind,
+                'payload': payload,
+                'response_max_bytes': response_max_bytes,
+            })
+            reply_fn("200", "short answer")
+
+        with patch.object(gateway, "is_gateway_enabled", lambda: True), \
+             patch.object(gateway, "handle_apireq", _fake_handle), \
+             patch.object(command_handlers, "get_node_id_from_num", lambda *_: "!user"), \
+             patch.object(command_handlers, "send_message") as send_message_mock, \
+             patch.object(command_handlers, "update_user_state"):
+            command_handlers._apigw_submit(
+                sender_id=1,
+                interface=iface,
+                kind='r',
+                payload="ai\x1fquestion",
+                label="Project Nomad",
+            )
+
+        self.assertEqual(captured['requester_id'], "!user")
+        self.assertEqual(captured['kind'], "r")
+        self.assertEqual(captured['payload'], "ai\x1fquestion")
+        self.assertEqual(captured['response_max_bytes'], 160)
+        send_message_mock.assert_any_call("short answer", 1, iface)
 
 
 class RequesterReassemblyTests(unittest.TestCase):
