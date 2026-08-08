@@ -205,6 +205,10 @@ def load_gateway_settings(config_path: str) -> dict:
     "ai_dialect": g("ai_dialect", "ollama") or "ollama",
     "ai_model": g("ai_model", "llama3.2"),
     "ai_system_prompt": g("ai_system_prompt"),
+    "nomad_single_message": _parse_bool_setting(
+      config.get("gateway", "nomad_single_message", fallback="true"), True
+    ),
+    "nomad_max_characters": g("nomad_max_characters", "150") or "150",
     "allowed_hosts": g("allowed_hosts"),
     "allowed_schemes": g("allowed_schemes", "https") or "https",
     "allowed_nodes": g("allowed_nodes"),
@@ -718,7 +722,7 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('settings_page') }}\">Settings</a>
       <a href=\"{{ url_for('system_flowchart') }}\">Documentation</a>
       <a href=\"{{ url_for('system_transmissions') }}\">Transmission Stats</a>
-      <a href=\"{{ url_for('meshtastic_device') }}\">Meshtastic Device</a>
+      <a href=\"{{ url_for('meshtastic_device') }}\">Radio Device</a>
       <a href=\"{{ url_for('mesh_ui_index') }}\" target=\"_blank\">Mesh UI</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
       <div class="nav-right">
@@ -3086,6 +3090,13 @@ def create_app(runtime_interface=None) -> Flask:
         config.add_section("gateway")
       enabled = _parse_bool_setting(form.get("gateway_enabled", ""), False)
       config.set("gateway", "enabled", "true" if enabled else "false")
+      nomad_single_message = _parse_bool_setting(
+        form.get("gateway_nomad_single_message", ""), False
+      )
+      config.set(
+        "gateway", "nomad_single_message",
+        "true" if nomad_single_message else "false",
+      )
       # Free-text / list fields.
       for key in ("ai_base_url", "ai_model", "ai_system_prompt",
                   "allowed_hosts", "allowed_schemes", "allowed_nodes"):
@@ -3096,6 +3107,7 @@ def create_app(runtime_interface=None) -> Flask:
       config.set("gateway", "ai_dialect", dialect)
       # Numeric fields (clamped to sane minimums; fall back on bad input).
       for key, default, minimum in (("request_timeout", 20, 1),
+                                    ("nomad_max_characters", 150, 1),
                                     ("max_response_bytes", 800, 64),
                                     ("rate_limit_per_node", 5, 0)):
         raw = form.get(f"gateway_{key}", "").strip()
@@ -4323,6 +4335,25 @@ def create_app(runtime_interface=None) -> Flask:
     def meshtastic_device():
       config = read_config_file(app.config["CONFIG_PATH"])
       interface_type = config.get("interface", "type", fallback="serial").strip().lower()
+      if interface_type.startswith("meshcore_"):
+        transport = interface_type.removeprefix("meshcore_")
+        endpoint = ""
+        if transport == "tcp":
+          hostname = config.get("interface", "hostname", fallback="").strip()
+          tcp_port = config.get("interface", "tcp_port", fallback="5000").strip()
+          endpoint = f"{hostname}:{tcp_port}" if hostname else f"TCP port {tcp_port}"
+        elif transport == "serial":
+          endpoint = config.get("interface", "port", fallback="auto-detected serial port").strip()
+        elif transport == "ble":
+          endpoint = config.get("interface", "ble_address", fallback="BLE scan").strip() or "BLE scan"
+        return render_template(
+          "meshtastic_device.html",
+          title="MeshCore Companion Radio",
+          show_nav=True,
+          device_mode="meshcore",
+          meshcore_transport=transport.upper(),
+          meshcore_endpoint=endpoint,
+        )
       if interface_type == "tcp":
         hostname = config.get("interface", "hostname", fallback="").strip()
         if not hostname:

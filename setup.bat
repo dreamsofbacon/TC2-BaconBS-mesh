@@ -1,10 +1,10 @@
 @echo off
-REM TC²-BBS Meshtastic - Windows Setup Script (Batch)
+REM BaconBS Meshtastic + MeshCore - Windows Setup Script (Batch)
 REM This script sets up the environment with all necessary dependencies
 
 cls
 echo ========================================
-echo TC²-BBS Meshtastic - Windows Setup
+echo BaconBS Meshtastic + MeshCore - Windows Setup
 echo ========================================
 echo.
 
@@ -21,6 +21,13 @@ for /f "tokens=*" %%i in ('python --version') do set PYTHON_VERSION=%%i
 echo %PYTHON_VERSION%
 echo [OK] Python found
 echo.
+
+python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
+if errorlevel 1 (
+    echo ERROR: Python 3.10 or newer is required for MeshCore support.
+    pause
+    exit /b 1
+)
 
 REM Create virtual environment if it doesn't exist
 if not exist ".venv" (
@@ -67,6 +74,16 @@ if errorlevel 1 (
     exit /b 1
 )
 echo [OK] meshtastic import verified
+echo.
+
+echo Verifying MeshCore installation...
+%VENV_PYTHON% -c "import meshcore"
+if errorlevel 1 (
+    echo ERROR: meshcore is not importable in .venv.
+    pause
+    exit /b 1
+)
+echo [OK] MeshCore import verified
 echo.
 
 REM Note about dfrotz (required for Zork / Infocom games)

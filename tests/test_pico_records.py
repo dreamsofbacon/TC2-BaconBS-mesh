@@ -73,6 +73,39 @@ class BulletinTests(unittest.TestCase):
         self.assertTrue(complete)
         self.assertEqual(rec["content"], "AAAAABBBBBCCCCC")
 
+    def test_matching_overlap_extends_without_duplicate_text(self):
+        ra = records.RecordAssembler()
+        ra.feed("BULLETIN|General|Bob|Sub|ABCDE|uid-overlap|2026-06-08 14:30")
+        ra.feed("BULLETINMETA|uid-overlap|10")
+
+        scope, rec, complete = ra.feed("BULLETINCONT|uid-overlap|3|DEFGH")
+
+        self.assertEqual(scope, "bulletins")
+        self.assertFalse(complete)
+        self.assertEqual(rec["content"], "ABCDEFGH")
+
+    def test_conflicting_overlap_is_rejected_and_requests_record_repair(self):
+        ra = records.RecordAssembler()
+        ra.feed("BULLETIN|General|Bob|Sub|ABCDE|uid-conflict|2026-06-08 14:30")
+        ra.feed("BULLETINMETA|uid-conflict|10")
+
+        scope, rec, complete = ra.feed("BULLETINCONT|uid-conflict|3|XX")
+
+        self.assertEqual(scope, "bulletins")
+        self.assertFalse(complete)
+        self.assertEqual(rec["content"], "ABCDE")
+        self.assertEqual(ra.pop_repairs(), [("bulletins", "uid-conflict")])
+
+    def test_emoji_continuation_uses_character_offset(self):
+        ra = records.RecordAssembler()
+        ra.feed("BULLETIN|General|Bob|Sub|A🙂B|uid-emoji|2026-06-08 14:30")
+        ra.feed("BULLETINMETA|uid-emoji|4")
+
+        _scope, rec, complete = ra.feed("BULLETINCONT|uid-emoji|3|C")
+
+        self.assertTrue(complete)
+        self.assertEqual(rec["content"], "A🙂BC")
+
 
 class MailTests(unittest.TestCase):
     def test_mail_parse(self):

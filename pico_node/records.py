@@ -18,6 +18,11 @@ Pure Python (binascii only); host-tested, CircuitPython-safe.
 
 import binascii
 
+try:
+    from .fragment_assembly import CONFLICT, INVALID, FragmentAssembly
+except ImportError:  # Files are copied flat onto CIRCUITPY.
+    from fragment_assembly import CONFLICT, INVALID, FragmentAssembly
+
 # CONT/META prefix -> (cache_scope, kind)
 _CHUNK_PREFIXES = (
     ("BULLETINCONT|", "bulletins", "cont"),
@@ -145,7 +150,8 @@ class RecordAssembler:
     multi-packet records are re-emitted with more content as chunks arrive."""
 
     def __init__(self):
-        self._buf = {}  # uid -> {scope, fields, parts:{off:chunk}, expected}
+        self._buf = {}  # uid -> {scope, fields, assembly}
+        self._repairs = []
 
     def feed(self, frame):
         if frame.startswith("BULLETIN|"):
@@ -167,12 +173,21 @@ class RecordAssembler:
         content0 = parsed.pop("_content0")
         buf = self._buf.get(uid)
         if buf is None:
-            buf = {"scope": scope, "fields": {}, "parts": {}, "expected": None}
+            buf = {"scope": scope, "fields": {}, "assembly": FragmentAssembly()}
             self._evict_if_needed()
             self._buf[uid] = buf
         buf["scope"] = scope
         buf["fields"] = parsed
-        buf["parts"][0] = content0
+        assembly = buf["assembly"]
+        # A base frame following a rejected conflict is the start of the full
+        # record replay requested by SyncClient.
+        if assembly.repair_required:
+            assembly.reset(expected=assembly.expected)
+        outcome = assembly.accept(0, content0)
+        if outcome == CONFLICT:
+            self._queue_repair(scope, uid)
+        elif outcome == INVALID:
+            return None
         return self._emit(uid)
 
     def _chunk(self, frame, prefix, scope, kind):
@@ -188,7 +203,11 @@ class RecordAssembler:
             buf = self._buf.get(uid)
             if buf is None:
                 return None  # nothing to attach to yet
-            buf["expected"] = expected
+            outcome = buf["assembly"].accept(expected=expected)
+            if outcome == CONFLICT:
+                self._queue_repair(scope, uid)
+            elif outcome == INVALID:
+                return None
             return self._emit(uid)
         # cont
         parts = frame.split("|", 3)
@@ -205,24 +224,40 @@ class RecordAssembler:
                 return None
             chunk = parts[3]
         else:  # legacy blind append
-            offset = sum(len(c) for c in buf["parts"].values())
+            offset = len(buf["assembly"].prefix())
             chunk = parts[2]
-        buf["parts"][offset] = chunk
+        outcome = buf["assembly"].accept(offset, chunk)
+        if outcome == CONFLICT:
+            self._queue_repair(scope, uid)
+        elif outcome == INVALID:
+            return None
         return self._emit(uid)
 
     def _emit(self, uid):
         buf = self._buf.get(uid)
         if buf is None or not buf["fields"]:
             return None
-        assembled = "".join(buf["parts"][o] for o in sorted(buf["parts"]))
+        assembly = buf["assembly"]
         record = dict(buf["fields"])
-        record["content"] = assembled
-        expected = buf["expected"]
-        complete = expected is None or len(assembled) >= expected
+        record["content"] = assembly.prefix()
+        expected = assembly.expected
+        complete = ((expected is None and not assembly.repair_required)
+                    or assembly.complete)
         # Once a multi-packet record is fully assembled, free its buffer.
-        if expected is not None and len(assembled) >= expected:
+        if expected is not None and complete:
             del self._buf[uid]
         return (buf["scope"], record, complete)
+
+    def pop_repairs(self):
+        """Return and clear records that need a trustworthy full replay."""
+        repairs = list(self._repairs)
+        self._repairs = []
+        return repairs
+
+    def _queue_repair(self, scope, uid):
+        item = (scope, uid)
+        if item not in self._repairs:
+            self._repairs.append(item)
 
     def _evict_if_needed(self):
         if len(self._buf) >= _MAX_INFLIGHT:

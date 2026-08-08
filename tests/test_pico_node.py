@@ -138,6 +138,34 @@ class WireTests(unittest.TestCase):
         a.feed("APIRESPCONT|r4|0|AAA")  # no expected length learned yet
         self.assertEqual(a.gap_spec("r4"), "*")
 
+    def test_matching_overlap_does_not_false_complete(self):
+        a = wire.ResponseAssembler()
+        a.feed("APIRESP|r5|200|10|ABCDE")
+
+        self.assertIsNone(a.feed("APIRESPCONT|r5|3|DEFGH"))
+        self.assertEqual(a.gap_spec("r5"), "8-10")
+
+        self.assertEqual(a.feed("APIRESPCONT|r5|8|IJ"),
+                         ("r5", "200", "ABCDEFGHIJ"))
+
+    def test_conflicting_overlap_requests_full_resend_and_new_header_repairs(self):
+        a = wire.ResponseAssembler()
+        a.feed("APIRESP|r6|200|10|ABCDE")
+
+        self.assertIsNone(a.feed("APIRESPCONT|r6|3|XX"))
+        self.assertEqual(a.gap_spec("r6"), "*")
+
+        self.assertIsNone(a.feed("APIRESP|r6|200|10|VWXYZ"))
+        self.assertEqual(a.feed("APIRESPCONT|r6|5|12345"),
+                         ("r6", "200", "VWXYZ12345"))
+
+    def test_emoji_uses_character_offsets(self):
+        a = wire.ResponseAssembler()
+        a.feed("APIRESP|r7|200|4|A🙂B")
+
+        self.assertEqual(a.feed("APIRESPCONT|r7|3|C"),
+                         ("r7", "200", "A🙂BC"))
+
 
 if __name__ == "__main__":
     unittest.main()

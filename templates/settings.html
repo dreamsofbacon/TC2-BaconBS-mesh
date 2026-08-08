@@ -180,10 +180,31 @@
     <div class="form-group">
       <label for="gateway_ai_dialect">API dialect</label>
       <select id="gateway_ai_dialect" name="gateway_ai_dialect" class="form-control" style="width:auto">
-        <option value="nomad" {% if gateway.ai_dialect == 'nomad' %}selected{% endif %}>Project N.O.M.A.D (/api/ollama/chat)</option>
+        <option value="nomad" {% if gateway.ai_dialect == 'nomad' %}selected{% endif %}>Project N.O.M.A.D (/api/ollama/chat/)</option>
         <option value="ollama" {% if gateway.ai_dialect == 'ollama' %}selected{% endif %}>Ollama (/api/chat)</option>
         <option value="openai" {% if gateway.ai_dialect == 'openai' %}selected{% endif %}>OpenAI-compatible (/v1)</option>
       </select>
+    </div>
+    <div class="form-group">
+      <label>
+        <input type="checkbox" name="gateway_nomad_single_message" value="1"
+               {% if gateway.nomad_single_message %}checked{% endif %}>
+        Fit each Project Nomad answer into one radio message
+      </label>
+      <p class="text-muted">
+        Recommended. Nomad receives both the character limit below and the active
+        transport ceiling (160 UTF-8 bytes for MeshCore or 220 for Meshtastic),
+        and the gateway enforces both at a sentence or word break. Disable this
+        to allow multi-message answers up to the overall response cap below.
+      </p>
+    </div>
+    <div class="form-group">
+      <label for="gateway_nomad_max_characters">Nomad answer limit (characters)</label>
+      <input type="number" id="gateway_nomad_max_characters" name="gateway_nomad_max_characters"
+             class="form-control" style="width:120px" min="1"
+             value="{{ gateway.nomad_max_characters }}">
+      <p class="text-muted">Default: 150 characters. UTF-8 byte safety is enforced separately for the active radio.</p>
+      <p class="text-muted">Appropriate emojis are allowed; their multi-byte UTF-8 size counts toward the radio ceiling.</p>
     </div>
     <div class="form-group">
       <label for="gateway_ai_model">Model</label>
@@ -215,9 +236,10 @@
              style="width:120px" min="1" value="{{ gateway.request_timeout }}">
     </div>
     <div class="form-group">
-      <label for="gateway_max_response_bytes">Max response bytes</label>
+      <label for="gateway_max_response_bytes">Overall response cap (bytes)</label>
       <input type="number" id="gateway_max_response_bytes" name="gateway_max_response_bytes" class="form-control"
              style="width:120px" min="64" value="{{ gateway.max_response_bytes }}">
+      <p class="text-muted">Hard safety cap for HTTP and AI responses. Nomad's one-message setting also applies its character limit and the active radio ceiling.</p>
     </div>
     <div class="form-group">
       <label for="gateway_rate_limit_per_node">Rate limit (requests/min/node)</label>

@@ -18,7 +18,8 @@ from db_operations import (
 )
 from utils import (
     get_node_id_from_num, get_node_info,
-    get_node_short_name, get_user_state, get_zork_save_sync_notice, send_message,
+    get_node_short_name, get_user_state, get_zork_save_sync_notice,
+    get_max_text_bytes, send_message,
     update_user_state,
     select_gateway_peer, send_api_request, register_api_request,
 )
@@ -324,7 +325,8 @@ def _apigw_submit(sender_id, interface, kind, payload, label):
             prefix = "" if str(status) in ("200", "OK") else f"[{status}] "
             send_message(f"{prefix}{body}", sender_id, interface)
         gateway.handle_apireq(rid, node_id, kind, payload,
-                              getattr(interface, 'allowed_nodes', None), _reply)
+                              getattr(interface, 'allowed_nodes', None), _reply,
+                              response_max_bytes=get_max_text_bytes(interface))
         send_message(f"Asked {label}… reply will arrive shortly.", sender_id, interface)
         update_user_state(sender_id, None)
         return

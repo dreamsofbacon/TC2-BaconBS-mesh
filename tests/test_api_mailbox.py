@@ -155,7 +155,9 @@ class MailboxProtocolTests(unittest.TestCase):
         runs on this thread's in-memory DB (real gateway dispatches off-thread)."""
         iface = _Iface(allowed=["!user"])
 
-        def _fake_handle(rid, requester_id, kind, payload, allowed, reply_fn):
+        def _fake_handle(rid, requester_id, kind, payload, allowed, reply_fn,
+                         response_max_bytes=None):
+            self.assertEqual(response_max_bytes, 220)
             reply_fn("200", "blue sky")
 
         with patch.object(gateway, "is_gateway_enabled", lambda: True), \

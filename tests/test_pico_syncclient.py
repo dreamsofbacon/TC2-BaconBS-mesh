@@ -48,6 +48,31 @@ class SyncClientTests(unittest.TestCase):
         # once stored complete, it's no longer outstanding
         self.assertEqual(self.client.outstanding_hashmiss(), [])
 
+    def test_conflicting_overlap_preserves_cache_and_requests_full_record(self):
+        self.client.handle_frame("EVENT|bulletins|!gw|3|upsert|uidC")
+        self.client.handle_frame(
+            "BULLETIN|General|Bob|Hi|ABCDE|uidC|2026-06-08 14:30")
+        self.client.handle_frame("BULLETINMETA|uidC|10")
+
+        repair = self.client.handle_frame("BULLETINCONT|uidC|3|XX")
+
+        self.assertEqual(repair, ["HASHMISS|bulletins|uidC"])
+        self.assertEqual(self.store.get("bulletins")[0]["content"], "ABCDE")
+        self.assertEqual(self.client.outstanding_hashmiss(),
+                         ["HASHMISS|bulletins|uidC"])
+
+        # The requested full replay starts a clean generation and clears the
+        # repair only after continuous coverage reaches the declared length.
+        self.client.handle_frame(
+            "BULLETIN|General|Bob|Hi|VWXYZ|uidC|2026-06-08 14:30")
+        self.assertEqual(self.client.outstanding_hashmiss(),
+                         ["HASHMISS|bulletins|uidC"])
+        self.client.handle_frame("BULLETINMETA|uidC|10")
+        self.client.handle_frame("BULLETINCONT|uidC|5|12345")
+
+        self.assertEqual(self.store.get("bulletins")[0]["content"], "VWXYZ12345")
+        self.assertEqual(self.client.outstanding_hashmiss(), [])
+
     def test_delete_frame_removes_record(self):
         self.client.handle_frame("BULLETIN|General|Bob|Hi|body|uidD|2026-06-08 14:30")
         self.assertEqual(self.store.count("bulletins"), 1)
