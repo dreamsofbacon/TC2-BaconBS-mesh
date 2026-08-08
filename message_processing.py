@@ -78,7 +78,7 @@ from utils import (
     pack_missing, unpack_missing,
     compact_channel_manifest_key,
     send_api_response, pop_api_request,
-    _send_one_sync, _MESHTASTIC_MAX_BYTES,
+    _send_one_sync, get_max_text_bytes,
 )
 
 main_menu_handlers = {
@@ -1028,7 +1028,7 @@ def _do_striped_reconcile(scope: str, peer_manifests: dict, interface) -> None:
         _tomb_wire = encode_scope('tombstones', _peer_scc)
         wire_key = key
         if scope == 'channels' and not str(key).startswith('comment:'):
-            if len(f"HASHMISS|{_scope_wire}|{key}".encode('utf-8')) > _MESHTASTIC_MAX_BYTES:
+            if len(f"HASHMISS|{_scope_wire}|{key}".encode('utf-8')) > get_max_text_bytes(interface):
                 wire_key = compact_channel_manifest_key(key)
                 logging.info(f"Channel key too long for HASHMISS frame; using compact key {wire_key}")
 
@@ -1135,7 +1135,7 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
         # The sender will resolve the compact key back to the full channel record.
         wire_key = key
         if scope == 'channels' and not str(key).startswith('comment:'):
-            if len(f"HASHMISS|{_scope_wire}|{key}".encode('utf-8')) > _MESHTASTIC_MAX_BYTES:
+            if len(f"HASHMISS|{_scope_wire}|{key}".encode('utf-8')) > get_max_text_bytes(interface):
                 wire_key = compact_channel_manifest_key(key)
                 logging.info(f"Channel key too long for HASHMISS frame; using compact key {wire_key}")
         # Tombstone lookup: channel_comments stored under channels scope with 'comment:' prefix.
@@ -1182,7 +1182,7 @@ def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface)
     b64 = base64.urlsafe_b64encode(compressed).decode("ascii")
     manifest_id = str(int(time.time() * 1000))
     prefix = f"HASHZ|{_scope_wire}|{manifest_id}|"
-    max_chunk = _MESHTASTIC_MAX_BYTES - len(prefix.encode("utf-8")) - len("999999|999999|".encode("utf-8"))
+    max_chunk = get_max_text_bytes(interface) - len(prefix.encode("utf-8")) - len("999999|999999|".encode("utf-8"))
     if max_chunk <= 0:
         logging.warning("HASHZ prefix too large for packet limit; falling back to HASHREC")
         for key, rec_hash in manifest.items():
@@ -2064,6 +2064,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
 
             gateway.handle_apireq(
                 rid, requester_id, kind, payload, _allowed, reply_fn=_reply,
+                response_max_bytes=get_max_text_bytes(interface),
             )
         elif message.startswith("APIPOLL|"):
             # Gateway side (Phase 2): an intermittently-connected node asks for any

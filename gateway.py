@@ -16,6 +16,7 @@ loop (and its 180s watchdog) never blocks.
 import ipaddress
 import json
 import logging
+import re
 import socket
 import threading
 import time
@@ -52,6 +53,16 @@ def _request_timeout() -> int:
 
 def _max_response_bytes() -> int:
     return _config_int('gateway', 'max_response_bytes', 800)
+
+
+def _nomad_single_message_enabled() -> bool:
+    """Whether Project Nomad replies should fit one user-facing radio message."""
+    return _config_bool('gateway', 'nomad_single_message', True)
+
+
+def _nomad_max_characters() -> int:
+    """Operator-selected character ceiling for a Project Nomad answer."""
+    return max(1, _config_int('gateway', 'nomad_max_characters', 150))
 
 
 def _rate_limit_per_node() -> int:
@@ -138,12 +149,10 @@ def _rate_ok(node_id: str) -> bool:
 # ── Outbound calls ───────────────────────────────────────────────────────────
 
 def _read_capped(resp) -> str:
-    cap = _max_response_bytes()
+    cap = max(1, _max_response_bytes())
     raw = resp.read(cap + 1)
     text = raw.decode('utf-8', errors='replace')
-    if len(raw) > cap:
-        text = text[:cap] + "…[truncated]"
-    return text
+    return _fit_reply_to_budget(text, cap)
 
 
 def perform_http(method: str, url: str, body: str) -> Tuple[str, str]:
@@ -171,7 +180,95 @@ def perform_http(method: str, url: str, body: str) -> Tuple[str, str]:
         return "ERR", f"request failed: {e}"
 
 
-def perform_ai_chat(prompt: str) -> Tuple[str, str]:
+def _reply_budget(dialect: str, response_max_bytes: Optional[int]) -> int:
+    """Resolve the hard reply budget for this request.
+
+    ``max_response_bytes`` remains the overall operator safety cap. Project
+    Nomad can additionally target the active radio's single-message ceiling so
+    the requester receives one complete, deliberately concise answer instead
+    of an arbitrary sequence of chunks.
+    """
+    configured_cap = max(1, _max_response_bytes())
+    if dialect != 'nomad' or not _nomad_single_message_enabled():
+        return configured_cap
+    try:
+        message_cap = int(response_max_bytes) if response_max_bytes is not None else 0
+    except (TypeError, ValueError):
+        message_cap = 0
+    return min(configured_cap, message_cap) if message_cap > 0 else configured_cap
+
+
+def _nomad_delivery_instruction(max_characters: int, max_bytes: int) -> str:
+    """Build the final system instruction that makes Nomad mesh-aware."""
+    return (
+        "Mesh delivery constraint (this overrides earlier length guidance): "
+        f"return one concise plain-text reply of at most {max_characters} "
+        f"characters and {max_bytes} UTF-8 bytes. Both limits are hard. Answer "
+        "directly. Emojis are welcome when they add clear meaning, but use them "
+        "sparingly because they consume multiple UTF-8 bytes. Omit Markdown "
+        "headings, tables, preambles, and follow-up offers. End with a complete "
+        "sentence; when everything will not fit, keep only the essential answer."
+    )
+
+
+def _fit_reply_to_budget(reply, max_bytes: int,
+                         max_characters: Optional[int] = None) -> str:
+    """Return a reply within both the character and UTF-8 byte ceilings.
+
+    Models cannot count encoded bytes reliably, so prompt guidance is paired
+    with deterministic enforcement. When clipping is necessary, compact the
+    whitespace and prefer a sentence or word break over a mid-token cut.
+    """
+    byte_budget = max(1, int(max_bytes))
+    character_budget = (
+        max(1, int(max_characters)) if max_characters is not None else None
+    )
+
+    def _fits(value: str) -> bool:
+        return (
+            len(value.encode('utf-8')) <= byte_budget
+            and (character_budget is None or len(value) <= character_budget)
+        )
+
+    text = str(reply or '').strip()
+    if _fits(text):
+        return text
+
+    compact = re.sub(r'\s+', ' ', text).strip()
+    if _fits(compact):
+        return compact
+
+    ellipsis = "…"
+    ellipsis_bytes = len(ellipsis.encode('utf-8'))
+    if byte_budget <= ellipsis_bytes or character_budget == 1:
+        raw = compact[:character_budget] if character_budget is not None else compact
+        return raw.encode('utf-8')[:byte_budget].decode('utf-8', errors='ignore')
+
+    character_room = character_budget - 1 if character_budget is not None else len(compact)
+    prefix = compact[:character_room].encode('utf-8')[:byte_budget - ellipsis_bytes].decode(
+        'utf-8', errors='ignore'
+    )
+    minimum_break = max(16, len(prefix) // 2)
+
+    sentence_breaks = [
+        match.end()
+        for match in re.finditer(r'[.!?]["\']?(?=\s|$)', prefix)
+        if match.end() >= minimum_break
+    ]
+    if sentence_breaks:
+        cut = sentence_breaks[-1]
+    else:
+        word_break = prefix.rfind(' ')
+        cut = word_break if word_break >= minimum_break else len(prefix)
+
+    clipped = prefix[:cut].rstrip(' ,;:-')
+    if not clipped:
+        raw = compact[:character_budget] if character_budget is not None else compact
+        return raw.encode('utf-8')[:byte_budget].decode('utf-8', errors='ignore')
+    return clipped + ellipsis
+
+
+def perform_ai_chat(prompt: str, response_max_bytes: Optional[int] = None) -> Tuple[str, str]:
     """Relay a prompt to the configured Ollama / OpenAI-compatible chat endpoint."""
     base = (_config_raw('gateway', 'ai_base_url') or '').rstrip('/')
     if not base:
@@ -179,8 +276,19 @@ def perform_ai_chat(prompt: str) -> Tuple[str, str]:
     dialect = (_config_raw('gateway', 'ai_dialect') or 'ollama').lower()
     model = _config_raw('gateway', 'ai_model') or 'llama3.2'
     system = _config_raw('gateway', 'ai_system_prompt') or ''
-    messages = ([{"role": "system", "content": system}] if system else []) + \
-               [{"role": "user", "content": prompt}]
+    budget = _reply_budget(dialect, response_max_bytes)
+    character_budget = (
+        _nomad_max_characters()
+        if dialect == 'nomad' and _nomad_single_message_enabled()
+        else None
+    )
+    messages = ([{"role": "system", "content": system}] if system else [])
+    if dialect == 'nomad' and _nomad_single_message_enabled():
+        messages.append({
+            "role": "system",
+            "content": _nomad_delivery_instruction(character_budget, budget),
+        })
+    messages.append({"role": "user", "content": prompt})
     headers = {"Content-Type": "application/json"}
     if dialect == 'openai':
         url = f"{base}/v1/chat/completions"
@@ -191,7 +299,9 @@ def perform_ai_chat(prompt: str) -> Tuple[str, str]:
     elif dialect == 'nomad':
         # Project N.O.M.A.D proxies Ollama under its own /api/ollama/ prefix;
         # response shape is identical to Ollama ({message:{content}}).
-        url = f"{base}/api/ollama/chat"
+        # NOMAD's route is slash-sensitive and redirects/404s without the
+        # trailing slash. Keep it explicit so the mesh gateway gets JSON.
+        url = f"{base}/api/ollama/chat/"
         payload = {"model": model, "messages": messages, "stream": False}
         key = _config_raw('gateway', 'ai_api_key')
         if key:
@@ -208,11 +318,22 @@ def perform_ai_chat(prompt: str) -> Tuple[str, str]:
             reply = doc['choices'][0]['message']['content']
         else:
             reply = doc['message']['content']
-        cap = _max_response_bytes()
-        reply = str(reply).strip()
-        if len(reply.encode('utf-8')) > cap:
-            reply = reply.encode('utf-8')[:cap].decode('utf-8', errors='ignore') + "…[truncated]"
-        return "200", reply
+        fitted_reply = _fit_reply_to_budget(
+            reply, budget, max_characters=character_budget,
+        )
+        if fitted_reply != str(reply).strip():
+            if character_budget is not None:
+                logging.info(
+                    "AI reply fitted to %s-character / %s-byte mesh budget "
+                    "(dialect=%s)",
+                    character_budget, budget, dialect,
+                )
+            else:
+                logging.info(
+                    "AI reply fitted to %s-byte mesh budget (dialect=%s)",
+                    budget, dialect,
+                )
+        return "200", fitted_reply
     except Exception as e:
         return "ERR", f"AI request failed: {e}"
 
@@ -220,7 +341,8 @@ def perform_ai_chat(prompt: str) -> Tuple[str, str]:
 # ── Request dispatch ─────────────────────────────────────────────────────────
 
 def handle_apireq(rid: str, requester_id: str, kind: str, payload: str,
-                  allowed_nodes, reply_fn: Callable[[str, str], None]) -> None:
+                  allowed_nodes, reply_fn: Callable[[str, str], None],
+                  response_max_bytes: Optional[int] = None) -> None:
     """Validate + dispatch an API request on a worker thread.
 
     ``reply_fn(status, body)`` is transport-agnostic — the caller wires it to an
@@ -240,7 +362,9 @@ def handle_apireq(rid: str, requester_id: str, kind: str, payload: str,
             if kind == 'r':  # relay
                 target, _, body = payload.partition(US)
                 if target.strip().lower() == 'ai':
-                    status, result = perform_ai_chat(body)
+                    status, result = perform_ai_chat(
+                        body, response_max_bytes=response_max_bytes,
+                    )
                 else:
                     status, result = "ERR", f"unknown relay target '{target}'"
             else:  # http

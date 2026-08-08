@@ -1,0 +1,11 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+*.db
+*.db-shm
+*.db-wal
+config.ini
+docker/config
+test-results

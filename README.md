@@ -1,6 +1,6 @@
 # BaconBS-mesh
 
-A feature-rich, offline-first Bulletin Board System for [Meshtastic](https://meshtastic.org/) mesh radio networks. BaconBS-mesh enables asynchronous communication across low-bandwidth LoRa links with no internet dependency — designed for resilience in the field.
+A feature-rich, offline-first Bulletin Board System for [Meshtastic](https://meshtastic.org/) and [MeshCore](https://meshcore.co.uk/) mesh radio networks. BaconBS-mesh enables asynchronous communication across low-bandwidth LoRa links with no internet dependency — designed for resilience in the field.
 
 Forked from [TC²-BBS-mesh](https://github.com/TheCommsChannel/TC2-BBS-mesh) with significant protocol and reliability improvements.
 
@@ -49,9 +49,11 @@ BaconBS-mesh uses a custom five-phase distributed sync protocol designed for los
 
 ## Requirements
 
-- Python 3.9+
-- A Meshtastic device connected via serial (USB) or TCP (WiFi)
-- `pip install -r requirements.txt` (installs `meshtastic`, `pypubsub`, `flask`)
+- Python 3.10+
+- Either a Meshtastic device (serial or TCP) or a MeshCore companion radio
+  (serial, TCP, or BLE)
+- `pip install -r requirements.txt` (installs both radio client libraries,
+  `pypubsub`, and `flask`)
 - **dfrotz** (optional, required for games): `sudo apt install frotz`
 
 ---
@@ -87,6 +89,8 @@ Edit `config.ini` before running. Key sections:
 
 ### Interface
 
+Meshtastic serial:
+
 ```ini
 [interface]
 type = serial
@@ -98,14 +102,58 @@ type = serial
 # hostname = 192.168.1.x
 ```
 
+MeshCore companion serial:
+
+```ini
+[interface]
+type = meshcore_serial
+port = /dev/ttyACM0
+baudrate = 115200
+channel_index = 0  # MeshCore channel used for broadcast notifications
+```
+
+MeshCore companion TCP or BLE:
+
+```ini
+# TCP
+[interface]
+type = meshcore_tcp
+hostname = 192.168.1.x
+tcp_port = 5000
+
+# BLE (use this section instead of TCP)
+# [interface]
+# type = meshcore_ble
+# ble_address = 12:34:56:78:90:AB  # optional; omit to scan
+# ble_pin = 123456                 # optional
+```
+
+The MeshCore radio must run **companion firmware**. A repeater, room-server,
+or other non-companion build does not expose the client protocol used here.
+
 ### Sync Peers
 
-Add the node IDs of other BaconBS-mesh nodes you want to sync with. Find node IDs in the Meshtastic app under **Radio Configuration > User**, or via the web admin dashboard.
+Add the node IDs of other BaconBS-mesh nodes you want to sync with. For
+Meshtastic, use the usual `!xxxxxxxx` node IDs. For MeshCore, use each
+companion's full public key or a unique prefix of at least 12 hexadecimal
+characters; these are visible in MeshCore contact details and the web admin
+diagnostics.
 
 ```ini
 [sync]
 bbs_nodes = !f53f4abc,!f3abc123
 ```
+
+MeshCore example:
+
+```ini
+[sync]
+bbs_nodes = 7e18ca9d30a1,4b0264c19f6e
+```
+
+Every BBS node in one deployment must use the same radio protocol. This
+release adds native operation on either network; it is not an RF bridge
+between Meshtastic and MeshCore.
 
 ### Sync Tuning
 
@@ -128,6 +176,29 @@ repair_cycle_seconds = 90          # minimum seconds between repair cycles per p
 reconcile_max_per_pass = 20        # max records pulled/pushed per repair cycle
 sync_interval_minutes = 5          # how often a full P1–P5 sync runs
 ```
+
+### Project Nomad Reply Sizing
+
+Project Nomad can format each answer to a 150-character limit while also
+respecting the active radio's safe single-message ceiling: 160 UTF-8 bytes on
+MeshCore or 220 on Meshtastic. The gateway adds both limits to Nomad's system
+instructions and enforces them at a sentence or word break if the model overruns.
+Useful emojis remain allowed and are counted against the UTF-8 byte ceiling.
+
+```ini
+[gateway]
+enabled = true
+ai_base_url = http://nomad.local:8080
+ai_dialect = nomad
+ai_model = gemma4:12b
+nomad_single_message = true
+nomad_max_characters = 150
+max_response_bytes = 800
+```
+
+Turn `nomad_single_message` off to retain multi-message AI answers up to
+`max_response_bytes`. This option affects Project Nomad only; Ollama and
+OpenAI-compatible relays retain their existing response behavior.
 
 ### Menu Customization
 
@@ -236,11 +307,19 @@ The following Meshtastic device roles are confirmed working:
 
 Some other roles have been reported to cause the node to stop responding after a short time.
 
+For MeshCore, flash a **companion** build and make sure every intended peer is
+present in the radio's contact list. BaconBS sends direct encrypted MeshCore
+messages and uses MeshCore's automatic routing/flood fallback. MeshCore's
+160-byte text ceiling is detected automatically; BBS sync frames and user
+replies are chunked to fit it.
+
 ---
 
 ## Usage
 
-Send a direct message to the BBS node from any Meshtastic device. Any message triggers the main menu. Navigate by sending the letter shown in brackets — for example, send `B` for `[B]BS`.
+Send a direct message to the BBS node from any Meshtastic or MeshCore contact.
+Any message triggers the main menu. Navigate by sending the letter shown in
+brackets — for example, send `B` for `[B]BS`.
 
 ---
 
@@ -259,15 +338,24 @@ python tests/smoke_test.py
 ```
 python server.py --help
 
-usage: server.py [-h] [--config CONFIG] [--interface-type {serial,tcp}]
-                 [--port PORT] [--host HOST] [--mqtt-topic MQTT_TOPIC]
+usage: server.py [-h] [--config CONFIG]
+                 [--interface-type {serial,tcp,meshcore_serial,meshcore_tcp,meshcore_ble}]
+                 [--port PORT] [--host HOST] [--tcp-port TCP_PORT]
+                 [--baudrate BAUDRATE] [--ble-address BLE_ADDRESS]
+                 [--ble-pin BLE_PIN] [--channel-index CHANNEL_INDEX]
+                 [--mqtt-topic MQTT_TOPIC]
 
 options:
   -h, --help                        show this help message and exit
   --config CONFIG, -c CONFIG        Path to config file
-  --interface-type {serial,tcp}     Interface type
+  --interface-type {...}            Radio interface type
   --port PORT, -p PORT              Serial port
   --host HOST                       TCP hostname
+  --tcp-port TCP_PORT               MeshCore TCP port
+  --baudrate BAUDRATE               MeshCore serial baud rate
+  --ble-address BLE_ADDRESS         MeshCore BLE address (omit to scan)
+  --ble-pin BLE_PIN                 Optional MeshCore BLE pairing PIN
+  --channel-index CHANNEL_INDEX     MeshCore broadcast channel index
   --mqtt-topic MQTT_TOPIC           MQTT topic to subscribe
 ```
 
@@ -277,6 +365,7 @@ options:
 
 - [TheCommsChannel](https://github.com/TheCommsChannel) — original TC²-BBS-mesh
 - [Meshtastic](https://github.com/meshtastic) and [pdxlocations](https://github.com/pdxlocations) — Python library and examples
+- [MeshCore](https://github.com/meshcore-dev/MeshCore) and [meshcore_py](https://github.com/meshcore-dev/meshcore_py) — companion protocol, firmware, and Python library
 - [Jordan Sherer](https://bitbucket.org/widefido/js8call) — JS8Call and the TCP API example
 
 ---
