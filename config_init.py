@@ -65,7 +65,7 @@ def init_cli_parser() -> argparse.Namespace:
     Returns:
         argparse.ArgumentParser: Argparse namespace with processed CLI args
     """
-    parser = argparse.ArgumentParser(description="Meshtastic BBS system")
+    parser = argparse.ArgumentParser(description="BaconBS mesh radio BBS")
     
     parser.add_argument(
         "--config", "-c",
@@ -76,7 +76,7 @@ def init_cli_parser() -> argparse.Namespace:
     parser.add_argument(
         "--interface-type", "-i",
         action="store",
-        choices=['serial', 'tcp'],
+        choices=['serial', 'tcp', 'meshcore_serial', 'meshcore_tcp', 'meshcore_ble'],
         help="Node interface type",
         default=None)
     
@@ -90,6 +90,39 @@ def init_cli_parser() -> argparse.Namespace:
         "--host", 
         action="store",
         help="TCP host address",
+        default=None)
+
+    parser.add_argument(
+        "--tcp-port",
+        action="store",
+        type=int,
+        help="TCP port (MeshCore default: 5000)",
+        default=None)
+
+    parser.add_argument(
+        "--baudrate",
+        action="store",
+        type=int,
+        help="Serial baud rate (MeshCore default: 115200)",
+        default=None)
+
+    parser.add_argument(
+        "--ble-address",
+        action="store",
+        help="MeshCore BLE address (omit to scan)",
+        default=None)
+
+    parser.add_argument(
+        "--ble-pin",
+        action="store",
+        help="Optional MeshCore BLE pairing PIN",
+        default=None)
+
+    parser.add_argument(
+        "--channel-index",
+        action="store",
+        type=int,
+        help="MeshCore channel index used for broadcast notifications",
         default=None)
     
     parser.add_argument(
@@ -129,6 +162,21 @@ def merge_config(system_config:dict[str, Any], args:argparse.Namespace) -> dict[
     if args.host is not None:
         system_config['hostname'] = args.host
 
+    if args.tcp_port is not None:
+        system_config['tcp_port'] = args.tcp_port
+
+    if args.baudrate is not None:
+        system_config['baudrate'] = args.baudrate
+
+    if args.ble_address is not None:
+        system_config['ble_address'] = args.ble_address
+
+    if args.ble_pin is not None:
+        system_config['ble_pin'] = args.ble_pin
+
+    if args.channel_index is not None:
+        system_config['channel_index'] = args.channel_index
+
     if args.mqtt_topic is not None:
         system_config['mqtt_topic'] = args.mqtt_topic
     
@@ -158,13 +206,19 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
         config_file = resolve_app_path(os.getenv("BBS_CONFIG_PATH"), "config.ini")
     config.read(config_file)
 
-    interface_type = config['interface']['type']
+    interface_type = config['interface']['type'].strip().lower()
     hostname = config['interface'].get('hostname', None)
     port = config['interface'].get('port', None)
+    tcp_port = config['interface'].getint('tcp_port', fallback=5000)
+    baudrate = config['interface'].getint('baudrate', fallback=115200)
+    ble_address = config['interface'].get('ble_address', fallback=None)
+    ble_pin = config['interface'].get('ble_pin', fallback=None)
+    channel_index = config['interface'].getint('channel_index', fallback=0)
 
     bbs_nodes = config.get('sync', 'bbs_nodes', fallback='').split(',')
-    if bbs_nodes == ['']:
-        bbs_nodes = []
+    bbs_nodes = [node.strip() for node in bbs_nodes if node.strip()]
+    subscriber_nodes = config.get('sync', 'subscriber_nodes', fallback='').split(',')
+    subscriber_nodes = [node.strip() for node in subscriber_nodes if node.strip()]
 
     sync_interval_raw = config.get('sync', 'sync_interval_minutes', fallback='5').strip()
     try:
@@ -176,8 +230,7 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
     print(f"Configured to sync with the following BBS nodes: {bbs_nodes}")
 
     allowed_nodes = config.get('allow_list', 'allowed_nodes', fallback='').split(',')
-    if allowed_nodes == ['']:
-        allowed_nodes = []
+    allowed_nodes = [node.strip() for node in allowed_nodes if node.strip()]
 
     print(f"Nodes with Urgent board permissions: {allowed_nodes}")
 
@@ -187,7 +240,13 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
         'interface_type': interface_type,
         'hostname': hostname,
         'port': port,
+        'tcp_port': tcp_port,
+        'baudrate': baudrate,
+        'ble_address': ble_address,
+        'ble_pin': ble_pin,
+        'channel_index': channel_index,
         'bbs_nodes': bbs_nodes,
+        'subscriber_nodes': subscriber_nodes,
         'sync_interval_minutes': sync_interval_minutes,
         'allowed_nodes': allowed_nodes,
         'mqtt_topic': 'meshtastic.receive'
@@ -195,14 +254,13 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
 
 
 
-def get_interface(system_config:dict[str, Any]) -> meshtastic.stream_interface.StreamInterface:
+def get_interface(system_config:dict[str, Any]) -> Any:
     """
-    Function opens and returns an instance meshtastic interface of type specified by the configuration
-    
-    Function creates and returns an instance of a class inheriting from meshtastic.stream_interface.StreamInterface.
-    The type of the class depends on the type of the interface specified by the system configuration.
-    For 'serial' interfaces, function returns an instance of meshtastic.serial_interface.SerialInterface,
-    and for 'tcp' interface, an instance of meshtastic.tcp_interface.TCPInterface.
+    Open the configured Meshtastic or MeshCore radio interface.
+
+    Meshtastic serial/TCP modes return the native library interface. MeshCore
+    serial/TCP/BLE modes return ``MeshCoreInterface``, which presents the small
+    synchronous compatibility surface used by the BBS.
 
     Args:
         system_config (dict[str, Any]): A dict with system configuration. See description of initialize_config() for details.
@@ -215,12 +273,13 @@ def get_interface(system_config:dict[str, Any]) -> meshtastic.stream_interface.S
                 - Hostname not provided for TCP interface
 
     Returns:
-        meshtastic.stream_interface.StreamInterface: An instance of StreamInterface
+        A connected radio interface.
     """
     interface_type = system_config['interface_type']
-    if interface_type not in ('serial', 'tcp'):
+    valid_types = ('serial', 'tcp', 'meshcore_serial', 'meshcore_tcp', 'meshcore_ble')
+    if interface_type not in valid_types:
         raise ValueError("Invalid interface type specified in config file")
-    if interface_type == 'tcp' and not system_config['hostname']:
+    if interface_type in ('tcp', 'meshcore_tcp') and not system_config['hostname']:
         raise ValueError("Hostname must be specified for TCP interface")
 
     failures = 0
@@ -230,8 +289,25 @@ def get_interface(system_config:dict[str, Any]) -> meshtastic.stream_interface.S
             if interface_type == 'serial':
                 device = _resolve_serial_device(system_config)  # ValueError here is fatal (config), not retried
                 iface = meshtastic.serial_interface.SerialInterface(device)
-            else:
+            elif interface_type == 'tcp':
                 iface = meshtastic.tcp_interface.TCPInterface(hostname=system_config['hostname'])
+            else:
+                from meshcore_interface import MeshCoreInterface
+
+                meshcore_transport = interface_type.removeprefix('meshcore_')
+                if meshcore_transport == 'serial':
+                    device = _resolve_serial_device(system_config)
+                iface = MeshCoreInterface(
+                    meshcore_transport,
+                    port=device,
+                    baudrate=int(system_config.get('baudrate', 115200)),
+                    hostname=system_config.get('hostname'),
+                    tcp_port=int(system_config.get('tcp_port', 5000)),
+                    ble_address=system_config.get('ble_address'),
+                    ble_pin=system_config.get('ble_pin'),
+                    channel_index=int(system_config.get('channel_index', 0)),
+                    receive_topic=system_config.get('mqtt_topic', 'meshtastic.receive'),
+                )
             if failures:
                 print(f"Radio connection recovered after {failures} failed attempt(s).")
             return iface

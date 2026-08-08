@@ -625,6 +625,28 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("DELETE_ZORKSAVE", page)
         self.assertIn("CANDREQ / CANDRSP", page)
 
+    def test_radio_device_page_describes_meshcore_companion(self):
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        config["interface"] = {
+            "type": "meshcore_tcp",
+            "hostname": "192.0.2.20",
+            "tcp_port": "5000",
+        }
+        with open(self.config_path, "w", encoding="utf-8") as config_file:
+            config.write(config_file)
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = client.get("/system/meshtastic")
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertIn("MeshCore Companion Radio", page)
+        self.assertIn("192.0.2.20:5000", page)
+        self.assertIn("contact list", page)
+
     def test_settings_diagnostics_snapshot_fallback(self):
         with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:
             json.dump(
