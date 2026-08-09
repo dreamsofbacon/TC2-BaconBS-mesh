@@ -274,6 +274,20 @@ def load_device_settings(config_path: str) -> dict:
   }
 
 
+def load_account_settings(config_path: str) -> dict:
+  """Read [accounts] tunables for the web-admin Settings form. Defaults
+  match command_handlers.py's own defaults exactly -- these are the same
+  numbers used at runtime via utils._config_int, this is purely the
+  editable-in-the-GUI view of them."""
+  config = read_config_file(config_path)
+  return {
+    "link_code_ttl_minutes": config.get("accounts", "link_code_ttl_minutes", fallback="10").strip() or "10",
+    "link_requests_per_hour": config.get("accounts", "link_requests_per_hour", fallback="3").strip() or "3",
+    "link_attempts_per_hour": config.get("accounts", "link_attempts_per_hour", fallback="5").strip() or "5",
+    "max_linked_devices": config.get("accounts", "max_linked_devices", fallback="6").strip() or "6",
+  }
+
+
 def _parse_bool_setting(raw_value: Optional[str], default: bool = False) -> bool:
   if raw_value is None:
     return default
@@ -3240,6 +3254,27 @@ def create_app(runtime_interface=None) -> Flask:
       write_config_file(config, app.config["CONFIG_PATH"])
       return []
 
+    def save_account_settings(form) -> None:
+      """Persist [accounts] tunables. Hot-reloads: command_handlers.py
+      reads these fresh via utils._config_int on every use, so no restart
+      is needed for the change."""
+      config = read_config_file(app.config["CONFIG_PATH"])
+      if not config.has_section("accounts"):
+        config.add_section("accounts")
+      for key, default, minimum in (
+        ("link_code_ttl_minutes", 10, 1),
+        ("link_requests_per_hour", 3, 0),
+        ("link_attempts_per_hour", 5, 0),
+        ("max_linked_devices", 6, 1),
+      ):
+        raw = form.get(key, "").strip()
+        try:
+          val = max(minimum, int(raw))
+        except ValueError:
+          val = default
+        config.set("accounts", key, str(val))
+      write_config_file(config, app.config["CONFIG_PATH"])
+
     def save_admin_credentials(username, password) -> None:
       config = read_config_file(app.config["CONFIG_PATH"])
       if not config.has_section("admin"):
@@ -3847,6 +3882,7 @@ def create_app(runtime_interface=None) -> Flask:
       storage_settings = load_storage_settings(app.config["CONFIG_PATH"])
       subscriber_settings = load_subscriber_settings(app.config["CONFIG_PATH"])
       device_settings = load_device_settings(app.config["CONFIG_PATH"])
+      account_settings = load_account_settings(app.config["CONFIG_PATH"])
       return render_template(
         "settings.html",
         title="Settings",
@@ -3855,6 +3891,7 @@ def create_app(runtime_interface=None) -> Flask:
         storage=storage_settings,
         subscribers=subscriber_settings,
         devices=device_settings,
+        accounts=account_settings,
         boards_text=",".join(app.config["BULLETIN_BOARDS"]),
         env_override=bool(os.getenv("BBS_BULLETIN_BOARDS", "").strip()),
         bbs_nodes_text="\n".join(bbs_nodes),
@@ -4019,6 +4056,11 @@ def create_app(runtime_interface=None) -> Flask:
           if not errors:
             flash("Device settings saved. Restart the mesh-bbs service for the change to take effect.", "success")
           return redirect(url_for("settings_page") + "#devices")
+
+        if section == "accounts":
+          save_account_settings(request.form)
+          flash("Account linking settings saved.", "success")
+          return redirect(url_for("settings_page") + "#accounts")
 
         if section == "sync":
           update_sync_settings(
@@ -4475,12 +4517,32 @@ def create_app(runtime_interface=None) -> Flask:
         )
         profile = cursor.fetchone()
       short = profile["short_name"] if profile else node_id
+
+      # Opportunistic cross-link to the Accounts page: user_profiles is
+      # keyed by the NUMERIC node id, linked_nodes by the STRING id, and
+      # there's no persisted mapping between them -- best-effort resolve
+      # via the live interface's node table (only available when web_admin
+      # runs embedded with a runtime_interface, not the common standalone
+      # deployment). Silently omitted if resolution isn't possible.
+      account_id = None
+      try:
+        interface = get_runtime_interface()
+        if interface is not None:
+          from utils import get_node_id_from_num
+          from db_operations import get_account_id_for_node
+          string_node_id = get_node_id_from_num(int(node_id), interface)
+          if string_node_id:
+            account_id = get_account_id_for_node(string_node_id)
+      except Exception:
+        account_id = None
+
       return render_template(
         "client_profile.html",
         title=f"Profile – {short}",
         show_nav=True,
         profile=profile,
         node_id=node_id,
+        linked_account_id=account_id,
       )
 
     @app.get("/api/connection-events")
@@ -4505,6 +4567,63 @@ def create_app(runtime_interface=None) -> Flask:
         )
         events = [serialize_connection_event(row) for row in cursor.fetchall()]
       return jsonify({"events": events})
+
+    @app.get("/accounts")
+    @login_required
+    def accounts_list():
+      from db_operations import list_accounts
+      rows = list_accounts()
+      return render_template("accounts.html", title="Accounts", show_nav=True, rows=rows)
+
+    @app.route("/accounts/<account_id>", methods=["GET", "POST"])
+    @login_required
+    def account_detail(account_id):
+      from db_operations import (
+        get_account, get_linked_nodes_detail, set_account_alias,
+        unlink_node, link_node_to_account, get_account_id_for_node,
+      )
+      from utils import home_network
+
+      account = get_account(account_id)
+      if account is None:
+        flash("Account not found.", "error")
+        return redirect(url_for("accounts_list"))
+
+      if request.method == "POST":
+        action = request.form.get("action", "").strip()
+        if action == "set_alias":
+          alias = request.form.get("alias", "").strip()[:20]
+          set_account_alias(account_id, alias)
+          flash(f'Alias set to "{alias}".' if alias else "Alias cleared.", "success")
+        elif action == "unlink":
+          node_id = request.form.get("node_id", "").strip()
+          if node_id and unlink_node(node_id):
+            flash(f"Unlinked {node_id}.", "success")
+          else:
+            flash("Couldn't unlink that device (it may be the account's only one).", "error")
+        elif action == "force_link":
+          node_id = request.form.get("new_node_id", "").strip()
+          if not node_id:
+            flash("Node ID is required.", "error")
+          elif get_account_id_for_node(node_id) is not None:
+            flash(f"{node_id} is already linked to an account.", "error")
+          else:
+            link_node_to_account(node_id, account_id, home_network(node_id))
+            flash(f"Linked {node_id}.", "success")
+        else:
+          flash("Unknown action.", "error")
+        return redirect(url_for("account_detail", account_id=account_id))
+
+      detail = get_linked_nodes_detail(account_id)
+      return render_template(
+        "account_detail.html",
+        title=f"Account {account_id[:8]}",
+        show_nav=True,
+        account_id=account_id,
+        alias=account[1],
+        created_at=account[2],
+        devices=detail,
+      )
 
     def _describe_configured_device(config, section: str, label: str, runtime_interface_for_hostname=None) -> dict:
       """Build the {device_mode, ...} dict meshtastic_device.html renders for

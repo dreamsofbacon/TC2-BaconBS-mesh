@@ -773,6 +773,162 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertNotIn("Dual-radio bridge mode active", page)
         self.assertIn("Interface type:</strong> SerialInterface", page)
 
+    def test_accounts_settings_section_renders_with_defaults(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+        page = client.get("/settings").get_data(as_text=True)
+        self.assertIn("Account Linking", page)
+        self.assertIn('value="10"', page)  # default link_code_ttl_minutes
+
+    def test_accounts_settings_save_persists_to_config(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+        response = self.post_with_csrf(
+            client, "/settings",
+            data={
+                "settings_section": "accounts",
+                "link_code_ttl_minutes": "15",
+                "link_requests_per_hour": "2",
+                "link_attempts_per_hour": "4",
+                "max_linked_devices": "3",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertEqual(config.get("accounts", "link_code_ttl_minutes"), "15")
+        self.assertEqual(config.get("accounts", "max_linked_devices"), "3")
+
+    def test_accounts_list_page_shows_accounts(self):
+        db_operations.initialize_database()
+        account_id = db_operations.create_account()
+        db_operations.link_node_to_account("!aaa11111", account_id, "meshtastic")
+        db_operations.set_account_alias(account_id, "BaconFan")
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+        page = client.get("/accounts").get_data(as_text=True)
+        self.assertIn("BaconFan", page)
+        self.assertIn(account_id, page)
+
+    def test_accounts_list_page_empty_state(self):
+        db_operations.initialize_database()
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+        page = client.get("/accounts").get_data(as_text=True)
+        self.assertIn("No accounts yet", page)
+
+    def test_account_detail_shows_linked_devices(self):
+        db_operations.initialize_database()
+        account_id = db_operations.create_account()
+        db_operations.link_node_to_account("!aaa11111", account_id, "meshtastic")
+        db_operations.link_node_to_account("7e18ca9d30a1", account_id, "meshcore")
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+        page = client.get(f"/accounts/{account_id}").get_data(as_text=True)
+        self.assertIn("!aaa11111", page)
+        self.assertIn("7e18ca9d30a1", page)
+        self.assertIn("meshtastic", page)
+        self.assertIn("meshcore", page)
+
+    def test_account_detail_unknown_account_redirects(self):
+        db_operations.initialize_database()
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+        response = client.get("/accounts/does-not-exist")
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/accounts"))
+
+    def test_account_detail_set_alias(self):
+        db_operations.initialize_database()
+        account_id = db_operations.create_account()
+        db_operations.link_node_to_account("!aaa11111", account_id, "meshtastic")
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+        response = self.post_with_csrf(
+            client, f"/accounts/{account_id}",
+            data={"action": "set_alias", "alias": "NewAlias"},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(db_operations.get_account_alias(account_id), "NewAlias")
+
+    def test_account_detail_unlink_device(self):
+        db_operations.initialize_database()
+        account_id = db_operations.create_account()
+        db_operations.link_node_to_account("!aaa11111", account_id, "meshtastic")
+        db_operations.link_node_to_account("7e18ca9d30a1", account_id, "meshcore")
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+        response = self.post_with_csrf(
+            client, f"/accounts/{account_id}",
+            data={"action": "unlink", "node_id": "7e18ca9d30a1"},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIsNone(db_operations.get_account_id_for_node("7e18ca9d30a1"))
+
+    def test_account_detail_unlink_last_device_refused(self):
+        db_operations.initialize_database()
+        account_id = db_operations.create_account()
+        db_operations.link_node_to_account("!aaa11111", account_id, "meshtastic")
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+        self.post_with_csrf(
+            client, f"/accounts/{account_id}",
+            data={"action": "unlink", "node_id": "!aaa11111"},
+            follow_redirects=False,
+        )
+        self.assertEqual(db_operations.get_account_id_for_node("!aaa11111"), account_id)
+
+    def test_account_detail_force_link(self):
+        db_operations.initialize_database()
+        account_id = db_operations.create_account()
+        db_operations.link_node_to_account("!aaa11111", account_id, "meshtastic")
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+        response = self.post_with_csrf(
+            client, f"/accounts/{account_id}",
+            data={"action": "force_link", "new_node_id": "7e18ca9d30a1"},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(db_operations.get_account_id_for_node("7e18ca9d30a1"), account_id)
+
+    def test_account_detail_force_link_rejects_already_linked_node(self):
+        db_operations.initialize_database()
+        account_a = db_operations.create_account()
+        db_operations.link_node_to_account("!aaa11111", account_a, "meshtastic")
+        account_b = db_operations.create_account()
+        db_operations.link_node_to_account("!bbb22222", account_b, "meshtastic")
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+        self.post_with_csrf(
+            client, f"/accounts/{account_a}",
+            data={"action": "force_link", "new_node_id": "!bbb22222"},
+            follow_redirects=False,
+        )
+        # unchanged -- still linked to its original account
+        self.assertEqual(db_operations.get_account_id_for_node("!bbb22222"), account_b)
+
     def test_devices_section_renders_with_defaults(self):
         app = create_app()
         client = app.test_client()

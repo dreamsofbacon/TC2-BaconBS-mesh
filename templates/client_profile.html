@@ -17,6 +17,9 @@
   {% else %}
   <p class="text-muted">No profile on record for node <strong>{{ node_id }}</strong>.</p>
   {% endif %}
+  {% if linked_account_id %}
+  <p class="text-muted">This device is linked to <a href="{{ url_for('account_detail', account_id=linked_account_id) }}">an account</a>.</p>
+  {% endif %}
   <p style="margin-top:1rem"><a href="{{ url_for('clients_summary') }}">&larr; Back to Clients</a></p>
 </div>
 {% endblock %}

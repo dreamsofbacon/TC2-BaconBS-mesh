@@ -26,6 +26,7 @@ from collections import defaultdict, deque
 from typing import Callable, Optional, Tuple
 
 from utils import _config_bool, _config_int, _config_raw
+from db_operations import account_authorized
 
 # Per-node sliding-window request timestamps, guarded by a lock (touched by the
 # radio thread and worker threads).
@@ -72,10 +73,15 @@ def is_requester_authorized(requester_id, fallback_allowed=None) -> bool:
       are allowed (lock-down mode, configurable from the web GUI).
     - Otherwise fall back to the general [allow_list] (fallback_allowed): any
       allowed node may use the gateway (the current open default).
-    - If both are empty, the gateway is open to all."""
+    - If both are empty, the gateway is open to all.
+
+    Account-aware: if requester_id isn't directly on the effective list but
+    IS linked to a multi-device account (see db_operations.account_authorized)
+    and a SIBLING node is on the list, the requester is authorized too. An
+    unlinked node's behavior is completely unchanged."""
     gw = gateway_allowed_nodes()
     effective = gw if gw else list(fallback_allowed or [])
-    if effective and requester_id not in effective:
+    if effective and not account_authorized(requester_id, [effective]):
         return False
     return True
 

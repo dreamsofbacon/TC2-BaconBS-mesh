@@ -446,6 +446,38 @@
   </form>
 </div>
 
+<div class="card" id="accounts" style="max-width:600px">
+  <h2>Account Linking</h2>
+  <p class="text-muted">
+    Tunables for the self-service multi-device account system (Profile &gt;
+    Linked Devices in the mesh menu). See the <a href="{{ url_for('accounts_list') }}">Accounts</a>
+    page to view or manage individual accounts. Changes here take effect
+    immediately, no restart needed.
+  </p>
+  <form method="post" action="{{ url_for('settings_page') }}#accounts">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="accounts">
+    <div class="form-group">
+      <label for="link_code_ttl_minutes">Link code lifetime (minutes)</label>
+      <input type="text" id="link_code_ttl_minutes" name="link_code_ttl_minutes" class="form-control" value="{{ accounts.link_code_ttl_minutes }}">
+    </div>
+    <div class="form-group">
+      <label for="link_requests_per_hour">Max code requests per device, per hour</label>
+      <input type="text" id="link_requests_per_hour" name="link_requests_per_hour" class="form-control" value="{{ accounts.link_requests_per_hour }}">
+    </div>
+    <div class="form-group">
+      <label for="link_attempts_per_hour">Max code submission attempts per device, per hour</label>
+      <input type="text" id="link_attempts_per_hour" name="link_attempts_per_hour" class="form-control" value="{{ accounts.link_attempts_per_hour }}">
+      <p class="text-muted">Keep this low -- it's the main defense against brute-forcing a 6-digit code.</p>
+    </div>
+    <div class="form-group">
+      <label for="max_linked_devices">Max linked devices per account</label>
+      <input type="text" id="max_linked_devices" name="max_linked_devices" class="form-control" value="{{ accounts.max_linked_devices }}">
+    </div>
+    <button class="btn btn-primary" type="submit">Save Account Settings</button>
+  </form>
+</div>
+
 <div class="card" id="storage" style="max-width:600px">
   <h2>Storage / Database Size Cap</h2>
   <p class="text-muted">

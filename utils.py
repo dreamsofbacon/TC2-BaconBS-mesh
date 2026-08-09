@@ -505,6 +505,34 @@ def get_node_short_name(node_id, interface):
     return None
 
 
+def resolve_display_name(node_id, interface):
+    """Like get_node_short_name, but if node_id is linked to a multi-device
+    account with a non-empty alias, returns the alias instead. Falls
+    through to exactly get_node_short_name's behavior (including returning
+    None) when there's no account link or no alias set -- an unlinked
+    node's display name is completely unaffected by the account system.
+
+    Resolved once, at authorship time, by every caller that captures a
+    sender's name into a bulletin/mail/channel-comment row -- there is no
+    live join at display/read time anywhere in this codebase, so (matching
+    how a node's own short_name change today never rewrites already-posted
+    content) an alias change never retroactively rewrites old posts either.
+
+    db_operations is imported lazily here to avoid a circular import (it
+    already imports several send_* helpers from this module).
+    """
+    try:
+        from db_operations import get_account_id_for_node, get_account_alias
+        account_id = get_account_id_for_node(node_id)
+        if account_id:
+            alias = get_account_alias(account_id)
+            if alias:
+                return alias
+    except Exception:
+        pass
+    return get_node_short_name(node_id, interface)
+
+
 def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface, date=None, source_node_id=None, source_timestamp=None):
     header = f"BULLETIN|{board}|{sender_short_name}|{subject}|"
     _use_epoch = peers_all_support(bbs_nodes, 'epoch')
