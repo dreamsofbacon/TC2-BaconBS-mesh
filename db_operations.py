@@ -3,6 +3,7 @@ import base64
 import hashlib
 import logging
 import os
+import secrets
 import sqlite3
 import threading
 import time
@@ -649,10 +650,59 @@ def initialize_database():
     _ensure_content_status_columns(c)
     _ensure_channel_comment_sync_columns(c)
     _ensure_local_only_columns(c)
+    _ensure_accounts_tables(c)
     _dedupe_channels_and_create_unique_index(c)
     _dedupe_messages_and_create_unique_indexes(c)
     conn.commit()
     print(f"Database schema initialized at {get_database_path()}.")
+
+
+def _ensure_accounts_tables(cursor) -> None:
+    """Multi-device user accounts: a human can link several physical node
+    ids (across protocols) to one account, with a shared display alias.
+    Purely additive/opt-in -- user_profiles (numeric-node-id-keyed) is
+    untouched and keeps working exactly as before for any node that never
+    links to an account. These new tables key on the STABLE STRING node id
+    ('!xxxxxxxx' for Meshtastic, the public key/hex prefix for MeshCore),
+    never the numeric node number user_profiles uses -- MeshCore's numeric
+    id is synthesized from just the first 8 hex chars of its public key
+    (meshcore_interface.py's _node_num), which collides with real Meshtastic
+    node numbers far too easily to trust for identity/security purposes.
+    """
+    cursor.execute('''CREATE TABLE IF NOT EXISTS accounts (
+                    account_id TEXT PRIMARY KEY,
+                    alias TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS linked_nodes (
+                    node_id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    network TEXT NOT NULL,
+                    linked_at TEXT NOT NULL,
+                    FOREIGN KEY(account_id) REFERENCES accounts(account_id)
+                );''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_linked_nodes_account
+                    ON linked_nodes (account_id);''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS link_codes (
+                    code TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    requested_by_node_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    consumed_at TEXT,
+                    consumed_by_node_id TEXT
+                );''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_link_codes_account
+                    ON link_codes (account_id);''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS link_attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    node_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    attempted_at TEXT NOT NULL,
+                    success INTEGER NOT NULL DEFAULT 0
+                );''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_link_attempts_node_time
+                    ON link_attempts (node_id, attempted_at);''')
 
 
 def _ensure_content_status_columns(cursor) -> None:
@@ -3124,6 +3174,246 @@ def update_user_bio(user_id: int, bio: str) -> None:
     c = conn.cursor()
     c.execute("UPDATE user_profiles SET bio = ? WHERE user_id = ?", (bio[:100], str(user_id)))
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Multi-device user accounts
+#
+# Purely additive on top of user_profiles: linking is opt-in, and a node
+# that never links to an account behaves exactly as before this existed.
+# Keyed on the STABLE STRING node id (see _ensure_accounts_tables' docstring
+# for why -- never the numeric id user_profiles/user_states use).
+# ---------------------------------------------------------------------------
+
+_LINK_CODE_ATTEMPT_WINDOW_SECONDS = 3600
+
+
+def create_account() -> str:
+    """Create a new, empty (no linked nodes yet) account and return its id."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    account_id = uuid.uuid4().hex
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    c.execute(
+        "INSERT INTO accounts (account_id, alias, created_at) VALUES (?, '', ?)",
+        (account_id, now)
+    )
+    conn.commit()
+    return account_id
+
+
+def get_account_id_for_node(node_id: str) -> Optional[str]:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT account_id FROM linked_nodes WHERE node_id = ?", (str(node_id),))
+    row = c.fetchone()
+    return row[0] if row else None
+
+
+def get_linked_node_ids(account_id: str) -> list:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT node_id FROM linked_nodes WHERE account_id = ? ORDER BY linked_at",
+        (account_id,)
+    )
+    return [row[0] for row in c.fetchall()]
+
+
+def get_linked_nodes_detail(account_id: str) -> list:
+    """[(node_id, network, linked_at), ...] for display (DM 'list my devices'
+    and the web admin account detail page)."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT node_id, network, linked_at FROM linked_nodes WHERE account_id = ? ORDER BY linked_at",
+        (account_id,)
+    )
+    return c.fetchall()
+
+
+def count_linked_nodes(account_id: str) -> int:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM linked_nodes WHERE account_id = ?", (account_id,))
+    return int(c.fetchone()[0])
+
+
+def link_node_to_account(node_id: str, account_id: str, network: str, now: Optional[str] = None) -> None:
+    conn = get_db_connection()
+    c = conn.cursor()
+    now = now or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    c.execute(
+        '''INSERT INTO linked_nodes (node_id, account_id, network, linked_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(node_id) DO UPDATE SET
+             account_id = excluded.account_id,
+             network = excluded.network,
+             linked_at = excluded.linked_at''',
+        (str(node_id), account_id, network, now)
+    )
+    conn.commit()
+
+
+def unlink_node(node_id: str) -> bool:
+    """Remove node_id from its account. Refuses (returns False) if this
+    would leave the account with zero linked nodes -- an account can never
+    reach zero devices this way. Also returns False if node_id isn't linked
+    to anything."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    account_id = get_account_id_for_node(node_id)
+    if account_id is None:
+        return False
+    if count_linked_nodes(account_id) <= 1:
+        return False
+    c.execute("DELETE FROM linked_nodes WHERE node_id = ?", (str(node_id),))
+    conn.commit()
+    return True
+
+
+def get_account_alias(account_id: str) -> str:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT alias FROM accounts WHERE account_id = ?", (account_id,))
+    row = c.fetchone()
+    return row[0] if row else ''
+
+
+def set_account_alias(account_id: str, alias: str) -> None:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("UPDATE accounts SET alias = ? WHERE account_id = ?", (str(alias).strip()[:20], account_id))
+    conn.commit()
+
+
+def create_link_code(account_id: str, requested_by_node_id: str, ttl_minutes: int = 10) -> str:
+    """Generate a 6-digit, single-use, time-limited code for linking a new
+    device to account_id. Uses the `secrets` module (not `random`) for the
+    same reason web_admin.py's CSRF tokens do -- this gates account
+    membership, so it must be unguessable, not just look random."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    now_dt = datetime.now()
+    now_str = now_dt.strftime('%Y-%m-%d %H:%M:%S')
+    expires_at = (now_dt + timedelta(minutes=ttl_minutes)).strftime('%Y-%m-%d %H:%M:%S')
+
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    # Vanishingly unlikely to collide with another still-live code, but a
+    # PRIMARY KEY collision would otherwise raise -- regenerate defensively.
+    for _ in range(5):
+        c.execute("SELECT 1 FROM link_codes WHERE code = ?", (code,))
+        if not c.fetchone():
+            break
+        code = f"{secrets.randbelow(1_000_000):06d}"
+
+    c.execute(
+        '''INSERT INTO link_codes (code, account_id, requested_by_node_id, created_at, expires_at)
+           VALUES (?, ?, ?, ?, ?)''',
+        (code, account_id, str(requested_by_node_id), now_str, expires_at)
+    )
+    conn.commit()
+    return code
+
+
+def redeem_link_code(code: str, node_id: str, network: str, max_devices: int = 6) -> tuple:
+    """Attempt to link node_id to whichever account owns `code`.
+
+    Returns (ok: bool, message: str). `node_id` MUST be the packet's string
+    sender_node_id (fromId) -- never the numeric sender_id/node number --
+    since that numeric id can collide between a MeshCore and a Meshtastic
+    node in dual-radio bridge mode (see _ensure_accounts_tables). This
+    function does not know or care which numeric id was involved; the
+    caller is responsible for passing the right (string) identity.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    c.execute(
+        "SELECT code, account_id, expires_at FROM link_codes WHERE code = ? AND consumed_at IS NULL",
+        (str(code),)
+    )
+    row = c.fetchone()
+    if row is None or not secrets.compare_digest(row[0], str(code)):
+        return False, "Invalid or already-used code."
+    _code, account_id, expires_at = row
+    if expires_at < now_str:
+        return False, "That code has expired. Request a new one."
+
+    existing_account = get_account_id_for_node(node_id)
+    if existing_account == account_id:
+        return False, "This device is already linked to that account."
+    if existing_account is not None:
+        return False, "This device is already linked to a different account. Unlink it there first."
+    if count_linked_nodes(account_id) >= max_devices:
+        return False, "That account already has the maximum number of linked devices."
+
+    link_node_to_account(node_id, account_id, network, now=now_str)
+    c.execute(
+        "UPDATE link_codes SET consumed_at = ?, consumed_by_node_id = ? WHERE code = ?",
+        (now_str, str(node_id), _code)
+    )
+    conn.commit()
+    return True, "Device linked successfully."
+
+
+def record_link_attempt(node_id: str, kind: str, success: bool) -> None:
+    """kind is 'request_code' or 'submit_code'. Backed by a DB table
+    (link_attempts), not the in-memory deque/dict shape used elsewhere in
+    this codebase (e.g. gateway.py's rate limiter) -- deliberately, so
+    limits survive a restart and leave an audit trail, per the assumed
+    adversarial threat model for account linking."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    c.execute(
+        "INSERT INTO link_attempts (node_id, kind, attempted_at, success) VALUES (?, ?, ?, ?)",
+        (str(node_id), kind, now, 1 if success else 0)
+    )
+    conn.commit()
+
+
+def count_recent_link_attempts(node_id: str, kind: str, window_seconds: int = _LINK_CODE_ATTEMPT_WINDOW_SECONDS) -> int:
+    conn = get_db_connection()
+    c = conn.cursor()
+    cutoff = (datetime.now() - timedelta(seconds=window_seconds)).strftime('%Y-%m-%d %H:%M:%S')
+    c.execute(
+        "SELECT COUNT(*) FROM link_attempts WHERE node_id = ? AND kind = ? AND attempted_at > ?",
+        (str(node_id), kind, cutoff)
+    )
+    return int(c.fetchone()[0])
+
+
+def link_rate_limit_ok(node_id: str, kind: str, max_per_hour: int) -> bool:
+    """True if node_id has made fewer than max_per_hour attempts of `kind`
+    ('request_code' or 'submit_code') in the last hour. Callers should check
+    this BEFORE attempting the action, and always call record_link_attempt()
+    after (success or failure) so the count reflects reality."""
+    if max_per_hour <= 0:
+        return True
+    return count_recent_link_attempts(node_id, kind) < max_per_hour
+
+
+def account_authorized(node_id: str, configured_allow_lists) -> bool:
+    """True if node_id itself is in any of configured_allow_lists, OR
+    node_id is linked to an account and any sibling linked node is. Falls
+    through to plain membership (today's exact behavior) when node_id has
+    no account -- unlinked nodes are completely unaffected by this function.
+    configured_allow_lists is a list of node-id lists (e.g. [allow_list,
+    allow_list2] for the urgent board's two per-radio lists in dual-radio
+    bridge mode) so the union check can genuinely enforce 'any node on any
+    configured list authorizes the whole account' without needing this
+    function to know about RadioLink/dual-radio internals at all."""
+    union = set()
+    for lst in configured_allow_lists or []:
+        union.update(lst or [])
+    if str(node_id) in union:
+        return True
+    account_id = get_account_id_for_node(node_id)
+    if account_id is None:
+        return False
+    return any(sibling in union for sibling in get_linked_node_ids(account_id))
 
 
 # ---------------------------------------------------------------------------
