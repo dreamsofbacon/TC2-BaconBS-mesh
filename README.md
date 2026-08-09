@@ -245,10 +245,15 @@ Remove items you don't want to expose to users:
 
 ```ini
 [menu]
-main_menu_items = Q, B, U, P, X
+main_menu_items = Q, B, U, P, N, X
 bbs_menu_items = M, B, C, J, X
 utilities_menu_items = S, F, W, G, X
 ```
+
+`N` (Ask Nomad) is a homescreen shortcut straight to the Project Nomad AI
+question prompt — the same destination as Utilities > API Gateway > Ask
+Project Nomad, without the extra menu hops. After a reply arrives, you can
+immediately ask a follow-up question or send `0` to return to the main menu.
 
 ---
 

@@ -73,7 +73,7 @@ def _urgent_board_allow_lists(interface) -> list:
     return lists
 
 
-main_menu_items = _parse_menu_items(config.get('menu', 'main_menu_items', fallback='Q,B,U,P,X'))
+main_menu_items = _parse_menu_items(config.get('menu', 'main_menu_items', fallback='Q,B,U,P,N,X'))
 bbs_menu_items = _parse_menu_items(config.get('menu', 'bbs_menu_items', fallback='M,B,C,J,X'))
 utilities_menu_items = _parse_menu_items(config.get('menu', 'utilities_menu_items', fallback='S,F,W,G,X'))
 
@@ -144,6 +144,7 @@ def build_menu(items, menu_name):
             'B': "[2] BBS",
             'U': "[3] Utilities",
             'P': "[4] Profile",
+            'N': "[5] Ask Nomad",
             'X': "[0] Exit",
         }
     menu_str = f"{menu_name}\n"
@@ -338,9 +339,16 @@ def handle_apigw_command(sender_id, interface):
     update_user_state(sender_id, {'command': 'APIGW', 'step': 1})
 
 
+_APIGW_UNIT_SEP = "\x1f"
+
+
 def _apigw_submit(sender_id, interface, kind, payload, label):
     """Dispatch a composed request: fulfill locally if this node is a gateway,
-    otherwise forward to a gateway peer. Response returns asynchronously."""
+    otherwise forward to a gateway peer. Response returns asynchronously.
+
+    kind == 'r' (AI relay, e.g. Project Nomad) gets a post-reply follow-up
+    prompt offering another question or a trip back to the main menu --
+    kind == 'h' (HTTP GET) does not, matching the original one-shot flow."""
     import gateway
     import uuid as _uuid
     node_id = get_node_id_from_num(sender_id, interface)
@@ -351,6 +359,8 @@ def _apigw_submit(sender_id, interface, kind, payload, label):
         def _reply(status, body):
             prefix = "" if str(status) in ("200", "OK") else f"[{status}] "
             send_message(f"{prefix}{body}", sender_id, interface)
+            if kind == 'r':
+                _prompt_ask_nomad_followup(sender_id, interface)
         gateway.handle_apireq(rid, node_id, kind, payload,
                               getattr(interface, 'allowed_nodes', None), _reply)
         send_message(f"Asked {label}… reply will arrive shortly.", sender_id, interface)
@@ -362,7 +372,7 @@ def _apigw_submit(sender_id, interface, kind, payload, label):
         send_message("No internet gateway is reachable on the mesh right now.", sender_id, interface)
         update_user_state(sender_id, None)
         return
-    register_api_request(rid, sender_id, gateway_node_id=peer)
+    register_api_request(rid, sender_id, gateway_node_id=peer, kind=kind)
     if not send_api_request(rid, node_id, kind, payload, peer, interface):
         from utils import pop_api_request
         pop_api_request(rid)
@@ -370,7 +380,9 @@ def _apigw_submit(sender_id, interface, kind, payload, label):
         update_user_state(sender_id, None)
         return
     send_message(f"Sent to gateway {peer} via {label}… waiting for reply.", sender_id, interface)
-    update_user_state(sender_id, None)  # response/timeout delivered asynchronously
+    update_user_state(sender_id, None)  # response/timeout delivered asynchronously -- see
+    # message_processing._deliver_api_response, which shows the same
+    # follow-up prompt for kind='r' once the mesh reply actually lands.
 
 
 def handle_apigw_steps(sender_id, message, interface):
@@ -393,16 +405,55 @@ def handle_apigw_steps(sender_id, message, interface):
         return
 
     # step 2 — the composed input
-    US = "\x1f"
     mode = state.get('mode', 'ai')
     if not choice:
         send_message("Empty input — cancelled.", sender_id, interface)
         handle_help_command(sender_id, interface, 'utilities')
         return
     if mode == 'ai':
-        _apigw_submit(sender_id, interface, 'r', f"ai{US}{choice}", "Project Nomad")
+        _apigw_submit(sender_id, interface, 'r', f"ai{_APIGW_UNIT_SEP}{choice}", "Project Nomad")
     else:
-        _apigw_submit(sender_id, interface, 'h', f"GET{US}{choice}{US}", "HTTP")
+        _apigw_submit(sender_id, interface, 'h', f"GET{_APIGW_UNIT_SEP}{choice}{_APIGW_UNIT_SEP}", "HTTP")
+
+
+# ── Ask Nomad: homescreen shortcut + post-reply follow-up ──────────────────
+#
+# Skips Utilities > API Gateway > [1] Ask Project Nomad for the common case
+# of just wanting to ask a question, and lets the user immediately ask a
+# follow-up (or return to the main menu) once a reply arrives, instead of
+# re-navigating the whole menu tree for every question.
+
+def handle_ask_nomad_command(sender_id, interface):
+    """Main-menu shortcut ('N'): jumps straight to the question prompt."""
+    if not _apigw_authorized(sender_id, interface):
+        send_message("API gateway: your node is not on the allow-list.", sender_id, interface)
+        handle_help_command(sender_id, interface)
+        return
+    send_message("Type your question for Project Nomad:", sender_id, interface)
+    update_user_state(sender_id, {'command': 'ASK_NOMAD', 'step': 1})
+
+
+def _prompt_ask_nomad_followup(sender_id, interface) -> None:
+    """Shown right after a Project Nomad reply is delivered (from either the
+    local-gateway fast path or the mesh-relay path). Reusing 'ASK_NOMAD'
+    state here (same as the homescreen shortcut) means the very next message
+    is either treated as a new question or, for [0]/x/exit, sent back to the
+    MAIN menu specifically -- not Utilities -- which the shared
+    handle_apigw_steps() always does regardless of entry point."""
+    send_message("Reply with another question, or [0] for the main menu.", sender_id, interface)
+    update_user_state(sender_id, {'command': 'ASK_NOMAD', 'step': 1})
+
+
+def handle_ask_nomad_steps(sender_id, message, interface):
+    choice = message.strip()
+    if choice.lower() in ('0', 'x', 'exit'):
+        handle_help_command(sender_id, interface)  # back to the main menu
+        return
+    if not choice:
+        send_message("Empty question — cancelled.", sender_id, interface)
+        handle_help_command(sender_id, interface)
+        return
+    _apigw_submit(sender_id, interface, 'r', f"ai{_APIGW_UNIT_SEP}{choice}", "Project Nomad")
 
 
 def handle_scoreboard_command(sender_id, interface):

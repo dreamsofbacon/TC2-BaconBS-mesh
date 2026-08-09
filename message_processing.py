@@ -24,6 +24,7 @@ from command_handlers import (
     handle_scoreboard_command, handle_scoreboard_steps,
     handle_profile_command, handle_profile_steps,
     handle_apigw_command, handle_apigw_steps,
+    handle_ask_nomad_command, handle_ask_nomad_steps,
     handle_account_steps,
 )
 from db_operations import (
@@ -59,7 +60,7 @@ from db_operations import (
 )
 from js8call_integration import handle_js8call_command, handle_js8call_steps, handle_group_message_selection
 from utils import (
-    get_user_state, get_node_short_name, resolve_display_name, get_node_id_from_num, send_message,
+    get_user_state, update_user_state, get_node_short_name, resolve_display_name, get_node_id_from_num, send_message,
     send_bulletin_to_bbs_nodes, send_mail_to_bbs_nodes, send_channel_to_bbs_nodes,
     send_channel_comment_to_bbs_nodes,
     send_profile_to_bbs_nodes, send_game_score_to_bbs_nodes, send_zork_save_to_bbs_nodes,
@@ -78,7 +79,7 @@ from utils import (
     encode_text, decode_text,
     pack_missing, unpack_missing,
     compact_channel_manifest_key,
-    send_api_response, pop_api_request,
+    send_api_response, pop_api_request, get_api_request,
     _send_one_sync, get_max_text_bytes,
 )
 
@@ -87,6 +88,7 @@ main_menu_handlers = {
     "b": lambda sender_id, interface: handle_help_command(sender_id, interface, 'bbs'),
     "u": lambda sender_id, interface: handle_help_command(sender_id, interface, 'utilities'),
     "p": handle_profile_command,
+    "n": handle_ask_nomad_command,
     "x": handle_help_command
 }
 
@@ -807,12 +809,22 @@ def request_pending_api_gaps(interface, max_age=12.0, cooldown=10.0, no_response
 
 
 def _deliver_api_response(rid, status, body, interface):
-    """Resolve a completed API response to the waiting user and DM it."""
+    """Resolve a completed API response to the waiting user and DM it.
+
+    Peeks the pending entry's 'kind' BEFORE popping it (pop_api_request
+    clears the entry) so an AI-relay (Project Nomad) response can offer the
+    same ask-another-question follow-up here as the local-gateway fast path
+    in command_handlers._apigw_submit -- an HTTP GET response gets none,
+    matching the original one-shot flow."""
+    pending = get_api_request(rid)
     sender_id = pop_api_request(rid)
     if sender_id is None:
         return  # no waiter (already timed out / unknown rid)
     prefix = "" if str(status) in ("200", "OK") else f"[{status}] "
     send_message(f"{prefix}{body}", sender_id, interface)
+    if pending and pending.get('kind') == 'r':
+        send_message("Reply with another question, or [0] for the main menu.", sender_id, interface)
+        update_user_state(sender_id, {'command': 'ASK_NOMAD', 'step': 1})
 
 
 def _mark_hashreq_pending(peer_id: str, scope: str) -> None:
@@ -2333,6 +2345,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     handle_account_steps(sender_id, message, interface, sender_node_id)
                 elif command == 'APIGW':
                     handle_apigw_steps(sender_id, message, interface)
+                elif command == 'ASK_NOMAD':
+                    handle_ask_nomad_steps(sender_id, message, interface)
                 else:
                     handle_help_command(sender_id, interface)
             else:
