@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card" style="max-width:700px">
+  <h2>Account</h2>
+  <p class="text-muted">ID: <code>{{ account_id }}</code> &middot; Created {{ created_at }}</p>
+
+  <h3>Alias</h3>
+  <p class="text-muted">Shown instead of a linked device's own short name on its posts.</p>
+  <form method="post" action="{{ url_for('account_detail', account_id=account_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="action" value="set_alias">
+    <div class="form-group">
+      <input type="text" name="alias" class="form-control" value="{{ alias }}" placeholder="(none)" maxlength="20" style="max-width:260px;display:inline-block">
+      <button class="btn" type="submit">Save Alias</button>
+    </div>
+  </form>
+
+  <h3>Linked Devices</h3>
+  <div class="table-scroll-container">
+    <table class="data-table">
+      <thead>
+        <tr><th>Node ID</th><th>Network</th><th>Linked</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for node_id, network, linked_at in devices %}
+        <tr>
+          <td>{{ node_id }}</td>
+          <td>{{ network }}</td>
+          <td>{{ linked_at }}</td>
+          <td>
+            <form method="post" action="{{ url_for('account_detail', account_id=account_id) }}"
+                  onsubmit="return confirm('Unlink {{ node_id }}?');" style="display:inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="action" value="unlink">
+              <input type="hidden" name="node_id" value="{{ node_id }}">
+              <button class="btn btn-sm" type="submit" {% if devices|length <= 1 %}disabled title="Account's only device"{% endif %}>Unlink</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not devices %}
+        <tr><td colspan="4" class="text-muted empty-state">No devices linked.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Force-link a device</h3>
+  <p class="text-muted">Admin override &mdash; bypasses the self-service code-verification flow. Use for support cases only (e.g. a user who lost access to every already-linked device).</p>
+  <form method="post" action="{{ url_for('account_detail', account_id=account_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="action" value="force_link">
+    <div class="form-group">
+      <input type="text" name="new_node_id" class="form-control" placeholder="!xxxxxxxx or MeshCore hex key" style="max-width:320px;display:inline-block">
+      <button class="btn" type="submit">Force-link</button>
+    </div>
+  </form>
+
+  <p style="margin-top:1rem"><a href="{{ url_for('accounts_list') }}">&larr; Back to Accounts</a></p>
+</div>
+{% endblock %}
