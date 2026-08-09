@@ -214,6 +214,66 @@ def load_gateway_settings(config_path: str) -> dict:
   }
 
 
+DEVICE_TYPES = ("serial", "tcp", "meshcore_serial", "meshcore_tcp", "meshcore_ble")
+DEVICE_TYPE_LABELS = {
+  "serial": "Meshtastic — Serial (USB)",
+  "tcp": "Meshtastic — TCP (WiFi)",
+  "meshcore_serial": "MeshCore — Serial (USB)",
+  "meshcore_tcp": "MeshCore — TCP (WiFi)",
+  "meshcore_ble": "MeshCore — Bluetooth (BLE)",
+}
+
+
+def _load_device_section(config: configparser.ConfigParser, section: str) -> dict:
+  return {
+    "type": config.get(section, "type", fallback="").strip().lower(),
+    "port": config.get(section, "port", fallback="").strip(),
+    "hostname": config.get(section, "hostname", fallback="").strip(),
+    "tcp_port": config.get(section, "tcp_port", fallback="5000").strip() or "5000",
+    "baudrate": config.get(section, "baudrate", fallback="115200").strip() or "115200",
+    "ble_address": config.get(section, "ble_address", fallback="").strip(),
+    "ble_pin": config.get(section, "ble_pin", fallback="").strip(),
+    "channel_index": config.get(section, "channel_index", fallback="0").strip() or "0",
+  }
+
+
+def load_device_settings(config_path: str) -> dict:
+  """Read [interface] (primary) and [interface2] (optional secondary, dual-
+  radio bridge mode) plus [sync2]/[allow_list2] peer lists for the web-admin
+  Devices form.
+
+  Device changes require restarting the mesh-bbs service to take effect --
+  the running radio interface is opened once at startup from these same
+  config keys (config_init.get_interface/get_secondary_interface), so unlike
+  sync/gateway settings there is no live-apply path here.
+  """
+  config = read_config_file(config_path)
+  primary = _load_device_section(config, "interface")
+  if primary["type"] not in DEVICE_TYPES:
+    primary["type"] = "serial"
+
+  secondary = _load_device_section(config, "interface2")
+  secondary_configured = bool(secondary["type"]) and secondary["type"] in DEVICE_TYPES
+  secondary_enabled = secondary_configured and _parse_bool_setting(
+    config.get("interface2", "enabled", fallback="true"), True
+  )
+  if not secondary_configured:
+    secondary["type"] = ""
+
+  bbs_nodes2 = parse_list_input(config.get("sync2", "bbs_nodes", fallback=""))
+  allowed_nodes2 = parse_list_input(config.get("allow_list2", "allowed_nodes", fallback=""))
+
+  return {
+    "types": DEVICE_TYPES,
+    "type_labels": DEVICE_TYPE_LABELS,
+    "primary": primary,
+    "secondary": secondary,
+    "secondary_enabled": secondary_enabled,
+    "bbs_nodes2_text": "\n".join(bbs_nodes2),
+    "allowed_nodes2_text": "\n".join(allowed_nodes2),
+  }
+
+
 def _parse_bool_setting(raw_value: Optional[str], default: bool = False) -> bool:
   if raw_value is None:
     return default
@@ -3106,6 +3166,80 @@ def create_app(runtime_interface=None) -> Flask:
         config.set("gateway", key, str(val))
       write_config_file(config, app.config["CONFIG_PATH"])
 
+    def _write_device_fields(config, section: str, form, prefix: str) -> None:
+      config.set(section, "port", form.get(f"{prefix}port", "").strip())
+      config.set(section, "hostname", form.get(f"{prefix}hostname", "").strip())
+      config.set(section, "tcp_port", str(_parse_int_setting(form.get(f"{prefix}tcp_port", ""), 5000, minimum=1)))
+      config.set(section, "baudrate", str(_parse_int_setting(form.get(f"{prefix}baudrate", ""), 115200, minimum=1)))
+      config.set(section, "ble_address", form.get(f"{prefix}ble_address", "").strip())
+      config.set(section, "ble_pin", form.get(f"{prefix}ble_pin", "").strip())
+      config.set(section, "channel_index", str(_parse_int_setting(form.get(f"{prefix}channel_index", ""), 0, minimum=0)))
+
+    def save_device_settings(form) -> list[str]:
+      """Persist [interface] (primary) and, optionally, [interface2] +
+      [sync2]/[allow_list2] (secondary, dual-radio bridge mode) from the web
+      Devices form. Returns a list of validation error messages -- on any
+      error, nothing is written, so a bad edit can't leave config.ini in a
+      half-saved state. Requires a mesh-bbs service restart to take effect
+      (see load_device_settings)."""
+      errors = []
+
+      primary_type = form.get("primary_type", "").strip().lower()
+      if primary_type not in DEVICE_TYPES:
+        errors.append("Primary radio: choose a valid device type.")
+      primary_port = form.get("primary_port", "").strip()
+      primary_hostname = form.get("primary_hostname", "").strip()
+      if primary_type in ("tcp", "meshcore_tcp") and not primary_hostname:
+        errors.append("Primary radio: hostname is required for a TCP connection.")
+
+      secondary_enabled = _parse_bool_setting(form.get("secondary_enabled", ""), False)
+      secondary_type = form.get("secondary_type", "").strip().lower()
+      secondary_port = form.get("secondary_port", "").strip()
+      secondary_hostname = form.get("secondary_hostname", "").strip()
+      if secondary_enabled:
+        if secondary_type not in DEVICE_TYPES:
+          errors.append("Secondary radio: choose a valid device type.")
+        elif secondary_type in ("tcp", "meshcore_tcp") and not secondary_hostname:
+          errors.append("Secondary radio: hostname is required for a TCP connection.")
+        if (
+          primary_type in ("serial", "meshcore_serial")
+          and secondary_type in ("serial", "meshcore_serial")
+          and primary_port and primary_port == secondary_port
+        ):
+          errors.append("Primary and secondary radios cannot use the same serial port.")
+
+      if errors:
+        return errors
+
+      config = read_config_file(app.config["CONFIG_PATH"])
+
+      if not config.has_section("interface"):
+        config.add_section("interface")
+      config.set("interface", "type", primary_type)
+      _write_device_fields(config, "interface", form, "primary_")
+
+      if secondary_enabled:
+        if not config.has_section("interface2"):
+          config.add_section("interface2")
+        config.set("interface2", "enabled", "true")
+        config.set("interface2", "type", secondary_type)
+        _write_device_fields(config, "interface2", form, "secondary_")
+
+        if not config.has_section("sync2"):
+          config.add_section("sync2")
+        config.set("sync2", "bbs_nodes", ",".join(parse_list_input(form.get("bbs_nodes2", ""))))
+        if not config.has_section("allow_list2"):
+          config.add_section("allow_list2")
+        config.set("allow_list2", "allowed_nodes", ",".join(parse_list_input(form.get("allowed_nodes2", ""))))
+      elif config.has_section("interface2"):
+        # Keep the section (and its saved connection details) around but
+        # mark disabled, rather than deleting it, so re-enabling later
+        # doesn't require re-entering everything.
+        config.set("interface2", "enabled", "false")
+
+      write_config_file(config, app.config["CONFIG_PATH"])
+      return []
+
     def save_admin_credentials(username, password) -> None:
       config = read_config_file(app.config["CONFIG_PATH"])
       if not config.has_section("admin"):
@@ -3712,6 +3846,7 @@ def create_app(runtime_interface=None) -> Flask:
       gateway_settings = load_gateway_settings(app.config["CONFIG_PATH"])
       storage_settings = load_storage_settings(app.config["CONFIG_PATH"])
       subscriber_settings = load_subscriber_settings(app.config["CONFIG_PATH"])
+      device_settings = load_device_settings(app.config["CONFIG_PATH"])
       return render_template(
         "settings.html",
         title="Settings",
@@ -3719,6 +3854,7 @@ def create_app(runtime_interface=None) -> Flask:
         gateway=gateway_settings,
         storage=storage_settings,
         subscribers=subscriber_settings,
+        devices=device_settings,
         boards_text=",".join(app.config["BULLETIN_BOARDS"]),
         env_override=bool(os.getenv("BBS_BULLETIN_BOARDS", "").strip()),
         bbs_nodes_text="\n".join(bbs_nodes),
@@ -3875,6 +4011,14 @@ def create_app(runtime_interface=None) -> Flask:
         if section == "boards":
           update_board_settings(request.form.get("bulletin_boards", ""))
           return redirect(url_for("settings_page") + "#boards")
+
+        if section == "devices":
+          errors = save_device_settings(request.form)
+          for error in errors:
+            flash(error, "error")
+          if not errors:
+            flash("Device settings saved. Restart the mesh-bbs service for the change to take effect.", "success")
+          return redirect(url_for("settings_page") + "#devices")
 
         if section == "sync":
           update_sync_settings(
