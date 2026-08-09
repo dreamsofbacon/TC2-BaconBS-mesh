@@ -84,8 +84,11 @@ def _apply_socket_timeout(iface) -> None:
 
 
 def _is_interface_alive(iface) -> bool:
-    """Return False if the meshtastic reader thread has exited (connection dead)."""
+    """Return False if the active radio transport has disconnected."""
     try:
+        connected = getattr(iface, 'is_connected', None)
+        if isinstance(connected, bool) and not connected:
+            return False
         rx = getattr(iface, '_rxThread', None)
         if rx is not None and not rx.is_alive():
             return False
@@ -225,6 +228,7 @@ def write_runtime_diagnostics_snapshot(interface, system_config: dict) -> None:
         'updated_at': datetime.now(timezone.utc).isoformat(),
         'interface_attached': True,
         'interface_type': interface.__class__.__name__,
+        'radio_protocol': str(getattr(interface, 'protocol_name', 'Meshtastic')),
         'mesh_node_count': None,
         'local_node_id': None,
         'local_short_name': None,
@@ -292,7 +296,7 @@ def display_banner():
 ██╔══██╗██╔══██║██║     ██║   ██║██║╚██╗██║    ██╔══██╗██╔══██╗╚════██║
 ██████╔╝██║  ██║╚██████╗╚██████╔╝██║ ╚████║    ██████╔╝██████╔╝███████║
 ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝    ╚═════╝ ╚═════╝ ╚══════╝
-Meshtastic Version
+Meshtastic + MeshCore Version
 """
     print(banner)
 
@@ -310,6 +314,7 @@ def main():
     _apply_socket_timeout(interface)
     interface.bbs_nodes = system_config['bbs_nodes']
     interface.allowed_nodes = system_config['allowed_nodes']
+    interface.subscriber_nodes = system_config.get('subscriber_nodes', [])
     config_path = system_config.get('config_file', 'config.ini')
     trigger_path = get_manual_sync_trigger_path()
     force_check_trigger_path = get_force_check_trigger_path()
@@ -329,6 +334,10 @@ def main():
         on_receive(packet, interface)
 
     pub.subscribe(receive_packet, system_config['mqtt_topic'])
+
+    start_receive = getattr(interface, 'start_receive', None)
+    if callable(start_receive):
+        start_receive()
 
     # Initialize and start JS8Call Client if configured
     js8call_client = JS8CallClient(interface)
@@ -900,6 +909,10 @@ def main():
                         _apply_socket_timeout(interface)
                         interface.bbs_nodes = system_config['bbs_nodes']
                         interface.allowed_nodes = system_config['allowed_nodes']
+                        interface.subscriber_nodes = system_config.get('subscriber_nodes', [])
+                        start_receive = getattr(interface, 'start_receive', None)
+                        if callable(start_receive):
+                            start_receive()
                         logging.info("Reconnected to radio interface successfully.")
                         break
                     except Exception as exc:

@@ -718,7 +718,7 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('settings_page') }}\">Settings</a>
       <a href=\"{{ url_for('system_flowchart') }}\">Documentation</a>
       <a href=\"{{ url_for('system_transmissions') }}\">Transmission Stats</a>
-      <a href=\"{{ url_for('meshtastic_device') }}\">Meshtastic Device</a>
+      <a href=\"{{ url_for('meshtastic_device') }}\">Radio Device</a>
       <a href=\"{{ url_for('mesh_ui_index') }}\" target=\"_blank\">Mesh UI</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
       <div class="nav-right">
@@ -4323,6 +4323,25 @@ def create_app(runtime_interface=None) -> Flask:
     def meshtastic_device():
       config = read_config_file(app.config["CONFIG_PATH"])
       interface_type = config.get("interface", "type", fallback="serial").strip().lower()
+      if interface_type.startswith("meshcore_"):
+        transport = interface_type.removeprefix("meshcore_")
+        endpoint = ""
+        if transport == "tcp":
+          hostname = config.get("interface", "hostname", fallback="").strip()
+          tcp_port = config.get("interface", "tcp_port", fallback="5000").strip()
+          endpoint = f"{hostname}:{tcp_port}" if hostname else f"TCP port {tcp_port}"
+        elif transport == "serial":
+          endpoint = config.get("interface", "port", fallback="auto-detected serial port").strip()
+        elif transport == "ble":
+          endpoint = config.get("interface", "ble_address", fallback="BLE scan").strip() or "BLE scan"
+        return render_template(
+          "meshtastic_device.html",
+          title="MeshCore Companion Radio",
+          show_nav=True,
+          device_mode="meshcore",
+          meshcore_transport=transport.upper(),
+          meshcore_endpoint=endpoint,
+        )
       if interface_type == "tcp":
         hostname = config.get("interface", "hostname", fallback="").strip()
         if not hostname:
