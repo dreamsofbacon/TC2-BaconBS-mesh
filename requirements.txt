@@ -1,3 +1,4 @@
 meshtastic
+meshcore>=2.3.8,<3
 pypubsub
 flask

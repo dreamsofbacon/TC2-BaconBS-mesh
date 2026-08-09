@@ -1,6 +1,18 @@
 {% extends "base.html" %}
 {% block content %}
-{% if device_mode == 'tcp' %}
+{% if device_mode == 'meshcore' %}
+<div class="card">
+  <h2>MeshCore Companion Radio</h2>
+  <p class="text-muted">BaconBS is connected through <strong>{{ meshcore_transport }}</strong>{% if meshcore_endpoint %} at <strong>{{ meshcore_endpoint }}</strong>{% endif %}.</p>
+  <p>MeshCore companion firmware exposes its control protocol to BaconBS, but it does not provide a Meshtastic-style embeddable device web page.</p>
+  <h3>Administration</h3>
+  <ul>
+    <li>Use your preferred MeshCore client to inspect contacts, advertise the node, and manage radio settings.</li>
+    <li>Ensure every configured BBS peer is present in the companion radio's contact list.</li>
+    <li>Use the Clients, Transmission Stats, and Documentation pages here for BaconBS diagnostics.</li>
+  </ul>
+</div>
+{% elif device_mode == 'tcp' %}
 <div class="card">
   <h2>Meshtastic Device</h2>
   <p class="text-muted">Connected to <strong>{{ device_host }}</strong> via TCP. The device web interface is embedded below. You can also open it in a new tab.</p>
