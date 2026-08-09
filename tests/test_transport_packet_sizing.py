@@ -38,6 +38,40 @@ class TransportPacketSizingTests(unittest.TestCase):
         self.assertEqual("".join(chunks), "🙂" * 100)
         self.assertTrue(all(len(chunk.encode("utf-8")) <= 160 for chunk in chunks))
 
+    def test_two_differently_capped_interfaces_in_one_process_never_cross_contaminate(self):
+        """Dual-radio bridge mode runs a 220-byte Meshtastic link and a
+        160-byte MeshCore link in the SAME process. Chunking must be read
+        fresh from each interface on every call, not memoized/cached after
+        the first call -- interleave sends on both to catch a latent
+        module-level-caching bug that per-transport unit tests (which only
+        ever exercise one interface per process) can't see."""
+        meshtastic_iface = _MeshCoreSizedInterface()
+        meshtastic_iface.max_text_bytes = 220
+        meshcore_iface = _MeshCoreSizedInterface()
+        meshcore_iface.max_text_bytes = 160
+
+        # Interleave: meshcore first, then meshtastic, then meshcore again --
+        # a naive "cache the limit on first use" bug would leak the first
+        # call's limit into later calls on the OTHER interface.
+        for interface in (meshcore_iface, meshtastic_iface, meshcore_iface):
+            interface.sent.clear()
+            _send_sync_with_cont(
+                header="BULLETIN|General|CALL|Subject|",
+                footer="|uid-interleave",
+                content="payload " * 100,
+                unique_id="uid-interleave",
+                cont_prefix="BULLETINCONT|uid-interleave|",
+                meta_prefix="BULLETINMETA|uid-interleave|",
+                bbs_nodes=["peer"],
+                interface=interface,
+                pause_seconds=0,
+            )
+            cap = interface.max_text_bytes
+            self.assertTrue(
+                all(len(frame.encode("utf-8")) <= cap for frame in interface.sent),
+                f"frame exceeded this interface's own {cap}-byte cap",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

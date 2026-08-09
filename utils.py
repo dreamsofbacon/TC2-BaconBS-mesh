@@ -483,6 +483,21 @@ def get_node_id_from_num(node_num, interface):
     return None
 
 
+def home_network(node_id) -> str:
+    """Return 'meshtastic' or 'meshcore' based on node-id string shape.
+
+    Meshtastic node ids are '!'-prefixed hex (e.g. '!04058ac8'); MeshCore
+    node ids are bare hex public keys/prefixes with no '!' (see
+    meshcore_interface.py's _clean_key and the README's node-id docs). This
+    is a cheap, zero-new-state way to tell which network a peer id belongs
+    to -- used by dual-radio bridge mode (server.py's RadioLink routing) as
+    a defensive check, not as the primary safety mechanism (each link's own
+    bbs_nodes/subscriber_nodes list, read from a separate config section,
+    is what actually keeps the two networks' peers from being conflated).
+    """
+    return 'meshtastic' if str(node_id or '').strip().startswith('!') else 'meshcore'
+
+
 def get_node_short_name(node_id, interface):
     node_info = interface.nodes.get(node_id)
     if node_info:
@@ -1392,7 +1407,7 @@ def _send_one_sync(message, destination, interface, pause_seconds=None):
         _consecutive_send_failures = 0
         try:
             import server as _server
-            _server.reconnect_needed.set()
+            _server.signal_reconnect(interface)
         except Exception:
             os._exit(2)  # fallback if import fails
 

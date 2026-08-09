@@ -151,9 +151,71 @@ MeshCore example:
 bbs_nodes = 7e18ca9d30a1,4b0264c19f6e
 ```
 
-Every BBS node in one deployment must use the same radio protocol. This
-release adds native operation on either network; it is not an RF bridge
-between Meshtastic and MeshCore.
+Every BBS node normally uses one radio protocol at a time — but any node can
+optionally be configured as a **dual-radio bridge** between a Meshtastic
+network and a MeshCore network. See [Dual-Radio Bridge Mode](#dual-radio-bridge-mode)
+below.
+
+### Dual-Radio Bridge Mode
+
+A single node can run **two radios at once** — one Meshtastic, one MeshCore
+(either order) — and participate in the full five-phase sync protocol on
+both networks simultaneously. Mail, bulletins, channels, profiles, and game
+saves stay consistent across both networks through this node, as if they
+were one unified mesh.
+
+This is *not* a packet-level RF relay — the bridge node doesn't retransmit
+raw frames between the two radios. Instead, both radios' sync engines run
+independently against the **same local database**: content synced in from
+one network lands in the shared DB, and the other radio's own sync cycle
+picks it up and pushes it out on its next scheduled or mismatch-triggered
+pass. This means cross-network propagation is *eventually consistent* (on
+the normal sync cadence — a few minutes by default, sooner via SYNCSTATE
+heartbeats), not instantaneous.
+
+To enable it, add a second `[interface2]` section (same keys as
+`[interface]`) plus `[sync2]`/`[allow_list2]` for that radio's own peer
+list — everything is additive, so a config file without these sections
+behaves exactly as before:
+
+```ini
+[interface]
+type = serial
+port = /dev/ttyUSB0
+
+[sync]
+bbs_nodes = !f53f4abc
+
+[interface2]
+type = meshcore_tcp
+hostname = 192.168.1.50
+tcp_port = 5000
+
+[sync2]
+bbs_nodes = 7e18ca9d30a1
+
+[allow_list2]
+allowed_nodes = 7e18ca9d30a1
+```
+
+Notes:
+
+- Keep `[sync]`/`[sync2]` peer lists strictly separate — a node ID belongs
+  to exactly one network (Meshtastic `!xxxxxxxx` vs. MeshCore's bare hex
+  keys make this easy to tell apart at a glance), and nothing downstream
+  validates that a peer configured under one section is actually reachable
+  on that radio.
+- Each radio chunks outbound sync frames to its own transport's byte limit
+  (220 bytes for Meshtastic, 160 for MeshCore) automatically.
+- If one radio's connection drops, only that radio's side degrades — the
+  other radio keeps syncing normally while the dead one reconnects with
+  backoff in the background.
+- Currently supported/tested with exactly one bridge node between a given
+  Meshtastic network and a given MeshCore network. Running more than one
+  bridge node between the same two networks is unanalyzed and not a
+  supported topology yet.
+- The web admin "Radio Device" and Settings → Diagnostics pages show a
+  separate status card per active radio when bridge mode is on.
 
 ### Sync Tuning
 
