@@ -1,9 +1,11 @@
 {% extends "base.html" %}
 {% block content %}
-{% if device_mode == 'meshcore' %}
+{% for device in devices %}
+{% if devices|length > 1 %}<h3>{{ device.label }}</h3>{% endif %}
+{% if device.device_mode == 'meshcore' %}
 <div class="card">
   <h2>MeshCore Companion Radio</h2>
-  <p class="text-muted">BaconBS is connected through <strong>{{ meshcore_transport }}</strong>{% if meshcore_endpoint %} at <strong>{{ meshcore_endpoint }}</strong>{% endif %}.</p>
+  <p class="text-muted">BaconBS is connected through <strong>{{ device.meshcore_transport }}</strong>{% if device.meshcore_endpoint %} at <strong>{{ device.meshcore_endpoint }}</strong>{% endif %}.</p>
   <p>MeshCore companion firmware exposes its control protocol to BaconBS, but it does not provide a Meshtastic-style embeddable device web page.</p>
   <h3>Administration</h3>
   <ul>
@@ -12,16 +14,16 @@
     <li>Use the Clients, Transmission Stats, and Documentation pages here for BaconBS diagnostics.</li>
   </ul>
 </div>
-{% elif device_mode == 'tcp' %}
+{% elif device.device_mode == 'tcp' %}
 <div class="card">
   <h2>Meshtastic Device</h2>
-  <p class="text-muted">Connected to <strong>{{ device_host }}</strong> via TCP. The device web interface is embedded below. You can also open it in a new tab.</p>
-  <p><a href="{{ device_url }}" target="_blank" class="btn btn-sm">Open in new tab &rarr;</a></p>
+  <p class="text-muted">Connected to <strong>{{ device.device_host }}</strong> via TCP. The device web interface is embedded below. You can also open it in a new tab.</p>
+  <p><a href="{{ device.device_url }}" target="_blank" class="btn btn-sm">Open in new tab &rarr;</a></p>
 </div>
 <div class="card" style="padding:0;overflow:hidden;">
-  <iframe src="{{ device_url }}"
+  <iframe src="{{ device.device_url }}"
           style="width:100%;height:80vh;border:none;display:block;"
-          title="Meshtastic Device Web UI ({{ device_host }})">
+          title="Meshtastic Device Web UI ({{ device.device_host }})">
   </iframe>
 </div>
 {% else %}
@@ -35,6 +37,12 @@
     <li>Click <strong>+ New device</strong> and select the serial port for your radio.</li>
   </ol>
   <p class="text-muted">Alternatively, you can switch to TCP mode by setting <code>type = tcp</code> and <code>hostname = &lt;device-ip&gt;</code> in the <code>[interface]</code> section of your <code>config.ini</code>. In TCP mode, the device web UI will be embedded directly on this page.</p>
+</div>
+{% endif %}
+{% endfor %}
+{% if devices|length > 1 %}
+<div class="card">
+  <p class="text-muted">This node is running in dual-radio bridge mode: it participates in both radios' BBS sync protocol, keeping mail, bulletins, channels, and profiles consistent across both networks. See the <code>[interface2]</code>/<code>[sync2]</code>/<code>[allow_list2]</code> sections of <code>config.ini</code> to change the second radio's settings.</p>
 </div>
 {% endif %}
 {% endblock %}
