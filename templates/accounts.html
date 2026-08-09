@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Accounts</h2>
+  <p class="text-muted">Multi-device accounts linked via Profile &gt; Linked Devices on the mesh menu. {{ rows|length }} account(s).</p>
+  <div class="table-scroll-container">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Alias</th>
+          <th>Devices</th>
+          <th>Created</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for account_id, alias, created_at, device_count in rows %}
+        <tr>
+          <td>{{ alias or '(none)' }}</td>
+          <td>{{ device_count }}</td>
+          <td>{{ created_at }}</td>
+          <td><a href="{{ url_for('account_detail', account_id=account_id) }}" class="btn btn-sm">View</a></td>
+        </tr>
+        {% endfor %}
+        {% if not rows %}
+        <tr>
+          <td colspan="4" class="text-muted empty-state">No accounts yet.</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

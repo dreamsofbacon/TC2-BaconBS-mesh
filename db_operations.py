@@ -3428,6 +3428,29 @@ def account_authorized(node_id: str, configured_allow_lists) -> bool:
         return False
 
 
+def list_accounts() -> list:
+    """[(account_id, alias, created_at, device_count), ...] for the web
+    admin's /accounts list page, newest first."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        '''SELECT a.account_id, a.alias, a.created_at, COUNT(l.node_id)
+           FROM accounts a
+           LEFT JOIN linked_nodes l ON l.account_id = a.account_id
+           GROUP BY a.account_id, a.alias, a.created_at
+           ORDER BY a.created_at DESC'''
+    )
+    return c.fetchall()
+
+
+def get_account(account_id: str):
+    """(account_id, alias, created_at) or None."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT account_id, alias, created_at FROM accounts WHERE account_id = ?", (account_id,))
+    return c.fetchone()
+
+
 # ---------------------------------------------------------------------------
 # Game scores / scoreboard
 # ---------------------------------------------------------------------------

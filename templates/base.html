@@ -40,6 +40,9 @@
       <a href="{{ url_for('clients_summary') }}"
          class="nav-link{% if request.endpoint == 'clients_summary' or request.endpoint == 'client_profile' %} active{% endif %}"
          role="listitem">Clients</a>
+      <a href="{{ url_for('accounts_list') }}"
+         class="nav-link{% if request.endpoint == 'accounts_list' or request.endpoint == 'account_detail' %} active{% endif %}"
+         role="listitem">Accounts</a>
       <a href="{{ url_for('settings_page') }}"
          class="nav-link{% if request.endpoint == 'settings_page' %} active{% endif %}"
          role="listitem">Settings</a>
@@ -111,6 +114,7 @@
   <div class="drawer-section">
     <div class="drawer-section-label">Admin</div>
     <a href="{{ url_for('clients_summary') }}" class="drawer-link">Clients</a>
+    <a href="{{ url_for('accounts_list') }}" class="drawer-link">Accounts</a>
     <a href="{{ url_for('settings_page') }}" class="drawer-link">Settings</a>
     <a href="{{ url_for('system_transmissions') }}" class="drawer-link">Transmissions</a>
     <a href="{{ url_for('system_flowchart') }}" class="drawer-link">Docs</a>
