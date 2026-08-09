@@ -15,12 +15,17 @@ from db_operations import (
     add_channel_comment, get_channel_comments,
     auto_upsert_user_profile, get_user_profile, update_user_bio,
     upsert_game_score, get_game_scoreboard, get_user_game_scores, get_hall_of_fame,
+    create_account, get_account_id_for_node, get_linked_node_ids,
+    get_linked_nodes_detail, link_node_to_account, unlink_node,
+    get_account_alias, set_account_alias, create_link_code, redeem_link_code,
+    record_link_attempt, link_rate_limit_ok,
 )
 from utils import (
     get_node_id_from_num, get_node_info,
     get_node_short_name, get_user_state, get_zork_save_sync_notice, send_message,
     update_user_state,
     select_gateway_peer, send_api_request, register_api_request,
+    home_network, _config_int,
 )
 from zork_port import (
     GAMES,
@@ -429,7 +434,7 @@ def handle_profile_command(sender_id, interface):
         lines.append("Scores: " + " ".join(parts))
     if bio:
         lines.append(f"Bio: {bio}")
-    lines.append("[1]Edit Bio [0]Back")
+    lines.append("[1]Edit Bio [2]Linked Devices [0]Back")
     send_message("\n".join(lines), sender_id, interface)
     update_user_state(sender_id, {'command': 'PROFILE', 'step': 1})
 
@@ -450,7 +455,235 @@ def handle_profile_steps(sender_id, message, interface):
         send_message("Enter your bio (max 100 chars):", sender_id, interface)
         update_user_state(sender_id, {'command': 'PROFILE', 'step': 2})
         return
+    if choice.lower() in ('d', '2'):
+        handle_account_command(sender_id, interface)
+        return
     handle_profile_command(sender_id, interface)
+
+
+# ---------------------------------------------------------------------------
+# Multi-device user accounts: link/verify/list/delete + shared display alias.
+#
+# Nested under the Profile menu (not a new top-level menu letter) so it
+# needs no config.ini menu-item change. Numeric choices throughout (1-5, 0)
+# deliberately avoid colliding with the single-letter top-level menu
+# commands (q/b/u/p/x), which -- per message_processing.py's routing --
+# always win over an in-progress flow if typed, exactly like every other
+# existing multi-step flow in this file.
+#
+# SECURITY: every function here that identifies "which device is acting"
+# takes sender_node_id (the packet's string fromId) as an explicit
+# parameter -- never derives it from the numeric sender_id via
+# get_node_id_from_num(), which is a live/mutable lookup against
+# interface.nodes that isn't a reliable identity proof. sender_node_id is
+# threaded in from message_processing.py's routing, which already has it
+# in scope from on_receive().
+# ---------------------------------------------------------------------------
+
+_ACCOUNT_MENU_TEXT = (
+    "\U0001F517 Linked Devices\n"
+    "[1] Request link code\n"
+    "[2] Enter a code\n"
+    "[3] List my devices\n"
+    "[4] Set shared alias\n"
+    "[5] Unlink a device\n"
+    "[0] Back"
+)
+
+
+def _account_link_code_ttl_minutes() -> int:
+    return _config_int('accounts', 'link_code_ttl_minutes', 10)
+
+
+def _account_link_requests_per_hour() -> int:
+    return _config_int('accounts', 'link_requests_per_hour', 3)
+
+
+def _account_link_attempts_per_hour() -> int:
+    return _config_int('accounts', 'link_attempts_per_hour', 5)
+
+
+def _account_max_linked_devices() -> int:
+    return _config_int('accounts', 'max_linked_devices', 6)
+
+
+def handle_account_command(sender_id, interface):
+    send_message(_ACCOUNT_MENU_TEXT, sender_id, interface)
+    update_user_state(sender_id, {'command': 'ACCOUNT', 'step': 1})
+
+
+def handle_account_steps(sender_id, message, interface, sender_node_id=None):
+    if sender_node_id is None:
+        # Should never happen for a real interactive DM -- on_receive()
+        # always passes it. Defensive guard rather than trusting the
+        # numeric sender_id for anything identity-related here.
+        send_message("Couldn't verify your device identity. Please try again.", sender_id, interface)
+        update_user_state(sender_id, None)
+        return
+
+    state = get_user_state(sender_id) or {}
+    step = state.get('step', 1)
+    choice = message.strip()
+    choice_lower = choice.lower()
+
+    if step == 1:
+        if choice_lower in ('0', 'x', 'back', 'exit'):
+            handle_profile_command(sender_id, interface)
+            return
+        if choice == '1':
+            _handle_request_link_code(sender_id, interface, sender_node_id)
+            return
+        if choice == '2':
+            send_message("Enter the 6-digit code from your other device:", sender_id, interface)
+            update_user_state(sender_id, {'command': 'ACCOUNT', 'step': 2})
+            return
+        if choice == '3':
+            _handle_list_devices(sender_id, interface, sender_node_id)
+            return
+        if choice == '4':
+            send_message(
+                "Enter a shared alias (max 20 chars). Shown instead of this "
+                "device's short name on your posts once you have at least "
+                "one linked device:",
+                sender_id, interface,
+            )
+            update_user_state(sender_id, {'command': 'ACCOUNT', 'step': 4})
+            return
+        if choice == '5':
+            _handle_start_unlink(sender_id, interface, sender_node_id)
+            return
+        send_message(_ACCOUNT_MENU_TEXT, sender_id, interface)
+        return
+
+    if step == 2:
+        _handle_submit_link_code(sender_id, interface, sender_node_id, choice)
+        return
+
+    if step == 4:
+        _handle_set_alias(sender_id, interface, sender_node_id, choice)
+        return
+
+    if step == 5:
+        _handle_pick_unlink_target(sender_id, interface, choice, state)
+        return
+
+    if step == 6:
+        _handle_confirm_unlink(sender_id, interface, choice, state)
+        return
+
+    handle_account_command(sender_id, interface)
+
+
+def _handle_request_link_code(sender_id, interface, sender_node_id):
+    if not link_rate_limit_ok(sender_node_id, 'request_code', _account_link_requests_per_hour()):
+        send_message("Too many link-code requests recently. Try again later.", sender_id, interface)
+        handle_account_command(sender_id, interface)
+        return
+    account_id = get_account_id_for_node(sender_node_id)
+    if account_id is None:
+        # Bootstrap: requesting a code with no account yet creates one --
+        # "link a second device" and "create my first account" are the
+        # same code path, so no separate "create account" step is needed.
+        account_id = create_account()
+        link_node_to_account(sender_node_id, account_id, home_network(sender_node_id))
+    code = create_link_code(account_id, sender_node_id, ttl_minutes=_account_link_code_ttl_minutes())
+    record_link_attempt(sender_node_id, 'request_code', True)
+    send_message(
+        f"Your link code: {code}\n"
+        f"Valid for {_account_link_code_ttl_minutes()} minutes, one-time use. "
+        "Enter it from your OTHER device: Profile > Linked Devices > "
+        "[2] Enter a code.",
+        sender_id, interface,
+    )
+    handle_account_command(sender_id, interface)
+
+
+def _handle_submit_link_code(sender_id, interface, sender_node_id, code):
+    if not link_rate_limit_ok(sender_node_id, 'submit_code', _account_link_attempts_per_hour()):
+        record_link_attempt(sender_node_id, 'submit_code', False)
+        send_message("Too many attempts. Try again later.", sender_id, interface)
+        handle_account_command(sender_id, interface)
+        return
+    ok, msg = redeem_link_code(
+        code, sender_node_id, home_network(sender_node_id),
+        max_devices=_account_max_linked_devices(),
+    )
+    record_link_attempt(sender_node_id, 'submit_code', ok)
+    send_message(msg, sender_id, interface)
+    handle_account_command(sender_id, interface)
+
+
+def _handle_list_devices(sender_id, interface, sender_node_id):
+    account_id = get_account_id_for_node(sender_node_id)
+    if account_id is None:
+        send_message("No linked devices yet. Choose [1] to get a link code.", sender_id, interface)
+        handle_account_command(sender_id, interface)
+        return
+    detail = get_linked_nodes_detail(account_id)
+    alias = get_account_alias(account_id)
+    lines = [f"\U0001F517 Account alias: {alias or '(none set)'}"]
+    for i, (node_id, network, _linked_at) in enumerate(detail):
+        marker = " (this device)" if node_id == sender_node_id else ""
+        lines.append(f"{i + 1:02d}. {node_id} [{network}]{marker}")
+    send_message("\n".join(lines), sender_id, interface)
+    handle_account_command(sender_id, interface)
+
+
+def _handle_set_alias(sender_id, interface, sender_node_id, alias_text):
+    account_id = get_account_id_for_node(sender_node_id)
+    if account_id is None:
+        send_message("You don't have any linked devices yet. Get a link code first.", sender_id, interface)
+        handle_account_command(sender_id, interface)
+        return
+    alias = alias_text.strip()[:20]
+    set_account_alias(account_id, alias)
+    send_message(f'Alias set to "{alias}".', sender_id, interface)
+    handle_account_command(sender_id, interface)
+
+
+def _handle_start_unlink(sender_id, interface, sender_node_id):
+    account_id = get_account_id_for_node(sender_node_id)
+    if account_id is None:
+        send_message("No linked devices to unlink.", sender_id, interface)
+        handle_account_command(sender_id, interface)
+        return
+    detail = get_linked_nodes_detail(account_id)
+    if len(detail) <= 1:
+        send_message("You only have one device linked -- nothing to unlink.", sender_id, interface)
+        handle_account_command(sender_id, interface)
+        return
+    lines = ["Reply with the number of the device to unlink:"]
+    for i, (node_id, network, _linked_at) in enumerate(detail):
+        lines.append(f"{i + 1:02d}. {node_id} [{network}]")
+    send_message("\n".join(lines), sender_id, interface)
+    update_user_state(sender_id, {'command': 'ACCOUNT', 'step': 5, 'devices': detail})
+
+
+def _handle_pick_unlink_target(sender_id, interface, choice, state):
+    devices = state.get('devices', [])
+    try:
+        idx = int(choice) - 1
+    except ValueError:
+        idx = -1
+    if idx < 0 or idx >= len(devices):
+        send_message("Invalid selection.", sender_id, interface)
+        handle_account_command(sender_id, interface)
+        return
+    node_id = devices[idx][0]
+    send_message(f"Unlink {node_id}? [Y]es [N]o", sender_id, interface)
+    update_user_state(sender_id, {'command': 'ACCOUNT', 'step': 6, 'unlink_node_id': node_id})
+
+
+def _handle_confirm_unlink(sender_id, interface, choice, state):
+    node_id = state.get('unlink_node_id')
+    if choice.strip().lower() in ('y', 'yes', '1'):
+        if node_id and unlink_node(node_id):
+            send_message(f"Unlinked {node_id}.", sender_id, interface)
+        else:
+            send_message("Couldn't unlink that device (it may already be your only one).", sender_id, interface)
+    else:
+        send_message("Cancelled.", sender_id, interface)
+    handle_account_command(sender_id, interface)
 
 
 def handle_zork_steps(sender_id, message, interface):

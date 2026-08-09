@@ -24,6 +24,7 @@ from command_handlers import (
     handle_scoreboard_command, handle_scoreboard_steps,
     handle_profile_command, handle_profile_steps,
     handle_apigw_command, handle_apigw_steps,
+    handle_account_steps,
 )
 from db_operations import (
     add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel,
@@ -2328,6 +2329,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     handle_scoreboard_steps(sender_id, message, interface)
                 elif command == 'PROFILE':
                     handle_profile_steps(sender_id, message, interface)
+                elif command == 'ACCOUNT':
+                    handle_account_steps(sender_id, message, interface, sender_node_id)
                 elif command == 'APIGW':
                     handle_apigw_steps(sender_id, message, interface)
                 else:
