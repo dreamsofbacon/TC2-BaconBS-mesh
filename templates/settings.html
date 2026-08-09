@@ -2,8 +2,160 @@
 {% block content %}
 <div class="card">
   <h2>Settings</h2>
-  <p class="text-muted">Manage boards, sync peers, allowed nodes, and web admin credentials from one place.</p>
+  <p class="text-muted">Manage radio devices, boards, sync peers, allowed nodes, and web admin credentials from one place.</p>
 </div>
+
+<div class="card" id="devices" style="max-width:800px">
+  <h2>Device Configuration</h2>
+  <p class="text-muted">Choose the radio(s) this BBS talks over. <strong>Changes here require restarting the mesh-bbs service</strong> to take effect — the radio connection is opened once at startup, so this form doesn't apply live.</p>
+
+  <form method="post" action="{{ url_for('settings_page') }}#devices">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="devices">
+
+    <h3>Primary Radio</h3>
+    <div class="form-group">
+      <label for="primary_type">Device type</label>
+      <select id="primary_type" name="primary_type" class="form-control">
+        {% for t in devices.types %}
+        <option value="{{ t }}" {% if devices.primary.type == t %}selected{% endif %}>{{ devices.type_labels[t] }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group" id="primary_port_group">
+      <label for="primary_port">Serial port</label>
+      <input type="text" id="primary_port" name="primary_port" class="form-control" value="{{ devices.primary.port }}" placeholder="e.g. /dev/ttyUSB0 or COM3 — leave blank to auto-detect">
+    </div>
+    <div class="form-group" id="primary_baudrate_group">
+      <label for="primary_baudrate">Baud rate</label>
+      <input type="text" id="primary_baudrate" name="primary_baudrate" class="form-control" value="{{ devices.primary.baudrate }}">
+    </div>
+    <div class="form-group" id="primary_hostname_group">
+      <label for="primary_hostname">Hostname / IP address</label>
+      <input type="text" id="primary_hostname" name="primary_hostname" class="form-control" value="{{ devices.primary.hostname }}" placeholder="e.g. 192.168.1.100">
+    </div>
+    <div class="form-group" id="primary_tcp_port_group">
+      <label for="primary_tcp_port">TCP port</label>
+      <input type="text" id="primary_tcp_port" name="primary_tcp_port" class="form-control" value="{{ devices.primary.tcp_port }}">
+    </div>
+    <div class="form-group" id="primary_ble_address_group">
+      <label for="primary_ble_address">BLE address</label>
+      <input type="text" id="primary_ble_address" name="primary_ble_address" class="form-control" value="{{ devices.primary.ble_address }}" placeholder="e.g. 12:34:56:78:90:AB — leave blank to scan">
+    </div>
+    <div class="form-group" id="primary_ble_pin_group">
+      <label for="primary_ble_pin">BLE pairing PIN (optional)</label>
+      <input type="text" id="primary_ble_pin" name="primary_ble_pin" class="form-control" value="{{ devices.primary.ble_pin }}">
+    </div>
+    <div class="form-group" id="primary_channel_index_group">
+      <label for="primary_channel_index">MeshCore broadcast channel index</label>
+      <input type="text" id="primary_channel_index" name="primary_channel_index" class="form-control" value="{{ devices.primary.channel_index }}">
+    </div>
+
+    <hr style="margin:1.5rem 0">
+    <h3>Secondary Radio <span class="text-muted" style="font-weight:normal">(optional &mdash; dual-radio bridge mode)</span></h3>
+    <p class="text-muted">Enable a second radio to bridge this node's mesh with another network (e.g. one Meshtastic radio + one MeshCore radio on the same node). Both networks' mail, bulletins, channels, and profiles stay in sync through this node.</p>
+    <div class="form-group">
+      <label>
+        <input type="checkbox" id="secondary_enabled" name="secondary_enabled" value="1" {% if devices.secondary_enabled %}checked{% endif %}>
+        Enable a second radio on this node
+      </label>
+    </div>
+
+    <div id="secondary_fields">
+      <div class="form-group">
+        <label for="secondary_type">Device type</label>
+        <select id="secondary_type" name="secondary_type" class="form-control">
+          <option value="">— select —</option>
+          {% for t in devices.types %}
+          <option value="{{ t }}" {% if devices.secondary.type == t %}selected{% endif %}>{{ devices.type_labels[t] }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group" id="secondary_port_group">
+        <label for="secondary_port">Serial port</label>
+        <input type="text" id="secondary_port" name="secondary_port" class="form-control" value="{{ devices.secondary.port }}" placeholder="e.g. /dev/ttyACM0 or COM4 — must differ from the primary radio's port">
+      </div>
+      <div class="form-group" id="secondary_baudrate_group">
+        <label for="secondary_baudrate">Baud rate</label>
+        <input type="text" id="secondary_baudrate" name="secondary_baudrate" class="form-control" value="{{ devices.secondary.baudrate }}">
+      </div>
+      <div class="form-group" id="secondary_hostname_group">
+        <label for="secondary_hostname">Hostname / IP address</label>
+        <input type="text" id="secondary_hostname" name="secondary_hostname" class="form-control" value="{{ devices.secondary.hostname }}" placeholder="e.g. 192.168.1.50">
+      </div>
+      <div class="form-group" id="secondary_tcp_port_group">
+        <label for="secondary_tcp_port">TCP port</label>
+        <input type="text" id="secondary_tcp_port" name="secondary_tcp_port" class="form-control" value="{{ devices.secondary.tcp_port }}">
+      </div>
+      <div class="form-group" id="secondary_ble_address_group">
+        <label for="secondary_ble_address">BLE address</label>
+        <input type="text" id="secondary_ble_address" name="secondary_ble_address" class="form-control" value="{{ devices.secondary.ble_address }}" placeholder="e.g. 12:34:56:78:90:AB — leave blank to scan">
+      </div>
+      <div class="form-group" id="secondary_ble_pin_group">
+        <label for="secondary_ble_pin">BLE pairing PIN (optional)</label>
+        <input type="text" id="secondary_ble_pin" name="secondary_ble_pin" class="form-control" value="{{ devices.secondary.ble_pin }}">
+      </div>
+      <div class="form-group" id="secondary_channel_index_group">
+        <label for="secondary_channel_index">MeshCore broadcast channel index</label>
+        <input type="text" id="secondary_channel_index" name="secondary_channel_index" class="form-control" value="{{ devices.secondary.channel_index }}">
+      </div>
+      <div class="form-group">
+        <label for="bbs_nodes2">Secondary radio's sync peers</label>
+        <textarea id="bbs_nodes2" name="bbs_nodes2" class="form-control" placeholder="One per line or comma separated — peer IDs on the secondary radio's network only">{{ devices.bbs_nodes2_text }}</textarea>
+        <p class="text-muted">These must be peers reachable on the <em>secondary</em> radio's network, not the primary's.</p>
+      </div>
+      <div class="form-group">
+        <label for="allowed_nodes2">Secondary radio's Urgent board allow-list</label>
+        <textarea id="allowed_nodes2" name="allowed_nodes2" class="form-control" placeholder="Leave blank to allow all nodes on this radio">{{ devices.allowed_nodes2_text }}</textarea>
+      </div>
+    </div>
+
+    <button class="btn btn-primary" type="submit">Save Device Settings</button>
+  </form>
+</div>
+
+<script>
+(function () {
+  function toggle(id, show) {
+    var el = document.getElementById(id);
+    if (el) { el.style.display = show ? '' : 'none'; }
+  }
+  function updateDeviceFields(prefix) {
+    var sel = document.getElementById(prefix + '_type');
+    var type = sel ? sel.value : '';
+    var isSerial = (type === 'serial' || type === 'meshcore_serial');
+    var isTcp = (type === 'tcp' || type === 'meshcore_tcp');
+    var isBle = (type === 'meshcore_ble');
+    var isMeshcore = type.indexOf('meshcore') === 0;
+    toggle(prefix + '_port_group', isSerial);
+    toggle(prefix + '_baudrate_group', isSerial);
+    toggle(prefix + '_hostname_group', isTcp);
+    toggle(prefix + '_tcp_port_group', isTcp);
+    toggle(prefix + '_ble_address_group', isBle);
+    toggle(prefix + '_ble_pin_group', isBle);
+    toggle(prefix + '_channel_index_group', isMeshcore);
+  }
+  function updateSecondaryVisibility() {
+    var checkbox = document.getElementById('secondary_enabled');
+    var body = document.getElementById('secondary_fields');
+    if (body) { body.style.display = (checkbox && checkbox.checked) ? '' : 'none'; }
+  }
+  document.addEventListener('DOMContentLoaded', function () {
+    ['primary', 'secondary'].forEach(function (prefix) {
+      var sel = document.getElementById(prefix + '_type');
+      if (sel) {
+        sel.addEventListener('change', function () { updateDeviceFields(prefix); });
+        updateDeviceFields(prefix);
+      }
+    });
+    var checkbox = document.getElementById('secondary_enabled');
+    if (checkbox) {
+      checkbox.addEventListener('change', updateSecondaryVisibility);
+      updateSecondaryVisibility();
+    }
+  });
+})();
+</script>
 
 <div class="card" id="boards">
   <h2>Board Settings</h2>
