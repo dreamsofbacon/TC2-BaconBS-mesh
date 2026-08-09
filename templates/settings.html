@@ -328,12 +328,29 @@
   <h3>Runtime</h3>
   <p><strong>Runtime source:</strong> {{ diagnostics.runtime_source }}</p>
   <p><strong>Snapshot updated at:</strong> {{ diagnostics.snapshot_updated_at }}</p>
+  {% if diagnostics.radios and diagnostics.radios|length > 1 %}
+  <p class="text-muted">Dual-radio bridge mode active &mdash; {{ diagnostics.radios|length }} radios.</p>
+  {% endif %}
+  {% for radio in diagnostics.radios %}
+  <div style="border:1px solid var(--border-color, #333); border-radius:6px; padding:10px 14px; margin:10px 0;">
+    <h4 style="margin-top:0;">Radio: {{ radio.name }} ({{ radio.radio_protocol }})</h4>
+    <p><strong>Interface attached:</strong> {{ radio.connected }}{% if radio.reconnecting == "Yes" %} (reconnecting&hellip;){% endif %}</p>
+    <p><strong>Interface type:</strong> {{ radio.interface_type }}</p>
+    <p><strong>Known mesh nodes:</strong> {{ radio.mesh_node_count }}</p>
+    <p><strong>Local node:</strong> {{ radio.local_node_id }}</p>
+    <p><strong>Local short name:</strong> {{ radio.local_short_name }}</p>
+    <p><strong>Local long name:</strong> {{ radio.local_long_name }}</p>
+    <p><strong>Sync peers on this radio:</strong> {{ radio.bbs_nodes_count }}{% if radio.bbs_nodes_text %} ({{ radio.bbs_nodes_text }}){% endif %}</p>
+    <p><strong>Urgent allow-list on this radio:</strong> {{ radio.allowed_nodes_count }}{% if radio.allowed_nodes_text %} ({{ radio.allowed_nodes_text }}){% endif %}</p>
+  </div>
+  {% else %}
   <p><strong>Interface attached:</strong> {{ diagnostics.interface_attached }}</p>
   <p><strong>Interface type:</strong> {{ diagnostics.interface_type }}</p>
   <p><strong>Known mesh nodes:</strong> {{ diagnostics.mesh_node_count }}</p>
   <p><strong>Local node:</strong> {{ diagnostics.local_node_id }}</p>
   <p><strong>Local short name:</strong> {{ diagnostics.local_short_name }}</p>
   <p><strong>Local long name:</strong> {{ diagnostics.local_long_name }}</p>
+  {% endfor %}
 
   <h3>BBS</h3>
   <p><strong>Configured sync peers:</strong> {{ diagnostics.bbs_nodes_count }}{% if diagnostics.bbs_nodes_text %} ({{ diagnostics.bbs_nodes_text }}){% endif %}</p>

@@ -1,7 +1,12 @@
 services:
   tc2-bbs-mesh:
-    build: .
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     restart: always
     volumes:
       - ./config:/home/mesh/bbs/config
     container_name: tc2-bbs-mesh
+    # For a USB companion radio, uncomment and replace the host device path:
+    # devices:
+    #   - /dev/ttyACM0:/dev/ttyACM0

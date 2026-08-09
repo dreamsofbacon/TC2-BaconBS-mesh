@@ -1,8 +1,8 @@
-# TC²-BBS Meshtastic - Windows Setup Script
+# BaconBS Meshtastic + MeshCore - Windows Setup Script
 # This script sets up the environment with all necessary dependencies
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "TC²-BBS Meshtastic - Windows Setup" -ForegroundColor Cyan
+Write-Host "BaconBS Meshtastic + MeshCore - Windows Setup" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -16,6 +16,12 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "✓ Python found" -ForegroundColor Green
 Write-Host ""
+
+python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: Python 3.10 or newer is required for MeshCore support." -ForegroundColor Red
+    exit 1
+}
 
 # Create virtual environment if it doesn't exist
 if (-not (Test-Path ".venv")) {
@@ -60,6 +66,15 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 Write-Host "✓ meshtastic import verified" -ForegroundColor Green
+Write-Host ""
+
+Write-Host "Verifying MeshCore installation..." -ForegroundColor Yellow
+& $venvPython -c "import meshcore"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: meshcore is not importable in .venv." -ForegroundColor Red
+    exit 1
+}
+Write-Host "✓ MeshCore import verified" -ForegroundColor Green
 Write-Host ""
 
 # Note about dfrotz (required for Zork / Infocom games)

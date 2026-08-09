@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# TC²-BBS Meshtastic - Linux/Mac Setup Script
+# BaconBS mesh radio - Linux/macOS setup script
 # This script sets up the environment with all necessary dependencies
 
 set -euo pipefail
 
 echo "========================================"
-echo "TC²-BBS Meshtastic - Setup"
+echo "BaconBS Meshtastic + MeshCore - Setup"
 echo "========================================"
 echo ""
 
@@ -20,6 +20,10 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 python3 --version
+if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+    echo "ERROR: Python 3.10 or newer is required for MeshCore support."
+    exit 1
+fi
 echo "✓ Python found"
 echo ""
 
@@ -56,6 +60,14 @@ if ! $VENV_PYTHON -c "import meshtastic.stream_interface"; then
     exit 1
 fi
 echo "✓ meshtastic import verified"
+echo ""
+
+echo "Verifying MeshCore installation..."
+if ! $VENV_PYTHON -c "import meshcore"; then
+    echo "ERROR: meshcore is not importable in venv."
+    exit 1
+fi
+echo "✓ MeshCore import verified"
 echo ""
 
 # Install dfrotz (required for Zork / Infocom games)

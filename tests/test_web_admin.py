@@ -625,6 +625,154 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("DELETE_ZORKSAVE", page)
         self.assertIn("CANDREQ / CANDRSP", page)
 
+    def test_radio_device_page_describes_meshcore_companion(self):
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        config["interface"] = {
+            "type": "meshcore_tcp",
+            "hostname": "192.0.2.20",
+            "tcp_port": "5000",
+        }
+        with open(self.config_path, "w", encoding="utf-8") as config_file:
+            config.write(config_file)
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = client.get("/system/meshtastic")
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertIn("MeshCore Companion Radio", page)
+        self.assertIn("192.0.2.20:5000", page)
+        self.assertIn("contact list", page)
+
+    def test_radio_device_page_shows_both_radios_in_bridge_mode(self):
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        config["interface"] = {"type": "serial", "port": "COM3"}
+        config["interface2"] = {
+            "type": "meshcore_tcp",
+            "hostname": "192.0.2.30",
+            "tcp_port": "5000",
+        }
+        with open(self.config_path, "w", encoding="utf-8") as config_file:
+            config.write(config_file)
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = client.get("/system/meshtastic")
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertIn("Radio 1 (primary)", page)
+        self.assertIn("Radio 2 (secondary", page)
+        self.assertIn("MeshCore Companion Radio", page)
+        self.assertIn("192.0.2.30:5000", page)
+        self.assertIn("bridge mode", page)
+
+    def test_radio_device_page_single_radio_unchanged_without_interface2(self):
+        """No [interface2] at all -- must render exactly as before dual-radio
+        bridge mode existed (no 'Radio 1'/'Radio 2' labels, no bridge-mode note)."""
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        config["interface"] = {"type": "serial", "port": "COM3"}
+        with open(self.config_path, "w", encoding="utf-8") as config_file:
+            config.write(config_file)
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = client.get("/system/meshtastic")
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertNotIn("Radio 1 (primary)", page)
+        self.assertNotIn("bridge mode", page)
+        self.assertIn("Meshtastic Device", page)
+
+    def test_settings_diagnostics_shows_per_radio_breakdown_in_bridge_mode(self):
+        with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:
+            json.dump(
+                {
+                    "updated_at": "2026-03-30T01:02:03+00:00",
+                    "interface_attached": True,
+                    "interface_type": "SerialInterface",
+                    "radio_protocol": "Meshtastic",
+                    "mesh_node_count": 7,
+                    "local_node_id": "!snap1234",
+                    "bbs_nodes": ["!sync1"],
+                    "allowed_nodes": [],
+                    "radios": [
+                        {
+                            "name": "primary",
+                            "interface_type": "SerialInterface",
+                            "radio_protocol": "Meshtastic",
+                            "connected": True,
+                            "reconnecting": False,
+                            "mesh_node_count": 7,
+                            "local_node_id": "!snap1234",
+                            "bbs_nodes": ["!sync1"],
+                            "allowed_nodes": [],
+                        },
+                        {
+                            "name": "secondary",
+                            "interface_type": "MeshCoreInterface",
+                            "radio_protocol": "MeshCore",
+                            "connected": True,
+                            "reconnecting": False,
+                            "mesh_node_count": 3,
+                            "local_node_id": "7e18ca9d",
+                            "bbs_nodes": ["7e18ca9d30a1"],
+                            "allowed_nodes": [],
+                        },
+                    ],
+                    "error": "",
+                },
+                snapshot_file,
+            )
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        settings_response = client.get("/settings")
+        self.assertEqual(settings_response.status_code, 200)
+        page = settings_response.get_data(as_text=True)
+        self.assertIn("Dual-radio bridge mode active", page)
+        self.assertIn("Radio: primary (Meshtastic)", page)
+        self.assertIn("Radio: secondary (MeshCore)", page)
+        self.assertIn("7e18ca9d30a1", page)
+
+    def test_settings_diagnostics_single_radio_no_bridge_banner(self):
+        """No 'radios' array in the snapshot (old server.py, or single-radio) --
+        must fall back to exactly one synthesized radio entry, no bridge-mode banner."""
+        with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:
+            json.dump(
+                {
+                    "updated_at": "2026-03-30T01:02:03+00:00",
+                    "interface_attached": True,
+                    "interface_type": "SerialInterface",
+                    "mesh_node_count": 7,
+                    "local_node_id": "!snap1234",
+                    "bbs_nodes": ["!sync1"],
+                    "allowed_nodes": [],
+                    "error": "",
+                },
+                snapshot_file,
+            )
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        settings_response = client.get("/settings")
+        self.assertEqual(settings_response.status_code, 200)
+        page = settings_response.get_data(as_text=True)
+        self.assertNotIn("Dual-radio bridge mode active", page)
+        self.assertIn("Interface type:</strong> SerialInterface", page)
+
     def test_settings_diagnostics_snapshot_fallback(self):
         with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:
             json.dump(
