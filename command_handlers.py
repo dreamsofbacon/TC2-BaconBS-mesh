@@ -18,7 +18,7 @@ from db_operations import (
     create_account, get_account_id_for_node, get_linked_node_ids,
     get_linked_nodes_detail, link_node_to_account, unlink_node,
     get_account_alias, set_account_alias, create_link_code, redeem_link_code,
-    record_link_attempt, link_rate_limit_ok,
+    record_link_attempt, link_rate_limit_ok, account_authorized,
 )
 from utils import (
     get_node_id_from_num, get_node_info,
@@ -48,6 +48,29 @@ config.read('config.ini')
 
 def _parse_menu_items(value: str) -> list[str]:
     return [item.strip().upper() for item in value.split(',') if item.strip()]
+
+
+def _urgent_board_allow_lists(interface) -> list:
+    """All configured urgent-board allow-lists: this interface's own live,
+    already-refreshed allowed_nodes, PLUS [allow_list]/[allow_list2] read
+    fresh from config.ini. Reading both sections directly here (rather than
+    only consulting `interface.allowed_nodes`, which is just ONE radio's
+    list) is what lets account_authorized() correctly authorize a linked
+    sibling node on the OTHER radio in dual-radio bridge mode, without this
+    handler needing to know anything about RadioLink/dual-radio internals.
+    config.ini is re-read fresh (not cached) so allow-list edits made via
+    the web GUI take effect without a restart, matching how
+    interface.allowed_nodes is already live-refreshed."""
+    lists = [list(getattr(interface, 'allowed_nodes', []) or [])]
+    try:
+        config.read('config.ini')
+        for section in ('allow_list', 'allow_list2'):
+            if config.has_section(section):
+                raw = config.get(section, 'allowed_nodes', fallback='')
+                lists.append([n.strip() for n in raw.split(',') if n.strip()])
+    except Exception:
+        pass
+    return lists
 
 
 main_menu_items = _parse_menu_items(config.get('menu', 'main_menu_items', fallback='Q,B,U,P,X'))
@@ -818,9 +841,11 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
         elif message.lower() == 'p':
             if board_name.lower() == 'urgent':
                 node_id = get_node_id_from_num(sender_id, interface)
-                allowed_nodes = interface.allowed_nodes
-                logging.info(f"Checking permissions for node_id: {node_id} with allowed_nodes: {allowed_nodes}")  # Debug statement
-                if allowed_nodes and node_id not in allowed_nodes:
+                allow_lists = _urgent_board_allow_lists(interface)
+                logging.info(f"Checking permissions for node_id: {node_id} with allowed_nodes: {allow_lists}")  # Debug statement
+                # Empty everywhere = no restriction configured = open to all
+                # (matches the original single-list behavior exactly).
+                if any(allow_lists) and not account_authorized(node_id, allow_lists):
                     send_message("You don't have permission to post to this board.", sender_id, interface)
                     handle_bb_steps(sender_id, 'e', 1, state, interface, bbs_nodes)
                     return
