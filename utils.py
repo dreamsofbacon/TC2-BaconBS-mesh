@@ -22,6 +22,15 @@ user_states = {}
 # under 220 to leave room for packet-layer overhead and multi-byte UTF-8 chars.
 _MESHTASTIC_MAX_BYTES = 220
 
+
+def get_max_text_bytes(interface=None) -> int:
+    """Return the active transport's safe single-message UTF-8 byte limit."""
+    try:
+        value = int(getattr(interface, 'max_text_bytes', _MESHTASTIC_MAX_BYTES))
+    except (TypeError, ValueError):
+        value = _MESHTASTIC_MAX_BYTES
+    return max(32, value)
+
 # ---------------------------------------------------------------------------
 # Wire protocol version + capability advertisement
 # ---------------------------------------------------------------------------
@@ -400,7 +409,7 @@ def get_user_state(user_id):
 
 
 def _split_into_chunks(text, max_len=200):
-    """Split text into chunks of at most max_len chars, breaking at sentence boundaries."""
+    """Split text by UTF-8 bytes, preferring sentence and word boundaries."""
     # Collapse 3+ consecutive newlines to at most 2, and runs of spaces/tabs to one space
     text = re.sub(r'\n{3,}', '\n\n', text)
     text = re.sub(r'[ \t]+', ' ', text)
@@ -408,11 +417,11 @@ def _split_into_chunks(text, max_len=200):
 
     chunks = []
     while text:
-        if len(text) <= max_len:
+        if len(text.encode('utf-8')) <= max_len:
             chunks.append(text)
             break
 
-        segment = text[:max_len]
+        segment, overflow = _take_prefix_within_bytes(text, max_len)
 
         # Find the last sentence-ending punctuation followed by whitespace in the segment
         best = -1
@@ -429,16 +438,16 @@ def _split_into_chunks(text, max_len=200):
             else:
                 # Fall back to last space
                 sp = segment.rfind(' ')
-                split_pos = sp + 1 if sp > 10 else max_len
+                split_pos = sp + 1 if sp > 10 else len(segment)
 
         chunks.append(text[:split_pos].rstrip())
-        text = text[split_pos:].lstrip()
+        text = (segment[split_pos:] + overflow).lstrip()
 
     return chunks
 
 
 def send_message(message, destination, interface):
-    for chunk in _split_into_chunks(message):
+    for chunk in _split_into_chunks(message, max_len=get_max_text_bytes(interface)):
         try:
             d = interface.sendText(
                 text=chunk,
@@ -463,10 +472,30 @@ def get_node_info(interface, short_name):
 
 
 def get_node_id_from_num(node_num, interface):
+    resolver = getattr(interface, 'node_id_from_num', None)
+    if callable(resolver):
+        resolved = resolver(node_num)
+        if resolved:
+            return resolved
     for node_id, node in interface.nodes.items():
         if node['num'] == node_num:
             return node_id
     return None
+
+
+def home_network(node_id) -> str:
+    """Return 'meshtastic' or 'meshcore' based on node-id string shape.
+
+    Meshtastic node ids are '!'-prefixed hex (e.g. '!04058ac8'); MeshCore
+    node ids are bare hex public keys/prefixes with no '!' (see
+    meshcore_interface.py's _clean_key and the README's node-id docs). This
+    is a cheap, zero-new-state way to tell which network a peer id belongs
+    to -- used by dual-radio bridge mode (server.py's RadioLink routing) as
+    a defensive check, not as the primary safety mechanism (each link's own
+    bbs_nodes/subscriber_nodes list, read from a separate config section,
+    is what actually keeps the two networks' peers from being conflated).
+    """
+    return 'meshtastic' if str(node_id or '').strip().startswith('!') else 'meshcore'
 
 
 def get_node_short_name(node_id, interface):
@@ -694,10 +723,10 @@ def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_da
     _MIN_CHANNEL_COMMENT_CONTENT_BYTES = 8
     full_too_big = (
         len(full_header.encode('utf-8')) + len(footer.encode('utf-8'))
-        > _MESHTASTIC_MAX_BYTES - _MIN_CHANNEL_COMMENT_CONTENT_BYTES
+        > get_max_text_bytes(interface) - _MIN_CHANNEL_COMMENT_CONTENT_BYTES
     )
 
-    if len(short_header.encode('utf-8')) + len(footer.encode('utf-8')) > _MESHTASTIC_MAX_BYTES:
+    if len(short_header.encode('utf-8')) + len(footer.encode('utf-8')) > get_max_text_bytes(interface):
         logging.warning(
             f"CHANNELCOMMENT header exceeds packet limit even with compact key for uid={unique_id}; skipping"
         )
@@ -983,7 +1012,7 @@ def send_api_request(rid, requester_id, kind, payload, gateway_node_id, interfac
     'request too long' message. (Response chunking is handled separately; API
     requests are short by design — a URL or a prompt.)"""
     frame = f"APIREQ|{rid}|{requester_id}|{kind}|{payload}"
-    if len(frame.encode('utf-8')) > _MESHTASTIC_MAX_BYTES:
+    if len(frame.encode('utf-8')) > get_max_text_bytes(interface):
         return False
     _send_one_sync(frame, gateway_node_id, interface, pause_seconds=get_sync_pause_seconds())
     return True
@@ -1273,7 +1302,7 @@ def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nod
     prefix = f"ZORKSAVE|{save_id}|{user_b64}|{game_b64}|{updated_at_wire}|{payload_hash}|"
     # Reserve enough room for chunk index and total chunk counters.
     overhead = len(prefix.encode("utf-8")) + len("999999|999999|".encode("utf-8"))
-    available = _MESHTASTIC_MAX_BYTES - overhead
+    available = get_max_text_bytes(interface) - overhead
     if available <= 0:
         logging.warning("ZORKSAVE framing prefix too large for packet limit; skipping save sync frame")
         return
@@ -1322,17 +1351,17 @@ _SEND_THREAD_TIMEOUT_SECONDS: float = float(os.environ.get("BBS_SEND_TIMEOUT_SEC
 def _send_one_sync(message, destination, interface, pause_seconds=None):
     """Send a single sync packet directly to destination (no chunking).
 
-    The meshtastic library blocks for up to 30 s waiting for a radio ack after
-    each send. Running the send in a daemon thread with a hard 8-second join
-    timeout ensures the main loop stays responsive even when the radio link is
-    dead and the ack never arrives.
+    Radio libraries may block while waiting for an acknowledgement. Running
+    the send in a daemon thread with a bounded, transport-aware join timeout
+    keeps the main loop responsive when a connection dies.
     """
     global _consecutive_send_failures
     if pause_seconds is None:
         pause_seconds = get_sync_pause_seconds()
     msg_len = len(message.encode('utf-8'))
-    if msg_len > _MESHTASTIC_MAX_BYTES:
-        logging.warning(f"SYNC frame exceeds {_MESHTASTIC_MAX_BYTES} bytes ({msg_len}); dropping frame")
+    max_text_bytes = get_max_text_bytes(interface)
+    if msg_len > max_text_bytes:
+        logging.warning(f"SYNC frame exceeds {max_text_bytes} bytes ({msg_len}); dropping frame")
         return
 
     _result: list = [None]   # True on success, Exception on error
@@ -1350,12 +1379,16 @@ def _send_one_sync(message, destination, interface, pause_seconds=None):
 
     t = threading.Thread(target=_do_send, daemon=True)
     t.start()
-    t.join(timeout=_SEND_THREAD_TIMEOUT_SECONDS)
+    send_timeout = max(
+        _SEND_THREAD_TIMEOUT_SECONDS,
+        float(getattr(interface, 'send_timeout_seconds', 0) or 0),
+    )
+    t.join(timeout=send_timeout)
 
     if t.is_alive():
         # Send is still blocking — ack never arrived, connection is dead.
         _consecutive_send_failures += 1
-        logging.info(f"SYNC SEND ERROR: send blocked for >{_SEND_THREAD_TIMEOUT_SECONDS:.0f}s — connection likely dead")
+        logging.info(f"SYNC SEND ERROR: send blocked for >{send_timeout:.0f}s — connection likely dead")
     elif isinstance(_result[0], Exception):
         _consecutive_send_failures += 1
         logging.info(f"SYNC SEND ERROR {_result[0]}")
@@ -1374,7 +1407,7 @@ def _send_one_sync(message, destination, interface, pause_seconds=None):
         _consecutive_send_failures = 0
         try:
             import server as _server
-            _server.reconnect_needed.set()
+            _server.signal_reconnect(interface)
         except Exception:
             os._exit(2)  # fallback if import fails
 
@@ -1401,7 +1434,8 @@ def _send_sync_with_cont(header, footer, content, unique_id, cont_prefix, bbs_no
     _OFFSET_OVERHEAD = 10
 
     # How many content bytes can fit in the first (primary) packet?
-    max_first = _MESHTASTIC_MAX_BYTES - len(header_bytes) - len(footer_bytes)
+    max_text_bytes = get_max_text_bytes(interface)
+    max_first = max_text_bytes - len(header_bytes) - len(footer_bytes)
     if max_first <= 0:
         logging.warning("Sync frame header/footer exceed packet limit; skipping message")
         return
@@ -1419,7 +1453,7 @@ def _send_sync_with_cont(header, footer, content, unique_id, cont_prefix, bbs_no
 
     # Send continuation packets for any remaining content
     remaining = remaining_text
-    max_cont = _MESHTASTIC_MAX_BYTES - len(cont_prefix_bytes) - _OFFSET_OVERHEAD
+    max_cont = max_text_bytes - len(cont_prefix_bytes) - _OFFSET_OVERHEAD
     if max_cont <= 0:
         logging.warning("Sync continuation prefix exceeds packet limit; skipping continuations")
         return

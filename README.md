@@ -1,6 +1,6 @@
 # BaconBS-mesh
 
-A feature-rich, offline-first Bulletin Board System for [Meshtastic](https://meshtastic.org/) mesh radio networks. BaconBS-mesh enables asynchronous communication across low-bandwidth LoRa links with no internet dependency — designed for resilience in the field.
+A feature-rich, offline-first Bulletin Board System for [Meshtastic](https://meshtastic.org/) and [MeshCore](https://meshcore.co.uk/) mesh radio networks. BaconBS-mesh enables asynchronous communication across low-bandwidth LoRa links with no internet dependency — designed for resilience in the field.
 
 Forked from [TC²-BBS-mesh](https://github.com/TheCommsChannel/TC2-BBS-mesh) with significant protocol and reliability improvements.
 
@@ -49,9 +49,11 @@ BaconBS-mesh uses a custom five-phase distributed sync protocol designed for los
 
 ## Requirements
 
-- Python 3.9+
-- A Meshtastic device connected via serial (USB) or TCP (WiFi)
-- `pip install -r requirements.txt` (installs `meshtastic`, `pypubsub`, `flask`)
+- Python 3.10+
+- Either a Meshtastic device (serial or TCP) or a MeshCore companion radio
+  (serial, TCP, or BLE)
+- `pip install -r requirements.txt` (installs both radio client libraries,
+  `pypubsub`, and `flask`)
 - **dfrotz** (optional, required for games): `sudo apt install frotz`
 
 ---
@@ -87,6 +89,8 @@ Edit `config.ini` before running. Key sections:
 
 ### Interface
 
+Meshtastic serial:
+
 ```ini
 [interface]
 type = serial
@@ -98,14 +102,120 @@ type = serial
 # hostname = 192.168.1.x
 ```
 
+MeshCore companion serial:
+
+```ini
+[interface]
+type = meshcore_serial
+port = /dev/ttyACM0
+baudrate = 115200
+channel_index = 0  # MeshCore channel used for broadcast notifications
+```
+
+MeshCore companion TCP or BLE:
+
+```ini
+# TCP
+[interface]
+type = meshcore_tcp
+hostname = 192.168.1.x
+tcp_port = 5000
+
+# BLE (use this section instead of TCP)
+# [interface]
+# type = meshcore_ble
+# ble_address = 12:34:56:78:90:AB  # optional; omit to scan
+# ble_pin = 123456                 # optional
+```
+
+The MeshCore radio must run **companion firmware**. A repeater, room-server,
+or other non-companion build does not expose the client protocol used here.
+
 ### Sync Peers
 
-Add the node IDs of other BaconBS-mesh nodes you want to sync with. Find node IDs in the Meshtastic app under **Radio Configuration > User**, or via the web admin dashboard.
+Add the node IDs of other BaconBS-mesh nodes you want to sync with. For
+Meshtastic, use the usual `!xxxxxxxx` node IDs. For MeshCore, use each
+companion's full public key or a unique prefix of at least 12 hexadecimal
+characters; these are visible in MeshCore contact details and the web admin
+diagnostics.
 
 ```ini
 [sync]
 bbs_nodes = !f53f4abc,!f3abc123
 ```
+
+MeshCore example:
+
+```ini
+[sync]
+bbs_nodes = 7e18ca9d30a1,4b0264c19f6e
+```
+
+Every BBS node normally uses one radio protocol at a time — but any node can
+optionally be configured as a **dual-radio bridge** between a Meshtastic
+network and a MeshCore network. See [Dual-Radio Bridge Mode](#dual-radio-bridge-mode)
+below.
+
+### Dual-Radio Bridge Mode
+
+A single node can run **two radios at once** — one Meshtastic, one MeshCore
+(either order) — and participate in the full five-phase sync protocol on
+both networks simultaneously. Mail, bulletins, channels, profiles, and game
+saves stay consistent across both networks through this node, as if they
+were one unified mesh.
+
+This is *not* a packet-level RF relay — the bridge node doesn't retransmit
+raw frames between the two radios. Instead, both radios' sync engines run
+independently against the **same local database**: content synced in from
+one network lands in the shared DB, and the other radio's own sync cycle
+picks it up and pushes it out on its next scheduled or mismatch-triggered
+pass. This means cross-network propagation is *eventually consistent* (on
+the normal sync cadence — a few minutes by default, sooner via SYNCSTATE
+heartbeats), not instantaneous.
+
+To enable it, add a second `[interface2]` section (same keys as
+`[interface]`) plus `[sync2]`/`[allow_list2]` for that radio's own peer
+list — everything is additive, so a config file without these sections
+behaves exactly as before:
+
+```ini
+[interface]
+type = serial
+port = /dev/ttyUSB0
+
+[sync]
+bbs_nodes = !f53f4abc
+
+[interface2]
+type = meshcore_tcp
+hostname = 192.168.1.50
+tcp_port = 5000
+
+[sync2]
+bbs_nodes = 7e18ca9d30a1
+
+[allow_list2]
+allowed_nodes = 7e18ca9d30a1
+```
+
+Notes:
+
+- Keep `[sync]`/`[sync2]` peer lists strictly separate — a node ID belongs
+  to exactly one network (Meshtastic `!xxxxxxxx` vs. MeshCore's bare hex
+  keys make this easy to tell apart at a glance), and nothing downstream
+  validates that a peer configured under one section is actually reachable
+  on that radio.
+- Each radio chunks outbound sync frames to its own transport's byte limit
+  (220 bytes for Meshtastic, 160 for MeshCore) automatically.
+- If one radio's connection drops, only that radio's side degrades — the
+  other radio keeps syncing normally while the dead one reconnects with
+  backoff in the background.
+- Currently supported/tested with exactly one bridge node between a given
+  Meshtastic network and a given MeshCore network. Running more than one
+  bridge node between the same two networks is unanalyzed and not a
+  supported topology yet.
+- The web admin "Radio Device" and Settings → Diagnostics pages show a
+  separate status card per active radio when bridge mode is on.
 
 ### Sync Tuning
 
@@ -236,11 +346,19 @@ The following Meshtastic device roles are confirmed working:
 
 Some other roles have been reported to cause the node to stop responding after a short time.
 
+For MeshCore, flash a **companion** build and make sure every intended peer is
+present in the radio's contact list. BaconBS sends direct encrypted MeshCore
+messages and uses MeshCore's automatic routing/flood fallback. MeshCore's
+160-byte text ceiling is detected automatically; BBS sync frames and user
+replies are chunked to fit it.
+
 ---
 
 ## Usage
 
-Send a direct message to the BBS node from any Meshtastic device. Any message triggers the main menu. Navigate by sending the letter shown in brackets — for example, send `B` for `[B]BS`.
+Send a direct message to the BBS node from any Meshtastic or MeshCore contact.
+Any message triggers the main menu. Navigate by sending the letter shown in
+brackets — for example, send `B` for `[B]BS`.
 
 ---
 
@@ -259,15 +377,24 @@ python tests/smoke_test.py
 ```
 python server.py --help
 
-usage: server.py [-h] [--config CONFIG] [--interface-type {serial,tcp}]
-                 [--port PORT] [--host HOST] [--mqtt-topic MQTT_TOPIC]
+usage: server.py [-h] [--config CONFIG]
+                 [--interface-type {serial,tcp,meshcore_serial,meshcore_tcp,meshcore_ble}]
+                 [--port PORT] [--host HOST] [--tcp-port TCP_PORT]
+                 [--baudrate BAUDRATE] [--ble-address BLE_ADDRESS]
+                 [--ble-pin BLE_PIN] [--channel-index CHANNEL_INDEX]
+                 [--mqtt-topic MQTT_TOPIC]
 
 options:
   -h, --help                        show this help message and exit
   --config CONFIG, -c CONFIG        Path to config file
-  --interface-type {serial,tcp}     Interface type
+  --interface-type {...}            Radio interface type
   --port PORT, -p PORT              Serial port
   --host HOST                       TCP hostname
+  --tcp-port TCP_PORT               MeshCore TCP port
+  --baudrate BAUDRATE               MeshCore serial baud rate
+  --ble-address BLE_ADDRESS         MeshCore BLE address (omit to scan)
+  --ble-pin BLE_PIN                 Optional MeshCore BLE pairing PIN
+  --channel-index CHANNEL_INDEX     MeshCore broadcast channel index
   --mqtt-topic MQTT_TOPIC           MQTT topic to subscribe
 ```
 
@@ -277,6 +404,7 @@ options:
 
 - [TheCommsChannel](https://github.com/TheCommsChannel) — original TC²-BBS-mesh
 - [Meshtastic](https://github.com/meshtastic) and [pdxlocations](https://github.com/pdxlocations) — Python library and examples
+- [MeshCore](https://github.com/meshcore-dev/MeshCore) and [meshcore_py](https://github.com/meshcore-dev/meshcore_py) — companion protocol, firmware, and Python library
 - [Jordan Sherer](https://bitbucket.org/widefido/js8call) — JS8Call and the TCP API example
 
 ---

@@ -718,7 +718,7 @@ BASE_TEMPLATE = """
       <a href=\"{{ url_for('settings_page') }}\">Settings</a>
       <a href=\"{{ url_for('system_flowchart') }}\">Documentation</a>
       <a href=\"{{ url_for('system_transmissions') }}\">Transmission Stats</a>
-      <a href=\"{{ url_for('meshtastic_device') }}\">Meshtastic Device</a>
+      <a href=\"{{ url_for('meshtastic_device') }}\">Radio Device</a>
       <a href=\"{{ url_for('mesh_ui_index') }}\" target=\"_blank\">Mesh UI</a>
       <a href=\"{{ url_for('logout') }}\">Logout</a>
       <div class="nav-right">
@@ -3350,6 +3350,7 @@ def create_app(runtime_interface=None) -> Flask:
         "local_node_id": "Unavailable",
         "local_short_name": "Unavailable",
         "local_long_name": "Unavailable",
+        "radios": [],  # per-radio breakdown for dual-radio bridge mode; always overwritten below
         "bbs_nodes_count": str(len(bbs_nodes)),
         "allowed_nodes_count": str(len(allowed_nodes)),
         "sync_interval_minutes": str(sync_interval_minutes),
@@ -3495,6 +3496,49 @@ def create_app(runtime_interface=None) -> Flask:
 
           if snapshot.get("error"):
             diagnostics["error"] = str(snapshot.get("error"))
+
+      # Per-radio breakdown for dual-radio bridge mode (the snapshot's
+      # 'radios' array -- see server.py's write_runtime_diagnostics_snapshot).
+      # Falls back to a single entry synthesized from the flat fields above
+      # so the template can always iterate diagnostics["radios"], whether
+      # this node is running single- or dual-radio, and whether diagnostics
+      # came from a live interface or the snapshot file.
+      radios_raw = snapshot.get("radios") if isinstance(snapshot, dict) else None
+      if isinstance(radios_raw, list) and radios_raw:
+        diagnostics["radios"] = [
+          {
+            "name": str(r.get("name", "primary")),
+            "interface_type": str(r.get("interface_type", "Unavailable")),
+            "radio_protocol": str(r.get("radio_protocol", "Meshtastic")),
+            "connected": "Yes" if r.get("connected", True) else "No",
+            "reconnecting": "Yes" if r.get("reconnecting", False) else "No",
+            "mesh_node_count": str(r.get("mesh_node_count")) if r.get("mesh_node_count") is not None else "Unavailable",
+            "local_node_id": str(r.get("local_node_id") or "Unavailable"),
+            "local_short_name": str(r.get("local_short_name") or "Unavailable"),
+            "local_long_name": str(r.get("local_long_name") or "Unavailable"),
+            "bbs_nodes_count": str(len(r.get("bbs_nodes") or [])),
+            "bbs_nodes_text": ", ".join(str(n) for n in (r.get("bbs_nodes") or [])),
+            "allowed_nodes_count": str(len(r.get("allowed_nodes") or [])),
+            "allowed_nodes_text": ", ".join(str(n) for n in (r.get("allowed_nodes") or [])),
+          }
+          for r in radios_raw
+        ]
+      else:
+        diagnostics["radios"] = [{
+          "name": "primary",
+          "interface_type": diagnostics["interface_type"],
+          "radio_protocol": str(snapshot.get("radio_protocol", "Meshtastic")) if isinstance(snapshot, dict) else "Meshtastic",
+          "connected": diagnostics["interface_attached"],
+          "reconnecting": "No",
+          "mesh_node_count": diagnostics["mesh_node_count"],
+          "local_node_id": diagnostics["local_node_id"],
+          "local_short_name": diagnostics["local_short_name"],
+          "local_long_name": diagnostics["local_long_name"],
+          "bbs_nodes_count": diagnostics["bbs_nodes_count"],
+          "bbs_nodes_text": diagnostics["bbs_nodes_text"],
+          "allowed_nodes_count": diagnostics["allowed_nodes_count"],
+          "allowed_nodes_text": diagnostics["allowed_nodes_text"],
+        }]
 
       try:
         conn = get_db_connection()
@@ -4318,33 +4362,59 @@ def create_app(runtime_interface=None) -> Flask:
         events = [serialize_connection_event(row) for row in cursor.fetchall()]
       return jsonify({"events": events})
 
+    def _describe_configured_device(config, section: str, label: str, runtime_interface_for_hostname=None) -> dict:
+      """Build the {device_mode, ...} dict meshtastic_device.html renders for
+      ONE radio (section='interface' primary, or 'interface2' secondary in
+      dual-radio bridge mode). Shared so the view below can render one or
+      two device cards from the same logic."""
+      interface_type = config.get(section, "type", fallback="serial").strip().lower()
+      device = {"label": label}
+      if interface_type.startswith("meshcore_"):
+        transport = interface_type.removeprefix("meshcore_")
+        endpoint = ""
+        if transport == "tcp":
+          hostname = config.get(section, "hostname", fallback="").strip()
+          tcp_port = config.get(section, "tcp_port", fallback="5000").strip()
+          endpoint = f"{hostname}:{tcp_port}" if hostname else f"TCP port {tcp_port}"
+        elif transport == "serial":
+          endpoint = config.get(section, "port", fallback="auto-detected serial port").strip()
+        elif transport == "ble":
+          endpoint = config.get(section, "ble_address", fallback="BLE scan").strip() or "BLE scan"
+        device.update(device_mode="meshcore", meshcore_transport=transport.upper(), meshcore_endpoint=endpoint)
+      elif interface_type == "tcp":
+        hostname = config.get(section, "hostname", fallback="").strip()
+        if not hostname and runtime_interface_for_hostname is not None:
+          hostname = getattr(runtime_interface_for_hostname, "hostname", "") or ""
+        device_url = f"http://{hostname}" if hostname else "http://meshtastic.local"
+        device.update(device_mode="tcp", device_host=hostname or "meshtastic.local", device_url=device_url)
+      else:
+        device.update(device_mode="serial")
+      return device
+
     @app.route("/system/meshtastic")
     @login_required
     def meshtastic_device():
       config = read_config_file(app.config["CONFIG_PATH"])
-      interface_type = config.get("interface", "type", fallback="serial").strip().lower()
-      if interface_type == "tcp":
-        hostname = config.get("interface", "hostname", fallback="").strip()
-        if not hostname:
-          interface = get_runtime_interface()
-          if interface is not None:
-            hostname = getattr(interface, "hostname", "") or ""
-        device_url = f"http://{hostname}" if hostname else "http://meshtastic.local"
-        return render_template(
-          "meshtastic_device.html",
-          title="Meshtastic Device",
-          show_nav=True,
-          device_mode="tcp",
-          device_host=hostname or "meshtastic.local",
-          device_url=device_url,
-        )
-      else:
-        return render_template(
-          "meshtastic_device.html",
-          title="Meshtastic Device",
-          show_nav=True,
-          device_mode="serial",
-        )
+      devices = [_describe_configured_device(config, "interface", "Radio", get_runtime_interface())]
+      interface2_type = config.get("interface2", "type", fallback="").strip().lower()
+      interface2_enabled = bool(interface2_type) and config.getboolean("interface2", "enabled", fallback=True)
+      if interface2_enabled:
+        devices[0]["label"] = "Radio 1 (primary)"
+        devices.append(_describe_configured_device(config, "interface2", "Radio 2 (secondary, bridge mode)"))
+      title = "MeshCore Companion Radio" if devices[0]["device_mode"] == "meshcore" and len(devices) == 1 else "Radio Device"
+      return render_template(
+        "meshtastic_device.html",
+        title=title,
+        show_nav=True,
+        devices=devices,
+        # Back-compat: single-radio deployments' templates/tooling may still
+        # reference the old flat vars directly instead of devices[0].
+        device_mode=devices[0]["device_mode"],
+        meshcore_transport=devices[0].get("meshcore_transport"),
+        meshcore_endpoint=devices[0].get("meshcore_endpoint"),
+        device_host=devices[0].get("device_host"),
+        device_url=devices[0].get("device_url"),
+      )
 
     @app.route("/system/flowchart")
     @login_required
