@@ -3410,10 +3410,22 @@ def account_authorized(node_id: str, configured_allow_lists) -> bool:
         union.update(lst or [])
     if str(node_id) in union:
         return True
-    account_id = get_account_id_for_node(node_id)
+    try:
+        account_id = get_account_id_for_node(node_id)
+    except sqlite3.Error:
+        # Accounts schema not present on this connection (e.g. a DB that
+        # predates this feature and hasn't gone through
+        # initialize_database() yet). Degrade to plain membership -- the
+        # check above already covers that -- rather than raising, so
+        # callers that don't (yet) have an accounts-aware DB keep working
+        # exactly as before this feature existed.
+        return False
     if account_id is None:
         return False
-    return any(sibling in union for sibling in get_linked_node_ids(account_id))
+    try:
+        return any(sibling in union for sibling in get_linked_node_ids(account_id))
+    except sqlite3.Error:
+        return False
 
 
 # ---------------------------------------------------------------------------
