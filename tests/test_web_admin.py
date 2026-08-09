@@ -773,6 +773,185 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertNotIn("Dual-radio bridge mode active", page)
         self.assertIn("Interface type:</strong> SerialInterface", page)
 
+    def test_devices_section_renders_with_defaults(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        page = client.get("/settings").get_data(as_text=True)
+        self.assertIn("Device Configuration", page)
+        self.assertIn("Primary Radio", page)
+        self.assertIn("Secondary Radio", page)
+        # setUp's config.ini has no [interface] section at all -- must not 500.
+        self.assertIn('name="primary_type"', page)
+
+    def test_devices_save_primary_serial(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = self.post_with_csrf(
+            client,
+            "/settings",
+            data={
+                "settings_section": "devices",
+                "primary_type": "serial",
+                "primary_port": "/dev/ttyUSB0",
+                "primary_baudrate": "115200",
+                "secondary_enabled": "",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/settings#devices"))
+
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertEqual(config.get("interface", "type"), "serial")
+        self.assertEqual(config.get("interface", "port"), "/dev/ttyUSB0")
+
+    def test_devices_save_primary_tcp_requires_hostname(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = self.post_with_csrf(
+            client,
+            "/settings",
+            data={
+                "settings_section": "devices",
+                "primary_type": "tcp",
+                "primary_hostname": "",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertIn("hostname is required", page)
+
+        # Nothing was written -- original config untouched.
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertFalse(config.has_section("interface"))
+
+    def test_devices_save_enables_secondary_radio_bridge_mode(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = self.post_with_csrf(
+            client,
+            "/settings",
+            data={
+                "settings_section": "devices",
+                "primary_type": "serial",
+                "primary_port": "/dev/ttyUSB0",
+                "secondary_enabled": "1",
+                "secondary_type": "meshcore_tcp",
+                "secondary_hostname": "192.168.1.50",
+                "secondary_tcp_port": "5000",
+                "bbs_nodes2": "7e18ca9d30a1",
+                "allowed_nodes2": "7e18ca9d30a1",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertEqual(config.get("interface2", "type"), "meshcore_tcp")
+        self.assertEqual(config.get("interface2", "enabled"), "true")
+        self.assertEqual(config.get("interface2", "hostname"), "192.168.1.50")
+        self.assertEqual(config.get("sync2", "bbs_nodes"), "7e18ca9d30a1")
+        self.assertEqual(config.get("allow_list2", "allowed_nodes"), "7e18ca9d30a1")
+
+        # Round-trip: the settings page must now show it as enabled.
+        page = client.get("/settings").get_data(as_text=True)
+        self.assertIn('id="secondary_enabled" name="secondary_enabled" value="1" checked', page)
+        self.assertIn("192.168.1.50", page)
+
+    def test_devices_secondary_rejects_bad_type(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = self.post_with_csrf(
+            client,
+            "/settings",
+            data={
+                "settings_section": "devices",
+                "primary_type": "serial",
+                "primary_port": "/dev/ttyUSB0",
+                "secondary_enabled": "1",
+                "secondary_type": "",
+            },
+            follow_redirects=True,
+        )
+        page = response.get_data(as_text=True)
+        self.assertIn("choose a valid device type", page)
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertFalse(config.has_section("interface2"))
+
+    def test_devices_rejects_duplicate_serial_port(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = self.post_with_csrf(
+            client,
+            "/settings",
+            data={
+                "settings_section": "devices",
+                "primary_type": "serial",
+                "primary_port": "/dev/ttyUSB0",
+                "secondary_enabled": "1",
+                "secondary_type": "meshcore_serial",
+                "secondary_port": "/dev/ttyUSB0",
+            },
+            follow_redirects=True,
+        )
+        page = response.get_data(as_text=True)
+        self.assertIn("cannot use the same serial port", page)
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertFalse(config.has_section("interface"))
+
+    def test_devices_disabling_secondary_keeps_saved_settings(self):
+        """Disabling the checkbox flips enabled=false but doesn't wipe the
+        saved connection details, so re-enabling later doesn't need re-entry."""
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        self.post_with_csrf(
+            client, "/settings",
+            data={
+                "settings_section": "devices",
+                "primary_type": "serial",
+                "primary_port": "/dev/ttyUSB0",
+                "secondary_enabled": "1",
+                "secondary_type": "meshcore_tcp",
+                "secondary_hostname": "192.168.1.50",
+            },
+        )
+        self.post_with_csrf(
+            client, "/settings",
+            data={
+                "settings_section": "devices",
+                "primary_type": "serial",
+                "primary_port": "/dev/ttyUSB0",
+                "secondary_enabled": "",
+                "secondary_type": "meshcore_tcp",
+                "secondary_hostname": "192.168.1.50",
+            },
+        )
+
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertEqual(config.get("interface2", "enabled"), "false")
+        self.assertEqual(config.get("interface2", "hostname"), "192.168.1.50")
+
     def test_settings_diagnostics_snapshot_fallback(self):
         with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:
             json.dump(
