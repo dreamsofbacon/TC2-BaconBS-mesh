@@ -59,7 +59,7 @@ from db_operations import (
 )
 from js8call_integration import handle_js8call_command, handle_js8call_steps, handle_group_message_selection
 from utils import (
-    get_user_state, get_node_short_name, get_node_id_from_num, send_message,
+    get_user_state, get_node_short_name, resolve_display_name, get_node_id_from_num, send_message,
     send_bulletin_to_bbs_nodes, send_mail_to_bbs_nodes, send_channel_to_bbs_nodes,
     send_channel_comment_to_bbs_nodes,
     send_profile_to_bbs_nodes, send_game_score_to_bbs_nodes, send_zork_save_to_bbs_nodes,
@@ -2348,7 +2348,7 @@ def on_receive(packet, interface):
             to_id = packet.get('to')
             sender_node_id = packet['fromId']
 
-            sender_short_name = get_node_short_name(sender_node_id, interface)
+            sender_short_name = resolve_display_name(sender_node_id, interface)
             receiver_short_name = get_node_short_name(get_node_id_from_num(to_id, interface),
                                                       interface) if to_id else "Group Chat"
             logging.info(f"Received message from user '{sender_short_name}' ({sender_node_id}) to {receiver_short_name}: {message_string}")
