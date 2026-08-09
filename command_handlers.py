@@ -22,7 +22,7 @@ from db_operations import (
 )
 from utils import (
     get_node_id_from_num, get_node_info,
-    get_node_short_name, get_user_state, get_zork_save_sync_notice, send_message,
+    get_node_short_name, resolve_display_name, get_user_state, get_zork_save_sync_notice, send_message,
     update_user_state,
     select_gateway_peer, send_api_request, register_api_request,
     home_network, _config_int,
@@ -854,12 +854,11 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
             subject = state['subject']
             content = state['content']
             node_id = get_node_id_from_num(sender_id, interface)
-            node_info = interface.nodes.get(node_id)
-            if node_info is None:
+            sender_short_name = resolve_display_name(node_id, interface)
+            if not sender_short_name:
                 send_message("Error: Unable to retrieve your node information.", sender_id, interface)
                 update_user_state(sender_id, None)
                 return
-            sender_short_name = node_info['user'].get('shortName', f"Node {sender_id}")
             unique_id = add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interface)
             send_message(f"Your bulletin '{subject}' has been posted to {board}.\n(╯°□°)╯📄📌[{board}]", sender_id, interface)
             handle_bb_steps(sender_id, 'e', 1, state, interface, bbs_nodes)
@@ -977,7 +976,7 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             content = state['content']
             recipient_name = get_node_name(recipient_id, interface)
 
-            sender_short_name = get_node_short_name(get_node_id_from_num(sender_id, interface), interface)
+            sender_short_name = resolve_display_name(get_node_id_from_num(sender_id, interface), interface)
             unique_id = add_mail(get_node_id_from_num(sender_id, interface), sender_short_name, recipient_id, subject, content, bbs_nodes, interface)
             send_message(f"Mail has been posted to the mailbox of {recipient_name}.\n(╯°□°)╯📨📬", sender_id, interface)
 
@@ -1131,7 +1130,7 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
             if not content:
                 send_message("Comment was empty. Nothing posted.", sender_id, interface)
             else:
-                node_short_name = get_node_short_name(get_node_id_from_num(sender_id, interface), interface) or "Unknown"
+                node_short_name = resolve_display_name(get_node_id_from_num(sender_id, interface), interface) or "Unknown"
                 add_channel_comment(state.get('channel_id'), node_short_name, content,
                                     bbs_nodes=interface.bbs_nodes, interface=interface)
                 send_message("Comment posted.", sender_id, interface)
@@ -1178,7 +1177,7 @@ def handle_send_mail_command(sender_id, message, interface, bbs_nodes):
 
         recipient_id = nodes[0]['num']
         recipient_name = get_node_name(recipient_id, interface)
-        sender_short_name = get_node_short_name(get_node_id_from_num(sender_id, interface), interface)
+        sender_short_name = resolve_display_name(get_node_id_from_num(sender_id, interface), interface)
 
         unique_id = add_mail(get_node_id_from_num(sender_id, interface), sender_short_name, recipient_id, subject,
                              content, bbs_nodes, interface)
@@ -1273,7 +1272,7 @@ def handle_post_bulletin_command(sender_id, message, interface, bbs_nodes):
             return
 
         _, board_name, subject, content = parts
-        sender_short_name = get_node_short_name(get_node_id_from_num(sender_id, interface), interface)
+        sender_short_name = resolve_display_name(get_node_id_from_num(sender_id, interface), interface)
 
         unique_id = add_bulletin(board_name, sender_short_name, subject, content, bbs_nodes, interface)
         send_message(f"Your bulletin '{subject}' has been posted to {board_name}.", sender_id, interface)
