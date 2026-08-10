@@ -802,6 +802,21 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(config.get("accounts", "link_code_ttl_minutes"), "15")
         self.assertEqual(config.get("accounts", "max_linked_devices"), "3")
 
+    def test_create_app_initializes_schema_without_a_prior_initialize_database_call(self):
+        """Regression test: bacon-web-admin.service is a separate process
+        from mesh-bbs.service and must not depend on that other service
+        having run schema migrations first -- a fresh DB file (or a window
+        where mesh-bbs.service is down while the web admin stays up) must
+        not 500 on /accounts. Deliberately does NOT call
+        db_operations.initialize_database() itself, unlike every other test
+        in this class -- create_app() alone must be sufficient."""
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+        response = client.get("/accounts")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("No accounts yet.", response.get_data(as_text=True))
+
     def test_accounts_list_page_shows_accounts(self):
         db_operations.initialize_database()
         account_id = db_operations.create_account()
