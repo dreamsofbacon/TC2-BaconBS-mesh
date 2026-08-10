@@ -26,7 +26,10 @@ import time
 from datetime import datetime, timezone
 from app_paths import resolve_app_path
 
-from config_init import initialize_config, get_interface, get_secondary_interface, init_cli_parser, merge_config
+from config_init import (
+    initialize_config, get_interface, get_secondary_interface, init_cli_parser, merge_config,
+    get_mqtt_interfaces, get_mqtt_interface_by_name,
+)
 from radio_link import RadioLink
 from db_operations import (
     initialize_database,
@@ -411,9 +414,20 @@ def _seed_link_from_db(link: RadioLink) -> None:
 
 
 def _link_for_node(links: list, node_id) -> RadioLink:
-    """Pick the RadioLink whose network a node id belongs to (see
-    utils.home_network); falls back to links[0] if no active link's network
-    matches, which is exactly single-radio behavior when there's only one."""
+    """Pick the RadioLink a node id belongs to.
+
+    Checks each link's own configured peer lists FIRST -- the only way to
+    disambiguate multiple simultaneous same-protocol links (e.g. two MQTT
+    links bridging two different remote sites both report network_key
+    values that don't collapse to one shared bucket, but a bare
+    home_network() shape check can't tell them apart either way). Falls
+    back to the coarser home_network()==network_key match for a peer id no
+    link's lists contain yet, then to links[0] -- exactly single-radio
+    behavior when there's only one link."""
+    text = str(node_id or '')
+    for link in links:
+        if text in link.bbs_nodes or text in link.allowed_nodes or text in link.subscriber_nodes:
+            return link
     target = home_network(node_id)
     for link in links:
         if link.network_key == target:
@@ -555,14 +569,16 @@ def _reconnect_link(link: RadioLink, system_config: dict, config_path: str) -> N
     while True:
         try:
             time.sleep(retry_delay)
-            if link.name == 'primary':
+            if link.reconnect_fn is not None:
+                new_iface = link.reconnect_fn(system_config)
+            elif link.name == 'primary':
                 new_iface = get_interface(system_config)
             else:
                 new_iface = get_secondary_interface(system_config)
-                if new_iface is None:
-                    logging.warning(f"[{link.name}] secondary interface no longer configured in config.ini; abandoning reconnect")
-                    link.reconnecting = False
-                    return
+            if new_iface is None:
+                logging.warning(f"[{link.name}] interface no longer configured in config.ini; abandoning reconnect")
+                link.reconnecting = False
+                return
             _apply_socket_timeout(new_iface)
             refresh_peer_lists_from_config(
                 config_path, new_iface, system_config,
@@ -680,7 +696,7 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
                 _peer = random.choice(_peer_pool)
                 _send_one_sync(
                     f"HASHMISS|{_scope}|{_uid}", _peer, interface,
-                    pause_seconds=get_hash_repair_pause_seconds(),
+                    pause_seconds=get_hash_repair_pause_seconds(interface),
                 )
                 _sent += 1
             if _sent:
@@ -706,7 +722,17 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
         system_config['sync_last_trigger_reason'] = 'force_check'
 
     peer_resync_node = triggers.get('peer_resync_node')
-    if peer_resync_node and home_network(peer_resync_node) == link.network_key:
+    # Peer-list membership first (see _link_for_node) -- the only way to
+    # route a resync to the right link when multiple share a protocol
+    # bucket (e.g. two MQTT links); home_network()==network_key remains a
+    # valid fallback for a peer not yet in any link's configured lists.
+    peer_belongs_to_link = bool(peer_resync_node) and (
+        peer_resync_node in link.bbs_nodes
+        or peer_resync_node in link.allowed_nodes
+        or peer_resync_node in link.subscriber_nodes
+        or home_network(peer_resync_node) == link.network_key
+    )
+    if peer_belongs_to_link:
         link.mail_synced_nodes.discard(peer_resync_node)
         link.bulletins_synced_nodes.discard(peer_resync_node)
         link.channels_synced_nodes.discard(peer_resync_node)
@@ -741,7 +767,7 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
             for peer_id in sorted(current_bbs_nodes):
                 send_hash_request_to_bbs_nodes([peer_id], interface, scope=scope)
                 _scope_wire = encode_scope(scope, peers_all_support([peer_id], 'scc'))
-                _send_one_sync(f"HASHMISS|{_scope_wire}|{key}", peer_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+                _send_one_sync(f"HASHMISS|{_scope_wire}|{key}", peer_id, interface, pause_seconds=get_hash_repair_pause_seconds(interface))
             system_config['sync_last_trigger_reason'] = 'record_resolver'
             logging.info(f"[{link.name}] Queued per-record repair for {scope}:{key} to peers: {sorted(current_bbs_nodes)}")
         except Exception as exc:
@@ -875,7 +901,7 @@ def main():
 
     primary_iface = get_interface(system_config)
     _apply_socket_timeout(primary_iface)
-    links = [RadioLink('primary', primary_iface)]
+    links = [RadioLink('primary', primary_iface, reconnect_fn=get_interface)]
     refresh_peer_lists_from_config(config_path, primary_iface, system_config)
 
     # Optional second radio for dual-radio bridge mode (see radio_link.py and
@@ -890,6 +916,7 @@ def main():
             sync_section='sync2', allow_section='allow_list2',
             bbs_nodes_key='bbs_nodes2', allowed_nodes_key='allowed_nodes2',
             subscriber_nodes_key='subscriber_nodes2',
+            reconnect_fn=get_secondary_interface,
         )
         refresh_peer_lists_from_config(
             config_path, secondary_iface, system_config,
@@ -903,6 +930,29 @@ def main():
             f"secondary={system_config['interface2_type']}"
         )
 
+    # Optional MQTT internet-bridge links -- 0, 1, or many simultaneous
+    # connections, each bridging to a different remote site over an
+    # internet-connected broker (see config_init.get_mqtt_interfaces and the
+    # project plan). Purely additive: absent [mqttN] sections leaves links
+    # exactly as built above.
+    for mqtt_entry in get_mqtt_interfaces(system_config):
+        mqtt_iface = mqtt_entry['interface']
+        mqtt_link = RadioLink(
+            mqtt_entry['name'], mqtt_iface,
+            sync_section=mqtt_entry['sync_section'], allow_section=mqtt_entry['allow_section'],
+            bbs_nodes_key=mqtt_entry['bbs_nodes_key'], allowed_nodes_key=mqtt_entry['allowed_nodes_key'],
+            subscriber_nodes_key=mqtt_entry['subscriber_nodes_key'],
+            reconnect_fn=lambda cfg, _name=mqtt_entry['name']: get_mqtt_interface_by_name(cfg, _name),
+        )
+        refresh_peer_lists_from_config(
+            config_path, mqtt_iface, system_config,
+            sync_section=mqtt_entry['sync_section'], allow_section=mqtt_entry['allow_section'],
+            bbs_nodes_key=mqtt_entry['bbs_nodes_key'], allowed_nodes_key=mqtt_entry['allowed_nodes_key'],
+            subscriber_nodes_key=mqtt_entry['subscriber_nodes_key'],
+        )
+        links.append(mqtt_link)
+        logging.info(f"[{mqtt_entry['name']}] MQTT bridge link active: {mqtt_iface.protocol_name}")
+
     global _active_links
     _active_links = links
 
@@ -914,7 +964,8 @@ def main():
     write_runtime_diagnostics_snapshot(links, system_config)
 
     if len(links) > 1:
-        logging.info(f"TC²-BBS is running on {system_config['interface_type']} + {system_config['interface2_type']} interfaces (bridge mode)...")
+        link_descriptions = ", ".join(f"{l.name}={l.protocol_name}" for l in links)
+        logging.info(f"TC²-BBS is running on {len(links)} active links (bridge mode): {link_descriptions}...")
     else:
         logging.info(f"TC²-BBS is running on {system_config['interface_type']} interface...")
 

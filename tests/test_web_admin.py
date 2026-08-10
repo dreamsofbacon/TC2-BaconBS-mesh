@@ -740,7 +740,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         settings_response = client.get("/settings")
         self.assertEqual(settings_response.status_code, 200)
         page = settings_response.get_data(as_text=True)
-        self.assertIn("Dual-radio bridge mode active", page)
+        self.assertIn("Bridge mode active", page)
         self.assertIn("Radio: primary (Meshtastic)", page)
         self.assertIn("Radio: secondary (MeshCore)", page)
         self.assertIn("7e18ca9d30a1", page)
@@ -770,7 +770,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         settings_response = client.get("/settings")
         self.assertEqual(settings_response.status_code, 200)
         page = settings_response.get_data(as_text=True)
-        self.assertNotIn("Dual-radio bridge mode active", page)
+        self.assertNotIn("Bridge mode active", page)
         self.assertIn("Interface type:</strong> SerialInterface", page)
 
     def test_accounts_settings_section_renders_with_defaults(self):
