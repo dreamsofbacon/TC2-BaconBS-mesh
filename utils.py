@@ -224,6 +224,23 @@ def _is_sync_turbo_enabled() -> bool:
     return _config_bool("sync", "sync_turbo", False)
 
 
+def _effective_turbo(interface=None) -> bool:
+    """True if THIS call's pacing should use turbo defaults.
+
+    An interface that reports itself as low-latency (currently only
+    MqttInterface -- MQTT has none of LoRa's payload-size or half-duplex
+    constraints) always gets turbo pacing for its own sync/repair calls,
+    independent of the global [sync] sync_turbo flag. This is what lets a
+    mixed LoRa+MQTT bridge node run its fragile radio at normal pacing
+    while its MQTT link runs fast, simultaneously -- the global-only flag
+    can't express that combination. interface=None (every call site before
+    this existed) falls straight through to the global flag, unchanged.
+    """
+    if interface is not None and getattr(interface, 'is_low_latency', False):
+        return True
+    return _is_sync_turbo_enabled()
+
+
 def _env_float(name: str, default: float) -> float:
     raw = str(os.getenv(name, str(default))).strip()
     try:
@@ -242,16 +259,16 @@ def _env_int(name: str, default: int) -> int:
     return max(0, value)
 
 
-def get_sync_pause_seconds() -> float:
-    turbo = _is_sync_turbo_enabled()
+def get_sync_pause_seconds(interface=None) -> float:
+    turbo = _effective_turbo(interface)
     default = 0.02 if turbo else 0.75
     if os.getenv("BBS_SYNC_PAUSE_SECONDS") is not None:
         return _env_float("BBS_SYNC_PAUSE_SECONDS", default)
     return _config_float("sync", "sync_pause_seconds", default)
 
 
-def get_hash_repair_pause_seconds() -> float:
-    turbo = _is_sync_turbo_enabled()
+def get_hash_repair_pause_seconds(interface=None) -> float:
+    turbo = _effective_turbo(interface)
     default = 0.0 if turbo else 0.1
     if os.getenv("BBS_HASH_REPAIR_PAUSE_SECONDS") is not None:
         return _env_float("BBS_HASH_REPAIR_PAUSE_SECONDS", default)
@@ -272,35 +289,35 @@ def get_hash_chunk_pause_seconds() -> float:
     return _config_float("sync", "hash_chunk_pause_seconds", 1.5)
 
 
-def get_full_sync_delay_ms() -> int:
-    turbo = _is_sync_turbo_enabled()
+def get_full_sync_delay_ms(interface=None) -> int:
+    turbo = _effective_turbo(interface)
     default = 0 if turbo else 500
     if os.getenv("BBS_FULL_SYNC_DELAY_MS") is not None:
         return _env_int("BBS_FULL_SYNC_DELAY_MS", default)
     return _config_int("sync", "full_sync_delay_ms", default)
 
 
-def get_repair_cycle_seconds() -> int:
+def get_repair_cycle_seconds(interface=None) -> int:
     """Minimum seconds between SYNCSTATE-triggered repair cycles for the same peer/scope.
 
     Lower values converge mismatches faster but risk repair-storms on busy meshes.
     Turbo mode shrinks this aggressively for small (e.g. 2-node) deployments.
     """
-    turbo = _is_sync_turbo_enabled()
+    turbo = _effective_turbo(interface)
     default = 15 if turbo else 90
     if os.getenv("BBS_REPAIR_CYCLE_SECONDS") is not None:
         return _env_int("BBS_REPAIR_CYCLE_SECONDS", default)
     return _config_int("sync", "repair_cycle_seconds", default)
 
 
-def get_reconcile_max_per_pass() -> int:
+def get_reconcile_max_per_pass(interface=None) -> int:
     """Cap on records pulled (HASHMISS) or pushed per single reconcile pass.
 
     Higher values converge larger mismatches in one cycle but tie up the receive
     callback longer. Turbo mode raises this for small meshes where collisions
     are rare.
     """
-    turbo = _is_sync_turbo_enabled()
+    turbo = _effective_turbo(interface)
     default = 100 if turbo else 20
     if os.getenv("BBS_RECONCILE_MAX_PER_PASS") is not None:
         return _env_int("BBS_RECONCILE_MAX_PER_PASS", default)
@@ -308,6 +325,9 @@ def get_reconcile_max_per_pass() -> int:
 
 
 def get_sync_runtime_settings() -> dict:
+    # Global diagnostics snapshot -- no interface context, so this always
+    # reports the un-overridden [sync] settings even on a node with a
+    # low-latency (e.g. MQTT) link active. See _effective_turbo.
     return {
         "sync_turbo": _is_sync_turbo_enabled(),
         "sync_pause_seconds": get_sync_pause_seconds(),
@@ -484,18 +504,28 @@ def get_node_id_from_num(node_num, interface):
 
 
 def home_network(node_id) -> str:
-    """Return 'meshtastic' or 'meshcore' based on node-id string shape.
+    """Return 'meshtastic', 'meshcore', or 'mqtt' based on node-id string shape.
 
     Meshtastic node ids are '!'-prefixed hex (e.g. '!04058ac8'); MeshCore
     node ids are bare hex public keys/prefixes with no '!' (see
-    meshcore_interface.py's _clean_key and the README's node-id docs). This
-    is a cheap, zero-new-state way to tell which network a peer id belongs
-    to -- used by dual-radio bridge mode (server.py's RadioLink routing) as
-    a defensive check, not as the primary safety mechanism (each link's own
+    meshcore_interface.py's _clean_key and the README's node-id docs);
+    MQTT-bridged node ids are always prefixed 'mqtt:' (see
+    mqtt_interface.py's _mqtt_node_id) specifically so they classify here
+    instead of silently falling into the 'meshcore' default the way an
+    unrecognized shape otherwise would. This is a cheap, zero-new-state way
+    to tell which network a peer id belongs to -- used by dual-radio/
+    multi-link bridge mode (server.py's RadioLink routing) as a defensive
+    fallback, not the primary safety mechanism (each link's own
     bbs_nodes/subscriber_nodes list, read from a separate config section,
-    is what actually keeps the two networks' peers from being conflated).
+    is what actually keeps different networks' peers from being conflated;
+    see server._link_for_node's peer-list-membership-first match).
     """
-    return 'meshtastic' if str(node_id or '').strip().startswith('!') else 'meshcore'
+    text = str(node_id or '').strip()
+    if text.startswith('!'):
+        return 'meshtastic'
+    if text.startswith('mqtt:'):
+        return 'mqtt'
+    return 'meshcore'
 
 
 def get_node_short_name(node_id, interface):
@@ -551,7 +581,7 @@ def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, uniqu
         cont_prefix=f"BULLETINCONT|{_wire_uid}|",
         meta_prefix=f"BULLETINMETA|{_wire_uid}|",
         bbs_nodes=bbs_nodes, interface=interface,
-        pause_seconds=get_sync_pause_seconds(),
+        pause_seconds=get_sync_pause_seconds(interface),
     )
 
 
@@ -574,7 +604,7 @@ def send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, 
         cont_prefix=f"MAILCONT|{_wire_uid}|",
         meta_prefix=f"MAILMETA|{_wire_uid}|",
         bbs_nodes=bbs_nodes, interface=interface,
-        pause_seconds=get_sync_pause_seconds(),
+        pause_seconds=get_sync_pause_seconds(interface),
     )
 
 
@@ -780,7 +810,7 @@ def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_da
             cont_prefix=f"CHANNELCOMMENTCONT|{_cck_uid}|",
             meta_prefix=f"CHANNELCOMMENTMETA|{_cck_uid}|",
             bbs_nodes=cck_peers, interface=interface,
-            pause_seconds=get_sync_pause_seconds(),
+            pause_seconds=get_sync_pause_seconds(interface),
         )
 
     if legacy_peers:
@@ -791,7 +821,7 @@ def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_da
             cont_prefix=f"CHANNELCOMMENTCONT|{_legacy_uid}|",
             meta_prefix=f"CHANNELCOMMENTMETA|{_legacy_uid}|",
             bbs_nodes=legacy_peers, interface=interface,
-            pause_seconds=get_sync_pause_seconds(),
+            pause_seconds=get_sync_pause_seconds(interface),
         )
 
 
@@ -864,7 +894,7 @@ def send_peer_gossip_to_bbs_nodes(local_node_id: str, bbs_nodes, interface) -> N
         if not peers_all_support([node_id], 'pgos'):
             continue
         for frame in build_peer_gossip_frames(local_node_id, node_id):
-            _send_one_sync(frame, node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+            _send_one_sync(frame, node_id, interface, pause_seconds=get_hash_repair_pause_seconds(interface))
 
 
 # ── API gateway (apigw) ──────────────────────────────────────────────────────
@@ -965,7 +995,7 @@ def send_api_poll(local_node_id, interface) -> int:
     for peer in (getattr(interface, 'bbs_nodes', []) or []):
         if peers_all_support([peer], 'apimb'):
             _send_one_sync(f"APIPOLL|{local_node_id}", peer, interface,
-                           pause_seconds=get_sync_pause_seconds())
+                           pause_seconds=get_sync_pause_seconds(interface))
             sent += 1
     return sent
 
@@ -1008,7 +1038,7 @@ def resend_api_response_ranges(rid, range_spec, interface) -> bool:
     ranges = _parse_gap_ranges(range_spec, total)
     if not ranges:
         return False
-    pause = get_sync_pause_seconds()
+    pause = get_sync_pause_seconds(interface)
     for start, end in ranges:
         chunk = body[start:end]
         if start == 0:
@@ -1045,7 +1075,7 @@ def send_api_request(rid, requester_id, kind, payload, gateway_node_id, interfac
     frame = f"APIREQ|{rid}|{requester_id}|{kind}|{payload}"
     if len(frame.encode('utf-8')) > get_max_text_bytes(interface):
         return False
-    _send_one_sync(frame, gateway_node_id, interface, pause_seconds=get_sync_pause_seconds())
+    _send_one_sync(frame, gateway_node_id, interface, pause_seconds=get_sync_pause_seconds(interface))
     return True
 
 
@@ -1067,7 +1097,7 @@ def send_api_response(rid, status, body, dest_node_id, interface):
         meta_prefix=f"APIRESPMETA|{rid}|",
         bbs_nodes=[dest_node_id],
         interface=interface,
-        pause_seconds=get_sync_pause_seconds(),
+        pause_seconds=get_sync_pause_seconds(interface),
     )
 
 
@@ -1084,7 +1114,7 @@ def send_have_to_bbs_nodes(local_node_id: str, bbs_nodes, interface) -> None:
         for node_id in bbs_nodes:
             frame = build_have_frame(local_node_id, peer_id=node_id)
             if frame:
-                _send_one_sync(frame, node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+                _send_one_sync(frame, node_id, interface, pause_seconds=get_hash_repair_pause_seconds(interface))
     except Exception as exc:
         logging.warning('send_have_to_bbs_nodes failed: %s', exc)
 
@@ -1104,7 +1134,7 @@ def send_hash_request_to_bbs_nodes(bbs_nodes, interface, scope='all'):
     if scope == 'channels':
         scopes_to_request.append('channel_comments')
 
-    pause = max(get_sync_pause_seconds(), get_hash_chunk_pause_seconds())
+    pause = max(get_sync_pause_seconds(interface), get_hash_chunk_pause_seconds())
     for node_id in bbs_nodes:
         for _scope in scopes_to_request:
             if _scope != 'all' and peers_all_support([node_id], 'scc'):
@@ -1388,7 +1418,7 @@ def _send_one_sync(message, destination, interface, pause_seconds=None):
     """
     global _consecutive_send_failures
     if pause_seconds is None:
-        pause_seconds = get_sync_pause_seconds()
+        pause_seconds = get_sync_pause_seconds(interface)
     msg_len = len(message.encode('utf-8'))
     max_text_bytes = get_max_text_bytes(interface)
     if msg_len > max_text_bytes:

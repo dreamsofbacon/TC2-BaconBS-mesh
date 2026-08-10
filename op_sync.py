@@ -115,7 +115,7 @@ def handle_have(parts: list[str], sender_node_id: str, local_node_id: str, inter
                 )
                 _send_one_sync(
                     want_frame, sender_node_id, interface,
-                    pause_seconds=get_hash_repair_pause_seconds(),
+                    pause_seconds=get_hash_repair_pause_seconds(interface),
                 )
     except Exception as exc:
         logging.warning('op_sync.handle_have failed (from %s): %s', sender_node_id, exc)
@@ -158,7 +158,7 @@ def handle_want(parts: list[str], sender_node_id: str, local_node_id: str, inter
             return
         from utils import _send_one_sync, get_hash_repair_pause_seconds, encode_scope, peers_all_support
         use_codes = peers_all_support([sender_node_id], 'scc')
-        pause = get_hash_repair_pause_seconds()
+        pause = get_hash_repair_pause_seconds(interface)
         logging.info(
             'op_sync WANT from %s: scope=%s from_seq=%d \u2192 sending %d EVENT frame(s)',
             sender_node_id, scope, from_seq, len(events),
@@ -227,7 +227,7 @@ def handle_event(parts: list[str], sender_node_id: str, interface) -> None:
                     f'HASHMISS|{scope}|{target_uid}',
                     sender_node_id,
                     interface,
-                    pause_seconds=get_hash_repair_pause_seconds(),
+                    pause_seconds=get_hash_repair_pause_seconds(interface),
                 )
             else:
                 logging.debug(
