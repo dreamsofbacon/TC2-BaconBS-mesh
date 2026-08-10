@@ -255,7 +255,7 @@ def _retry_stale_zork_save_buffers(interface) -> None:
                     f"HASHMISS|zork_saves|{save_id}",
                     peer_id,
                     interface,
-                    pause_seconds=get_hash_repair_pause_seconds(),
+                    pause_seconds=get_hash_repair_pause_seconds(interface),
                 )
             except Exception as exc:
                 logging.warning(f"Failed to re-request ZORKSAVE {peer_id}/{save_id}: {exc}")
@@ -287,7 +287,7 @@ def _retry_stale_zork_save_buffers(interface) -> None:
                 gap_msg,
                 peer_id,
                 interface,
-                pause_seconds=get_hash_repair_pause_seconds(),
+                pause_seconds=get_hash_repair_pause_seconds(interface),
             )
         except Exception as exc:
             logging.warning(f"Failed to send ZORKGAP {peer_id}/{save_id}: {exc}")
@@ -433,7 +433,7 @@ def _retry_stale_hash_manifest_buffers(interface) -> None:
                 gap_msg,
                 peer_id,
                 interface,
-                pause_seconds=get_hash_repair_pause_seconds(),
+                pause_seconds=get_hash_repair_pause_seconds(interface),
             )
         except Exception as exc:
             logging.warning(f"Failed to send HASHZGAP for {peer_id}/{scope}: {exc}")
@@ -535,7 +535,7 @@ def _send_candidate_response(scope: str, request_id: str, user_id: str, game_id:
     payload_hash = str(candidate.get('payload_hash', '') or '')
     _scope_wire = encode_scope(scope, peers_all_support([destination_node_id], 'scc'))
     message = f"CANDRSP|{_scope_wire}|{request_id}|{user_b64}|{game_b64}|{kind}|{updated_at}|{size}|{payload_hash}"
-    _send_one_sync(message, destination_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+    _send_one_sync(message, destination_node_id, interface, pause_seconds=get_hash_repair_pause_seconds(interface))
 
 
 def start_zork_save_best_candidate_resolution(user_id: str, game_id: str, peer_node_ids: list[str], interface) -> str:
@@ -566,7 +566,7 @@ def start_zork_save_best_candidate_resolution(user_id: str, game_id: str, peer_n
         _u = encode_text(user_b64, _use_plain)
         _g = encode_text(game_b64, _use_plain)
         message = f"CANDREQ|{_scope_wire}|{request_id}|{_u}|{_g}"
-        _send_one_sync(message, peer_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+        _send_one_sync(message, peer_id, interface, pause_seconds=get_hash_repair_pause_seconds(interface))
     if not peers:
         _finalize_candidate_resolution_request(request_id, interface, timed_out=False)
     return request_id
@@ -585,11 +585,11 @@ def _finalize_candidate_resolution_request(request_id: str, interface, timed_out
         kind = str(best.get('kind', 'missing'))
         source_peer = str(best.get('source_peer', 'local') or 'local')
         if source_peer != 'local' and kind == 'save':
-            _send_one_sync(f"HASHMISS|zork_saves|{key}", source_peer, interface, pause_seconds=get_hash_repair_pause_seconds())
+            _send_one_sync(f"HASHMISS|zork_saves|{key}", source_peer, interface, pause_seconds=get_hash_repair_pause_seconds(interface))
             action = f"pull-save:{source_peer}"
             result_text = f"Best candidate save requested from {source_peer} @ {best.get('updated_at', '')} ({best.get('size', 0)} bytes)"
         elif source_peer != 'local' and kind == 'tombstone':
-            _send_one_sync(f"HASHMISS|tombstones|zork_saves:{key}", source_peer, interface, pause_seconds=get_hash_repair_pause_seconds())
+            _send_one_sync(f"HASHMISS|tombstones|zork_saves:{key}", source_peer, interface, pause_seconds=get_hash_repair_pause_seconds(interface))
             action = f"pull-tombstone:{source_peer}"
             result_text = f"Best candidate tombstone requested from {source_peer} @ {best.get('updated_at', '')}"
         elif source_peer == 'local' and kind == 'save':
@@ -802,7 +802,7 @@ def request_pending_api_gaps(interface, max_age=12.0, cooldown=10.0, no_response
                     continue
                 spec = ",".join(f"{a}-{b}" for a, b in gaps)
         _send_one_sync(f"APIRESPGAP|{rid}|{spec}", target, interface,
-                       pause_seconds=get_sync_pause_seconds())
+                       pause_seconds=get_sync_pause_seconds(interface))
         mark_api_gap_request(rid)
         sent += 1
     return sent
@@ -851,9 +851,9 @@ def is_hashreq_pending_for_peer_scope(peer_id: str, scope: str) -> bool:
     return _is_hashreq_pending(peer_id, scope)
 
 
-def _prune_recent_syncstate_repairs() -> None:
+def _prune_recent_syncstate_repairs(interface=None) -> None:
     now = time.time()
-    ttl = get_repair_cycle_seconds()
+    ttl = get_repair_cycle_seconds(interface)
     stale_keys = [
         k for k, last_sent in _recent_syncstate_repairs.items()
         if now - float(last_sent) > ttl
@@ -873,11 +873,11 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
         return
     logging.info(f"SYNCSTATE-driven mismatch eval for {sender_node_id}: scopes={scopes}")
 
-    _prune_recent_syncstate_repairs()
+    _prune_recent_syncstate_repairs(interface)
     now = time.time()
     repair_sig = (str(sender_node_id), tuple(sorted(scopes)))
     last_sent = _recent_syncstate_repairs.get(repair_sig)
-    if last_sent is not None and (now - float(last_sent)) < get_repair_cycle_seconds():
+    if last_sent is not None and (now - float(last_sent)) < get_repair_cycle_seconds(interface):
         return
 
     _recent_syncstate_repairs[repair_sig] = now
@@ -983,7 +983,7 @@ def _do_striped_reconcile(scope: str, peer_manifests: dict, interface) -> None:
     """
     local = get_record_hash_manifest(scope)
     local_keys = set(local.keys())
-    max_per_pass = get_reconcile_max_per_pass()
+    max_per_pass = get_reconcile_max_per_pass(interface)
     if scope == 'zork_saves':
         max_per_pass = 1
 
@@ -1056,11 +1056,11 @@ def _do_striped_reconcile(scope: str, peer_manifests: dict, interface) -> None:
         if scope in ('bulletins', 'mail', 'zork_saves', 'channels', 'channel_comments') and key not in local and has_sync_tombstone(_tomb_scope, _tomb_key):
             logging.info(f"Requesting tombstone replay from {assigned_peer} for {scope}:{key}")
             _send_one_sync(f"HASHMISS|{_tomb_wire}|{_scope_wire}:{wire_key}", assigned_peer, interface,
-                           pause_seconds=get_hash_repair_pause_seconds())
+                           pause_seconds=get_hash_repair_pause_seconds(interface))
         else:
             logging.info(f"Requesting record from {assigned_peer} scope={scope} key={wire_key} (striped {i % n_peers + 1}/{n_peers})")
             _send_one_sync(f"HASHMISS|{_scope_wire}|{wire_key}", assigned_peer, interface,
-                           pause_seconds=get_hash_repair_pause_seconds())
+                           pause_seconds=get_hash_repair_pause_seconds(interface))
 
         peer_pull_counts[assigned_peer] += 1
         pull_sent_total += 1
@@ -1117,7 +1117,7 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
     # Cap HASHMISS requests per pass to avoid flooding the LoRa channel, which causes
     # the very packet loss that stalls convergence.  Deferred keys will be retried on
     # the next SYNCSTATE → HASHREQ → reconcile cycle.
-    max_per_pass = get_reconcile_max_per_pass()
+    max_per_pass = get_reconcile_max_per_pass(interface)
     # zork_saves payloads are the largest and least important; cap them at 1
     # per pass so a stuck (or chunk-lossy) save can't blanket the channel and
     # block the other scopes from converging.
@@ -1156,10 +1156,10 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
         _tomb_key = f"comment:{key}" if scope == 'channel_comments' else key
         if scope in ('bulletins', 'mail', 'zork_saves', 'channels', 'channel_comments') and key not in local and has_sync_tombstone(_tomb_scope, _tomb_key):
             logging.info(f"Requesting tombstone replay from {sender_node_id} for {scope}:{key}")
-            _send_one_sync(f"HASHMISS|{_tomb_wire}|{_scope_wire}:{wire_key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+            _send_one_sync(f"HASHMISS|{_tomb_wire}|{_scope_wire}:{wire_key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds(interface))
         else:
             logging.info(f"Requesting record from {sender_node_id} scope={scope} key={wire_key}")
-            _send_one_sync(f"HASHMISS|{_scope_wire}|{wire_key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds())
+            _send_one_sync(f"HASHMISS|{_scope_wire}|{wire_key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds(interface))
         pull_sent += 1
 
     # Proactively push records the peer is missing to converge in one cycle.
@@ -1182,7 +1182,7 @@ def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface)
     logging.info(f"Sending hash manifest to {destination_node_id} scope={scope} count={len(manifest)} compressed={_hash_manifest_compression_enabled()}")
     # Manifest frames travel back-to-back; a chunk-pause floor (independent of
     # turbo) keeps trailing chunks from being dropped on the LoRa receive path.
-    chunk_pause = max(get_hash_repair_pause_seconds(), get_hash_chunk_pause_seconds())
+    chunk_pause = max(get_hash_repair_pause_seconds(interface), get_hash_chunk_pause_seconds())
     _scope_wire = encode_scope(scope, peers_all_support([destination_node_id], 'scc'))
     if not _hash_manifest_compression_enabled():
         for key, rec_hash in manifest.items():
@@ -1308,7 +1308,7 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
             try:
                 send_zork_save_to_bbs_nodes(
                     row[0], row[1], row[2], row[3], [destination_node_id], interface,
-                    pause_seconds=max(get_hash_repair_pause_seconds(), get_hash_chunk_pause_seconds()),
+                    pause_seconds=max(get_hash_repair_pause_seconds(interface), get_hash_chunk_pause_seconds()),
                 )
             except Exception:
                 import traceback
@@ -1788,7 +1788,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 return
             _scope_wire = encode_scope(scope, peers_all_support([sender_node_id], 'scc'))
             prefix = f"HASHZ|{_scope_wire}|{manifest_id}|"
-            chunk_pause = max(get_hash_repair_pause_seconds(), get_hash_chunk_pause_seconds())
+            chunk_pause = max(get_hash_repair_pause_seconds(interface), get_hash_chunk_pause_seconds())
             logging.info(
                 f"Honoring HASHZGAP from {sender_node_id} scope={scope} manifest_id={manifest_id} "
                 f"missing={missing} total={total}"
@@ -1949,7 +1949,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             try:
                 send_zork_save_to_bbs_nodes(
                     row[0], row[1], row[2], row[3], [sender_node_id], interface,
-                    pause_seconds=max(get_hash_repair_pause_seconds(), get_hash_chunk_pause_seconds()),
+                    pause_seconds=max(get_hash_repair_pause_seconds(interface), get_hash_chunk_pause_seconds()),
                     only_indices=missing,
                 )
             except Exception:

@@ -24,12 +24,12 @@ bookkeeping needed to run that per-interface sync loop concurrently.
 from dataclasses import dataclass, field
 import threading
 import time
-from typing import Any
+from typing import Any, Callable, Optional
 
 
 @dataclass
 class RadioLink:
-    name: str                      # 'primary' | 'secondary' -- used in logs/diagnostics
+    name: str                      # 'primary' | 'secondary' | 'mqttN' -- used in logs/diagnostics
     interface: Any
     sync_section: str = 'sync'             # config section holding bbs_nodes/subscriber_nodes
     allow_section: str = 'allow_list'      # config section holding allowed_nodes
@@ -37,10 +37,21 @@ class RadioLink:
     # system_config dict keys refresh_peer_lists_from_config() writes the
     # parsed lists to -- 'bbs_nodes'/'allowed_nodes'/'subscriber_nodes' for
     # the primary link (unchanged from pre-dual-radio behavior) or the '2'
-    # variants for the secondary, so the two links never clobber each other.
+    # / '_mqttN' variants for the secondary/MQTT links, so links never
+    # clobber each other.
     bbs_nodes_key: str = 'bbs_nodes'
     allowed_nodes_key: str = 'allowed_nodes'
     subscriber_nodes_key: str = 'subscriber_nodes'
+
+    # Rebuilds this link's interface from system_config alone: (system_config)
+    # -> new_interface_or_None. server.py's main() sets this per link
+    # (get_interface / get_secondary_interface / a per-name MQTT closure) so
+    # _reconnect_link never has to special-case by link name -- that
+    # special-casing broke the moment a third link (the first MQTT link)
+    # existed. Defaults to None only so tests can construct a bare RadioLink
+    # without wiring reconnect support; _reconnect_link falls back to the
+    # old name-based behavior in that case.
+    reconnect_fn: Optional[Callable[[dict], Any]] = None
 
     # Set by server.py's liveness check; cleared once a dedicated reconnect
     # thread picks it up. `reconnecting` is true for the duration of that
@@ -92,11 +103,24 @@ class RadioLink:
 
     @property
     def network_key(self) -> str:
-        """'meshcore' or 'meshtastic' -- which network this link's nodes live on.
+        """Which network this link's nodes live on -- used as a coarse
+        fallback (after peer-list membership, see server._link_for_node) to
+        route peer-specific admin actions to the correct link.
 
-        Used to route peer-specific admin actions (e.g. a single-peer resync
-        request) to the correct link when two are active. Derived from
-        protocol_name rather than node-id shape so it's correct even before
-        any peer id has been seen.
+        'meshcore'/'meshtastic' preserve the exact prior behavior (anything
+        not literally 'meshcore' used to collapse to 'meshtastic', before
+        any transport but those two existed). MQTT links instead get a
+        link-specific key derived from protocol_name (e.g. 'mqtt:mqtt1')
+        rather than a single shared 'mqtt' bucket -- two simultaneous MQTT
+        links reporting the same generic bucket would let a message meant
+        for one peer wrongly match the other link. Genuine disambiguation
+        between same-protocol links comes from peer-list membership, not
+        this property; this is only the last-resort fallback for a peer id
+        no active link's lists contain yet.
         """
-        return 'meshcore' if self.protocol_name.strip().lower() == 'meshcore' else 'meshtastic'
+        name = self.protocol_name.strip().lower()
+        if name == 'meshcore':
+            return 'meshcore'
+        if name.startswith('mqtt'):
+            return name
+        return 'meshtastic'

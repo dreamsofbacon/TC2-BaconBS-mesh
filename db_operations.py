@@ -3746,7 +3746,7 @@ def sync_mail_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] = Non
     conn = get_db_connection()
     c = conn.cursor()
     if delay_ms is None:
-        delay_ms = get_full_sync_delay_ms()
+        delay_ms = get_full_sync_delay_ms(interface)
     delay_seconds = max(0.0, float(delay_ms) / 1000.0)
     c.execute("SELECT COUNT(*) FROM mail")
     total_items = c.fetchone()[0]
@@ -3791,7 +3791,7 @@ def sync_bulletins_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] 
     conn = get_db_connection()
     c = conn.cursor()
     if delay_ms is None:
-        delay_ms = get_full_sync_delay_ms()
+        delay_ms = get_full_sync_delay_ms(interface)
     delay_seconds = max(0.0, float(delay_ms) / 1000.0)
     c.execute("SELECT COUNT(*) FROM bulletins WHERE local_only = 0")
     total_items = c.fetchone()[0]
@@ -3835,7 +3835,7 @@ def sync_channels_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] =
     conn = get_db_connection()
     c = conn.cursor()
     if delay_ms is None:
-        delay_ms = get_full_sync_delay_ms()
+        delay_ms = get_full_sync_delay_ms(interface)
     delay_seconds = max(0.0, float(delay_ms) / 1000.0)
     c.execute("SELECT COUNT(*) FROM channels WHERE local_only = 0")
     total_items = int(c.fetchone()[0])
@@ -3905,7 +3905,7 @@ def sync_profiles_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] =
     conn = get_db_connection()
     c = conn.cursor()
     if delay_ms is None:
-        delay_ms = get_full_sync_delay_ms()
+        delay_ms = get_full_sync_delay_ms(interface)
     delay_seconds = max(0.0, float(delay_ms) / 1000.0)
     c.execute("SELECT COUNT(*) FROM user_profiles")
     total_items = c.fetchone()[0]
@@ -3987,7 +3987,7 @@ def sync_game_data_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] 
     conn = get_db_connection()
     c = conn.cursor()
     if delay_ms is None:
-        delay_ms = get_full_sync_delay_ms()
+        delay_ms = get_full_sync_delay_ms(interface)
     delay_seconds = max(0.0, float(delay_ms) / 1000.0)
     total_messages = 0
 
