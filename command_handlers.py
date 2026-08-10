@@ -52,20 +52,23 @@ def _parse_menu_items(value: str) -> list[str]:
 
 def _urgent_board_allow_lists(interface) -> list:
     """All configured urgent-board allow-lists: this interface's own live,
-    already-refreshed allowed_nodes, PLUS [allow_list]/[allow_list2] read
-    fresh from config.ini. Reading both sections directly here (rather than
-    only consulting `interface.allowed_nodes`, which is just ONE radio's
-    list) is what lets account_authorized() correctly authorize a linked
-    sibling node on the OTHER radio in dual-radio bridge mode, without this
-    handler needing to know anything about RadioLink/dual-radio internals.
-    config.ini is re-read fresh (not cached) so allow-list edits made via
-    the web GUI take effect without a restart, matching how
-    interface.allowed_nodes is already live-refreshed."""
+    already-refreshed allowed_nodes, PLUS every [allow_list*] section read
+    fresh from config.ini -- [allow_list]/[allow_list2] for up to two
+    radios, and [allow_list_mqttN] for each configured MQTT bridge link
+    (see config_init.discover_mqtt_link_names; N is open-ended, not capped
+    at 2). Reading every section directly here (rather than only consulting
+    `interface.allowed_nodes`, which is just ONE link's list) is what lets
+    account_authorized() correctly authorize a linked sibling node on a
+    DIFFERENT radio or MQTT link, without this handler needing to know
+    anything about RadioLink/multi-link internals. config.ini is re-read
+    fresh (not cached) so allow-list edits made via the web GUI take effect
+    without a restart, matching how interface.allowed_nodes is already
+    live-refreshed."""
     lists = [list(getattr(interface, 'allowed_nodes', []) or [])]
     try:
         config.read('config.ini')
-        for section in ('allow_list', 'allow_list2'):
-            if config.has_section(section):
+        for section in config.sections():
+            if section.startswith('allow_list'):
                 raw = config.get(section, 'allowed_nodes', fallback='')
                 lists.append([n.strip() for n in raw.split(',') if n.strip()])
     except Exception:

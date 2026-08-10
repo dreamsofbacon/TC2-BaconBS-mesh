@@ -1,6 +1,7 @@
 import configparser
 import gc
 import os
+import re
 import time
 from typing import Any
 from app_paths import resolve_app_path
@@ -20,6 +21,12 @@ import argparse
 # (systemd / wrapper) to restart the whole process from a clean slate.
 _MAX_CONNECT_FAILURES_BEFORE_EXIT = int(os.environ.get("BBS_MAX_CONNECT_FAILURES", "8"))
 _RADIO_BOOT_WAIT_SECONDS = float(os.environ.get("BBS_RADIO_BOOT_WAIT_SECONDS", "8"))
+
+# MQTT links are internet-bridge-only, not the last physical radio on the
+# node -- an unreachable broker is never worth a supervised process restart
+# the way a wedged serial radio is. Bounded retry, then give up and continue
+# without that link (see _open_mqtt_interface).
+_MQTT_MAX_CONNECT_FAILURES = int(os.environ.get("BBS_MQTT_MAX_CONNECT_FAILURES", "5"))
 
 
 def _reset_serial_radio(device: str) -> bool:
@@ -204,6 +211,45 @@ def _read_node_list(config: configparser.ConfigParser, section: str, key: str) -
     return [node.strip() for node in raw if node.strip()]
 
 
+def _read_mqtt_settings(section) -> dict[str, Any]:
+    """Read connection settings for one [mqttN] section."""
+    return {
+        'host': section.get('host', fallback=None),
+        'port': section.getint('port', fallback=1883),
+        'username': section.get('username', fallback=None),
+        'password': section.get('password', fallback=None),
+        'tls': section.getboolean('tls', fallback=False),
+        'topic_prefix': section.get('topic_prefix', fallback=None),
+        'local_id': section.get('local_id', fallback=None),
+        'client_id': section.get('client_id', fallback=None),
+        'keepalive': section.getint('keepalive', fallback=60),
+    }
+
+
+_MQTT_SECTION_RE = re.compile(r'^mqtt(\d+)$')
+
+
+def discover_mqtt_link_names(config: configparser.ConfigParser) -> list:
+    """Scan for [mqttN] sections (N = 1, 2, 3, ...), skipping any with
+    'enabled = false'. Sorted by N so link ordering/naming stays stable
+    across restarts regardless of the section order in config.ini.
+
+    Deliberately open-ended, unlike [interface2]'s fixed single slot --
+    "multiple simultaneous MQTT links" means a node can bridge to several
+    independent remote sites at once, not just one secondary connection.
+    """
+    found = []
+    for section_name in config.sections():
+        match = _MQTT_SECTION_RE.match(section_name)
+        if not match:
+            continue
+        if not config.getboolean(section_name, 'enabled', fallback=True):
+            continue
+        found.append((int(match.group(1)), section_name))
+    found.sort(key=lambda item: item[0])
+    return [name for _, name in found]
+
+
 def initialize_config(config_file: str = None) -> dict[str, Any]:
     """
     Function reads and parses system configuration file
@@ -283,6 +329,38 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
             print(f"Dual-radio bridge mode enabled: interface2 = {interface2_type}, "
                   f"bridging to BBS nodes: {bbs_nodes2}")
 
+    # --- Optional MQTT internet-bridge links (0, 1, or many) ----------------
+    # Unlike interface2's single fixed slot, this is a genuinely open-ended
+    # list -- see discover_mqtt_link_names(). Absent [mqttN] sections means
+    # mqtt_links is empty and behavior is identical to before MQTT support
+    # existed.
+    mqtt_links: list = []
+    for link_name in discover_mqtt_link_names(config):
+        settings = _read_mqtt_settings(config[link_name])
+        if not settings['host'] or not settings['topic_prefix']:
+            print(f"[{link_name}] Skipping MQTT link: 'host' and 'topic_prefix' are both required")
+            continue
+        local_id = settings['local_id'] or f"{link_name}-node"
+        mqtt_links.append({
+            'name': link_name,
+            'host': settings['host'],
+            'port': settings['port'],
+            'username': settings['username'],
+            'password': settings['password'],
+            'tls': settings['tls'],
+            'topic_prefix': settings['topic_prefix'],
+            'local_id': local_id,
+            'client_id': settings['client_id'],
+            'keepalive': settings['keepalive'],
+            'sync_section': f'sync_{link_name}',
+            'allow_section': f'allow_list_{link_name}',
+            'bbs_nodes_key': f'bbs_nodes_{link_name}',
+            'allowed_nodes_key': f'allowed_nodes_{link_name}',
+            'subscriber_nodes_key': f'subscriber_nodes_{link_name}',
+        })
+        print(f"MQTT link '{link_name}' configured: {settings['host']}:{settings['port']} "
+              f"topic_prefix={settings['topic_prefix']}")
+
     return {
         'config': config,
         'config_file': config_file,
@@ -311,6 +389,7 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
         'bbs_nodes2': bbs_nodes2,
         'subscriber_nodes2': subscriber_nodes2,
         'allowed_nodes2': allowed_nodes2,
+        'mqtt_links': mqtt_links,
     }
 
 
@@ -435,3 +514,88 @@ def get_secondary_interface(system_config: dict[str, Any]) -> Any:
         'channel_index': system_config.get('interface2_channel_index', 0),
         'mqtt_topic': system_config.get('mqtt_topic', 'meshtastic.receive'),
     })
+
+
+def _open_mqtt_interface(link_cfg: dict[str, Any]):
+    """Open one configured MQTT link with bounded retry-then-give-up.
+
+    Unlike _open_interface's serial-radio retry loop, an unreachable MQTT
+    broker is never fatal to the whole process (no os._exit) -- a node
+    without its MQTT bridge is still a fully functional local BBS. After
+    repeated failures this gives up and returns None; the caller logs and
+    continues without that link. paho itself owns transient reconnects once
+    connected (see mqtt_interface.py's reconnect_delay_set) -- this retry
+    loop only covers the initial connect.
+    """
+    from mqtt_interface import MqttInterface
+
+    name = link_cfg['name']
+    failures = 0
+    while True:
+        try:
+            iface = MqttInterface(
+                host=link_cfg['host'],
+                port=link_cfg['port'],
+                topic_prefix=link_cfg['topic_prefix'],
+                local_id=link_cfg['local_id'],
+                username=link_cfg.get('username'),
+                password=link_cfg.get('password'),
+                tls=link_cfg.get('tls', False),
+                client_id=link_cfg.get('client_id'),
+                link_name=name,
+                keepalive=link_cfg.get('keepalive', 60),
+                receive_topic=link_cfg.get('mqtt_topic', 'meshtastic.receive'),
+            )
+            if failures:
+                print(f"[{name}] MQTT connection recovered after {failures} failed attempt(s).")
+            return iface
+        except Exception as e:
+            failures += 1
+            print(f"[{name}] MQTT connect attempt {failures} failed: {type(e).__name__}: {e}")
+            if failures >= _MQTT_MAX_CONNECT_FAILURES:
+                print(
+                    f"[{name}] {failures} consecutive MQTT connect failures; giving up. "
+                    "The local BBS continues running without this link."
+                )
+                return None
+            time.sleep(5)
+
+
+def get_mqtt_interfaces(system_config: dict[str, Any]) -> list:
+    """Open every configured [mqttN] link (see discover_mqtt_link_names).
+
+    Returns a list of dicts, one per successfully connected link, each
+    carrying everything server.py needs to build a RadioLink: 'name',
+    'interface', 'sync_section', 'allow_section', 'bbs_nodes_key',
+    'allowed_nodes_key', 'subscriber_nodes_key'. A link that fails to
+    connect at startup is skipped (logged, not fatal), matching
+    _open_mqtt_interface's give-up-without-exiting behavior.
+    """
+    results = []
+    for link_cfg in system_config.get('mqtt_links', []):
+        iface = _open_mqtt_interface(link_cfg)
+        if iface is None:
+            continue
+        results.append({
+            'name': link_cfg['name'],
+            'interface': iface,
+            'sync_section': link_cfg['sync_section'],
+            'allow_section': link_cfg['allow_section'],
+            'bbs_nodes_key': link_cfg['bbs_nodes_key'],
+            'allowed_nodes_key': link_cfg['allowed_nodes_key'],
+            'subscriber_nodes_key': link_cfg['subscriber_nodes_key'],
+        })
+    return results
+
+
+def get_mqtt_interface_by_name(system_config: dict[str, Any], name: str):
+    """Reconnect helper: rebuild ONE named MQTT link's interface from
+    system_config alone (mirrors get_secondary_interface's contract) --
+    used as a RadioLink.reconnect_fn closure. Returns None if the link is
+    no longer in system_config['mqtt_links'] (e.g. removed from
+    config.ini since startup -- matching interface2's existing
+    "no longer configured" reconnect behavior) or fails to reconnect."""
+    for link_cfg in system_config.get('mqtt_links', []):
+        if link_cfg['name'] == name:
+            return _open_mqtt_interface(link_cfg)
+    return None

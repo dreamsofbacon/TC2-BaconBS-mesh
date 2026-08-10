@@ -154,7 +154,8 @@ bbs_nodes = 7e18ca9d30a1,4b0264c19f6e
 Every BBS node normally uses one radio protocol at a time — but any node can
 optionally be configured as a **dual-radio bridge** between a Meshtastic
 network and a MeshCore network. See [Dual-Radio Bridge Mode](#dual-radio-bridge-mode)
-below.
+below. A node can also bridge to a BBS node it can't reach over RF at all,
+via an internet-connected MQTT broker — see [MQTT Internet Bridge](#mqtt-internet-bridge).
 
 ### Dual-Radio Bridge Mode
 
@@ -216,6 +217,62 @@ Notes:
   supported topology yet.
 - The web admin "Radio Device" and Settings → Diagnostics pages show a
   separate status card per active radio when bridge mode is on.
+
+### MQTT Internet Bridge
+
+Dual-radio bridge mode connects two *co-located* networks through one node.
+MQTT bridging solves a different problem: reaching a BBS node you can't hear
+over RF **at all** — a separate LoRa mesh island in another city, say — by
+relaying sync over an internet-connected MQTT broker instead. It participates
+in the exact same five-phase sync protocol as a radio link, over a plain
+MQTT topic.
+
+This project is an MQTT **client** only — it connects to a broker you
+already run (e.g. self-hosted Mosquitto). No broker code ships here, and
+message content is only as private as your broker: anyone with the topic
+and broker credentials can read it, so use a private/trusted broker (or add
+your own transport-level encryption) unless you're comfortable with that.
+
+A node can run any number of MQTT links at once (`[mqtt1]`, `[mqtt2]`, ...),
+each an independent bridge relationship — unlike `[interface2]`'s single
+slot, this isn't capped at one secondary connection. To bridge three remote
+sites, configure three sections with three distinct `topic_prefix` values;
+every subscriber on a topic sees every message published to it, so don't
+reuse one prefix across unrelated bridges.
+
+```ini
+[mqtt1]
+host = broker.example.com
+port = 8883
+tls = true
+username = your-username
+password = your-password
+topic_prefix = baconbs/cityA-cityB
+local_id = cityA-node
+
+[sync_mqtt1]
+bbs_nodes = mqtt:baconbs/cityA-cityB:cityB-node
+
+[allow_list_mqtt1]
+allowed_nodes = mqtt:baconbs/cityA-cityB:cityB-node
+```
+
+Notes:
+
+- MQTT links get fast ("turbo-equivalent") pacing automatically, since MQTT
+  has none of LoRa's payload-size or half-duplex constraints — do **not**
+  set `sync_turbo = true` to speed one up, especially on a node that also
+  has a radio: that would also speed up (and likely destabilize) the
+  radio's own LoRa pacing. Radio and MQTT links are always paced
+  independently on the same node.
+- An MQTT link's own node ids are shaped `mqtt:<topic_prefix>:<label>` —
+  distinct from both Meshtastic's `!xxxxxxxx` and MeshCore's bare hex keys.
+- If a broker is unreachable, the local BBS keeps running normally on its
+  other link(s) — an MQTT outage never restarts the process the way a
+  wedged serial radio can.
+- Web admin Settings → Diagnostics shows a status card per active MQTT
+  link, same as it does for radios. Adding/removing `[mqttN]` links is
+  config.ini-only for now (no add/remove UI yet).
 
 ### Sync Tuning
 

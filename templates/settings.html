@@ -513,7 +513,7 @@
   <p><strong>Runtime source:</strong> {{ diagnostics.runtime_source }}</p>
   <p><strong>Snapshot updated at:</strong> {{ diagnostics.snapshot_updated_at }}</p>
   {% if diagnostics.radios and diagnostics.radios|length > 1 %}
-  <p class="text-muted">Dual-radio bridge mode active &mdash; {{ diagnostics.radios|length }} radios.</p>
+  <p class="text-muted">Bridge mode active &mdash; {{ diagnostics.radios|length }} active links.</p>
   {% endif %}
   {% for radio in diagnostics.radios %}
   <div style="border:1px solid var(--border-color, #333); border-radius:6px; padding:10px 14px; margin:10px 0;">
