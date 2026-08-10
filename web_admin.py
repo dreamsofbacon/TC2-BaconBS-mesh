@@ -13,7 +13,7 @@ from app_paths import resolve_app_path
 
 from flask import Flask, flash, jsonify, redirect, render_template, render_template_string, request, send_from_directory, session, url_for
 
-from db_operations import install_connection_log_handler
+from db_operations import install_connection_log_handler, initialize_database
 from utils import get_sync_runtime_settings
 from version_info import get_display_version
 
@@ -2878,6 +2878,15 @@ def create_app(runtime_interface=None) -> Flask:
     app.secret_key = os.getenv("BBS_WEBGUI_SECRET", "change-this-secret")
     app.config["DB_PATH"] = resolve_app_path(os.getenv("BBS_DB_PATH"), "bulletins.db")
     app.config["CONFIG_PATH"] = resolve_app_path(os.getenv("BBS_CONFIG_PATH"), "config.ini")
+    # bacon-web-admin.service is a separate process from mesh-bbs.service and
+    # must not depend on that other service having already run schema
+    # migrations at least once -- e.g. a fresh install, or any window where
+    # mesh-bbs.service is stopped (maintenance, troubleshooting) while the
+    # web admin stays up, would otherwise 500 on any account/table this
+    # process is first to touch. initialize_database() is fully idempotent
+    # (CREATE TABLE IF NOT EXISTS / guarded ALTER TABLE throughout), so
+    # calling it here is always safe, even when mesh-bbs.service already did.
+    initialize_database()
     install_connection_log_handler(app.config["DB_PATH"])
     admin_user, admin_password, username_env_override, password_env_override = load_admin_credentials(app.config["CONFIG_PATH"])
     app.config["ADMIN_USER"] = admin_user
