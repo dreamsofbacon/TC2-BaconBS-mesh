@@ -1,6 +1,6 @@
-# BaconBS-mesh
+# Bacon BBS
 
-A feature-rich, offline-first Bulletin Board System for [Meshtastic](https://meshtastic.org/) and [MeshCore](https://meshcore.co.uk/) mesh radio networks. BaconBS-mesh enables asynchronous communication across low-bandwidth LoRa links with no internet dependency — designed for resilience in the field.
+A feature-rich, offline-first Bulletin Board System for [Meshtastic](https://meshtastic.org/) and [MeshCore](https://meshcore.co.uk/) mesh radio networks. Bacon BBS enables asynchronous communication across low-bandwidth LoRa links with no internet dependency — designed for resilience in the field.
 
 Forked from [TC²-BBS-mesh](https://github.com/TheCommsChannel/TC2-BBS-mesh) with significant protocol and reliability improvements.
 
@@ -23,7 +23,7 @@ Forked from [TC²-BBS-mesh](https://github.com/TheCommsChannel/TC2-BBS-mesh) wit
 
 ## Sync Protocol
 
-BaconBS-mesh uses a custom five-phase distributed sync protocol designed for lossy, low-bandwidth LoRa links. All data is eventually consistent across peers with no central server.
+Bacon BBS uses a custom five-phase distributed sync protocol designed for lossy, low-bandwidth LoRa links. All data is eventually consistent across peers with no central server.
 
 **Five sync phases (in priority order):**
 1. **Mail** — Direct messages (highest priority; aborts remaining phases on failure)
@@ -133,7 +133,7 @@ or other non-companion build does not expose the client protocol used here.
 
 ### Sync Peers
 
-Add the node IDs of other BaconBS-mesh nodes you want to sync with. For
+Add the node IDs of other Bacon BBS nodes you want to sync with. For
 Meshtastic, use the usual `!xxxxxxxx` node IDs. For MeshCore, use each
 companion's full public key or a unique prefix of at least 12 hexadecimal
 characters; these are visible in MeshCore contact details and the web admin
@@ -271,8 +271,10 @@ Notes:
   other link(s) — an MQTT outage never restarts the process the way a
   wedged serial radio can.
 - Web admin Settings → Diagnostics shows a status card per active MQTT
-  link, same as it does for radios. Adding/removing `[mqttN]` links is
-  config.ini-only for now (no add/remove UI yet).
+  link, same as it does for radios. Brokers can also be added, edited, and
+  removed from Settings → MQTT Bridges instead of hand-editing `config.ini`
+  — same restart-required caveat as the Device Configuration section, since
+  links are opened once at startup.
 
 ### Sync Tuning
 
@@ -409,7 +411,7 @@ The following Meshtastic device roles are confirmed working:
 Some other roles have been reported to cause the node to stop responding after a short time.
 
 For MeshCore, flash a **companion** build and make sure every intended peer is
-present in the radio's contact list. BaconBS sends direct encrypted MeshCore
+present in the radio's contact list. Bacon BBS sends direct encrypted MeshCore
 messages and uses MeshCore's automatic routing/flood fallback. MeshCore's
 160-byte text ceiling is detected automatically; BBS sync frames and user
 replies are chunked to fit it.

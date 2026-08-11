@@ -1,8 +1,8 @@
-# BaconBS Meshtastic + MeshCore - Windows Setup Script
+# Bacon BBS Meshtastic + MeshCore - Windows Setup Script
 # This script sets up the environment with all necessary dependencies
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "BaconBS Meshtastic + MeshCore - Windows Setup" -ForegroundColor Cyan
+Write-Host "Bacon BBS Meshtastic + MeshCore - Windows Setup" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 

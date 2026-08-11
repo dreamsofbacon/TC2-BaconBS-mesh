@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TC²-BBS Meshtastic Web UI Setup Script (Linux/macOS)
+# Bacon BBS Meshtastic Web UI Setup Script (Linux/macOS)
 # Clones and builds the Meshtastic web client and places it where web_admin.py can serve it.
 
 set -euo pipefail
@@ -13,7 +13,7 @@ TARGET_DIR="meshtastic-web-dist"
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 
 echo -e "${CYAN}========================================${NC}"
-echo -e "${CYAN}TC²-BBS  Meshtastic Web UI Setup${NC}"
+echo -e "${CYAN}Bacon BBS Meshtastic Web UI Setup${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo ""
 

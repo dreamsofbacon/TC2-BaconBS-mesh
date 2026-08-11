@@ -1,5 +1,5 @@
 [Unit]
-Description=TC²-BBS Meshtastic Version
+Description=Bacon BBS (Meshtastic + MeshCore)
 After=network-online.target
 Wants=network-online.target
 

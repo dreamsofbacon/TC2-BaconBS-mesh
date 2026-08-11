@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# BaconBS mesh radio - Linux/macOS setup script
+# Bacon BBS mesh radio - Linux/macOS setup script
 # This script sets up the environment with all necessary dependencies
 
 set -euo pipefail
 
 echo "========================================"
-echo "BaconBS Meshtastic + MeshCore - Setup"
+echo "Bacon BBS Meshtastic + MeshCore - Setup"
 echo "========================================"
 echo ""
 

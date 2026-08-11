@@ -1,4 +1,4 @@
-# TC²-BBS Meshtastic Web UI Setup Script (Windows)
+# Bacon BBS Meshtastic Web UI Setup Script (Windows)
 # Clones and builds the Meshtastic web client and places it where web_admin.py can serve it.
 
 $ErrorActionPreference = "Stop"
@@ -10,7 +10,7 @@ $DIST_DIR = Join-Path $WEB_PKG_DIR "dist"
 $TARGET_DIR = "meshtastic-web-dist"
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "TC²-BBS  Meshtastic Web UI Setup" -ForegroundColor Cyan
+Write-Host "Bacon BBS Meshtastic Web UI Setup" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
