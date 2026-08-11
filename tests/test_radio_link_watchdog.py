@@ -177,6 +177,30 @@ class RadioLinkTickTests(_FreshServerCase):
         self.assertLess(elapsed, 2.0, "reconnect handoff must not block the calling tick")
         self.assertTrue(link.reconnecting)
 
+    def test_none_interface_triggers_background_reconnect_not_inline_block(self):
+        """A link that never connected at startup (interface=None -- see
+        config_init._open_interface's None-on-exhaustion return and main()'s
+        RadioLink construction) must be treated exactly like a dead
+        interface: reconnecting flips to True via the background thread
+        handoff, not an inline block or a crash trying to use None as an
+        interface."""
+        link = self.RadioLink('primary', None, reconnect_fn=lambda cfg: None)
+        system_config = {'interface_type': 'serial'}
+
+        import time
+        start = time.time()
+        self.server._run_link_tick(
+            link, system_config=system_config, config_path=self.config_path,
+            triggers=self._base_triggers(), now=time.time(),
+        )
+        elapsed = time.time() - start
+
+        self.assertLess(elapsed, 2.0, "reconnect handoff must not block the calling tick")
+        self.assertTrue(link.reconnecting)
+
+    def test_is_interface_alive_treats_none_as_not_alive(self):
+        self.assertFalse(self.server._is_interface_alive(None))
+
     def test_healthy_link_keeps_ticking_while_sibling_link_is_reconnecting(self):
         """The scenario dual-radio bridge mode exists to support: one link
         stuck reconnecting must not prevent the OTHER active link's tick
@@ -210,6 +234,40 @@ class RadioLinkTickTests(_FreshServerCase):
         self.assertEqual(healthy_link.next_node_sync_check, now + 5)
         # The stuck link, by contrast, never got past the early return.
         self.assertEqual(stuck_link.next_node_sync_check, 0.0)
+
+
+class IsLinkStillConfiguredTests(_FreshServerCase):
+    """_reconnect_link must distinguish "still configured, just failed to
+    connect again" (keep retrying) from "removed/disabled in config.ini
+    since startup" (abandon reconnect) -- see server._is_link_still_configured
+    and its docstring for why conflating these two None-return reasons was
+    a real bug (both for the primary/secondary radio fix and, pre-existing,
+    for MQTT links whose broker was down long enough to exhaust
+    _open_mqtt_interface's bounded retry)."""
+
+    def test_primary_is_always_configured(self):
+        link = self.RadioLink('primary', None)
+        self.assertTrue(self.server._is_link_still_configured(link, {}))
+
+    def test_secondary_configured_iff_interface2_enabled(self):
+        link = self.RadioLink('secondary', None)
+        self.assertTrue(
+            self.server._is_link_still_configured(link, {'interface2_enabled': True})
+        )
+        self.assertFalse(
+            self.server._is_link_still_configured(link, {'interface2_enabled': False})
+        )
+        self.assertFalse(self.server._is_link_still_configured(link, {}))
+
+    def test_mqtt_link_configured_iff_still_in_mqtt_links(self):
+        link = self.RadioLink('mqtt1', None)
+        self.assertTrue(self.server._is_link_still_configured(
+            link, {'mqtt_links': [{'name': 'mqtt1'}, {'name': 'mqtt2'}]}
+        ))
+        self.assertFalse(self.server._is_link_still_configured(
+            link, {'mqtt_links': [{'name': 'mqtt2'}]}
+        ))
+        self.assertFalse(self.server._is_link_still_configured(link, {}))
 
 
 if __name__ == "__main__":

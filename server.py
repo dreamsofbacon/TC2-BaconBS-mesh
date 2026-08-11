@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-TC²-BBS Server for Meshtastic by TheCommsChannel (TC²)
+Bacon BBS Server for Meshtastic + MeshCore (fork of TC²-BBS-mesh by TheCommsChannel)
 Date: 07/14/2024
 Version: 0.1.6
 
@@ -117,7 +117,18 @@ def _apply_socket_timeout(iface) -> None:
 
 
 def _is_interface_alive(iface) -> bool:
-    """Return False if the active radio transport has disconnected."""
+    """Return False if the active radio transport has disconnected.
+
+    None is never "alive" -- it means this link either never connected at
+    startup (get_interface/get_secondary_interface gave up after repeated
+    failures, see config_init._open_interface) or is mid-reconnect. Treating
+    it the same as a disconnected interface routes it through the exact same
+    _run_link_tick -> reconnect_needed -> _reconnect_link path as a live
+    interface that later drops, so a radio that fails at startup keeps
+    retrying in the background instead of being permanently absent.
+    """
+    if iface is None:
+        return False
     try:
         connected = getattr(iface, 'is_connected', None)
         if isinstance(connected, bool) and not connected:
@@ -269,7 +280,11 @@ def _describe_radio(interface, system_config: dict, *, bbs_nodes_key='bbs_nodes'
     """Build one radio's diagnostics entry -- shared by the flat top-level
     fields (back-compat, mirrors the primary radio) and the 'radios' array."""
     entry = {
-        'interface_attached': True,
+        # None here means this link never connected at startup (or dropped
+        # and is mid-reconnect) -- see config_init._open_interface / main()'s
+        # RadioLink construction, which now creates the link either way so
+        # the background reconnect loop can pick it up.
+        'interface_attached': interface is not None,
         'interface_type': interface.__class__.__name__,
         'radio_protocol': str(getattr(interface, 'protocol_name', 'Meshtastic')),
         'mesh_node_count': None,
@@ -278,7 +293,7 @@ def _describe_radio(interface, system_config: dict, *, bbs_nodes_key='bbs_nodes'
         'local_long_name': None,
         'bbs_nodes': list(getattr(interface, 'bbs_nodes', system_config.get(bbs_nodes_key, [])) or []),
         'allowed_nodes': list(getattr(interface, 'allowed_nodes', system_config.get(allowed_nodes_key, [])) or []),
-        'connected': True,
+        'connected': interface is not None,
     }
     try:
         connected = getattr(interface, 'is_connected', None)
@@ -548,6 +563,27 @@ def _run_sync_for_link(link: RadioLink, node) -> None:
             link.pending_sync_nodes.discard(node)
 
 
+def _is_link_still_configured(link: RadioLink, system_config: dict) -> bool:
+    """True if ``link`` is still supposed to exist per current config.ini,
+    independent of whether its interface is currently connected.
+
+    Needed because reconnect_fn (get_interface / get_secondary_interface /
+    get_mqtt_interface_by_name) returns None for two very different reasons
+    that _reconnect_link must NOT treat the same way:
+      1. The link was removed/disabled in config.ini since startup -> stop
+         retrying, it's gone for good.
+      2. The link is still configured but this attempt cycle failed again
+         (wedged radio, unreachable broker) -> keep retrying with backoff.
+    Only (1) should ever abandon the reconnect loop.
+    """
+    if link.name == 'primary':
+        return True  # no disable flag for the primary radio -- always configured
+    if link.name == 'secondary':
+        return bool(system_config.get('interface2_enabled'))
+    # MQTT links: still configured iff still present in mqtt_links by name.
+    return any(entry.get('name') == link.name for entry in system_config.get('mqtt_links', []))
+
+
 def _reconnect_link(link: RadioLink, system_config: dict, config_path: str) -> None:
     """Dedicated per-link reconnect-with-backoff thread.
 
@@ -559,11 +595,17 @@ def _reconnect_link(link: RadioLink, system_config: dict, config_path: str) -> N
     """
     import utils as _utils
     _utils._consecutive_send_failures = 0
-    logging.warning(f"[{link.name}] Reconnect signal received — closing dead interface...")
-    try:
-        link.interface.close()
-    except Exception:
-        pass
+    if link.interface is not None:
+        logging.warning(f"[{link.name}] Reconnect signal received — closing dead interface...")
+        try:
+            link.interface.close()
+        except Exception:
+            pass
+    else:
+        # This link never connected at startup (get_interface/
+        # get_secondary_interface gave up after repeated failures) -- there
+        # is nothing to close, just start trying to connect.
+        logging.warning(f"[{link.name}] Never connected at startup — attempting first connect...")
     logging.warning(f"[{link.name}] Attempting to reconnect to radio interface...")
     retry_delay = 5
     while True:
@@ -576,9 +618,17 @@ def _reconnect_link(link: RadioLink, system_config: dict, config_path: str) -> N
             else:
                 new_iface = get_secondary_interface(system_config)
             if new_iface is None:
-                logging.warning(f"[{link.name}] interface no longer configured in config.ini; abandoning reconnect")
-                link.reconnecting = False
-                return
+                if not _is_link_still_configured(link, system_config):
+                    logging.warning(f"[{link.name}] interface no longer configured in config.ini; abandoning reconnect")
+                    link.reconnecting = False
+                    return
+                # Still configured -- this attempt cycle just failed again
+                # (e.g. get_interface's own bounded retry gave up on a still-
+                # wedged radio, or the MQTT broker is still unreachable).
+                # Keep retrying with backoff rather than abandoning the link.
+                logging.warning(f"[{link.name}] Reconnect attempt still failing; retrying in {retry_delay}s...")
+                retry_delay = min(retry_delay * 2, 60)
+                continue
             _apply_socket_timeout(new_iface)
             refresh_peer_lists_from_config(
                 config_path, new_iface, system_config,
@@ -899,18 +949,36 @@ def main():
 
     config_path = system_config.get('config_file', 'config.ini')
 
+    # primary_iface may be None here -- get_interface gives up (and returns
+    # None) after repeated connect failures instead of killing the process
+    # (see config_init._open_interface). The primary link is still created
+    # either way so _run_link_tick's normal "interface not alive -> trigger
+    # reconnect" path (_is_interface_alive treats None as not-alive) picks it
+    # up in the background, exactly like a radio that drops mid-session.
+    # This is what lets a wedged primary radio NOT block the secondary radio
+    # (or MQTT links, or the rest of the node) from running.
     primary_iface = get_interface(system_config)
-    _apply_socket_timeout(primary_iface)
     links = [RadioLink('primary', primary_iface, reconnect_fn=get_interface)]
-    refresh_peer_lists_from_config(config_path, primary_iface, system_config)
+    if primary_iface is not None:
+        _apply_socket_timeout(primary_iface)
+        refresh_peer_lists_from_config(config_path, primary_iface, system_config)
+    else:
+        logging.warning(
+            "[primary] Failed to connect at startup; continuing without it. "
+            "A background reconnect loop will keep retrying -- see _reconnect_link."
+        )
 
     # Optional second radio for dual-radio bridge mode (see radio_link.py and
     # the project plan). Absent/disabled in every deployment that doesn't
     # opt in via [interface2] -- links stays a single-element list and every
     # loop below behaves exactly as it did before dual-radio support existed.
-    secondary_iface = get_secondary_interface(system_config)
-    if secondary_iface is not None:
-        _apply_socket_timeout(secondary_iface)
+    # interface2_enabled is checked directly (not "secondary_iface is not
+    # None") so a secondary radio that's configured but failed to connect
+    # still gets its own RadioLink and background reconnect loop, same as
+    # primary -- only a genuinely absent/disabled [interface2] skips it.
+    interface2_enabled = bool(system_config.get('interface2_enabled'))
+    secondary_iface = get_secondary_interface(system_config) if interface2_enabled else None
+    if interface2_enabled:
         secondary_link = RadioLink(
             'secondary', secondary_iface,
             sync_section='sync2', allow_section='allow_list2',
@@ -918,12 +986,22 @@ def main():
             subscriber_nodes_key='subscriber_nodes2',
             reconnect_fn=get_secondary_interface,
         )
-        refresh_peer_lists_from_config(
-            config_path, secondary_iface, system_config,
-            sync_section='sync2', allow_section='allow_list2',
-            bbs_nodes_key='bbs_nodes2', allowed_nodes_key='allowed_nodes2',
-            subscriber_nodes_key='subscriber_nodes2',
-        )
+        if secondary_iface is not None:
+            _apply_socket_timeout(secondary_iface)
+            refresh_peer_lists_from_config(
+                config_path, secondary_iface, system_config,
+                sync_section='sync2', allow_section='allow_list2',
+                bbs_nodes_key='bbs_nodes2', allowed_nodes_key='allowed_nodes2',
+                subscriber_nodes_key='subscriber_nodes2',
+            )
+        else:
+            logging.warning(
+                "[secondary] Failed to connect at startup; continuing without it. "
+                "A background reconnect loop will keep retrying -- see _reconnect_link."
+            )
+        # Appended either way -- a secondary that failed to connect still
+        # gets a background reconnect loop (see _is_interface_alive/
+        # _run_link_tick), same as the primary.
         links.append(secondary_link)
         logging.info(
             f"Dual-radio bridge mode active: primary={system_config['interface_type']}, "
@@ -965,9 +1043,9 @@ def main():
 
     if len(links) > 1:
         link_descriptions = ", ".join(f"{l.name}={l.protocol_name}" for l in links)
-        logging.info(f"TC²-BBS is running on {len(links)} active links (bridge mode): {link_descriptions}...")
+        logging.info(f"Bacon BBS is running on {len(links)} active links (bridge mode): {link_descriptions}...")
     else:
-        logging.info(f"TC²-BBS is running on {system_config['interface_type']} interface...")
+        logging.info(f"Bacon BBS is running on {system_config['interface_type']} interface...")
 
     initialize_database()
     install_connection_log_handler()
