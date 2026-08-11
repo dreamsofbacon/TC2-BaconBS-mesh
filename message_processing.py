@@ -1182,7 +1182,7 @@ def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface)
     logging.info(f"Sending hash manifest to {destination_node_id} scope={scope} count={len(manifest)} compressed={_hash_manifest_compression_enabled()}")
     # Manifest frames travel back-to-back; a chunk-pause floor (independent of
     # turbo) keeps trailing chunks from being dropped on the LoRa receive path.
-    chunk_pause = max(get_hash_repair_pause_seconds(interface), get_hash_chunk_pause_seconds())
+    chunk_pause = max(get_hash_repair_pause_seconds(interface), get_hash_chunk_pause_seconds(interface))
     _scope_wire = encode_scope(scope, peers_all_support([destination_node_id], 'scc'))
     if not _hash_manifest_compression_enabled():
         for key, rec_hash in manifest.items():
@@ -1308,7 +1308,7 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
             try:
                 send_zork_save_to_bbs_nodes(
                     row[0], row[1], row[2], row[3], [destination_node_id], interface,
-                    pause_seconds=max(get_hash_repair_pause_seconds(interface), get_hash_chunk_pause_seconds()),
+                    pause_seconds=max(get_hash_repair_pause_seconds(interface), get_hash_chunk_pause_seconds(interface)),
                 )
             except Exception:
                 import traceback
@@ -1788,7 +1788,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 return
             _scope_wire = encode_scope(scope, peers_all_support([sender_node_id], 'scc'))
             prefix = f"HASHZ|{_scope_wire}|{manifest_id}|"
-            chunk_pause = max(get_hash_repair_pause_seconds(interface), get_hash_chunk_pause_seconds())
+            chunk_pause = max(get_hash_repair_pause_seconds(interface), get_hash_chunk_pause_seconds(interface))
             logging.info(
                 f"Honoring HASHZGAP from {sender_node_id} scope={scope} manifest_id={manifest_id} "
                 f"missing={missing} total={total}"
@@ -1949,7 +1949,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             try:
                 send_zork_save_to_bbs_nodes(
                     row[0], row[1], row[2], row[3], [sender_node_id], interface,
-                    pause_seconds=max(get_hash_repair_pause_seconds(interface), get_hash_chunk_pause_seconds()),
+                    pause_seconds=max(get_hash_repair_pause_seconds(interface), get_hash_chunk_pause_seconds(interface)),
                     only_indices=missing,
                 )
             except Exception:

@@ -275,18 +275,23 @@ def get_hash_repair_pause_seconds(interface=None) -> float:
     return _config_float("sync", "hash_repair_pause_seconds", default)
 
 
-def get_hash_chunk_pause_seconds() -> float:
+def get_hash_chunk_pause_seconds(interface=None) -> float:
     """Minimum airtime gap between consecutive HASHZ manifest chunks and HASHREQ
     frames sent to the same peer.
 
     Multi-chunk HASHZ manifests and HASHREQ bursts (one per scope) MUST clear the
     receiver's RX path between frames or LoRa drops the trailing frames. This
-    floor applies regardless of ``sync_turbo`` because back-to-back small frames
-    cause silent manifest loss that breaks the entire reconcile cycle. Lower
-    only when running on a non-LoRa transport (e.g. simulator)."""
+    1.5s floor applies on LoRa regardless of ``sync_turbo`` because back-to-back
+    small frames cause silent manifest loss that breaks the entire reconcile
+    cycle. A low-latency transport (e.g. MQTT, which has none of LoRa's
+    half-duplex/collision constraints) gets a near-zero default instead, the
+    same way the other pacing getters in this module do -- see
+    ``_effective_turbo``."""
+    turbo = _effective_turbo(interface)
+    default = 0.0 if turbo else 1.5
     if os.getenv("BBS_HASH_CHUNK_PAUSE_SECONDS") is not None:
-        return _env_float("BBS_HASH_CHUNK_PAUSE_SECONDS", 1.5)
-    return _config_float("sync", "hash_chunk_pause_seconds", 1.5)
+        return _env_float("BBS_HASH_CHUNK_PAUSE_SECONDS", default)
+    return _config_float("sync", "hash_chunk_pause_seconds", default)
 
 
 def get_full_sync_delay_ms(interface=None) -> int:
@@ -1112,7 +1117,7 @@ def send_have_to_bbs_nodes(local_node_id: str, bbs_nodes, interface) -> None:
     try:
         from op_sync import build_have_frame
         for node_id in bbs_nodes:
-            frame = build_have_frame(local_node_id, peer_id=node_id)
+            frame = build_have_frame(local_node_id, peer_id=node_id, interface=interface)
             if frame:
                 _send_one_sync(frame, node_id, interface, pause_seconds=get_hash_repair_pause_seconds(interface))
     except Exception as exc:
@@ -1134,7 +1139,7 @@ def send_hash_request_to_bbs_nodes(bbs_nodes, interface, scope='all'):
     if scope == 'channels':
         scopes_to_request.append('channel_comments')
 
-    pause = max(get_sync_pause_seconds(interface), get_hash_chunk_pause_seconds())
+    pause = max(get_sync_pause_seconds(interface), get_hash_chunk_pause_seconds(interface))
     for node_id in bbs_nodes:
         for _scope in scopes_to_request:
             if _scope != 'all' and peers_all_support([node_id], 'scc'):
