@@ -1,6 +1,8 @@
 """Phase 2: HAVE / WANT / EVENT op-log discovery protocol.
 
-Frame formats (all pipe-delimited, max 220 bytes as per Meshtastic limit):
+Frame formats (all pipe-delimited; HAVE trims itself to the active
+transport's byte budget -- 220 bytes on LoRa, far higher on a low-latency
+transport like MQTT -- via utils.get_max_text_bytes(interface)):
 
   HAVE|{local_node_id}|{scope}:{max_seq}[|{scope}:{max_seq}...]
       Broadcast periodically by each node.  Advertises the highest op_log
@@ -38,24 +40,24 @@ _SCOPE_TO_TABLE = {
     'channel_comments': 'channel_comments',
 }
 
-# Maximum number of EVENT frames sent per WANT response.  Keeps individual
-# replies bounded so they don't flood the LoRa channel.
-_MAX_EVENTS_PER_WANT = 20
-
-
 # ── HAVE ──────────────────────────────────────────────────────────────────────
 
-def build_have_frame(local_node_id: str, peer_id: Optional[str] = None) -> Optional[str]:
+def build_have_frame(local_node_id: str, peer_id: Optional[str] = None, interface=None) -> Optional[str]:
     """Build a HAVE announcement from the local op_log.
 
     Returns None when the op_log is empty (nothing to advertise yet).
     When ``peer_id`` is provided and that peer supports the 'scc' wire cap,
     scope names are encoded as single chars to save bytes.
+
+    The oversized-frame trim uses the active transport's byte budget
+    (``utils.get_max_text_bytes(interface)``) rather than a fixed LoRa-sized
+    cap, so a low-latency transport like MQTT (32KB budget) doesn't discard
+    scope data it has plenty of room to carry.
     """
     if not local_node_id:
         return None
     try:
-        from utils import peers_all_support, encode_scope
+        from utils import peers_all_support, encode_scope, get_max_text_bytes
         use_codes = peers_all_support([peer_id], 'scc') if peer_id else False
         conn = db_operations.get_db_connection()
         c = conn.cursor()
@@ -67,7 +69,7 @@ def build_have_frame(local_node_id: str, peer_id: Optional[str] = None) -> Optio
         if not scope_parts:
             return None
         frame = 'HAVE|' + local_node_id + '|' + '|'.join(scope_parts)
-        if len(frame.encode('utf-8')) > 220:
+        if len(frame.encode('utf-8')) > get_max_text_bytes(interface):
             # Trim to first two scopes if somehow oversized
             frame = 'HAVE|' + local_node_id + '|' + '|'.join(scope_parts[:2])
         return frame
@@ -150,9 +152,15 @@ def handle_want(parts: list[str], sender_node_id: str, local_node_id: str, inter
         logging.warning('op_sync WANT: bad from_seq %r; ignoring', from_seq_str)
         return
     try:
+        from utils import get_reconcile_max_per_pass
         conn = db_operations.get_db_connection()
         c = conn.cursor()
-        events = op_log.get_op_log_events(c, local_node_id, scope, from_seq, limit=_MAX_EVENTS_PER_WANT)
+        # Bound the number of EVENT frames sent per WANT with the same
+        # turbo-aware cap used elsewhere for records-per-reconcile-pass (20
+        # normal / 100 for a low-latency transport like MQTT) rather than a
+        # flat constant that never scales up off LoRa.
+        max_events = get_reconcile_max_per_pass(interface)
+        events = op_log.get_op_log_events(c, local_node_id, scope, from_seq, limit=max_events)
         if not events:
             logging.debug('op_sync WANT: no events for scope=%s from_seq=%d', scope, from_seq)
             return

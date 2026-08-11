@@ -44,6 +44,29 @@ def _fake_interface():
     return iface
 
 
+class _FakeLowLatencyInterface:
+    """Mirrors tests/test_mqtt_turbo_pacing.py's fake -- a low-latency
+    transport like MQTT, which utils._effective_turbo() detects via this
+    single attribute."""
+    is_low_latency = True
+
+
+class _FakeNormalInterface:
+    pass  # no is_low_latency attribute -- must behave like plain LoRa
+
+
+class _FakeLowBudgetInterface:
+    """A transport with a tiny per-message byte budget, to exercise
+    build_have_frame's oversized-frame trim path deterministically."""
+    max_text_bytes = 32
+
+
+class _FakeHighBudgetInterface:
+    """An MQTT-sized byte budget -- large enough that build_have_frame
+    should never need to trim scopes."""
+    max_text_bytes = 32768
+
+
 # ── build_have_frame ──────────────────────────────────────────────────────────
 
 class TestBuildHaveFrame:
@@ -78,6 +101,31 @@ class TestBuildHaveFrame:
     def test_none_local_node_returns_none(self):
         assert op_sync.build_have_frame("") is None
         assert op_sync.build_have_frame(None) is None
+
+    def _seed_all_three_scopes(self):
+        c = self.conn.cursor()
+        for scope in ("bulletins", "mail", "channel_comments"):
+            op_log.append_local_event(
+                c, origin_node_id="!local_node", event_type="upsert",
+                scope=scope, target_uid=f"uid-{scope}", payload={},
+            )
+        self.conn.commit()
+
+    def test_trims_to_two_scopes_when_frame_exceeds_transport_budget(self):
+        self._seed_all_three_scopes()
+        frame = op_sync.build_have_frame("!local_node", interface=_FakeLowBudgetInterface())
+        assert frame is not None
+        assert "bulletins:" in frame
+        assert "mail:" in frame
+        assert "channel_comments:" not in frame  # trimmed by the tiny budget
+
+    def test_does_not_trim_when_transport_budget_is_large(self):
+        self._seed_all_three_scopes()
+        frame = op_sync.build_have_frame("!local_node", interface=_FakeHighBudgetInterface())
+        assert frame is not None
+        assert "bulletins:" in frame
+        assert "mail:" in frame
+        assert "channel_comments:" in frame  # MQTT-sized budget needs no trim
 
 
 # ── handle_have ───────────────────────────────────────────────────────────────
@@ -176,6 +224,44 @@ class TestHandleWant:
             parts = ["WANT", "bulletins", "!local_node", "999"]
             op_sync.handle_want(parts, "!peer_node", "!local_node", iface)
         assert not sent
+
+    def _seed_bulletin_events(self, count):
+        c = self.conn.cursor()
+        for i in range(count):
+            op_log.append_local_event(
+                c, origin_node_id="!local_node", event_type="upsert",
+                scope="bulletins", target_uid=f"uid-{i}", payload={},
+            )
+        self.conn.commit()
+
+    def test_caps_events_per_want_at_the_normal_reconcile_limit(self):
+        # 25 events available, but a plain (non-low-latency) interface must
+        # still cap at the normal reconcile-per-pass limit (20), unchanged
+        # from the old flat _MAX_EVENTS_PER_WANT constant. Force the global
+        # sync_turbo flag off so this is deterministic regardless of the
+        # machine's own config.ini (mirrors test_mqtt_turbo_pacing.py).
+        self._seed_bulletin_events(25)
+        sent = []
+        with patch("utils._is_sync_turbo_enabled", return_value=False):
+            with patch("utils._send_one_sync", lambda *a, **kw: sent.append(a[0])):
+                with patch("utils.get_hash_repair_pause_seconds", return_value=0):
+                    parts = ["WANT", "bulletins", "!local_node", "1"]
+                    op_sync.handle_want(parts, "!peer_node", "!local_node", _FakeNormalInterface())
+        event_frames = [m for m in sent if m.startswith("EVENT|")]
+        assert len(event_frames) == 20
+
+    def test_caps_events_per_want_at_the_turbo_reconcile_limit_for_mqtt(self):
+        # Same 25 events, but a low-latency (e.g. MQTT) interface should use
+        # the turbo reconcile-per-pass limit (100), so all 25 go out in one
+        # WANT response instead of being throttled to 20.
+        self._seed_bulletin_events(25)
+        sent = []
+        with patch("utils._send_one_sync", lambda *a, **kw: sent.append(a[0])):
+            with patch("utils.get_hash_repair_pause_seconds", return_value=0):
+                parts = ["WANT", "bulletins", "!local_node", "1"]
+                op_sync.handle_want(parts, "!peer_node", "!local_node", _FakeLowLatencyInterface())
+        event_frames = [m for m in sent if m.startswith("EVENT|")]
+        assert len(event_frames) == 25
 
 
 # ── handle_event ──────────────────────────────────────────────────────────────

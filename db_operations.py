@@ -4046,7 +4046,7 @@ def sync_game_data_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] 
             c.execute("SELECT user_id, game_id, save_data, updated_at FROM zork_saves")
             # Multi-chunk ZORKSAVE frames need an inter-chunk pause floor or
             # the receiving LoRa radio drops trailing chunks under turbo.
-            zork_chunk_pause = get_hash_chunk_pause_seconds()
+            zork_chunk_pause = get_hash_chunk_pause_seconds(interface)
             for user_id, game_id, save_data, updated_at in c.fetchall():
                 send_zork_save_to_bbs_nodes(
                     user_id, game_id, save_data, updated_at, bbs_nodes, interface,

@@ -79,6 +79,18 @@ class PacingGetterOverrideTests(unittest.TestCase):
         self.assertEqual(utils.get_reconcile_max_per_pass(_FakeNormalInterface()), 20)
         self.assertEqual(utils.get_reconcile_max_per_pass(_FakeLowLatencyInterface()), 100)
 
+    def test_hash_chunk_pause_seconds_respects_low_latency(self):
+        # The LoRa collision-safety floor (1.5s) must be unchanged for a
+        # normal/radio interface; a low-latency transport like MQTT has none
+        # of the half-duplex constraints that floor exists for.
+        self.assertEqual(utils.get_hash_chunk_pause_seconds(_FakeNormalInterface()), 1.5)
+        self.assertEqual(utils.get_hash_chunk_pause_seconds(_FakeLowLatencyInterface()), 0.0)
+
+    def test_hash_chunk_pause_seconds_env_override_applies_regardless_of_interface(self):
+        with patch.dict("os.environ", {"BBS_HASH_CHUNK_PAUSE_SECONDS": "0.3"}):
+            self.assertEqual(utils.get_hash_chunk_pause_seconds(_FakeNormalInterface()), 0.3)
+            self.assertEqual(utils.get_hash_chunk_pause_seconds(_FakeLowLatencyInterface()), 0.3)
+
     def test_global_sync_turbo_true_does_not_downgrade_a_normal_interface(self):
         """A global sync_turbo=true (e.g. left on from a prior small-mesh
         tuning pass) still applies to a plain interface with no
