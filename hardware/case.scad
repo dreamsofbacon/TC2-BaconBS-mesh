@@ -1,5 +1,5 @@
 // ============================================================================
-// TC2-BaconBS Pico cache node — parametric enclosure
+// Bacon BBS Pico cache node — parametric enclosure
 // ----------------------------------------------------------------------------
 // Holds a RAK19007 WisBlock base board (with RAK4631 core) and a Raspberry Pi
 // Pico side-by-side in a tray, with a snap/screw lid, USB-C and antenna

@@ -1,10 +1,10 @@
 @echo off
-REM BaconBS Meshtastic + MeshCore - Windows Setup Script (Batch)
+REM Bacon BBS Meshtastic + MeshCore - Windows Setup Script (Batch)
 REM This script sets up the environment with all necessary dependencies
 
 cls
 echo ========================================
-echo BaconBS Meshtastic + MeshCore - Windows Setup
+echo Bacon BBS Meshtastic + MeshCore - Windows Setup
 echo ========================================
 echo.
 

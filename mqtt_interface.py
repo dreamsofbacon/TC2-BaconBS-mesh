@@ -82,7 +82,7 @@ def _node_num(node_id: str) -> int:
 
 
 class MqttInterface:
-    """Expose the subset of Meshtastic's interface used by BaconBS, over MQTT."""
+    """Expose the subset of Meshtastic's interface used by Bacon BBS, over MQTT."""
 
     protocol_name = "MQTT"
     max_text_bytes = MQTT_MAX_TEXT_BYTES

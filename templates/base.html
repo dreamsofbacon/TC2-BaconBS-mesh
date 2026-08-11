@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf_token }}">
-  <title>{{ title }} — TC²-BBS Admin</title>
+  <title>{{ title }} — Bacon BBS Admin</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css', v=asset_version) }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css', v=asset_version) }}">
   {% block extra_head %}{% endblock %}
@@ -23,7 +23,7 @@
         <rect y="14" width="18" height="2" rx="1"/>
       </svg>
     </button>
-    <a href="{{ url_for('table_list', table='bulletins') }}" class="nav-brand" aria-label="TC²-BBS Home">TC²-BBS</a>
+    <a href="{{ url_for('table_list', table='bulletins') }}" class="nav-brand" aria-label="Bacon BBS Home">Bacon BBS</a>
     <div class="nav-links" role="list">
       <!-- Content group -->
       <a href="{{ url_for('table_list', table='bulletins') }}"
@@ -98,7 +98,7 @@
 <!-- Mobile nav drawer -->
 <nav id="nav-drawer" class="nav-drawer" aria-hidden="true" aria-modal="true" aria-label="Mobile navigation" role="dialog">
   <div class="drawer-header">
-    <span class="nav-brand">TC²-BBS Admin</span>
+    <span class="nav-brand">Bacon BBS Admin</span>
     <button id="drawer-close" class="drawer-close" aria-label="Close menu">
       <svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16" aria-hidden="true">
         <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>

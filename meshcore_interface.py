@@ -43,7 +43,7 @@ def _node_num(public_key: str) -> int:
 
 
 class MeshCoreInterface:
-    """Expose the subset of Meshtastic's interface used by BaconBS."""
+    """Expose the subset of Meshtastic's interface used by Bacon BBS."""
 
     protocol_name = "MeshCore"
     max_text_bytes = MESHCORE_MAX_TEXT_BYTES
