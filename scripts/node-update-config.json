@@ -1,7 +1,7 @@
 {
-  "repoPath": "~/TC2-BaconBS-mesh",
+  "repoPath": "/home/bacon/TC2-BaconBS-mesh",
   "branch": "main",
-  "remoteScriptPath": "~/remote-node-update.sh",
+  "remoteScriptPath": "/home/bacon/remote-node-update.sh",
   "services": [
     "mesh-bbs.service",
     "bacon-web-admin.service"
