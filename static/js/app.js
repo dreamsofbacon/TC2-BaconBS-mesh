@@ -173,6 +173,95 @@
     BBS._syncIntervalId  = interval;
   }
 
+  /* ── Link status badges ───────────────────────────────────────── */
+  /* One badge per active radio/MQTT link, polling /api/status/links (see
+     web_admin.py's get_link_status_list). Deliberately protocol-agnostic --
+     a future transport (or a 3rd/4th MQTT bridge) just shows up here with
+     no code change, since the server side already treats every link
+     uniformly. Fires a toast (toast.js) on connect/disconnect transitions,
+     not on every poll -- only state CHANGES are notification-worthy. */
+  function initLinkStatus() {
+    var region = document.getElementById('link-status');
+    if (!region) return;
+
+    function iconFor(protocol) {
+      var p = String(protocol || '').toLowerCase();
+      if (p.indexOf('mqtt') === 0) return '☁️';       // ☁️
+      return '📡';                                     // 📡 (Meshtastic + MeshCore)
+    }
+    function stateOf(link) {
+      if (link.reconnecting) return 'reconnecting';
+      if (link.connected) return 'connected';
+      return 'disconnected';
+    }
+    function stateLabel(state) {
+      if (state === 'connected') return 'connected';
+      if (state === 'reconnecting') return 'reconnecting…';
+      return 'disconnected';
+    }
+
+    var prevStates = {};   // link name -> last-seen state, to detect transitions
+    var haveBaseline = false;
+
+    function render(links) {
+      region.innerHTML = '';
+      links.forEach(function(link) {
+        var state = stateOf(link);
+        var badge = document.createElement('span');
+        badge.className = 'link-badge ' + state;
+        badge.title = link.name + ' (' + link.protocol + ') — ' + stateLabel(state);
+        var dot = document.createElement('span');
+        dot.className = 'link-badge-dot';
+        dot.setAttribute('aria-hidden', 'true');
+        badge.appendChild(dot);
+        badge.appendChild(document.createTextNode(iconFor(link.protocol) + ' ' + link.name));
+        region.appendChild(badge);
+      });
+    }
+
+    function notifyTransitions(links) {
+      // First poll just establishes the baseline -- nothing to compare
+      // against yet, so no toasts on page load even if something is down.
+      if (!haveBaseline) {
+        links.forEach(function(link) { prevStates[link.name] = stateOf(link); });
+        haveBaseline = true;
+        return;
+      }
+      links.forEach(function(link) {
+        var state = stateOf(link);
+        var prev = prevStates[link.name];
+        if (prev !== undefined && prev !== state && window.BBS.toast) {
+          var label = link.name + ' (' + link.protocol + ')';
+          if (state === 'connected') {
+            window.BBS.toast(label + ' connected', 'success');
+          } else if (state === 'disconnected') {
+            window.BBS.toast(label + ' disconnected', 'error');
+          } else if (state === 'reconnecting' && prev === 'connected') {
+            window.BBS.toast(label + ' lost connection, reconnecting…', 'warn');
+          }
+        }
+        prevStates[link.name] = state;
+      });
+    }
+
+    function fetchStatus() {
+      fetch('/api/status/links', { headers: { 'X-CSRF-Token': BBS._csrfToken || '' } })
+        .then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+        .then(function(data) {
+          var links = Array.isArray(data.links) ? data.links : [];
+          notifyTransitions(links);
+          render(links);
+        })
+        .catch(function() {
+          // Keep whatever badges are already shown rather than flashing to
+          // empty on a single failed poll.
+        });
+    }
+
+    fetchStatus();
+    setInterval(fetchStatus, 5000);
+  }
+
   /* ── Drag-to-reorder rows ──────────────────────────────────── */
   function initDragReorder() {
     document.querySelectorAll('tbody[data-reorderable]').forEach(function(tbody) {
@@ -307,6 +396,7 @@
     initThemePicker();
     injectCsrf();
     initSyncPill();
+    initLinkStatus();
     initDragReorder();
     initBoardSelector();
     initFlowchart();
