@@ -157,6 +157,171 @@
 })();
 </script>
 
+<div class="card" id="mqtt" style="max-width:800px">
+  <h2>MQTT Bridges</h2>
+  <p class="text-muted">
+    Bridge this node to BBS peers you can't reach over RF at all (a separate mesh
+    island in another city, say) by relaying sync over an internet-connected MQTT
+    broker you already run -- this is an MQTT <strong>client</strong> only, no
+    broker is hosted here. Independent of the radio(s) above; add as many
+    brokers as you have bridge relationships. Each MQTT link paces itself
+    automatically fast ("turbo-equivalent") regardless of the Sync Speed
+    setting below, without affecting your radio's own pacing.
+    <strong>Changes here require restarting the mesh-bbs service</strong> to
+    take effect -- links are opened once at startup, so this form doesn't
+    apply live.
+  </p>
+
+  <form method="post" action="{{ url_for('settings_page') }}#mqtt" id="mqtt_form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="mqtt">
+    <input type="hidden" name="mqtt_indexes" id="mqtt_indexes" value="{{ mqtt_links|map(attribute='index')|join(',') }}">
+
+    <div id="mqtt_brokers">
+      {% for link in mqtt_links %}
+      <div class="card" data-mqtt-index="{{ link.index }}" style="border:1px solid var(--border); margin-bottom:1rem">
+        <h3>Broker #{{ link.index }}</h3>
+        <div class="form-group">
+          <label>
+            <input type="checkbox" name="mqtt_{{ link.index }}_enabled" value="1" {% if link.enabled %}checked{% endif %}>
+            Enabled
+          </label>
+        </div>
+        <div class="form-group">
+          <label for="mqtt_{{ link.index }}_host">Broker host</label>
+          <input type="text" id="mqtt_{{ link.index }}_host" name="mqtt_{{ link.index }}_host" class="form-control" value="{{ link.host }}" placeholder="e.g. broker.example.com">
+        </div>
+        <div class="form-group">
+          <label for="mqtt_{{ link.index }}_port">Port</label>
+          <input type="text" id="mqtt_{{ link.index }}_port" name="mqtt_{{ link.index }}_port" class="form-control" value="{{ link.port }}">
+        </div>
+        <div class="form-group">
+          <label>
+            <input type="checkbox" name="mqtt_{{ link.index }}_tls" value="1" {% if link.tls %}checked{% endif %}>
+            Use TLS
+          </label>
+        </div>
+        <div class="form-group">
+          <label for="mqtt_{{ link.index }}_username">Username (optional)</label>
+          <input type="text" id="mqtt_{{ link.index }}_username" name="mqtt_{{ link.index }}_username" class="form-control" value="{{ link.username }}">
+        </div>
+        <div class="form-group">
+          <label for="mqtt_{{ link.index }}_password">Password (optional)</label>
+          <input type="password" id="mqtt_{{ link.index }}_password" name="mqtt_{{ link.index }}_password" class="form-control" value="{{ link.password }}">
+        </div>
+        <div class="form-group">
+          <label for="mqtt_{{ link.index }}_topic_prefix">Topic prefix</label>
+          <input type="text" id="mqtt_{{ link.index }}_topic_prefix" name="mqtt_{{ link.index }}_topic_prefix" class="form-control" value="{{ link.topic_prefix }}" placeholder="e.g. baconbs/cityA-cityB">
+          <p class="text-muted">Must be unique per bridge relationship -- reusing one across links means every subscriber sees every message, silently merging two supposedly-independent bridges.</p>
+        </div>
+        <div class="form-group">
+          <label for="mqtt_{{ link.index }}_local_id">This node's label on this link</label>
+          <input type="text" id="mqtt_{{ link.index }}_local_id" name="mqtt_{{ link.index }}_local_id" class="form-control" value="{{ link.local_id }}" placeholder="e.g. cityA-node -- leave blank to auto-generate">
+        </div>
+        <div class="form-group">
+          <label for="mqtt_{{ link.index }}_client_id">MQTT client ID (optional)</label>
+          <input type="text" id="mqtt_{{ link.index }}_client_id" name="mqtt_{{ link.index }}_client_id" class="form-control" value="{{ link.client_id }}" placeholder="leave blank to auto-generate">
+        </div>
+        <div class="form-group">
+          <label for="mqtt_{{ link.index }}_keepalive">Keepalive (seconds)</label>
+          <input type="text" id="mqtt_{{ link.index }}_keepalive" name="mqtt_{{ link.index }}_keepalive" class="form-control" value="{{ link.keepalive }}">
+        </div>
+        <div class="form-group">
+          <label for="mqtt_{{ link.index }}_bbs_nodes">Sync peers on this link</label>
+          <textarea id="mqtt_{{ link.index }}_bbs_nodes" name="mqtt_{{ link.index }}_bbs_nodes" class="form-control" placeholder="One per line or comma separated -- e.g. mqtt:baconbs/cityA-cityB:cityB-node">{{ link.bbs_nodes_text }}</textarea>
+        </div>
+        <div class="form-group">
+          <label for="mqtt_{{ link.index }}_allowed_nodes">Urgent board allow-list on this link</label>
+          <textarea id="mqtt_{{ link.index }}_allowed_nodes" name="mqtt_{{ link.index }}_allowed_nodes" class="form-control" placeholder="Leave blank to allow all nodes on this link">{{ link.allowed_nodes_text }}</textarea>
+        </div>
+        <button type="button" class="btn btn-danger btn-sm mqtt-remove-btn">Remove This Broker</button>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="row-actions">
+      <button type="button" class="btn" id="mqtt_add_btn">Add Broker</button>
+      <button class="btn btn-primary" type="submit">Save MQTT Bridge Settings</button>
+    </div>
+  </form>
+</div>
+
+<script>
+(function () {
+  function nextIndex() {
+    var max = 0;
+    document.querySelectorAll('#mqtt_brokers [data-mqtt-index]').forEach(function (el) {
+      var n = parseInt(el.getAttribute('data-mqtt-index'), 10);
+      if (!isNaN(n) && n > max) { max = n; }
+    });
+    return max + 1;
+  }
+  function syncIndexes() {
+    var indexes = [];
+    document.querySelectorAll('#mqtt_brokers [data-mqtt-index]').forEach(function (el) {
+      indexes.push(el.getAttribute('data-mqtt-index'));
+    });
+    var field = document.getElementById('mqtt_indexes');
+    if (field) { field.value = indexes.join(','); }
+  }
+  function brokerRowHtml(index) {
+    return '' +
+      '<div class="card" data-mqtt-index="' + index + '" style="border:1px solid var(--border); margin-bottom:1rem">' +
+      '  <h3>Broker #' + index + '</h3>' +
+      '  <div class="form-group"><label><input type="checkbox" name="mqtt_' + index + '_enabled" value="1" checked> Enabled</label></div>' +
+      '  <div class="form-group"><label for="mqtt_' + index + '_host">Broker host</label>' +
+      '    <input type="text" id="mqtt_' + index + '_host" name="mqtt_' + index + '_host" class="form-control" placeholder="e.g. broker.example.com"></div>' +
+      '  <div class="form-group"><label for="mqtt_' + index + '_port">Port</label>' +
+      '    <input type="text" id="mqtt_' + index + '_port" name="mqtt_' + index + '_port" class="form-control" value="1883"></div>' +
+      '  <div class="form-group"><label><input type="checkbox" name="mqtt_' + index + '_tls" value="1"> Use TLS</label></div>' +
+      '  <div class="form-group"><label for="mqtt_' + index + '_username">Username (optional)</label>' +
+      '    <input type="text" id="mqtt_' + index + '_username" name="mqtt_' + index + '_username" class="form-control"></div>' +
+      '  <div class="form-group"><label for="mqtt_' + index + '_password">Password (optional)</label>' +
+      '    <input type="password" id="mqtt_' + index + '_password" name="mqtt_' + index + '_password" class="form-control"></div>' +
+      '  <div class="form-group"><label for="mqtt_' + index + '_topic_prefix">Topic prefix</label>' +
+      '    <input type="text" id="mqtt_' + index + '_topic_prefix" name="mqtt_' + index + '_topic_prefix" class="form-control" placeholder="e.g. baconbs/cityA-cityB">' +
+      '    <p class="text-muted">Must be unique per bridge relationship -- reusing one across links means every subscriber sees every message, silently merging two supposedly-independent bridges.</p></div>' +
+      '  <div class="form-group"><label for="mqtt_' + index + '_local_id">This node\'s label on this link</label>' +
+      '    <input type="text" id="mqtt_' + index + '_local_id" name="mqtt_' + index + '_local_id" class="form-control" placeholder="e.g. cityA-node -- leave blank to auto-generate"></div>' +
+      '  <div class="form-group"><label for="mqtt_' + index + '_client_id">MQTT client ID (optional)</label>' +
+      '    <input type="text" id="mqtt_' + index + '_client_id" name="mqtt_' + index + '_client_id" class="form-control" placeholder="leave blank to auto-generate"></div>' +
+      '  <div class="form-group"><label for="mqtt_' + index + '_keepalive">Keepalive (seconds)</label>' +
+      '    <input type="text" id="mqtt_' + index + '_keepalive" name="mqtt_' + index + '_keepalive" class="form-control" value="60"></div>' +
+      '  <div class="form-group"><label for="mqtt_' + index + '_bbs_nodes">Sync peers on this link</label>' +
+      '    <textarea id="mqtt_' + index + '_bbs_nodes" name="mqtt_' + index + '_bbs_nodes" class="form-control" placeholder="One per line or comma separated -- e.g. mqtt:baconbs/cityA-cityB:cityB-node"></textarea></div>' +
+      '  <div class="form-group"><label for="mqtt_' + index + '_allowed_nodes">Urgent board allow-list on this link</label>' +
+      '    <textarea id="mqtt_' + index + '_allowed_nodes" name="mqtt_' + index + '_allowed_nodes" class="form-control" placeholder="Leave blank to allow all nodes on this link"></textarea></div>' +
+      '  <button type="button" class="btn btn-danger btn-sm mqtt-remove-btn">Remove This Broker</button>' +
+      '</div>';
+  }
+  document.addEventListener('DOMContentLoaded', function () {
+    var container = document.getElementById('mqtt_brokers');
+    var addBtn = document.getElementById('mqtt_add_btn');
+    var form = document.getElementById('mqtt_form');
+    if (container) {
+      container.addEventListener('click', function (ev) {
+        if (ev.target && ev.target.classList.contains('mqtt-remove-btn')) {
+          var row = ev.target.closest('[data-mqtt-index]');
+          if (row) { row.remove(); syncIndexes(); }
+        }
+      });
+    }
+    if (addBtn && container) {
+      addBtn.addEventListener('click', function () {
+        var wrapper = document.createElement('div');
+        wrapper.innerHTML = brokerRowHtml(nextIndex());
+        container.appendChild(wrapper.firstElementChild);
+        syncIndexes();
+      });
+    }
+    if (form) {
+      form.addEventListener('submit', syncIndexes);
+    }
+    syncIndexes();
+  });
+})();
+</script>
+
 <div class="card" id="boards">
   <h2>Board Settings</h2>
   <p class="text-muted">Manage bulletin board categories used by create/edit dropdowns.</p>
