@@ -391,6 +391,50 @@ def write_runtime_diagnostics_snapshot(links, system_config: dict) -> None:
     except Exception as exc:
         logging.debug(f"Unable to write runtime diagnostics snapshot: {exc}")
 
+    return snapshot
+
+
+def publish_mqtt_status(links, snapshot: dict) -> None:
+    """Publish this node's whole link-status tree to every active MQTT
+    broker link -- see mqtt_interface.MqttInterface.publish_status for the
+    actual topic design. Reuses the exact 'radios' entries
+    write_runtime_diagnostics_snapshot just built (same call site, always
+    passed its return value) so this, the Settings > Diagnostics page, and
+    the nav-bar status badges' /api/status/links can never disagree.
+
+    Each broker gets the SAME whole-node status -- every radio AND every
+    MQTT link, not just itself -- so a peer bridging with this node on ONE
+    broker can still see whether its other links are healthy, which
+    matters for routing/monitoring decisions on their end.
+
+    Best-effort throughout: entirely skipped if there are no MQTT links,
+    and a publish failure on one link is logged, never allowed to affect
+    the others or the caller (server.py's main loop).
+    """
+    radios = snapshot.get('radios', []) if isinstance(snapshot, dict) else []
+    if not radios:
+        return
+    status = {
+        'updated_at': snapshot.get('updated_at') if isinstance(snapshot, dict) else None,
+        'links': {
+            str(r.get('name', 'primary')): {
+                'protocol': r.get('radio_protocol'),
+                'connected': bool(r.get('connected', False)),
+                'reconnecting': bool(r.get('reconnecting', False)),
+                'mesh_node_count': r.get('mesh_node_count'),
+            }
+            for r in radios
+        },
+    }
+    for link in links:
+        publish = getattr(link.interface, 'publish_status', None)
+        if callable(publish):
+            try:
+                publish(status)
+            except Exception:
+                logging.debug(f"[{link.name}] MQTT status publish failed", exc_info=True)
+
+
 def display_banner():
     banner = """
 ██████╗  █████╗  ██████╗ ██████╗ ███╗   ██╗    ██████╗ ██████╗ ███████╗
@@ -1039,7 +1083,7 @@ def main():
     peer_resync_trigger_path = get_peer_resync_trigger_path()
     zork_save_resolve_trigger_path = get_zork_save_resolve_trigger_path()
     record_resolve_trigger_path = get_record_resolve_trigger_path()
-    write_runtime_diagnostics_snapshot(links, system_config)
+    publish_mqtt_status(links, write_runtime_diagnostics_snapshot(links, system_config))
 
     if len(links) > 1:
         link_descriptions = ", ".join(f"{l.name}={l.protocol_name}" for l in links)
@@ -1124,8 +1168,10 @@ def main():
                 pass
 
             # Refresh diagnostics snapshot (5 s while syncing, 30 s otherwise)
+            # -- also republishes MQTT status telemetry on the same cadence,
+            # see publish_mqtt_status.
             if now >= next_diagnostics_write:
-                write_runtime_diagnostics_snapshot(links, system_config)
+                publish_mqtt_status(links, write_runtime_diagnostics_snapshot(links, system_config))
                 sync_progress = get_sync_progress()
                 next_diagnostics_write = now + (5 if sync_progress.get('in_progress') else 30)
 

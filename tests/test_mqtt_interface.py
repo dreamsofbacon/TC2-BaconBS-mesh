@@ -1,3 +1,4 @@
+import json
 import threading
 import types
 import unittest
@@ -81,9 +82,9 @@ class _FakeMqttClient:
         self.broker.subscribe(topic, self)
 
     def publish(self, topic, payload, qos=0, retain=False):
-        del qos, retain
+        del qos
         self._mid += 1
-        self.published.append((topic, payload))
+        self.published.append((topic, payload, retain))
         self.broker.publish(topic, payload)
         return types.SimpleNamespace(
             rc=mqtt_interface.mqtt.MQTT_ERR_SUCCESS,
@@ -267,6 +268,57 @@ class MqttInterfaceTests(unittest.TestCase):
 
         self.assertIsNotNone(result.id)
         self.assertEqual(node_a._num_to_label[node_b.myInfo.my_node_num], "node-b")
+
+    def test_publish_status_writes_master_and_per_link_subtopics(self):
+        iface = self._make_interface("node-a", link_name="mqtt1", topic_prefix="baconbs/city-a-b")
+        client = iface._client
+        client.published.clear()  # drop the initial subscribe-time noise, if any
+
+        status = {
+            "updated_at": "2026-08-12T00:00:00Z",
+            "links": {
+                "primary": {"protocol": "Meshtastic", "connected": True, "reconnecting": False},
+                "mqtt1": {"protocol": "MQTT:mqtt1", "connected": True, "reconnecting": False},
+            },
+        }
+        iface.publish_status(status)
+
+        by_topic = {topic: (payload, retain) for topic, payload, retain in client.published}
+
+        # Master topic: single-line JSON, retained, everything in one message.
+        master_payload, master_retain = by_topic["baconbs/city-a-b/node-a/status"]
+        self.assertTrue(master_retain)
+        self.assertNotIn("\n", master_payload)
+        self.assertEqual(json.loads(master_payload), status)
+
+        # One retained sub-topic per link.
+        primary_payload, primary_retain = by_topic["baconbs/city-a-b/node-a/status/links/primary"]
+        self.assertTrue(primary_retain)
+        self.assertEqual(json.loads(primary_payload), status["links"]["primary"])
+
+        mqtt1_payload, mqtt1_retain = by_topic["baconbs/city-a-b/node-a/status/links/mqtt1"]
+        self.assertTrue(mqtt1_retain)
+        self.assertEqual(json.loads(mqtt1_payload), status["links"]["mqtt1"])
+
+    def test_publish_status_after_close_is_a_silent_noop(self):
+        iface = self._make_interface("node-a")
+        iface.close()
+        iface.publish_status({"updated_at": "now", "links": {}})  # must not raise
+
+    def test_publish_status_malformed_links_field_still_publishes_master(self):
+        """A non-dict 'links' value must not crash the sub-topic loop --
+        the master topic (built by the caller, server.py's
+        publish_mqtt_status, and always well-formed in practice) should
+        still go out."""
+        iface = self._make_interface("node-a", topic_prefix="baconbs/city-a-b")
+        client = iface._client
+        client.published.clear()
+
+        iface.publish_status({"updated_at": "now", "links": "not-a-dict"})
+
+        topics = [topic for topic, _payload, _retain in client.published]
+        self.assertIn("baconbs/city-a-b/node-a/status", topics)
+        self.assertEqual(len(topics), 1)  # no sub-topics attempted
 
 
 class NodeIdCollisionAvoidanceTests(unittest.TestCase):

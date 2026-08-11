@@ -15,6 +15,17 @@ scopes one bridge *relationship*; bridging three sites off one shared broker
 means three separate ``[mqttN]`` links (three prefixes), not one link with
 everyone crosstalking on a single topic.
 
+Status telemetry (separate from the sync topic above, see publish_status):
+server.py's main loop periodically publishes this node's whole link-status
+tree (every radio AND every configured MQTT link, not just this one) to
+``{topic_prefix}/{local_id}/status`` -- one retained, compact single-line
+JSON message with everything -- plus one retained sub-topic per link at
+``{topic_prefix}/{local_id}/status/links/<name>`` for a subscriber that only
+wants one piece. Scoped under ``local_id`` (not just ``topic_prefix``)
+because multiple nodes can share one broker+prefix; each only ever
+publishes its own tree. ``retain=True`` so a client connecting later still
+gets the last known state immediately, without waiting for the next cycle.
+
 This project is an MQTT *client* only -- it connects to a broker the
 operator already runs (e.g. self-hosted Mosquitto). No broker code lives
 here.
@@ -340,6 +351,46 @@ class MqttInterface:
         if info.rc != mqtt.MQTT_ERR_SUCCESS:
             raise IOError(f"MQTT publish failed: rc={info.rc}")
         return SimpleNamespace(id=str(info.mid))
+
+    def publish_status(self, status: dict[str, Any]) -> None:
+        """Publish node status telemetry (see module docstring for the
+        topic tree). ``status`` is expected to look like
+        ``{"updated_at": ..., "links": {name: {...}, ...}}`` -- server.py's
+        publish_mqtt_status builds this from the same per-link data the
+        Settings > Diagnostics page and the nav-bar status badges use, so
+        all three always agree.
+
+        Deliberately swallows every exception (logged at debug, not
+        raised): status telemetry is a nice-to-have side effect of the
+        periodic diagnostics cycle, never allowed to disrupt it or the sync
+        engine that shares this connection.
+        """
+        if self._closed:
+            return
+        base = f"{self.topic_prefix}/{self.local_id}/status"
+        try:
+            self._client.publish(
+                base, json.dumps(status, separators=(",", ":")), qos=0, retain=True,
+            )
+        except Exception:
+            logging.debug("MQTT[%s] status publish failed", self.link_name, exc_info=True)
+            return
+
+        links = status.get("links")
+        if not isinstance(links, dict):
+            return
+        for name, link_status in links.items():
+            try:
+                self._client.publish(
+                    f"{base}/links/{name}",
+                    json.dumps(link_status, separators=(",", ":")),
+                    qos=0, retain=True,
+                )
+            except Exception:
+                logging.debug(
+                    "MQTT[%s] status sub-topic publish failed for %s",
+                    self.link_name, name, exc_info=True,
+                )
 
     def getMyNodeInfo(self) -> dict[str, Any]:
         return {

@@ -40,6 +40,7 @@ class _FakeMqttClient:
         self._connected = False
         self._mid = 0
         self.broker = None
+        self.published = []
 
     def username_pw_set(self, *a, **kw):
         pass
@@ -72,6 +73,7 @@ class _FakeMqttClient:
 
     def publish(self, topic, payload, qos=0, retain=False):
         self._mid += 1
+        self.published.append((topic, payload, retain))
         self.broker.publish(topic, payload)
         return types.SimpleNamespace(
             rc=mqtt_interface.mqtt.MQTT_ERR_SUCCESS, mid=self._mid,
@@ -181,6 +183,67 @@ class MqttDiagnosticsRenderingTests(_FreshServerCase):
         self.assertEqual(names, ["primary", "mqtt1"])
         protocols = [r["radio_protocol"] for r in snapshot["radios"]]
         self.assertIn("MQTT:mqtt1", protocols)
+
+    def test_write_runtime_diagnostics_snapshot_returns_the_snapshot(self):
+        """publish_mqtt_status is fed this return value directly at both
+        call sites in main() -- must actually return the dict, not None."""
+        primary = self.RadioLink("primary", self._make_mqtt_interface(link_name="primary-stand-in"))
+        result = self.server.write_runtime_diagnostics_snapshot([primary], {})
+        self.assertIsInstance(result, dict)
+        self.assertIn("radios", result)
+        self.assertEqual(result["radios"][0]["name"], "primary")
+
+    def test_publish_mqtt_status_sends_to_every_mqtt_link(self):
+        """Each MQTT link gets the SAME whole-node status (every link, not
+        just itself) -- so a peer bridging on one broker can still see
+        whether this node's other links are healthy."""
+        primary = self.RadioLink("primary", self._make_mqtt_interface(link_name="primary-stand-in"))
+        mqtt_link = self.RadioLink(
+            "mqtt1", self._make_mqtt_interface(link_name="mqtt1"),
+            sync_section="sync_mqtt1", allow_section="allow_list_mqtt1",
+        )
+        links = [primary, mqtt_link]
+        snapshot = self.server.write_runtime_diagnostics_snapshot(links, {})
+
+        self.server.publish_mqtt_status(links, snapshot)
+
+        for link in links:
+            client = link.interface._client
+            by_topic = {t: (p, r) for t, p, r in client.published}
+            master_payload, master_retain = by_topic["baconbs/city-a-b/node-a/status"]
+            self.assertTrue(master_retain)
+            data = json.loads(master_payload)
+            self.assertIn("primary", data["links"])
+            self.assertIn("mqtt1", data["links"])
+            self.assertTrue(data["links"]["primary"]["connected"])
+            self.assertTrue(data["links"]["mqtt1"]["connected"])
+            self.assertEqual(data["links"]["mqtt1"]["protocol"], "MQTT:mqtt1")
+
+            sub_payload, sub_retain = by_topic["baconbs/city-a-b/node-a/status/links/mqtt1"]
+            self.assertTrue(sub_retain)
+            self.assertEqual(json.loads(sub_payload), data["links"]["mqtt1"])
+
+    def test_publish_mqtt_status_skips_non_mqtt_links_without_crashing(self):
+        class _PlainRadio:
+            protocol_name = "Meshtastic"
+
+        plain = self.RadioLink("primary", _PlainRadio())
+        mqtt_link = self.RadioLink(
+            "mqtt1", self._make_mqtt_interface(link_name="mqtt1"),
+            sync_section="sync_mqtt1", allow_section="allow_list_mqtt1",
+        )
+        links = [plain, mqtt_link]
+        snapshot = self.server.write_runtime_diagnostics_snapshot(links, {})
+
+        self.server.publish_mqtt_status(links, snapshot)  # must not raise
+
+        client = mqtt_link.interface._client
+        topics = [t for t, _p, _r in client.published]
+        self.assertIn("baconbs/city-a-b/node-a/status", topics)
+
+    def test_publish_mqtt_status_noop_on_empty_snapshot(self):
+        self.server.publish_mqtt_status([], {"radios": []})  # must not raise
+        self.server.publish_mqtt_status([], None)  # must not raise
 
 
 if __name__ == "__main__":

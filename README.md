@@ -275,6 +275,23 @@ Notes:
   removed from Settings → MQTT Bridges instead of hand-editing `config.ini`
   — same restart-required caveat as the Device Configuration section, since
   links are opened once at startup.
+- Every configured MQTT link also **publishes** this node's status back to
+  its broker, separate from the `{topic_prefix}/bbs` sync topic above:
+  ```
+  {topic_prefix}/{local_id}/status                     ← one retained message,
+                                                           single-line JSON,
+                                                           every link's status
+  {topic_prefix}/{local_id}/status/links/<name>         ← one retained message
+                                                           per link (primary,
+                                                           secondary, each
+                                                           mqttN), same fields
+  ```
+  Each broker gets this node's *whole* status (every radio and every MQTT
+  link, not just that one broker's own connection), refreshed on the same
+  cadence as the local diagnostics snapshot (every 5s while syncing, 30s
+  otherwise). Retained, so a client that subscribes later still gets the
+  last known state immediately. This is the same data the nav-bar status
+  badges and Settings → Diagnostics show — all three always agree.
 
 ### Sync Tuning
 
