@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 import sqlite3
 import time
 import uuid
@@ -286,6 +287,53 @@ def load_account_settings(config_path: str) -> dict:
     "link_attempts_per_hour": config.get("accounts", "link_attempts_per_hour", fallback="5").strip() or "5",
     "max_linked_devices": config.get("accounts", "max_linked_devices", fallback="6").strip() or "6",
   }
+
+
+_MQTT_SECTION_RE = re.compile(r"^mqtt(\d+)$")
+
+
+def load_mqtt_settings(config_path: str) -> list[dict]:
+  """Read every [mqttN] section (N = 1, 2, 3, ... -- open-ended, unlike
+  [interface2]'s fixed single slot) for the web-admin MQTT Bridges form.
+
+  Unlike config_init.discover_mqtt_link_names (which is runtime-only and
+  skips 'enabled = false' links), this returns EVERY configured link
+  regardless of its enabled state, so a disabled broker's connection
+  details still show up in the form instead of disappearing.
+
+  MQTT changes require restarting the mesh-bbs service to take effect --
+  links are opened once at startup in server.py's main() via
+  config_init.get_mqtt_interfaces(), so unlike sync/gateway settings there
+  is no live-apply path here (same restart caveat as Device Configuration)."""
+  config = read_config_file(config_path)
+  found = []
+  for section_name in config.sections():
+    match = _MQTT_SECTION_RE.match(section_name)
+    if match:
+      found.append((int(match.group(1)), section_name))
+  found.sort(key=lambda item: item[0])
+
+  sync_section = lambda n: f"sync_mqtt{n}"  # noqa: E731
+  allow_section = lambda n: f"allow_list_mqtt{n}"  # noqa: E731
+
+  links = []
+  for index, section_name in found:
+    links.append({
+      "index": index,
+      "enabled": _parse_bool_setting(config.get(section_name, "enabled", fallback="true"), True),
+      "host": config.get(section_name, "host", fallback="").strip(),
+      "port": config.get(section_name, "port", fallback="1883").strip() or "1883",
+      "tls": _parse_bool_setting(config.get(section_name, "tls", fallback="false"), False),
+      "username": config.get(section_name, "username", fallback="").strip(),
+      "password": config.get(section_name, "password", fallback="").strip(),
+      "topic_prefix": config.get(section_name, "topic_prefix", fallback="").strip(),
+      "local_id": config.get(section_name, "local_id", fallback="").strip(),
+      "client_id": config.get(section_name, "client_id", fallback="").strip(),
+      "keepalive": config.get(section_name, "keepalive", fallback="60").strip() or "60",
+      "bbs_nodes_text": "\n".join(parse_list_input(config.get(sync_section(index), "bbs_nodes", fallback=""))),
+      "allowed_nodes_text": "\n".join(parse_list_input(config.get(allow_section(index), "allowed_nodes", fallback=""))),
+    })
+  return links
 
 
 def _parse_bool_setting(raw_value: Optional[str], default: bool = False) -> bool:
@@ -1215,7 +1263,7 @@ BASE_TEMPLATE = """
 
 LOGIN_CONTENT = """
 <div class=\"card\" style=\"max-width: 420px; margin: 60px auto;\">
-  <h2>TC²-BBS Database Admin</h2>
+  <h2>Bacon BBS Database Admin</h2>
   <p class=\"muted\">Standalone moderation interface for local SQLite data.</p>
   <form method=\"post\">
     <label>Username</label><br>
@@ -3284,6 +3332,117 @@ def create_app(runtime_interface=None) -> Flask:
         config.set("accounts", key, str(val))
       write_config_file(config, app.config["CONFIG_PATH"])
 
+    def save_mqtt_settings(form) -> list[str]:
+      """Persist every [mqttN] section (+ its [sync_mqttN]/[allow_list_mqttN]
+      peer lists) from the web MQTT Bridges form.
+
+      The submitted 'mqtt_indexes' hidden field (kept in sync by the page's
+      JS as broker rows are added/removed) is the source of truth for which
+      brokers exist: any previously-configured index no longer in that list
+      is deleted outright -- unlike [interface2]'s fixed slot, MQTT links are
+      open-ended and user-managed, so "removed in the form" should mean
+      "gone from config.ini", not just disabled.
+
+      Returns a list of validation error messages -- on any error, nothing
+      is written, so a bad edit can't leave config.ini half-saved. Requires
+      a mesh-bbs service restart to take effect (see load_mqtt_settings)."""
+      errors = []
+
+      submitted_indexes = []
+      for token in form.get("mqtt_indexes", "").strip().split(","):
+        token = token.strip()
+        if not token:
+          continue
+        try:
+          submitted_indexes.append(int(token))
+        except ValueError:
+          pass
+
+      parsed = []
+      for index in submitted_indexes:
+        prefix = f"mqtt_{index}_"
+        host = form.get(f"{prefix}host", "").strip()
+        topic_prefix = form.get(f"{prefix}topic_prefix", "").strip()
+        if not host:
+          errors.append(f"Broker #{index}: host is required.")
+        if not topic_prefix:
+          errors.append(f"Broker #{index}: topic prefix is required.")
+        parsed.append({
+          "index": index,
+          "enabled": _parse_bool_setting(form.get(f"{prefix}enabled", ""), False),
+          "host": host,
+          "port": _parse_int_setting(form.get(f"{prefix}port", ""), 1883, minimum=1),
+          "tls": _parse_bool_setting(form.get(f"{prefix}tls", ""), False),
+          "username": form.get(f"{prefix}username", "").strip(),
+          "password": form.get(f"{prefix}password", "").strip(),
+          "topic_prefix": topic_prefix,
+          "local_id": form.get(f"{prefix}local_id", "").strip(),
+          "client_id": form.get(f"{prefix}client_id", "").strip(),
+          "keepalive": _parse_int_setting(form.get(f"{prefix}keepalive", ""), 60, minimum=5),
+          "bbs_nodes": parse_list_input(form.get(f"{prefix}bbs_nodes", "")),
+          "allowed_nodes": parse_list_input(form.get(f"{prefix}allowed_nodes", "")),
+        })
+
+      # Each bridge relationship needs its own topic_prefix -- reusing one
+      # across links means every subscriber sees every message, silently
+      # merging two supposedly-independent bridges (see example_config.ini).
+      seen_prefixes: dict[str, int] = {}
+      for link in parsed:
+        if not link["topic_prefix"]:
+          continue
+        prior = seen_prefixes.get(link["topic_prefix"])
+        if prior is not None:
+          errors.append(
+            f"Broker #{prior} and #{link['index']} both use topic prefix "
+            f"'{link['topic_prefix']}' -- each bridge needs its own unique prefix."
+          )
+        else:
+          seen_prefixes[link["topic_prefix"]] = link["index"]
+
+      if errors:
+        return errors
+
+      config = read_config_file(app.config["CONFIG_PATH"])
+
+      existing_indexes = set()
+      for section_name in config.sections():
+        match = _MQTT_SECTION_RE.match(section_name)
+        if match:
+          existing_indexes.add(int(match.group(1)))
+      submitted_set = {link["index"] for link in parsed}
+      for index in existing_indexes - submitted_set:
+        for section_name in (f"mqtt{index}", f"sync_mqtt{index}", f"allow_list_mqtt{index}"):
+          if config.has_section(section_name):
+            config.remove_section(section_name)
+
+      for link in parsed:
+        section_name = f"mqtt{link['index']}"
+        if not config.has_section(section_name):
+          config.add_section(section_name)
+        config.set(section_name, "enabled", "true" if link["enabled"] else "false")
+        config.set(section_name, "host", link["host"])
+        config.set(section_name, "port", str(link["port"]))
+        config.set(section_name, "tls", "true" if link["tls"] else "false")
+        config.set(section_name, "username", link["username"])
+        config.set(section_name, "password", link["password"])
+        config.set(section_name, "topic_prefix", link["topic_prefix"])
+        config.set(section_name, "local_id", link["local_id"])
+        config.set(section_name, "client_id", link["client_id"])
+        config.set(section_name, "keepalive", str(link["keepalive"]))
+
+        sync_section_name = f"sync_mqtt{link['index']}"
+        if not config.has_section(sync_section_name):
+          config.add_section(sync_section_name)
+        config.set(sync_section_name, "bbs_nodes", ",".join(link["bbs_nodes"]))
+
+        allow_section_name = f"allow_list_mqtt{link['index']}"
+        if not config.has_section(allow_section_name):
+          config.add_section(allow_section_name)
+        config.set(allow_section_name, "allowed_nodes", ",".join(link["allowed_nodes"]))
+
+      write_config_file(config, app.config["CONFIG_PATH"])
+      return []
+
     def save_admin_credentials(username, password) -> None:
       config = read_config_file(app.config["CONFIG_PATH"])
       if not config.has_section("admin"):
@@ -3892,6 +4051,7 @@ def create_app(runtime_interface=None) -> Flask:
       subscriber_settings = load_subscriber_settings(app.config["CONFIG_PATH"])
       device_settings = load_device_settings(app.config["CONFIG_PATH"])
       account_settings = load_account_settings(app.config["CONFIG_PATH"])
+      mqtt_settings = load_mqtt_settings(app.config["CONFIG_PATH"])
       return render_template(
         "settings.html",
         title="Settings",
@@ -3901,6 +4061,7 @@ def create_app(runtime_interface=None) -> Flask:
         subscribers=subscriber_settings,
         devices=device_settings,
         accounts=account_settings,
+        mqtt_links=mqtt_settings,
         boards_text=",".join(app.config["BULLETIN_BOARDS"]),
         env_override=bool(os.getenv("BBS_BULLETIN_BOARDS", "").strip()),
         bbs_nodes_text="\n".join(bbs_nodes),
@@ -4070,6 +4231,14 @@ def create_app(runtime_interface=None) -> Flask:
           save_account_settings(request.form)
           flash("Account linking settings saved.", "success")
           return redirect(url_for("settings_page") + "#accounts")
+
+        if section == "mqtt":
+          errors = save_mqtt_settings(request.form)
+          for error in errors:
+            flash(error, "error")
+          if not errors:
+            flash("MQTT bridge settings saved. Restart the mesh-bbs service for the change to take effect.", "success")
+          return redirect(url_for("settings_page") + "#mqtt")
 
         if section == "sync":
           update_sync_settings(

@@ -303,6 +303,43 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("Resolve", page)
         self.assertIn("uid-incomple", page)
 
+    def test_bulletin_new_page_populates_board_dropdown(self):
+        """Regression test: bulletin_new.html must be given the SAME context
+        key the route passes ('bulletin_boards') -- it previously looped over
+        an undefined 'boards' variable, which Jinja silently renders as zero
+        <option> elements (no error) instead of failing loudly, so the board
+        dropdown was empty on every "New Bulletin" page load."""
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        page = client.get("/bulletins/new").get_data(as_text=True)
+        for board in ("General", "Info", "News", "Urgent"):
+            self.assertIn(f'value="{board}"', page)
+
+    def test_bulletin_new_post_creates_bulletin_with_selected_board(self):
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        post_response = self.post_with_csrf(
+            client,
+            "/bulletins/new",
+            data={
+                "board": "News",
+                "sender_short_name": "CALL",
+                "subject": "Test Subject",
+                "content": "Test content",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(post_response.status_code, 302)
+
+        page = client.get("/bulletins").get_data(as_text=True)
+        self.assertIn("Test Subject", page)
+
     def test_resolve_zork_save_settings_action_creates_trigger_file(self):
         app = create_app()
         client = app.test_client()
@@ -1122,6 +1159,142 @@ class WebAdminSettingsTests(unittest.TestCase):
         config.read(self.config_path)
         self.assertEqual(config.get("interface2", "enabled"), "false")
         self.assertEqual(config.get("interface2", "hostname"), "192.168.1.50")
+
+    def test_mqtt_section_renders_with_defaults(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        page = client.get("/settings").get_data(as_text=True)
+        self.assertIn("MQTT Bridges", page)
+        self.assertIn("Add Broker", page)
+        # setUp's config.ini has no [mqttN] sections -- must not 500.
+        self.assertIn('id="mqtt_indexes" value=""', page)
+
+    def test_mqtt_save_adds_new_broker(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = self.post_with_csrf(
+            client,
+            "/settings",
+            data={
+                "settings_section": "mqtt",
+                "mqtt_indexes": "1",
+                "mqtt_1_enabled": "1",
+                "mqtt_1_host": "broker.example.com",
+                "mqtt_1_port": "8883",
+                "mqtt_1_tls": "1",
+                "mqtt_1_username": "bacon",
+                "mqtt_1_password": "hunter2",
+                "mqtt_1_topic_prefix": "baconbs/cityA-cityB",
+                "mqtt_1_local_id": "cityA-node",
+                "mqtt_1_client_id": "",
+                "mqtt_1_keepalive": "60",
+                "mqtt_1_bbs_nodes": "mqtt:baconbs/cityA-cityB:cityB-node",
+                "mqtt_1_allowed_nodes": "",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/settings#mqtt"))
+
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertEqual(config.get("mqtt1", "host"), "broker.example.com")
+        self.assertEqual(config.get("mqtt1", "port"), "8883")
+        self.assertEqual(config.get("mqtt1", "tls"), "true")
+        self.assertEqual(config.get("mqtt1", "topic_prefix"), "baconbs/cityA-cityB")
+        self.assertEqual(config.get("sync_mqtt1", "bbs_nodes"), "mqtt:baconbs/cityA-cityB:cityB-node")
+
+        # Round-trip: the settings page must now show the saved broker.
+        page = client.get("/settings").get_data(as_text=True)
+        self.assertIn("broker.example.com", page)
+        self.assertIn("baconbs/cityA-cityB", page)
+
+    def test_mqtt_save_requires_host_and_topic_prefix(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = self.post_with_csrf(
+            client,
+            "/settings",
+            data={
+                "settings_section": "mqtt",
+                "mqtt_indexes": "1",
+                "mqtt_1_host": "",
+                "mqtt_1_topic_prefix": "",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertIn("host is required", page)
+        self.assertIn("topic prefix is required", page)
+
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertFalse(config.has_section("mqtt1"))
+
+    def test_mqtt_save_rejects_duplicate_topic_prefix(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = self.post_with_csrf(
+            client,
+            "/settings",
+            data={
+                "settings_section": "mqtt",
+                "mqtt_indexes": "1,2",
+                "mqtt_1_host": "broker-a.example.com",
+                "mqtt_1_topic_prefix": "baconbs/shared",
+                "mqtt_2_host": "broker-b.example.com",
+                "mqtt_2_topic_prefix": "baconbs/shared",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("unique prefix", response.get_data(as_text=True))
+
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertFalse(config.has_section("mqtt1"))
+        self.assertFalse(config.has_section("mqtt2"))
+
+    def test_mqtt_save_removes_broker_dropped_from_indexes(self):
+        """A broker whose row was removed client-side (so its index is no
+        longer in mqtt_indexes) must be deleted from config.ini entirely --
+        unlike [interface2]'s fixed slot, MQTT links are open-ended and
+        user-managed, so 'removed in the form' means 'gone', not disabled."""
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        self.post_with_csrf(
+            client, "/settings",
+            data={
+                "settings_section": "mqtt",
+                "mqtt_indexes": "1",
+                "mqtt_1_host": "broker.example.com",
+                "mqtt_1_topic_prefix": "baconbs/cityA-cityB",
+            },
+        )
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertTrue(config.has_section("mqtt1"))
+
+        self.post_with_csrf(
+            client, "/settings",
+            data={"settings_section": "mqtt", "mqtt_indexes": ""},
+        )
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertFalse(config.has_section("mqtt1"))
+        self.assertFalse(config.has_section("sync_mqtt1"))
+        self.assertFalse(config.has_section("allow_list_mqtt1"))
 
     def test_settings_diagnostics_snapshot_fallback(self):
         with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:

@@ -7,8 +7,8 @@
     <div class="form-group">
       <label for="board">Board</label>
       <select id="board" name="board" class="form-control" required>
-        {% for b in boards %}
-        <option value="{{ b }}">{{ b }}</option>
+        {% for b in bulletin_boards %}
+        <option value="{{ b }}" {% if b == selected_board %}selected{% endif %}>{{ b }}</option>
         {% endfor %}
       </select>
     </div>
