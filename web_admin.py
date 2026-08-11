@@ -3667,6 +3667,43 @@ def create_app(runtime_interface=None) -> Flask:
       except Exception:
         return snapshot
 
+    def get_link_status_list() -> list[dict]:
+      """Per-link connection status (name, protocol, connected, reconnecting)
+      for every active radio/MQTT link -- shared by the nav-bar status badges'
+      /api/status/links poll (see static/js/app.js's initLinkStatus). Generic
+      over transport: an MQTT bridge appears here exactly like a radio, since
+      server.py's RadioLink/_describe_radio already treat every link type
+      uniformly (this is also what makes it trivial to add a future protocol
+      here later -- nothing link-type-specific to update on this end).
+      """
+      interface = get_runtime_interface()
+      if interface is not None:
+        # web_admin.py sharing a process with the live interface (rare in
+        # normal deployments -- mesh-bbs.service and bacon-web-admin.service
+        # run as separate processes; this path mainly matters for tests).
+        # No multi-link snapshot to read in this case, just the one interface.
+        return [{
+          "name": "primary",
+          "protocol": str(getattr(interface, "protocol_name", interface.__class__.__name__)),
+          "connected": bool(getattr(interface, "is_connected", True)),
+          "reconnecting": False,
+        }]
+
+      snapshot_path = resolve_app_path(os.getenv("BBS_RUNTIME_DIAG_PATH"), "runtime_diagnostics.json")
+      snapshot = load_runtime_snapshot(snapshot_path)
+      radios_raw = snapshot.get("radios") if isinstance(snapshot, dict) else None
+      if not isinstance(radios_raw, list):
+        return []
+      return [
+        {
+          "name": str(r.get("name", "primary")),
+          "protocol": str(r.get("radio_protocol", "Unknown")),
+          "connected": bool(r.get("connected", True)),
+          "reconnecting": bool(r.get("reconnecting", False)),
+        }
+        for r in radios_raw
+      ]
+
     def build_settings_diagnostics() -> dict[str, str]:
       bbs_nodes, allowed_nodes, sync_interval_minutes, sync_zork_saves = load_sync_settings(app.config["CONFIG_PATH"])
       scope_labels = [
@@ -4358,6 +4395,15 @@ def create_app(runtime_interface=None) -> Flask:
         if changed:
           return redirect(url_for("logout"))
       return redirect(url_for("settings_page") + "#admin")
+
+    @app.get("/api/status/links")
+    @login_required
+    def api_status_links():
+      """Lightweight per-link connection status for the nav-bar status
+      badges -- polled every few seconds by static/js/app.js's
+      initLinkStatus(), separate from the heavier /api/sync/status (sync
+      progress) and Settings > Diagnostics (full per-radio breakdown)."""
+      return jsonify({"links": get_link_status_list()})
 
     @app.get("/api/sync/status")
     @login_required

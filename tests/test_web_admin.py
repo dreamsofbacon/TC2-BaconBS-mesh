@@ -782,6 +782,78 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("Radio: secondary (MeshCore)", page)
         self.assertIn("7e18ca9d30a1", page)
 
+    def test_api_status_links_reports_every_link_including_mqtt(self):
+        """The nav-bar status badges' poll endpoint must be generic over
+        transport -- an MQTT bridge shows up exactly like a radio, since
+        server.py's snapshot already treats every link uniformly."""
+        with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:
+            json.dump(
+                {
+                    "updated_at": "2026-03-30T01:02:03+00:00",
+                    "interface_attached": True,
+                    "radios": [
+                        {
+                            "name": "primary",
+                            "radio_protocol": "Meshtastic",
+                            "connected": True,
+                            "reconnecting": False,
+                        },
+                        {
+                            "name": "secondary",
+                            "radio_protocol": "MeshCore",
+                            "connected": False,
+                            "reconnecting": True,
+                        },
+                        {
+                            "name": "mqtt1",
+                            "radio_protocol": "MQTT:mqtt1",
+                            "connected": False,
+                            "reconnecting": False,
+                        },
+                    ],
+                    "error": "",
+                },
+                snapshot_file,
+            )
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = client.get("/api/status/links")
+        self.assertEqual(response.status_code, 200)
+        links = response.get_json()["links"]
+        self.assertEqual(len(links), 3)
+
+        by_name = {link["name"]: link for link in links}
+        self.assertEqual(by_name["primary"]["protocol"], "Meshtastic")
+        self.assertTrue(by_name["primary"]["connected"])
+        self.assertFalse(by_name["primary"]["reconnecting"])
+
+        self.assertEqual(by_name["secondary"]["protocol"], "MeshCore")
+        self.assertFalse(by_name["secondary"]["connected"])
+        self.assertTrue(by_name["secondary"]["reconnecting"])
+
+        self.assertEqual(by_name["mqtt1"]["protocol"], "MQTT:mqtt1")
+        self.assertFalse(by_name["mqtt1"]["connected"])
+        self.assertFalse(by_name["mqtt1"]["reconnecting"])
+
+    def test_api_status_links_empty_when_no_snapshot(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = client.get("/api/status/links")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["links"], [])
+
+    def test_api_status_links_requires_login(self):
+        app = create_app()
+        client = app.test_client()
+        response = client.get("/api/status/links")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response.headers["Location"])
+
     def test_settings_diagnostics_single_radio_no_bridge_banner(self):
         """No 'radios' array in the snapshot (old server.py, or single-radio) --
         must fall back to exactly one synthesized radio entry, no bridge-mode banner."""

@@ -317,6 +317,47 @@ h1,h2,h3,h4,h5 { margin-top: 0; }
   color: var(--success-fg);
 }
 
+/* ── Link status badges (nav bar) ────────────────────────────── */
+/* One badge per active radio/MQTT link -- see static/js/app.js's
+   initLinkStatus() and web_admin.py's /api/status/links. Deliberately
+   generic (no per-protocol styling beyond the icon glyph JS picks), so a
+   future transport needs zero new CSS here. */
+.link-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.link-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 3px 8px;
+  font-size: 0.72rem;
+  background: var(--surface);
+  color: var(--text-faint);
+  white-space: nowrap;
+  cursor: default;
+}
+.link-badge-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-faint);
+}
+.link-badge.connected .link-badge-dot { background: var(--success); }
+.link-badge.reconnecting .link-badge-dot {
+  background: var(--warn);
+  animation: link-badge-pulse 1.2s ease-in-out infinite;
+}
+.link-badge.disconnected .link-badge-dot { background: var(--error); }
+@keyframes link-badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
 /* ── Theme picker ────────────────────────────────────────────── */
 .theme-picker {
   position: relative;
@@ -1226,5 +1267,6 @@ kbd {
   .modal-backdrop { padding-top: 24px; padding-left: 8px; padding-right: 8px; }
   .toast-region   { right: 8px; left: 8px; max-width: none; }
   .nav-right .version-chip,
+  .nav-right .link-status,
   .nav-right .sync-pill { display: none; }
 }
