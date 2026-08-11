@@ -17,8 +17,13 @@ import argparse
 # Unattended-recovery tunables. A wedged radio (USB-serial enumerates but the
 # ESP32 stops answering the Meshtastic handshake) is recovered remotely by
 # pulsing DTR/RTS — the same auto-reset circuit esptool uses — so no physical
-# access is required. After too many failures we exit for the supervisor
-# (systemd / wrapper) to restart the whole process from a clean slate.
+# access is required. After too many failures we give up on THIS interface
+# and return None -- same as an unreachable MQTT broker (_open_mqtt_interface)
+# -- rather than taking the whole process down. A single wedged radio must
+# not block the other radio (or MQTT links) from running; server.py's
+# per-link reconnect loop (_reconnect_link) keeps retrying this interface
+# in the background so it can rejoin once it recovers, with no restart
+# needed.
 _MAX_CONNECT_FAILURES_BEFORE_EXIT = int(os.environ.get("BBS_MAX_CONNECT_FAILURES", "8"))
 _RADIO_BOOT_WAIT_SECONDS = float(os.environ.get("BBS_RADIO_BOOT_WAIT_SECONDS", "8"))
 
@@ -72,7 +77,7 @@ def init_cli_parser() -> argparse.Namespace:
     Returns:
         argparse.ArgumentParser: Argparse namespace with processed CLI args
     """
-    parser = argparse.ArgumentParser(description="BaconBS mesh radio BBS")
+    parser = argparse.ArgumentParser(description="Bacon BBS mesh radio")
     
     parser.add_argument(
         "--config", "-c",
@@ -416,7 +421,10 @@ def _open_interface(cfg: dict[str, Any]) -> Any:
                 - Hostname not provided for TCP interface
 
     Returns:
-        A connected radio interface.
+        A connected radio interface, or None if it never connected after
+        _MAX_CONNECT_FAILURES_BEFORE_EXIT attempts (caller should treat this
+        the same as an interface that dropped mid-session -- see
+        server.py's RadioLink / _reconnect_link).
     """
     interface_type = cfg['interface_type']
     valid_types = ('serial', 'tcp', 'meshcore_serial', 'meshcore_tcp', 'meshcore_ble')
@@ -461,10 +469,21 @@ def _open_interface(cfg: dict[str, Any]) -> Any:
             # Force release of any serial handle left open by the failed attempt
             # (meshtastic may not close pyserial on handshake failure → the next
             # attempt would hit 'could not exclusively lock port' forever).
+            # `e.__traceback__` keeps every frame on the stack alive -- including
+            # whichever one inside SerialInterface.__init__() still holds the open
+            # pyserial handle -- so gc.collect() cannot free it while `e` is still
+            # bound. Drop the reference first so the leaked handle actually becomes
+            # collectible.
+            del e
             gc.collect()
             if failures >= _MAX_CONNECT_FAILURES_BEFORE_EXIT:
-                print(f"{failures} consecutive connect failures; exiting (rc=2) for supervised restart.")
-                os._exit(2)
+                print(
+                    f"{failures} consecutive connect failures on {interface_type} "
+                    f"({device or cfg.get('hostname') or 'unknown device'}); giving up on this "
+                    "interface for now. The rest of the node (other radio / MQTT links / web "
+                    "admin) is unaffected -- a background reconnect loop will keep retrying."
+                )
+                return None
             # Escalate on every other failure: hardware-reset a wedged radio.
             # (Serial only — TCP devices can't be DTR/RTS reset over the network.)
             if interface_type == 'serial' and failures % 2 == 0:
