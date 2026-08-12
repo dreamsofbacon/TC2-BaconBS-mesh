@@ -21,6 +21,16 @@
     { id: 'monokai',        label: 'Monokai',          swatch: '#272822' },
     { id: 'cyberpunk',      label: 'Cyberpunk',        swatch: '#0d0221' },
     { id: 'sepia',          label: 'Sepia',            swatch: '#f4ead8' },
+    { id: 'matrix',         label: 'Matrix',           swatch: 'linear-gradient(135deg,#000000 50%,#00ff41 50%)' },
+    { id: 'amber-terminal', label: 'Amber Terminal',   swatch: '#1a0f00' },
+    { id: 'tokyo-night',    label: 'Tokyo Night',      swatch: '#1a1b26' },
+    { id: 'forest',         label: 'Forest',           swatch: '#eaf3e6' },
+    { id: 'catppuccin-mocha', label: 'Catppuccin Mocha', swatch: '#1e1e2e' },
+    { id: 'rose-pine',      label: 'Rosé Pine',        swatch: '#191724' },
+    { id: 'one-dark',       label: 'One Dark',         swatch: '#282c34' },
+    { id: 'synthwave',      label: 'Synthwave',        swatch: 'linear-gradient(135deg,#241b2f 50%,#ff7edb 50%)' },
+    { id: 'gruvbox-light',  label: 'Gruvbox Light',    swatch: '#fbf1c7' },
+    { id: 'ice',            label: 'Ice',              swatch: '#eef5fb' },
   ];
 
   var STORAGE_KEY = 'bbs_theme';
