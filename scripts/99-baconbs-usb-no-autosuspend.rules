@@ -1,0 +1,25 @@
+# Bacon BBS: disable USB autosuspend for this node.
+#
+# This node is a dedicated, always-on appliance -- there is no power-saving
+# benefit to USB autosuspend here, only risk. Linux's default USB autosuspend
+# (2s idle timeout on most distros) does not play well with the CP210x/CH340/
+# FTDI-based USB-serial adapters most Meshtastic/MeshCore radio boards use --
+# they frequently fail to resume cleanly, producing a repeating disconnect/
+# reconnect cycle instead (visible in `dmesg` as repeated
+# "usb_serial_generic_read_bulk_callback - urb stopped: -32" followed by
+# "USB disconnect"). Each reconnect can also reassign the device to a NEW
+# /dev/ttyUSBn number, silently breaking a fixed `port = /dev/ttyUSBx` in
+# config.ini until it's manually corrected.
+#
+# Disabling autosuspend on just the leaf USB-serial device is not enough --
+# an upstream HUB the device sits behind can still be suspended and drag the
+# leaf device down with it. This rule instead covers every USB device on the
+# bus (hubs included) rather than trying to enumerate specific radio
+# vendor/product IDs, so it keeps working for any current or future
+# Meshtastic/MeshCore hardware without needing updates here.
+#
+# Installed automatically by install_services.sh. To apply by hand:
+#   sudo cp scripts/99-baconbs-usb-no-autosuspend.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+ACTION=="add", SUBSYSTEM=="usb", TEST=="power/control", ATTR{power/control}="on"

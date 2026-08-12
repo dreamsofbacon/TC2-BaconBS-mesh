@@ -117,6 +117,25 @@ sudo systemctl daemon-reload
 sudo systemctl enable mesh-bbs.service bacon-web-admin.service
 sudo systemctl restart mesh-bbs.service bacon-web-admin.service
 
+# USB autosuspend disable -- see the rules file itself for why. Best-effort:
+# a udev rule install failure (e.g. non-systemd-udev environment, container,
+# read-only /etc) must not fail the whole install, since the BBS itself
+# doesn't depend on it to run, only to stay reliably connected to its radios.
+UDEV_RULE="$REPO_DIR/scripts/99-baconbs-usb-no-autosuspend.rules"
+if [[ -f "$UDEV_RULE" ]] && command -v udevadm >/dev/null 2>&1; then
+    echo "Installing USB autosuspend fix for radio USB-serial adapters..."
+    if sudo cp "$UDEV_RULE" /etc/udev/rules.d/99-baconbs-usb-no-autosuspend.rules \
+        && sudo udevadm control --reload-rules \
+        && sudo udevadm trigger; then
+        echo "USB autosuspend disabled (applies immediately, no reboot needed)."
+    else
+        echo "WARNING: Could not install the USB autosuspend fix -- radios may"
+        echo "  intermittently disconnect/reconnect under Linux's default USB"
+        echo "  power management. See scripts/99-baconbs-usb-no-autosuspend.rules"
+        echo "  to apply it manually."
+    fi
+fi
+
 echo ""
 echo "Installed and restarted services for user '$SERVICE_USER'."
 echo "Web admin default bind is 0.0.0.0:8081 (override in web-admin.env if needed)."
