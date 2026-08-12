@@ -603,6 +603,32 @@ def initialize_database():
                     message_type TEXT NOT NULL,
                     event_text TEXT NOT NULL
                 );''')
+    # Durable "who's in range" roster -- every radio/MQTT link's live
+    # interface.nodes dict is transient (rebuilt from scratch on every
+    # reconnect), so this is the only place that survives a restart. Keyed
+    # per-link (not just per-node) since the same physical node could in
+    # principle be seen on more than one active link. 'last_seen' is
+    # refreshed on every periodic sweep a node is still present in
+    # interface.nodes (server.py's persist_mesh_clients) -- deliberately
+    # OUR OWN sweep timestamp rather than the transport's self-reported
+    # recency, since only Meshtastic provides that (last_heard_epoch), so
+    # this is what makes "still in range" comparable across all transports.
+    c.execute('''CREATE TABLE IF NOT EXISTS mesh_clients (
+                    link_name TEXT NOT NULL,
+                    node_id TEXT NOT NULL,
+                    node_num TEXT,
+                    protocol TEXT NOT NULL DEFAULT '',
+                    short_name TEXT NOT NULL DEFAULT '',
+                    long_name TEXT NOT NULL DEFAULT '',
+                    hw_model TEXT NOT NULL DEFAULT '',
+                    role TEXT NOT NULL DEFAULT '',
+                    battery_level INTEGER,
+                    last_heard_epoch INTEGER,
+                    first_seen TEXT NOT NULL,
+                    last_seen TEXT NOT NULL,
+                    PRIMARY KEY (link_name, node_id)
+                );''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_mesh_clients_last_seen ON mesh_clients (last_seen);')
     c.execute('''CREATE TABLE IF NOT EXISTS peer_sync_state (
                     peer_node_id TEXT PRIMARY KEY,
                     bulletins INTEGER NOT NULL DEFAULT 0,
@@ -3156,6 +3182,91 @@ def auto_upsert_user_profile(user_id: int, short_name: str, long_name: str) -> N
         (str(user_id), short_name, long_name, now, now)
     )
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Mesh client roster ("who's in range") -- see mesh_clients schema comment
+# in initialize_database() for why this exists and how 'last_seen' works.
+# ---------------------------------------------------------------------------
+
+def upsert_mesh_clients(rows: list[dict]) -> None:
+    """Bulk-upsert one sweep's worth of a link's node roster in a single
+    transaction. Called once per link per periodic sweep (server.py's
+    persist_mesh_clients) with EVERY node currently in that link's
+    interface.nodes, not once per node -- a 100+ node mesh must not cost
+    100+ separate commits every 5-30s.
+
+    Each row is a dict with keys: link_name, node_id, node_num, protocol,
+    short_name, long_name, hw_model, role, battery_level, last_heard_epoch
+    (the last two may be None -- only Meshtastic reports them). 'first_seen'
+    is preserved across updates via COALESCE-by-conflict (only set on the
+    row's first-ever insert); 'last_seen' is always refreshed to now, since
+    being in this call's row list already means the node was present in
+    interface.nodes this cycle.
+    """
+    if not rows:
+        return
+    conn = get_db_connection()
+    c = conn.cursor()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    c.executemany(
+        '''INSERT INTO mesh_clients
+           (link_name, node_id, node_num, protocol, short_name, long_name, hw_model, role,
+            battery_level, last_heard_epoch, first_seen, last_seen)
+           VALUES (:link_name, :node_id, :node_num, :protocol, :short_name, :long_name, :hw_model, :role,
+                   :battery_level, :last_heard_epoch, :now, :now)
+           ON CONFLICT(link_name, node_id) DO UPDATE SET
+             node_num = excluded.node_num,
+             protocol = excluded.protocol,
+             short_name = excluded.short_name,
+             long_name = excluded.long_name,
+             hw_model = excluded.hw_model,
+             role = excluded.role,
+             battery_level = excluded.battery_level,
+             last_heard_epoch = excluded.last_heard_epoch,
+             last_seen = excluded.last_seen''',
+        [
+            {
+                'link_name': row.get('link_name', ''),
+                'node_id': row.get('node_id', ''),
+                'node_num': str(row['node_num']) if row.get('node_num') is not None else None,
+                'protocol': row.get('protocol') or '',
+                'short_name': row.get('short_name') or '',
+                'long_name': row.get('long_name') or '',
+                'hw_model': row.get('hw_model') or '',
+                'role': row.get('role') or '',
+                'battery_level': row.get('battery_level'),
+                'last_heard_epoch': row.get('last_heard_epoch'),
+                'now': now,
+            }
+            for row in rows
+        ],
+    )
+    conn.commit()
+
+
+def get_mesh_clients(link_name: Optional[str] = None) -> list[dict]:
+    """Every known mesh client, most-recently-seen first. Pass link_name to
+    scope to one radio/MQTT link; omit for the whole-node roster across all
+    links (web_admin.py's Clients page)."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    columns = (
+        'link_name, node_id, node_num, protocol, short_name, long_name, '
+        'hw_model, role, battery_level, last_heard_epoch, first_seen, last_seen'
+    )
+    if link_name:
+        c.execute(
+            f'SELECT {columns} FROM mesh_clients WHERE link_name = ? ORDER BY last_seen DESC',
+            (link_name,),
+        )
+    else:
+        c.execute(f'SELECT {columns} FROM mesh_clients ORDER BY last_seen DESC')
+    keys = [
+        'link_name', 'node_id', 'node_num', 'protocol', 'short_name', 'long_name',
+        'hw_model', 'role', 'battery_level', 'last_heard_epoch', 'first_seen', 'last_seen',
+    ]
+    return [dict(zip(keys, row)) for row in c.fetchall()]
 
 
 def get_user_profile(user_id: int):

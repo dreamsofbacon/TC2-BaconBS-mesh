@@ -484,6 +484,53 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("Client Post Counts", page)
         self.assertIn("ALICE", page)
 
+    def test_clients_page_shows_known_mesh_clients_roster(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS mesh_clients (
+                link_name TEXT NOT NULL, node_id TEXT NOT NULL, node_num TEXT,
+                protocol TEXT NOT NULL DEFAULT '', short_name TEXT NOT NULL DEFAULT '',
+                long_name TEXT NOT NULL DEFAULT '', hw_model TEXT NOT NULL DEFAULT '',
+                role TEXT NOT NULL DEFAULT '', battery_level INTEGER, last_heard_epoch INTEGER,
+                first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+                PRIMARY KEY (link_name, node_id))"""
+        )
+        conn.execute(
+            "INSERT INTO mesh_clients (link_name, node_id, node_num, protocol, short_name, "
+            "long_name, hw_model, role, battery_level, last_heard_epoch, first_seen, last_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("primary", "!04059140", "67437888", "Meshtastic", "PEER", "A Peer Node",
+             "TBEAM", "CLIENT", 76, 1755000000, "2026-03-30 12:00:00", "2026-03-30 12:05:00"),
+        )
+        conn.commit()
+        conn.close()
+
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        page_response = client.get("/clients")
+        self.assertEqual(page_response.status_code, 200)
+        page = page_response.get_data(as_text=True)
+        self.assertIn("Known Mesh Clients", page)
+        self.assertIn("PEER", page)
+        self.assertIn("A Peer Node", page)
+        self.assertIn("TBEAM", page)
+        self.assertIn("76%", page)
+
+    def test_clients_page_mesh_clients_empty_state(self):
+        app = create_app()
+        client = app.test_client()
+        response = self.login(client)
+        self.assertEqual(response.status_code, 302)
+
+        page_response = client.get("/clients")
+        self.assertEqual(page_response.status_code, 200)
+        page = page_response.get_data(as_text=True)
+        self.assertIn("Known Mesh Clients", page)
+        self.assertIn("No devices seen yet", page)
+
     def test_system_transmissions_page_counts_received_game_frames(self):
         conn = sqlite3.connect(self.db_path)
         conn.execute(
