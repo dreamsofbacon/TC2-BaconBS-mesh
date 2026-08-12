@@ -54,6 +54,7 @@ from db_operations import (
     get_local_node_id,
     run_op_log_backfill,
     get_peer_sync_states,
+    upsert_mesh_clients,
 )
 from js8call_integration import JS8CallClient
 from message_processing import (
@@ -433,6 +434,64 @@ def publish_mqtt_status(links, snapshot: dict) -> None:
                 publish(status)
             except Exception:
                 logging.debug(f"[{link.name}] MQTT status publish failed", exc_info=True)
+
+
+def persist_mesh_clients(links) -> None:
+    """Durably record each active link's live node roster (interface.nodes)
+    to the mesh_clients table -- see the schema comment in
+    initialize_database() for why this exists. interface.nodes is
+    transient (rebuilt from scratch on every reconnect), so without this a
+    restart silently forgets every device the BBS has ever seen nearby.
+
+    Excludes each interface's own local-node entry (a node is "in range OF"
+    this device, not itself). The common fields (num, user.id/shortName/
+    longName/hwModel/role) come from all three interface types uniformly;
+    lastHeard and deviceMetrics.batteryLevel are Meshtastic-only today (see
+    meshcore_interface.py / mqtt_interface.py -- neither populates them)
+    and simply come through as None on other transports.
+
+    Batches one upsert transaction per link (not per node) -- see
+    db_operations.upsert_mesh_clients. Best-effort: a failure on one link
+    is logged, never allowed to affect another link or the caller (the
+    main loop).
+    """
+    for link in links:
+        interface = link.interface
+        nodes = getattr(interface, 'nodes', None)
+        if not isinstance(nodes, dict) or not nodes:
+            continue
+
+        my_info = getattr(interface, 'myInfo', None)
+        local_num = getattr(my_info, 'my_node_num', None)
+        protocol = str(getattr(interface, 'protocol_name', 'Meshtastic'))
+
+        rows = []
+        for node_id, node in nodes.items():
+            if not isinstance(node, dict):
+                continue
+            node_num = node.get('num')
+            if local_num is not None and node_num == local_num:
+                continue  # our own node, not a device in range of us
+            user = node.get('user') if isinstance(node.get('user'), dict) else {}
+            device_metrics = node.get('deviceMetrics') if isinstance(node.get('deviceMetrics'), dict) else {}
+            rows.append({
+                'link_name': link.name,
+                'node_id': str(node_id),
+                'node_num': node_num,
+                'protocol': protocol,
+                'short_name': user.get('shortName', ''),
+                'long_name': user.get('longName', ''),
+                'hw_model': user.get('hwModel', ''),
+                'role': user.get('role', ''),
+                'battery_level': device_metrics.get('batteryLevel'),
+                'last_heard_epoch': node.get('lastHeard'),
+            })
+
+        if rows:
+            try:
+                upsert_mesh_clients(rows)
+            except Exception:
+                logging.debug(f"[{link.name}] mesh client roster persist failed", exc_info=True)
 
 
 def display_banner():
@@ -1084,6 +1143,7 @@ def main():
     zork_save_resolve_trigger_path = get_zork_save_resolve_trigger_path()
     record_resolve_trigger_path = get_record_resolve_trigger_path()
     publish_mqtt_status(links, write_runtime_diagnostics_snapshot(links, system_config))
+    persist_mesh_clients(links)
 
     if len(links) > 1:
         link_descriptions = ", ".join(f"{l.name}={l.protocol_name}" for l in links)
@@ -1168,10 +1228,12 @@ def main():
                 pass
 
             # Refresh diagnostics snapshot (5 s while syncing, 30 s otherwise)
-            # -- also republishes MQTT status telemetry on the same cadence,
-            # see publish_mqtt_status.
+            # -- also republishes MQTT status telemetry and persists each
+            # link's node roster to the DB on the same cadence, see
+            # publish_mqtt_status / persist_mesh_clients.
             if now >= next_diagnostics_write:
                 publish_mqtt_status(links, write_runtime_diagnostics_snapshot(links, system_config))
+                persist_mesh_clients(links)
                 sync_progress = get_sync_progress()
                 next_diagnostics_write = now + (5 if sync_progress.get('in_progress') else 30)
 

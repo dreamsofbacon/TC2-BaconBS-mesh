@@ -4719,6 +4719,9 @@ def create_app(runtime_interface=None) -> Flask:
       connection_events = [serialize_connection_event(row) for row in reversed(events_desc)]
       last_event_id = connection_events[-1]["id"] if connection_events else 0
 
+      from db_operations import get_mesh_clients
+      mesh_clients = get_mesh_clients()
+
       return render_template(
         "clients.html",
         title="Clients",
@@ -4727,6 +4730,7 @@ def create_app(runtime_interface=None) -> Flask:
         total_posts=total_posts,
         connection_events=connection_events,
         last_event_id=last_event_id,
+        mesh_clients=mesh_clients,
       )
 
     @app.route("/clients/<path:node_id>/profile")
