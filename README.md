@@ -433,6 +433,44 @@ messages and uses MeshCore's automatic routing/flood fallback. MeshCore's
 160-byte text ceiling is detected automatically; BBS sync frames and user
 replies are chunked to fit it.
 
+### USB Stability (Linux)
+
+`install_services.sh` disables USB autosuspend automatically (see below) --
+this section explains why, and covers the manual fix for anyone who set up
+the service some other way.
+
+Linux's default USB autosuspend (2s idle timeout on most distros) does not
+play well with the CP210x/CH340/FTDI-based USB-serial adapters most
+Meshtastic/MeshCore radio boards use. Symptoms: a radio silently stops
+responding after a period of idle, or intermittently drops and reconnects.
+Check `dmesg` for the signature:
+
+```
+usb_serial_generic_read_bulk_callback - urb stopped: -32
+usb 1-1.3: USB disconnect, device number 5
+```
+
+Each reconnect can also reassign the device to a **new** `/dev/ttyUSBn`
+number, which silently breaks a fixed `port = /dev/ttyUSBx` in `config.ini`
+until corrected -- if a radio that was working suddenly can't be found,
+check `ls /dev/ttyUSB*` against what `config.ini` actually points at before
+assuming a config or firmware problem.
+
+Disabling autosuspend on just the radio's own USB device isn't enough -- an
+upstream USB hub it's plugged into can still be suspended and drag the
+device down with it regardless of its own setting. `install_services.sh`
+installs `scripts/99-baconbs-usb-no-autosuspend.rules`, a udev rule that
+disables autosuspend for every USB device on the bus (hubs included) rather
+than targeting specific radio vendor/product IDs, so it keeps working for
+future hardware without needing updates. Applies immediately, no reboot
+required. To install it by hand on a node set up some other way:
+
+```bash
+sudo cp scripts/99-baconbs-usb-no-autosuspend.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
 ---
 
 ## Usage
