@@ -324,6 +324,11 @@ def load_mqtt_settings(config_path: str) -> list[dict]:
       "host": config.get(section_name, "host", fallback="").strip(),
       "port": config.get(section_name, "port", fallback="1883").strip() or "1883",
       "tls": _parse_bool_setting(config.get(section_name, "tls", fallback="false"), False),
+      "tls_ca_certs": config.get(section_name, "tls_ca_certs", fallback="").strip(),
+      "tls_certfile": config.get(section_name, "tls_certfile", fallback="").strip(),
+      "tls_keyfile": config.get(section_name, "tls_keyfile", fallback="").strip(),
+      "tls_keyfile_password": config.get(section_name, "tls_keyfile_password", fallback="").strip(),
+      "tls_insecure": _parse_bool_setting(config.get(section_name, "tls_insecure", fallback="false"), False),
       "username": config.get(section_name, "username", fallback="").strip(),
       "password": config.get(section_name, "password", fallback="").strip(),
       "topic_prefix": config.get(section_name, "topic_prefix", fallback="").strip(),
@@ -3367,12 +3372,24 @@ def create_app(runtime_interface=None) -> Flask:
           errors.append(f"Broker #{index}: host is required.")
         if not topic_prefix:
           errors.append(f"Broker #{index}: topic prefix is required.")
+        tls_certfile = form.get(f"{prefix}tls_certfile", "").strip()
+        tls_keyfile = form.get(f"{prefix}tls_keyfile", "").strip()
+        if tls_keyfile and not tls_certfile:
+          errors.append(
+            f"Broker #{index}: a client key file needs its client certificate too "
+            "(set both, or neither)."
+          )
         parsed.append({
           "index": index,
           "enabled": _parse_bool_setting(form.get(f"{prefix}enabled", ""), False),
           "host": host,
           "port": _parse_int_setting(form.get(f"{prefix}port", ""), 1883, minimum=1),
           "tls": _parse_bool_setting(form.get(f"{prefix}tls", ""), False),
+          "tls_ca_certs": form.get(f"{prefix}tls_ca_certs", "").strip(),
+          "tls_certfile": tls_certfile,
+          "tls_keyfile": tls_keyfile,
+          "tls_keyfile_password": form.get(f"{prefix}tls_keyfile_password", "").strip(),
+          "tls_insecure": _parse_bool_setting(form.get(f"{prefix}tls_insecure", ""), False),
           "username": form.get(f"{prefix}username", "").strip(),
           "password": form.get(f"{prefix}password", "").strip(),
           "topic_prefix": topic_prefix,
@@ -3423,6 +3440,11 @@ def create_app(runtime_interface=None) -> Flask:
         config.set(section_name, "host", link["host"])
         config.set(section_name, "port", str(link["port"]))
         config.set(section_name, "tls", "true" if link["tls"] else "false")
+        config.set(section_name, "tls_ca_certs", link["tls_ca_certs"])
+        config.set(section_name, "tls_certfile", link["tls_certfile"])
+        config.set(section_name, "tls_keyfile", link["tls_keyfile"])
+        config.set(section_name, "tls_keyfile_password", link["tls_keyfile_password"])
+        config.set(section_name, "tls_insecure", "true" if link["tls_insecure"] else "false")
         config.set(section_name, "username", link["username"])
         config.set(section_name, "password", link["password"])
         config.set(section_name, "topic_prefix", link["topic_prefix"])

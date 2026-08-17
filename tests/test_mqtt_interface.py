@@ -1,4 +1,6 @@
 import json
+import os
+import tempfile
 import threading
 import types
 import unittest
@@ -39,6 +41,8 @@ class _FakeMqttClient:
         self.username = None
         self.password = None
         self.tls = False
+        self.tls_kwargs = {}
+        self.tls_insecure = None
         self.on_connect = None
         self.on_disconnect = None
         self.on_message = None
@@ -52,8 +56,12 @@ class _FakeMqttClient:
         self.password = password
 
     def tls_set(self, *args, **kwargs):
-        del args, kwargs
+        del args
         self.tls = True
+        self.tls_kwargs = kwargs
+
+    def tls_insecure_set(self, value):
+        self.tls_insecure = value
 
     def reconnect_delay_set(self, min_delay=1, max_delay=120):
         del min_delay, max_delay
@@ -319,6 +327,105 @@ class MqttInterfaceTests(unittest.TestCase):
         topics = [topic for topic, _payload, _retain in client.published]
         self.assertIn("baconbs/city-a-b/node-a/status", topics)
         self.assertEqual(len(topics), 1)  # no sub-topics attempted
+
+
+class MqttTlsOptionTests(unittest.TestCase):
+    """Advanced TLS / certificate options -- see MqttInterface's docstring.
+    Covers the security-relevant behaviors: certs are never silently
+    ignored on a plaintext connection, and a bad path fails fast with a
+    clear message instead of an opaque SSL error at connect time."""
+
+    def setUp(self):
+        self.broker = _FakeBroker()
+        self.client_patch = patch.object(
+            mqtt_interface.mqtt, "Client", _make_client_factory(self.broker)
+        )
+        self.client_patch.start()
+        self.addCleanup(self.client_patch.stop)
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _cert_file(self, name):
+        path = os.path.join(self.tmp.name, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("-----BEGIN CERTIFICATE-----\nnot-a-real-cert\n-----END CERTIFICATE-----\n")
+        return path
+
+    def _make(self, **kwargs):
+        iface = MqttInterface(
+            host="broker.example.com",
+            topic_prefix="baconbs/city-a-b",
+            local_id="node-a",
+            link_name="mqtt1",
+            **kwargs,
+        )
+        self.addCleanup(iface.close)
+        return iface
+
+    def test_plain_tls_uses_system_ca_store(self):
+        """`tls = true` with no cert options must pass ca_certs=None, i.e.
+        paho's default system-CA behavior -- unchanged from before these
+        options existed."""
+        iface = self._make(tls=True)
+        self.assertTrue(iface._client.tls)
+        self.assertIsNone(iface._client.tls_kwargs.get("ca_certs"))
+        self.assertIsNone(iface._client.tls_kwargs.get("certfile"))
+        self.assertIsNone(iface._client.tls_insecure)
+
+    def test_no_tls_at_all_does_not_call_tls_set(self):
+        iface = self._make(tls=False)
+        self.assertFalse(iface._client.tls)
+
+    def test_ca_certs_passed_through(self):
+        ca = self._cert_file("ca.crt")
+        iface = self._make(tls=True, tls_ca_certs=ca)
+        self.assertEqual(iface._client.tls_kwargs.get("ca_certs"), ca)
+
+    def test_client_cert_and_key_passed_through(self):
+        cert = self._cert_file("client.crt")
+        key = self._cert_file("client.key")
+        iface = self._make(tls=True, tls_certfile=cert, tls_keyfile=key,
+                           tls_keyfile_password="s3cret")
+        kwargs = iface._client.tls_kwargs
+        self.assertEqual(kwargs.get("certfile"), cert)
+        self.assertEqual(kwargs.get("keyfile"), key)
+        self.assertEqual(kwargs.get("keyfile_password"), "s3cret")
+
+    def test_cert_options_imply_tls_even_when_tls_flag_is_false(self):
+        """Security-relevant: configuring certs but forgetting `tls = true`
+        must NOT silently connect in plaintext."""
+        ca = self._cert_file("ca.crt")
+        iface = self._make(tls=False, tls_ca_certs=ca)
+        self.assertTrue(iface._client.tls)
+        self.assertEqual(iface._client.tls_kwargs.get("ca_certs"), ca)
+
+    def test_tls_insecure_calls_insecure_set(self):
+        iface = self._make(tls=True, tls_insecure=True)
+        self.assertTrue(iface._client.tls_insecure)
+
+    def test_missing_cert_file_raises_naming_the_setting_and_path(self):
+        missing = os.path.join(self.tmp.name, "nope.crt")
+        with self.assertRaises(ValueError) as ctx:
+            self._make(tls=True, tls_ca_certs=missing)
+        message = str(ctx.exception)
+        self.assertIn("tls_ca_certs", message)
+        self.assertIn(missing, message)
+
+    def test_keyfile_without_certfile_is_rejected(self):
+        key = self._cert_file("client.key")
+        with self.assertRaises(ValueError) as ctx:
+            self._make(tls=True, tls_keyfile=key)
+        self.assertIn("tls_keyfile", str(ctx.exception))
+
+    def test_blank_cert_settings_are_ignored_not_treated_as_paths(self):
+        """Empty strings come from the web form's untouched fields -- they
+        must behave exactly like 'not configured', not like a path of ''."""
+        iface = self._make(tls=True, tls_ca_certs="", tls_certfile="   ",
+                           tls_keyfile="", tls_keyfile_password="")
+        self.assertTrue(iface._client.tls)
+        self.assertIsNone(iface._client.tls_kwargs.get("ca_certs"))
+        self.assertIsNone(iface._client.tls_kwargs.get("keyfile_password"))
 
 
 class NodeIdCollisionAvoidanceTests(unittest.TestCase):

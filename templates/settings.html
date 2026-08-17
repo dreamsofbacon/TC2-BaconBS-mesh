@@ -201,6 +201,33 @@
             Use TLS
           </label>
         </div>
+        <details class="form-group" {% if link.tls_ca_certs or link.tls_certfile or link.tls_keyfile or link.tls_insecure %}open{% endif %}>
+          <summary style="cursor:pointer">Advanced TLS / Certificates</summary>
+          <p class="text-muted">All optional. Plain <strong>Use TLS</strong> above already verifies the broker against the system CA store &mdash; you only need these for a self-hosted broker with a private CA, or one requiring client-certificate (mutual TLS) auth. Paths are read from <em>this node's</em> filesystem and must be readable by the service user. Setting any of them turns TLS on even if the box above is unchecked.</p>
+          <div class="form-group">
+            <label for="mqtt_{{ link.index }}_tls_ca_certs">CA certificate file</label>
+            <input type="text" id="mqtt_{{ link.index }}_tls_ca_certs" name="mqtt_{{ link.index }}_tls_ca_certs" class="form-control" value="{{ link.tls_ca_certs }}" placeholder="e.g. /etc/ssl/certs/my-broker-ca.crt — blank uses the system CA store">
+          </div>
+          <div class="form-group">
+            <label for="mqtt_{{ link.index }}_tls_certfile">Client certificate file (mutual TLS)</label>
+            <input type="text" id="mqtt_{{ link.index }}_tls_certfile" name="mqtt_{{ link.index }}_tls_certfile" class="form-control" value="{{ link.tls_certfile }}" placeholder="e.g. /etc/baconbs/client.crt">
+          </div>
+          <div class="form-group">
+            <label for="mqtt_{{ link.index }}_tls_keyfile">Client private key file (mutual TLS)</label>
+            <input type="text" id="mqtt_{{ link.index }}_tls_keyfile" name="mqtt_{{ link.index }}_tls_keyfile" class="form-control" value="{{ link.tls_keyfile }}" placeholder="e.g. /etc/baconbs/client.key — requires the certificate above">
+          </div>
+          <div class="form-group">
+            <label for="mqtt_{{ link.index }}_tls_keyfile_password">Client key password (only if the key is encrypted)</label>
+            <input type="password" id="mqtt_{{ link.index }}_tls_keyfile_password" name="mqtt_{{ link.index }}_tls_keyfile_password" class="form-control" value="{{ link.tls_keyfile_password }}">
+          </div>
+          <div class="form-group">
+            <label>
+              <input type="checkbox" name="mqtt_{{ link.index }}_tls_insecure" value="1" {% if link.tls_insecure %}checked{% endif %}>
+              Skip certificate hostname verification (insecure)
+            </label>
+            <p class="text-muted">Leave off. This disables the check that the broker is who it claims to be, so the connection can be impersonated &mdash; it defeats most of the point of TLS. For a self-signed broker, set the CA certificate above instead.</p>
+          </div>
+        </details>
         <div class="form-group">
           <label for="mqtt_{{ link.index }}_username">Username (optional)</label>
           <input type="text" id="mqtt_{{ link.index }}_username" name="mqtt_{{ link.index }}_username" class="form-control" value="{{ link.username }}">
@@ -274,6 +301,19 @@
       '  <div class="form-group"><label for="mqtt_' + index + '_port">Port</label>' +
       '    <input type="text" id="mqtt_' + index + '_port" name="mqtt_' + index + '_port" class="form-control" value="1883"></div>' +
       '  <div class="form-group"><label><input type="checkbox" name="mqtt_' + index + '_tls" value="1"> Use TLS</label></div>' +
+      '  <details class="form-group"><summary style="cursor:pointer">Advanced TLS / Certificates</summary>' +
+      '    <p class="text-muted">All optional. Plain <strong>Use TLS</strong> above already verifies the broker against the system CA store -- you only need these for a self-hosted broker with a private CA, or one requiring client-certificate (mutual TLS) auth. Paths are read from <em>this node\'s</em> filesystem and must be readable by the service user. Setting any of them turns TLS on even if the box above is unchecked.</p>' +
+      '    <div class="form-group"><label for="mqtt_' + index + '_tls_ca_certs">CA certificate file</label>' +
+      '      <input type="text" id="mqtt_' + index + '_tls_ca_certs" name="mqtt_' + index + '_tls_ca_certs" class="form-control" placeholder="e.g. /etc/ssl/certs/my-broker-ca.crt — blank uses the system CA store"></div>' +
+      '    <div class="form-group"><label for="mqtt_' + index + '_tls_certfile">Client certificate file (mutual TLS)</label>' +
+      '      <input type="text" id="mqtt_' + index + '_tls_certfile" name="mqtt_' + index + '_tls_certfile" class="form-control" placeholder="e.g. /etc/baconbs/client.crt"></div>' +
+      '    <div class="form-group"><label for="mqtt_' + index + '_tls_keyfile">Client private key file (mutual TLS)</label>' +
+      '      <input type="text" id="mqtt_' + index + '_tls_keyfile" name="mqtt_' + index + '_tls_keyfile" class="form-control" placeholder="e.g. /etc/baconbs/client.key — requires the certificate above"></div>' +
+      '    <div class="form-group"><label for="mqtt_' + index + '_tls_keyfile_password">Client key password (only if the key is encrypted)</label>' +
+      '      <input type="password" id="mqtt_' + index + '_tls_keyfile_password" name="mqtt_' + index + '_tls_keyfile_password" class="form-control"></div>' +
+      '    <div class="form-group"><label><input type="checkbox" name="mqtt_' + index + '_tls_insecure" value="1"> Skip certificate hostname verification (insecure)</label>' +
+      '      <p class="text-muted">Leave off. This disables the check that the broker is who it claims to be, so the connection can be impersonated -- it defeats most of the point of TLS. For a self-signed broker, set the CA certificate above instead.</p></div>' +
+      '  </details>' +
       '  <div class="form-group"><label for="mqtt_' + index + '_username">Username (optional)</label>' +
       '    <input type="text" id="mqtt_' + index + '_username" name="mqtt_' + index + '_username" class="form-control"></div>' +
       '  <div class="form-group"><label for="mqtt_' + index + '_password">Password (optional)</label>' +

@@ -217,13 +217,24 @@ def _read_node_list(config: configparser.ConfigParser, section: str, key: str) -
 
 
 def _read_mqtt_settings(section) -> dict[str, Any]:
-    """Read connection settings for one [mqttN] section."""
+    """Read connection settings for one [mqttN] section.
+
+    The tls_* keys are the advanced/certificate options -- see
+    mqtt_interface.MqttInterface for how each is applied. All optional:
+    absent means 'tls = true' uses the system CA store, matching the
+    behavior from before these existed.
+    """
     return {
         'host': section.get('host', fallback=None),
         'port': section.getint('port', fallback=1883),
         'username': section.get('username', fallback=None),
         'password': section.get('password', fallback=None),
         'tls': section.getboolean('tls', fallback=False),
+        'tls_ca_certs': section.get('tls_ca_certs', fallback=None),
+        'tls_certfile': section.get('tls_certfile', fallback=None),
+        'tls_keyfile': section.get('tls_keyfile', fallback=None),
+        'tls_keyfile_password': section.get('tls_keyfile_password', fallback=None),
+        'tls_insecure': section.getboolean('tls_insecure', fallback=False),
         'topic_prefix': section.get('topic_prefix', fallback=None),
         'local_id': section.get('local_id', fallback=None),
         'client_id': section.get('client_id', fallback=None),
@@ -353,6 +364,11 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
             'username': settings['username'],
             'password': settings['password'],
             'tls': settings['tls'],
+            'tls_ca_certs': settings['tls_ca_certs'],
+            'tls_certfile': settings['tls_certfile'],
+            'tls_keyfile': settings['tls_keyfile'],
+            'tls_keyfile_password': settings['tls_keyfile_password'],
+            'tls_insecure': settings['tls_insecure'],
             'topic_prefix': settings['topic_prefix'],
             'local_id': local_id,
             'client_id': settings['client_id'],
@@ -560,6 +576,11 @@ def _open_mqtt_interface(link_cfg: dict[str, Any]):
                 username=link_cfg.get('username'),
                 password=link_cfg.get('password'),
                 tls=link_cfg.get('tls', False),
+                tls_ca_certs=link_cfg.get('tls_ca_certs'),
+                tls_certfile=link_cfg.get('tls_certfile'),
+                tls_keyfile=link_cfg.get('tls_keyfile'),
+                tls_keyfile_password=link_cfg.get('tls_keyfile_password'),
+                tls_insecure=link_cfg.get('tls_insecure', False),
                 client_id=link_cfg.get('client_id'),
                 link_name=name,
                 keepalive=link_cfg.get('keepalive', 60),
@@ -568,6 +589,13 @@ def _open_mqtt_interface(link_cfg: dict[str, Any]):
             if failures:
                 print(f"[{name}] MQTT connection recovered after {failures} failed attempt(s).")
             return iface
+        except ValueError as e:
+            # Configuration error (missing/unreadable cert file, keyfile
+            # without certfile, blank required field) -- retrying can't fix
+            # it, and burning the full retry budget on it just buries the
+            # message and delays startup. Fail fast and loudly instead.
+            print(f"[{name}] MQTT configuration error, not retrying: {e}")
+            return None
         except Exception as e:
             failures += 1
             print(f"[{name}] MQTT connect attempt {failures} failed: {type(e).__name__}: {e}")
