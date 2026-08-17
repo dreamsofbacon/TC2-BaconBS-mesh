@@ -336,8 +336,8 @@
           <label for="mqtt_{{ link.index }}_keepalive">Keepalive (seconds)</label>
           <input type="text" id="mqtt_{{ link.index }}_keepalive" name="mqtt_{{ link.index }}_keepalive" class="form-control" value="{{ link.keepalive }}">
         </div>
-        <details class="form-group" {% if link.publish_clients or link.publish_telemetry or link.publish_activity or link.publish_sync_stats or link.publish_prefix %}open{% endif %}>
-          <summary style="cursor:pointer">What this broker receives</summary>
+        <details class="form-group" open>
+          <summary style="cursor:pointer"><strong>What this broker receives</strong></summary>
           <p class="text-muted">
             Beyond the BBS sync traffic this bridge exists for, choose what telemetry this
             node publishes here. Each broker is independent &mdash; you might send full
@@ -443,7 +443,7 @@
       '    <input type="text" id="mqtt_' + index + '_client_id" name="mqtt_' + index + '_client_id" class="form-control" placeholder="leave blank to auto-generate"></div>' +
       '  <div class="form-group"><label for="mqtt_' + index + '_keepalive">Keepalive (seconds)</label>' +
       '    <input type="text" id="mqtt_' + index + '_keepalive" name="mqtt_' + index + '_keepalive" class="form-control" value="60"></div>' +
-      '  <details class="form-group"><summary style="cursor:pointer">What this broker receives</summary>' +
+      '  <details class="form-group" open><summary style="cursor:pointer"><strong>What this broker receives</strong></summary>' +
       '    <p class="text-muted">Beyond the BBS sync traffic this bridge exists for, choose what telemetry this node publishes here. Each broker is independent. Topics live under &lt;prefix&gt;/&lt;this node\'s label&gt;/…</p>' +
       '    <div class="form-group"><label><input type="checkbox" name="mqtt_' + index + '_publish_status" value="1" checked> Node &amp; link status</label></div>' +
       '    <div class="form-group"><label><input type="checkbox" name="mqtt_' + index + '_publish_clients" value="1"> Mesh client roster</label></div>' +
