@@ -8,6 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 
 # db_operations.py does `from meshtastic import BROADCAST_NUM` at module
 # load time. If some other test file already cached a meshtastic stub that
@@ -283,6 +284,144 @@ class LinkReconnectRequestTests(_FreshServerCase):
         matched = self.server.apply_link_reconnect_request([dead], 'secondary')
         self.assertEqual(matched, ['secondary'])
         self.assertTrue(dead.reconnect_needed.is_set())
+
+
+class ReloadLinksFromConfigTests(_FreshServerCase):
+    """Applying MQTT config changes to a RUNNING service. `links` is built
+    once in main(), so without this a newly-added [mqttN] simply wouldn't
+    exist and an edited one would be rebuilt from stale startup settings."""
+
+    def _link_cfg(self, name, **overrides):
+        cfg = {
+            'name': name,
+            'host': 'broker.example.com',
+            'port': 1883,
+            'username': None,
+            'password': None,
+            'tls': False,
+            'tls_ca_certs': None,
+            'tls_certfile': None,
+            'tls_keyfile': None,
+            'tls_keyfile_password': None,
+            'tls_insecure': False,
+            'topic_prefix': f'baconbs/{name}',
+            'local_id': f'{name}-node',
+            'client_id': None,
+            'keepalive': 60,
+            'sync_section': f'sync_{name}',
+            'allow_section': f'allow_list_{name}',
+            'bbs_nodes_key': f'bbs_nodes_{name}',
+            'allowed_nodes_key': f'allowed_nodes_{name}',
+            'subscriber_nodes_key': f'subscriber_nodes_{name}',
+        }
+        cfg.update(overrides)
+        return cfg
+
+    def _patch_config(self, configured):
+        """Stand in for re-reading config.ini."""
+        import config_init
+        return patch.object(config_init, 'reload_mqtt_links', return_value=configured)
+
+    def test_newly_configured_broker_is_opened_and_added(self):
+        """The case that made the restart message necessary: mqtt2 added
+        after startup must become a live link without a restart."""
+        links = [self.RadioLink('primary', _FakeInterface())]
+        new_cfg = self._link_cfg('mqtt2')
+
+        with self._patch_config([new_cfg]), \
+             patch.object(self.server, 'get_mqtt_interface_by_name',
+                          return_value=_FakeInterface()), \
+             patch.object(self.server, 'refresh_peer_lists_from_config'):
+            result = self.server.reload_links_from_config(links, {}, 'config.ini')
+
+        self.assertEqual(result['added'], ['mqtt2'])
+        self.assertIn('mqtt2', [link.name for link in links])
+        self.assertEqual(len(links), 2)  # primary untouched
+
+    def test_removed_broker_is_closed_and_dropped(self):
+        closed = {'called': False}
+
+        class _ClosableInterface(_FakeInterface):
+            def close(self):
+                closed['called'] = True
+
+        mqtt1 = self.RadioLink('mqtt1', _ClosableInterface())
+        links = [self.RadioLink('primary', _FakeInterface()), mqtt1]
+
+        with self._patch_config([]):  # no longer in config.ini
+            result = self.server.reload_links_from_config(links, {}, 'config.ini')
+
+        self.assertEqual(result['removed'], ['mqtt1'])
+        self.assertTrue(closed['called'], "the dropped link's interface must be closed")
+        self.assertEqual([link.name for link in links], ['primary'])
+
+    def test_edited_broker_is_flagged_for_reconnect(self):
+        mqtt1 = self.RadioLink('mqtt1', _FakeInterface())
+        mqtt1.connection_settings = {
+            key: self._link_cfg('mqtt1')[key] for key in self.server._MQTT_CONNECTION_KEYS
+        }
+        links = [mqtt1]
+        edited = self._link_cfg('mqtt1', host='new-broker.example.com')
+
+        with self._patch_config([edited]):
+            result = self.server.reload_links_from_config(links, {}, 'config.ini')
+
+        self.assertEqual(result['changed'], ['mqtt1'])
+        self.assertTrue(mqtt1.reconnect_needed.is_set())
+
+    def test_unchanged_broker_is_not_reconnected(self):
+        """A no-op save must not needlessly drop a healthy connection."""
+        mqtt1 = self.RadioLink('mqtt1', _FakeInterface())
+        cfg = self._link_cfg('mqtt1')
+        mqtt1.connection_settings = {
+            key: cfg[key] for key in self.server._MQTT_CONNECTION_KEYS
+        }
+        links = [mqtt1]
+
+        with self._patch_config([cfg]):
+            result = self.server.reload_links_from_config(links, {}, 'config.ini')
+
+        self.assertEqual(result['changed'], [])
+        self.assertFalse(mqtt1.reconnect_needed.is_set())
+
+    def test_radios_are_never_touched_by_a_reload(self):
+        primary = self.RadioLink('primary', _FakeInterface())
+        secondary = self.RadioLink('secondary', _FakeInterface())
+        links = [primary, secondary]
+
+        with self._patch_config([]):
+            result = self.server.reload_links_from_config(links, {}, 'config.ini')
+
+        self.assertEqual(result, {'added': [], 'removed': [], 'changed': []})
+        self.assertEqual([link.name for link in links], ['primary', 'secondary'])
+        self.assertFalse(primary.reconnect_needed.is_set())
+
+    def test_unreachable_new_broker_is_still_registered_for_retry(self):
+        """Broker down at the moment of reload -- the link should still be
+        registered so the normal reconnect loop keeps retrying, rather than
+        silently vanishing until the next restart."""
+        links = []
+        with self._patch_config([self._link_cfg('mqtt2')]), \
+             patch.object(self.server, 'get_mqtt_interface_by_name', return_value=None), \
+             patch.object(self.server, 'refresh_peer_lists_from_config'):
+            result = self.server.reload_links_from_config(links, {}, 'config.ini')
+
+        self.assertEqual(result['added'], ['mqtt2'])
+        self.assertEqual(len(links), 1)
+        self.assertIsNone(links[0].interface)
+
+    def test_links_list_is_mutated_in_place(self):
+        """main() and the _active_links global alias the same list object --
+        rebinding instead of mutating would leave one of them stale."""
+        links = []
+        original_id = id(links)
+        with self._patch_config([self._link_cfg('mqtt2')]), \
+             patch.object(self.server, 'get_mqtt_interface_by_name',
+                          return_value=_FakeInterface()), \
+             patch.object(self.server, 'refresh_peer_lists_from_config'):
+            self.server.reload_links_from_config(links, {}, 'config.ini')
+        self.assertEqual(id(links), original_id)
+        self.assertEqual(len(links), 1)
 
 
 class IsLinkStillConfiguredTests(_FreshServerCase):

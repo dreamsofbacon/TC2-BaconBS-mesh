@@ -15,3 +15,8 @@ bbs-recent.log
 # Uploaded MQTT TLS material (may contain PRIVATE KEYS) -- never commit.
 # Nodes are updated by `git pull`, so a tracked key would propagate.
 data/mqtt-certs/
+
+# Runtime IPC trigger files written by the web admin for server.py to
+# consume (manual sync, reconnect, links reload). Transient, never source.
+*.trigger
+.manual_sync_trigger

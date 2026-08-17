@@ -285,13 +285,23 @@ tls_keyfile = /etc/baconbs/client.key
 topic_prefix = baconbs/cityA-cityB
 ```
 
-**Applying a changed broker without a restart.** MQTT connections are
-opened once at startup, so edited settings normally need a service restart
-to take effect. Instead, use **Settings → Links & Services → Reconnect** on
-that link: it drops and re-establishes just that connection using the saved
-config, while the BBS, the sync engine, and every other link keep running.
-Same button is the quickest fix for a single link that's wedged while the
-rest are healthy.
+**Applying broker changes without a restart.** Saving MQTT settings in the
+web admin applies them to the running service automatically — no restart.
+Behind the scenes it asks the server to reload links from `config.ini`,
+which opens brokers you added, closes ones you removed, and reconnects ones
+whose connection settings changed. If you edit `config.ini` by hand
+instead, press **Settings → Links & Services → Reload Links From Config**
+to do the same thing.
+
+Use **Reconnect** on a single link when the config hasn't changed but the
+connection is wedged — it re-establishes that one connection (re-reading
+`config.ini` as it does, so it also picks up edits) while the BBS, the sync
+engine, and every other link keep running.
+
+Radio devices (`[interface]` / `[interface2]`) are the exception: they're
+opened once at startup and still need a service restart after a change,
+since reopening a serial device is materially riskier than reopening a
+socket.
 
 **Uploading certificates from the browser.** Settings → MQTT Bridges →
 *Advanced TLS / Certificates* has a file picker for each of the three, so

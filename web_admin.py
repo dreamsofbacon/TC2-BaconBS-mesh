@@ -546,6 +546,26 @@ def request_link_reconnect_trigger(link_name: str) -> None:
   os.replace(tmp_path, trigger_path)
 
 
+def get_links_reload_trigger_path() -> str:
+  return resolve_app_path(os.getenv("BBS_LINKS_RELOAD_TRIGGER_PATH"), "reload_links.trigger")
+
+
+def request_links_reload_trigger() -> None:
+  """Ask server.py to bring its live links in line with config.ini.
+
+  Opens brokers added since startup, drops removed ones, and reconnects
+  ones whose connection settings changed -- all without restarting the
+  service. Requested automatically whenever MQTT settings are saved, since
+  otherwise `links` stays frozen at whatever main() built at startup and a
+  newly-added [mqttN] would not exist at all.
+  """
+  trigger_path = get_links_reload_trigger_path()
+  tmp_path = f"{trigger_path}.tmp"
+  with open(tmp_path, "w", encoding="utf-8") as trigger_file:
+    trigger_file.write("reload")
+  os.replace(tmp_path, trigger_path)
+
+
 def get_zork_save_resolve_trigger_path() -> str:
   return resolve_app_path(os.getenv("BBS_ZORK_SAVE_RESOLVE_TRIGGER_PATH"), "resolve_zork_save.trigger")
 
@@ -4474,6 +4494,15 @@ def create_app(runtime_interface=None) -> Flask:
           flash("Account linking settings saved.", "success")
           return redirect(url_for("settings_page") + "#accounts")
 
+        if section == "reload_links":
+          request_links_reload_trigger()
+          flash(
+            "Reloading links from config.ini — newly added brokers are opened, removed "
+            "ones closed, and edited ones reconnected. No restart needed.",
+            "success",
+          )
+          return redirect(url_for("settings_page") + "#links")
+
         if section == "reconnect_link":
           link_name = request.form.get("link_name", "").strip()
           if not link_name:
@@ -4493,7 +4522,15 @@ def create_app(runtime_interface=None) -> Flask:
           for error in errors:
             flash(error, "error")
           if not errors:
-            flash("MQTT bridge settings saved. Restart the mesh-bbs service for the change to take effect.", "success")
+            # Applies live: the server opens newly-added brokers, drops
+            # removed ones, and reconnects edited ones. No restart -- see
+            # server.reload_links_from_config.
+            request_links_reload_trigger()
+            flash(
+              "MQTT bridge settings saved and being applied to the running service "
+              "now — no restart needed. Watch Links & Services for the result.",
+              "success",
+            )
           return redirect(url_for("settings_page") + "#mqtt")
 
         if section == "sync":
