@@ -333,13 +333,42 @@ h1,h2,h3,h4,h5 { margin-top: 0; }
   gap: 4px;
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
-  padding: 3px 8px;
+  padding: 3px 7px;
   font-size: 0.72rem;
   background: var(--surface);
   color: var(--text-faint);
   white-space: nowrap;
   cursor: default;
+  position: relative;
 }
+.link-badge-icon { font-size: 0.85rem; line-height: 1; }
+
+/* Hover tooltip: the badge itself shows only an icon + status dot to keep
+   the nav bar compact as links/services are added, so the descriptive text
+   ("mqtt1 (MQTT:mqtt1) — connected") lives here. Screen readers get the
+   same string via aria-label, which a ::after tooltip can't provide. */
+.link-badge::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  box-shadow: var(--shadow-md);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--transition);
+  z-index: 100;
+  pointer-events: none;
+}
+.link-badge:hover::after,
+.link-badge:focus-visible::after { opacity: 1; visibility: visible; }
 .link-badge-dot {
   width: 7px;
   height: 7px;

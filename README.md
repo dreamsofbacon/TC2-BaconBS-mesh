@@ -17,6 +17,7 @@ Forked from [TC²-BBS-mesh](https://github.com/TheCommsChannel/TC2-BBS-mesh) wit
 - **Node Statistics** — View node counts, hardware types, and roles on the mesh
 - **Wall of Shame** — Devices with low battery levels
 - **Mesh Client Roster** — Every device seen on any active radio/MQTT link, persisted to the database (not just held in memory) so it survives a restart; browsable from Web Admin → Clients
+- **Per-Link Reconnect** — Drop and re-establish any single radio or MQTT link from Web Admin → Settings → Links & Services, without restarting the service or disturbing the other links
 - **Fortune Teller** — Random fortunes from a configurable text file
 - **Web Admin Dashboard** — Full moderation interface at `localhost:8081` with real-time sync monitoring, peer hash visualizations, transmission logs, and manual sync controls
 
@@ -284,11 +285,36 @@ tls_keyfile = /etc/baconbs/client.key
 topic_prefix = baconbs/cityA-cityB
 ```
 
-Paths are on **this node's** filesystem and must be readable by the user
-the service runs as (`User=` in `mesh-bbs.service`) — a common gotcha with
-keys in root-owned directories. A missing or unreadable file fails fast at
-startup naming the exact setting and path, rather than surfacing later as
-an opaque SSL error that looks like the broker being down.
+**Applying a changed broker without a restart.** MQTT connections are
+opened once at startup, so edited settings normally need a service restart
+to take effect. Instead, use **Settings → Links & Services → Reconnect** on
+that link: it drops and re-establishes just that connection using the saved
+config, while the BBS, the sync engine, and every other link keep running.
+Same button is the quickest fix for a single link that's wedged while the
+rest are healthy.
+
+**Uploading certificates from the browser.** Settings → MQTT Bridges →
+*Advanced TLS / Certificates* has a file picker for each of the three, so
+no shell access is needed: the file is validated, saved onto the node under
+`data/mqtt-certs/mqtt<N>/`, and the path is filled in for you. Uploads are
+checked for being genuine PEM of the *expected kind* — uploading a private
+key into a certificate field, or a binary DER/PKCS#12 file, is rejected
+immediately with an explanation instead of failing later as an opaque SSL
+error. Private keys are stored readable only by the service user, and
+`data/mqtt-certs/` is gitignored so an uploaded key can never be committed
+and propagated by `git pull` to other nodes.
+
+> **Uploading a private key:** the web admin serves plain **HTTP**, so a key
+> uploaded through the form crosses your network unencrypted. On a trusted
+> LAN that's usually acceptable; otherwise copy the key to the node
+> yourself and just type its path in the field instead. Public certificates
+> (the CA and client cert) carry no such concern.
+
+Typed paths are on **this node's** filesystem and must be readable by the
+user the service runs as (`User=` in `mesh-bbs.service`) — a common gotcha
+with keys in root-owned directories. A missing or unreadable file fails
+fast at startup naming the exact setting and path, rather than surfacing
+later as an opaque SSL error that looks like the broker being down.
 
 Setting any of these turns TLS on even without `tls = true`, so
 certificates can't be silently ignored on a plaintext connection. Avoid
@@ -490,11 +516,71 @@ usb_serial_generic_read_bulk_callback - urb stopped: -32
 usb 1-1.3: USB disconnect, device number 5
 ```
 
-Each reconnect can also reassign the device to a **new** `/dev/ttyUSBn`
-number, which silently breaks a fixed `port = /dev/ttyUSBx` in `config.ini`
-until corrected -- if a radio that was working suddenly can't be found,
-check `ls /dev/ttyUSB*` against what `config.ini` actually points at before
-assuming a config or firmware problem.
+### Use stable device paths, not `/dev/ttyUSBn`
+
+**On a multi-radio node, always set `port` to a `/dev/serial/by-*` path.**
+`/dev/ttyUSB0`, `ttyUSB1`, ... are assigned in *enumeration order*, not tied
+to a particular physical device — a reboot, a USB reconnect (see autosuspend
+above), or simply powering the radios up in a different order can renumber
+them or **swap which radio is which**. Two failure modes follow, and the
+second is nastier than it looks:
+
+- `port` points at a number that no longer exists → that radio never
+  connects, and the log just says the connect attempt failed.
+- `port` still exists but is now *the other radio* → the BBS tries a
+  Meshtastic handshake against a MeshCore board (or vice versa), holds the
+  port open, and never completes. This looks like a dead/misconfigured
+  radio, but both boards are fine.
+
+List the stable aliases:
+
+```bash
+ls -l /dev/serial/by-id/     # keyed by the adapter's USB serial number
+ls -l /dev/serial/by-path/   # keyed by which physical USB port it's in
+```
+
+Prefer `by-id` — it follows the device to any port. But many cheap CP2102
+adapters ship with the **same** hard-coded serial number (`...Controller_0001`),
+so two of them collide and only one `by-id` symlink appears. When that
+happens use `by-path`, which is unambiguous because it describes the
+physical port:
+
+```ini
+[interface]
+type = serial
+port = /dev/serial/by-path/platform-3f980000.usb-usb-0:1.1.3:1.0-port0
+
+[interface2]
+type = meshcore_serial
+port = /dev/serial/by-path/platform-3f980000.usb-usb-0:1.2:1.0-port0
+```
+
+The tradeoff: a `by-path` alias is tied to the physical USB port, so moving
+a radio to a different port changes it. That's usually what you want on a
+fixed install — it stays correct across reboots and renumbering, which is
+the failure that actually bites.
+
+To confirm which board is on which port, ask each one directly (stop the
+service first so the ports are free) — the MeshCore radio answers, the
+Meshtastic one doesn't:
+
+```bash
+sudo systemctl stop mesh-bbs.service
+venv/bin/python3 -c "
+import asyncio
+from meshcore import MeshCore
+async def main():
+    for p in ['/dev/ttyUSB0', '/dev/ttyUSB1']:
+        try:
+            mc = await asyncio.wait_for(MeshCore.create_serial(p, 115200, default_timeout=3), timeout=20)
+            print(p, '-> MeshCore:', (mc.self_info or {}).get('name') if mc else 'no response')
+            if mc: await mc.disconnect()
+        except Exception as e:
+            print(p, '-> not MeshCore (', type(e).__name__, ')')
+asyncio.run(main())
+"
+sudo systemctl start mesh-bbs.service
+```
 
 Disabling autosuspend on just the radio's own USB device isn't enough -- an
 upstream USB hub it's plugged into can still be suspended and drag the

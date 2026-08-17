@@ -11,3 +11,7 @@ meshtastic-web-dist/
 bbs-recent.log
 *.log
 
+
+# Uploaded MQTT TLS material (may contain PRIVATE KEYS) -- never commit.
+# Nodes are updated by `git pull`, so a tracked key would propagate.
+data/mqtt-certs/

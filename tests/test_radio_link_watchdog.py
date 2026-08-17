@@ -236,6 +236,55 @@ class RadioLinkTickTests(_FreshServerCase):
         self.assertEqual(stuck_link.next_node_sync_check, 0.0)
 
 
+class LinkReconnectRequestTests(_FreshServerCase):
+    """Operator-requested per-link reconnect (web admin's Links & Services
+    card -> trigger file -> server.apply_link_reconnect_request). The point
+    is that it reconnects ONE link in place without restarting anything --
+    so the key assertions are that siblings are left alone."""
+
+    def test_named_link_is_flagged_and_siblings_are_untouched(self):
+        primary = self.RadioLink('primary', _FakeInterface())
+        mqtt1 = self.RadioLink('mqtt1', _FakeInterface())
+        links = [primary, mqtt1]
+
+        matched = self.server.apply_link_reconnect_request(links, 'mqtt1')
+
+        self.assertEqual(matched, ['mqtt1'])
+        self.assertTrue(mqtt1.reconnect_needed.is_set())
+        self.assertFalse(primary.reconnect_needed.is_set())
+
+    def test_all_flags_every_link(self):
+        links = [
+            self.RadioLink('primary', _FakeInterface()),
+            self.RadioLink('secondary', _FakeInterface()),
+            self.RadioLink('mqtt1', _FakeInterface()),
+        ]
+
+        matched = self.server.apply_link_reconnect_request(links, 'all')
+
+        self.assertEqual(matched, ['primary', 'secondary', 'mqtt1'])
+        self.assertTrue(all(link.reconnect_needed.is_set() for link in links))
+
+    def test_unknown_link_flags_nothing(self):
+        primary = self.RadioLink('primary', _FakeInterface())
+        matched = self.server.apply_link_reconnect_request([primary], 'nope')
+        self.assertEqual(matched, [])
+        self.assertFalse(primary.reconnect_needed.is_set())
+
+    def test_blank_target_flags_nothing(self):
+        primary = self.RadioLink('primary', _FakeInterface())
+        self.assertEqual(self.server.apply_link_reconnect_request([primary], '   '), [])
+        self.assertFalse(primary.reconnect_needed.is_set())
+
+    def test_link_that_never_connected_can_still_be_reconnected(self):
+        """interface=None (gave up at startup) must still accept a manual
+        reconnect request -- that's exactly when an operator would use it."""
+        dead = self.RadioLink('secondary', None)
+        matched = self.server.apply_link_reconnect_request([dead], 'secondary')
+        self.assertEqual(matched, ['secondary'])
+        self.assertTrue(dead.reconnect_needed.is_set())
+
+
 class IsLinkStillConfiguredTests(_FreshServerCase):
     """_reconnect_link must distinguish "still configured, just failed to
     connect again" (keep retrying) from "removed/disabled in config.ini
