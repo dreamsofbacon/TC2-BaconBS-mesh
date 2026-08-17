@@ -1,0 +1,85 @@
+The following are ideas and are ment to be implimented later on or not at all(planning):
+    create a simple indented text file, that shows the entire menu path for the system. not including each sub program's menus (each game stops at the menu item to launch that game)
+    add a system for seperating out channels and bulletins based on upload node. so messages uploaded to a node are seperate from things uploaded to a sister node.
+    Speed up database propigation between nodes.
+    Test 3 or more nodes
+        test 3 or more nodes across multiple networks
+    add a system for having the server dm a user to get dms for mail sent to them via the users device profile configuration.
+    add a spot for a welcome message at the top of the first connection
+        allowing the user to change the public name of the bbs, and having each of its affiliated nodes names listed on the welcome page as well.
+        allow the user to configure this completely from the web ui
+    add web admin options for installing dependencies automatically for your given OS (fontz)
+    add system for pulling device node information from connected device, and creating a database of these settings.
+    add trivia game.
+    docker container updated (it is still the original version currently)
+    add more themes
+    
+
+The following are Features that should be added to the program(active)
+    add and test project nomad support.
+    restructure program to work modularly
+    
+   
+The following items have been implimented but not fully tested
+    [ ] enhanced user system and implimentation to support aliasing and device groups and create a test list, if you don't know if something is tested, assume it has not.
+    [ ] API Gateway (HTTP GET relay, Ollama/OpenAI AI relay, store-and-forward mailbox, per-node rate limiting, allow-list lock-down)
+    [ ] Native MeshCore radio support (serial/TCP/BLE companion connection)
+        [ ] Verified against real MeshCore companion hardware (unit-tested with mocks only; both live nodes currently run Meshtastic serial)
+    [ ] Dual-radio bridge mode (one node running both a Meshtastic and a MeshCore radio, bridging BBS sync between the two networks)
+        [ ] Verified against real second-radio hardware (never run against actual hardware; extensively unit-tested with fake interfaces only)
+        [ ] One radio going down degrades to single-network operation instead of halting both, confirmed in the field
+        [ ] Account-aware urgent-board permission across both radios, confirmed in the field
+    [ ] Device Configuration section in web admin Settings (pick each radio's type/connection details from the GUI)
+        [ ] A config change made through the GUI confirmed to take effect after a mesh-bbs service restart
+    [ ] Multi-device user accounts / aliasing system (Profile > Linked Devices)
+        [ ] Request a link code from an already-linked device
+        [ ] Enter a code from a second device and confirm it links successfully
+        [ ] List linked devices shows the correct devices and networks
+        [ ] Set a shared account alias
+        [ ] Alias appears on a bulletin post instead of the device's own short name
+        [ ] Alias appears on a mail message instead of the device's own short name
+        [ ] Alias appears on a channel comment instead of the device's own short name
+        [ ] Unlink a device via the [Y]es/[N]o confirmation step
+        [ ] Refuses to unlink an account's last remaining device
+        [ ] Rate limit trips after too many link-code requests in an hour
+        [ ] Rate limit trips after too many failed code submissions in an hour
+        [ ] Expired link code is rejected
+        [ ] Urgent board posting permission granted to a linked sibling device
+        [ ] API gateway access granted to a linked sibling device
+        [ ] Web admin Accounts list page
+        [ ] Web admin Account detail page: set alias, force-link, force-unlink
+        [ ] Settings page "Account Linking" tunables actually change rate-limit behavior
+    [ ] Project Nomad AI relay dialect (API Gateway > Ask Project Nomad)
+        [ ] A real query sent to a live Project Nomad endpoint with a correct reply received back over the mesh
+        [ ] Ask Nomad homescreen shortcut ('N' on the main menu) jumps straight to the question prompt
+        [ ] After a reply, asking a follow-up question immediately works without re-navigating the menu
+        [ ] After a reply, sending 0 returns to the main menu (not Utilities)
+        [ ] Follow-up prompt appears for a mesh-relayed reply (asking through a peer gateway), not just the local-gateway fast path
+    [ ] Pico "Option B" op_log subscriber cache node (device-side CircuitPython code)
+        [ ] Bring-up and sync verified on real Raspberry Pi Pico hardware wired to a Meshtastic radio
+    [ ] MQTT internet-bridge sync mode (bridge to a BBS node unreachable over RF, via an MQTT broker; open-ended multiple simultaneous links per node)
+        [ ] Verified against a real MQTT broker (unit-tested with a fake paho client only; never run against real Mosquitto/etc.)
+        [ ] Two live nodes bridged via MQTT confirmed to sync content with radios disconnected (proves it's not sneaking through RF)
+        [ ] Three or more simultaneous links on one node (radio + 2 MQTT) confirmed in the field, not just unit-tested
+        [ ] A broker going unreachable at startup or mid-run degrades only that link, confirmed in the field
+        [ ] MQTT link's turbo pacing confirmed not to affect a co-located radio's own pacing, in the field
+        [ ] Account-aware urgent-board permission for an MQTT-linked sibling device
+
+The following are features that have all ready been added to the program. (closed)
+    [  Private Mail (send, reply, delete, mailbox)
+    [  Bulletin Boards (post, read, per-board Urgent posting permission)
+    [  Channel Directory with threaded comments
+    [  User Profiles (short name, bio, activity stats)
+    [  Interactive Games (Zork I-III, Hitchhiker's Guide to the Galaxy, Enchanter, Planetfall, Starcross via dfrotz) with cross-mesh save sync
+    [ ] Five-phase distributed sync protocol
+        [ ] Mail, Bulletins, Channels, Profiles, Game saves priority ordering
+        [ ] SYNCSTATE hash-manifest reconciliation and HASHMISS gap-fill retries
+        [ ] Tombstone-based deletion propagation
+        [ ] Capability negotiation between heterogeneous peers
+    [?] JS8Call Bridge (group, direct, and urgent radio messages)
+    [  Node Statistics, Wall of Shame, and Fortune Teller utilities
+    [  Web Admin Dashboard (bulletins/mail/channels tables, live transmission log, sync status, peer hash graph)
+    [ ] Gateway subscriber mode (pull-only WANT/HASHMISS peers excluded from push-sync/hash-repair)
+    [ ] GUI-configurable database size cap with mesh-wide oldest-content pruning
+    [ ] Automatic database maintenance (WAL checkpointing, log table pruning)
+    [ ] Remote node update tooling (PowerShell/SSH deploy to Linux nodes)
