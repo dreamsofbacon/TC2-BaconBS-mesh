@@ -575,3 +575,62 @@ class NodeIdCollisionAvoidanceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ApplyPublishSettingsTests(unittest.TestCase):
+    """Toggling what a broker receives must take effect on a RUNNING link.
+
+    Regression: publish_kinds was only read in __init__, and the publish
+    flags aren't connection settings, so a reload saw no change and never
+    reconnected -- the saved toggles silently did nothing until restart.
+    """
+
+    def setUp(self):
+        self.broker = _FakeBroker()
+        self.client_patch = patch.object(
+            mqtt_interface.mqtt, "Client", _make_client_factory(self.broker)
+        )
+        self.client_patch.start()
+        self.addCleanup(self.client_patch.stop)
+        self.iface = MqttInterface(
+            host="broker.example.com", topic_prefix="baconbs/city-a-b",
+            local_id="node-a", link_name="mqtt1",
+            publish_kinds={"status": True},
+        )
+        self.addCleanup(self.iface.close)
+
+    def _topics(self):
+        return [t for t, _p, _r in self.iface._client.published]
+
+    def test_enabling_a_category_takes_effect_without_reconnecting(self):
+        self.assertFalse(self.iface.publishes("clients"))
+        self.iface.apply_publish_settings({"status": True, "clients": True})
+        self.assertTrue(self.iface.publishes("clients"))
+
+        self.iface._client.published.clear()
+        self.iface.publish_clients([{"node_id": "!abc", "link_name": "primary"}])
+        self.assertIn("baconbs/city-a-b/node-a/clients", self._topics())
+
+    def test_disabling_a_category_stops_publishing(self):
+        self.iface.apply_publish_settings({"status": False})
+        self.iface._client.published.clear()
+        self.iface.publish_status({"updated_at": "now", "links": {}})
+        self.assertEqual(self._topics(), [])
+
+    def test_prefix_change_applies_and_is_sanitized(self):
+        self.iface.apply_publish_settings({"status": True}, "home assistant/bacon")
+        self.iface._client.published.clear()
+        self.iface.publish_status({"updated_at": "now", "links": {}})
+        self.assertIn("home-assistant/bacon/node-a/status", self._topics())
+
+    def test_blank_prefix_falls_back_to_topic_prefix(self):
+        self.iface.apply_publish_settings({"status": True}, "")
+        self.iface._client.published.clear()
+        self.iface.publish_status({"updated_at": "now", "links": {}})
+        self.assertIn("baconbs/city-a-b/node-a/status", self._topics())
+
+    def test_connection_is_not_disturbed(self):
+        """Changing output routing must not drop a healthy session."""
+        self.assertTrue(self.iface.is_connected)
+        self.iface.apply_publish_settings({"status": True, "telemetry": True})
+        self.assertTrue(self.iface.is_connected)
