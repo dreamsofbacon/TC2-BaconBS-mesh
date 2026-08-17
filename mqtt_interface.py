@@ -489,6 +489,23 @@ class MqttInterface:
             raise IOError(f"MQTT publish failed: rc={info.rc}")
         return SimpleNamespace(id=str(info.mid))
 
+    def apply_publish_settings(
+        self, publish_kinds: dict, publish_prefix: Optional[str] = None
+    ) -> None:
+        """Update what this broker receives, WITHOUT reconnecting.
+
+        Publish selection is pure output routing -- it has no effect on the
+        MQTT session itself -- so dropping a healthy connection to change
+        it would be gratuitous. Called by server.reload_links_from_config
+        when config.ini changes, which is what makes the Settings toggles
+        take effect on a running node instead of silently waiting for the
+        next restart.
+        """
+        self.publish_kinds = dict(publish_kinds or {})
+        self.publish_prefix = (
+            sanitize_topic_segment(publish_prefix, allow_slash=True) or self.topic_prefix
+        )
+
     def publishes(self, kind: str) -> bool:
         """True if this broker is configured to receive ``kind``.
 

@@ -306,6 +306,26 @@ def reload_links_from_config(links, system_config: dict, config_path: str) -> di
         link = existing_by_name.get(name)
         if link is None:
             continue
+        # Publish selection is pure output routing -- it doesn't touch the
+        # MQTT session -- so apply it in place instead of reconnecting.
+        # Without this the Settings toggles would save to config.ini and
+        # then silently do nothing until the next service restart, because
+        # publish_kinds is otherwise only read in MqttInterface.__init__.
+        apply_publish = getattr(link.interface, 'apply_publish_settings', None)
+        if callable(apply_publish):
+            try:
+                apply_publish(
+                    {
+                        kind: bool(entry.get(f'publish_{kind}', default))
+                        for kind, default in (
+                            ('status', True), ('clients', False), ('telemetry', False),
+                            ('activity', False), ('sync_stats', False),
+                        )
+                    },
+                    entry.get('publish_prefix'),
+                )
+            except Exception:
+                logging.debug(f"[{name}] applying publish settings failed", exc_info=True)
         previous = getattr(link, 'connection_settings', None)
         current = {key: entry.get(key) for key in _MQTT_CONNECTION_KEYS}
         if previous is not None and previous != current:
