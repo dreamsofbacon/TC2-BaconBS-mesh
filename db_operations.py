@@ -3270,10 +3270,22 @@ def get_mesh_clients(
         clauses.append('link_name = ?')
         params.append(link_name)
     if seen_within_seconds and seen_within_seconds > 0:
-        cutoff = (datetime.now() - timedelta(seconds=int(seen_within_seconds))
-                  ).strftime('%Y-%m-%d %H:%M:%S')
-        clauses.append('last_seen >= ?')
-        params.append(cutoff)
+        # Recency means "the radio actually heard this node recently"
+        # (last_heard_epoch), NOT "it was in the node table during our last
+        # sweep" (last_seen). last_seen refreshes for every node the radio
+        # still lists, which is nearly all of them, so filtering on it
+        # excludes almost nothing. Only Meshtastic reports last_heard_epoch,
+        # so MeshCore/MQTT nodes fall back to last_seen -- for those, being
+        # present in the roster IS the freshest signal available.
+        window = int(seen_within_seconds)
+        epoch_cutoff = int(datetime.now().timestamp()) - window
+        ts_cutoff = (datetime.now() - timedelta(seconds=window)
+                     ).strftime('%Y-%m-%d %H:%M:%S')
+        clauses.append(
+            '((last_heard_epoch IS NOT NULL AND last_heard_epoch >= ?) OR '
+            ' (last_heard_epoch IS NULL AND last_seen >= ?))'
+        )
+        params.extend([epoch_cutoff, ts_cutoff])
     where = (' WHERE ' + ' AND '.join(clauses)) if clauses else ''
     c.execute(f'SELECT {columns} FROM mesh_clients{where} ORDER BY last_seen DESC', params)
     keys = [
