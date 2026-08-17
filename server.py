@@ -85,6 +85,12 @@ _INCOMPLETE_RESET_AFTER: int = 4  # ~3 min at the 45s repair cadence
 # object (passed up from a failed send in utils.py) belongs to.
 _active_links: list = []
 
+# Set by main() so the periodic diagnostics snapshot can report non-link
+# services (JS8Call, API gateway) alongside the radio/MQTT links -- see
+# _describe_services. Mirrors _active_links rather than threading another
+# parameter through write_runtime_diagnostics_snapshot's call sites.
+_js8call_client = None
+
 
 def signal_reconnect(interface) -> None:
     """Mark the RadioLink that owns ``interface`` as needing reconnect.
@@ -229,6 +235,33 @@ def get_record_resolve_trigger_path() -> str:
     return resolve_app_path(os.getenv('BBS_RECORD_RESOLVE_TRIGGER_PATH'), 'resolve_record.trigger')
 
 
+def get_link_reconnect_trigger_path() -> str:
+    return resolve_app_path(os.getenv('BBS_LINK_RECONNECT_TRIGGER_PATH'), 'reconnect_link.trigger')
+
+
+def apply_link_reconnect_request(links, target: str) -> list:
+    """Flag the requested link(s) for reconnect. Returns the names matched.
+
+    ``target`` is a link name or 'all'. Deliberately only sets the same
+    reconnect_needed flag the automatic liveness check uses, so the existing
+    _reconnect_link path does the work -- close, retry with backoff, rejoin --
+    without restarting the process or touching any other link.
+    """
+    normalized = str(target or '').strip()
+    if not normalized:
+        return []
+    matched = [link for link in links if normalized == 'all' or link.name == normalized]
+    for link in matched:
+        logging.info(f"[{link.name}] Reconnect requested from web admin.")
+        link.reconnect_needed.set()
+    if not matched:
+        logging.warning(
+            f"Reconnect requested for unknown link '{normalized}'; "
+            f"active links are: {', '.join(link.name for link in links) or '(none)'}"
+        )
+    return [link.name for link in matched]
+
+
 def read_sync_interval_minutes(config_path: str, default_minutes: int = 5) -> int:
     cfg = configparser.ConfigParser()
     cfg.read(config_path)
@@ -328,6 +361,46 @@ def _describe_radio(interface, system_config: dict, *, bbs_nodes_key='bbs_nodes'
     return entry
 
 
+def _describe_services() -> list:
+    """Non-link services this node runs, for the status display.
+
+    These are NOT RadioLinks -- they carry no BBS sync traffic and have no
+    reconnect path -- so they're reported separately from 'radios' and the
+    web admin renders them without a Reconnect button. Only services that
+    are actually configured appear; an unconfigured integration is absent
+    rather than shown as a permanently-down service.
+
+    Adding a future service here is the only change needed to surface it in
+    both the nav-bar badges and Settings > Links & Services.
+    """
+    services = []
+    try:
+        from gateway import is_gateway_enabled
+        if is_gateway_enabled():
+            services.append({
+                'name': 'gateway',
+                'protocol': 'API Gateway',
+                'connected': True,   # config-enabled; it has no socket to be "down"
+                'reconnecting': False,
+            })
+    except Exception:
+        pass
+    try:
+        client = _js8call_client
+        # db_conn is JS8Call's own "is this configured at all" signal --
+        # see js8call_integration.JS8CallClient.__init__.
+        if client is not None and getattr(client, 'db_conn', None):
+            services.append({
+                'name': 'js8call',
+                'protocol': 'JS8Call',
+                'connected': bool(getattr(client, 'connected', False)),
+                'reconnecting': False,
+            })
+    except Exception:
+        pass
+    return services
+
+
 def write_runtime_diagnostics_snapshot(links, system_config: dict) -> None:
     """Write the diagnostics JSON web_admin.py reads. ``links`` is a list of
     one or two RadioLink -- the top-level fields mirror links[0] (the
@@ -365,6 +438,7 @@ def write_runtime_diagnostics_snapshot(links, system_config: dict) -> None:
         'bbs_nodes': primary.get('bbs_nodes', []),
         'allowed_nodes': primary.get('allowed_nodes', []),
         'radios': radios,
+        'services': _describe_services(),
         'sync_in_progress': bool(sync_progress.get('in_progress', False)),
         'sync_progress_percent': int(sync_progress.get('progress_percent', 0)),
         'sync_completed_items': int(sync_progress.get('completed_items', 0)),
@@ -1142,6 +1216,7 @@ def main():
     peer_resync_trigger_path = get_peer_resync_trigger_path()
     zork_save_resolve_trigger_path = get_zork_save_resolve_trigger_path()
     record_resolve_trigger_path = get_record_resolve_trigger_path()
+    link_reconnect_trigger_path = get_link_reconnect_trigger_path()
     publish_mqtt_status(links, write_runtime_diagnostics_snapshot(links, system_config))
     persist_mesh_clients(links)
 
@@ -1171,6 +1246,8 @@ def main():
     # regardless of dual-radio bridge mode.
     js8call_client = JS8CallClient(links[0].interface)
     js8call_client.logger = js8call_logger
+    global _js8call_client
+    _js8call_client = js8call_client
 
     if js8call_client.db_conn:
         js8call_client.connect()
@@ -1193,6 +1270,7 @@ def main():
         last_peer_resync_trigger_mtime = 0.0
         last_zork_save_resolve_trigger_mtime = 0.0
         last_record_resolve_trigger_mtime = 0.0
+        last_link_reconnect_trigger_mtime = 0.0
         system_config['sync_last_trigger_reason'] = 'scheduled'
         system_config['sync_interval_minutes_runtime'] = int(system_config.get('sync_interval_minutes', 5))
         system_config['sync_next_run_epoch'] = int(time.time())
@@ -1353,6 +1431,24 @@ def main():
                                 logging.warning(f"Unable to parse record resolver trigger: {exc}")
             except Exception as exc:
                 logging.debug(f"Unable to process record resolve trigger: {exc}")
+
+            # Operator-requested reconnect of ONE link (or all), from the web
+            # admin's Links & Services card. Deliberately just sets the same
+            # reconnect_needed flag the automatic liveness check uses, so the
+            # existing _reconnect_link path handles it -- close, retry with
+            # backoff, rejoin -- without restarting the process or disturbing
+            # any other link.
+            try:
+                if os.path.exists(link_reconnect_trigger_path):
+                    trigger_mtime = os.path.getmtime(link_reconnect_trigger_path)
+                    if trigger_mtime > last_link_reconnect_trigger_mtime:
+                        last_link_reconnect_trigger_mtime = trigger_mtime
+                        with open(link_reconnect_trigger_path, 'r', encoding='utf-8') as _f:
+                            _target = _f.read().strip()
+                        os.remove(link_reconnect_trigger_path)
+                        apply_link_reconnect_request(links, _target)
+            except Exception as exc:
+                logging.debug(f"Unable to process link reconnect trigger: {exc}")
 
             for link in links:
                 _run_link_tick(

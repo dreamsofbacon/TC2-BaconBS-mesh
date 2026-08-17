@@ -5,6 +5,66 @@
   <p class="text-muted">Manage radio devices, boards, sync peers, allowed nodes, and web admin credentials from one place.</p>
 </div>
 
+<div class="card" id="links" style="max-width:800px">
+  <h2>Links &amp; Services</h2>
+  <p class="text-muted">
+    Everything this node is connected to. <strong>Links</strong> carry BBS traffic (radios,
+    MQTT bridges) and can be reconnected individually &mdash; the connection is dropped and
+    re-established (with retry backoff) while the BBS, the sync engine, and every
+    <em>other</em> link keep running. Use that after changing a broker's settings, or when
+    one link is stuck but the rest are fine; it is <strong>not</strong> a service restart and
+    nothing is lost. <strong>Services</strong> (JS8Call, API gateway) are shown for visibility
+    only &mdash; they carry no sync traffic and have no separate connection to cycle.
+  </p>
+  {% if link_statuses %}
+  <div class="table-scroll-container">
+    <table class="data-table">
+      <thead>
+        <tr><th>Name</th><th>Type</th><th>Protocol</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for link in link_statuses %}
+        <tr>
+          <td>{{ link.name }}</td>
+          <td>{{ 'Link' if link.kind == 'link' else 'Service' }}</td>
+          <td>{{ link.protocol }}</td>
+          <td>
+            {% if link.reconnecting %}
+              <span style="color:var(--warn-fg)">reconnecting&hellip;</span>
+            {% elif link.connected %}
+              <span style="color:var(--success-fg)">connected</span>
+            {% else %}
+              <span style="color:var(--error-fg)">disconnected</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if link.kind == 'link' %}
+            <form method="post" action="{{ url_for('settings_page') }}#links" style="margin:0">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="settings_section" value="reconnect_link">
+              <input type="hidden" name="link_name" value="{{ link.name }}">
+              <button class="btn btn-sm" type="submit">Reconnect</button>
+            </form>
+            {% else %}
+            <span class="text-muted" style="font-size:0.78rem">&mdash;</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <form method="post" action="{{ url_for('settings_page') }}#links" style="margin-top:1rem">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="reconnect_link">
+    <input type="hidden" name="link_name" value="all">
+    <button class="btn" type="submit">Reconnect All Links</button>
+  </form>
+  {% else %}
+  <p class="text-muted">No active links reported yet. This fills in once the mesh-bbs service is running and has written its first status snapshot.</p>
+  {% endif %}
+</div>
+
 <div class="card" id="devices" style="max-width:800px">
   <h2>Device Configuration</h2>
   <p class="text-muted">Choose the radio(s) this BBS talks over. <strong>Changes here require restarting the mesh-bbs service</strong> to take effect — the radio connection is opened once at startup, so this form doesn't apply live.</p>
@@ -172,7 +232,7 @@
     apply live.
   </p>
 
-  <form method="post" action="{{ url_for('settings_page') }}#mqtt" id="mqtt_form">
+  <form method="post" action="{{ url_for('settings_page') }}#mqtt" id="mqtt_form" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="settings_section" value="mqtt">
     <input type="hidden" name="mqtt_indexes" id="mqtt_indexes" value="{{ mqtt_links|map(attribute='index')|join(',') }}">
@@ -203,18 +263,27 @@
         </div>
         <details class="form-group" {% if link.tls_ca_certs or link.tls_certfile or link.tls_keyfile or link.tls_insecure %}open{% endif %}>
           <summary style="cursor:pointer">Advanced TLS / Certificates</summary>
-          <p class="text-muted">All optional. Plain <strong>Use TLS</strong> above already verifies the broker against the system CA store &mdash; you only need these for a self-hosted broker with a private CA, or one requiring client-certificate (mutual TLS) auth. Paths are read from <em>this node's</em> filesystem and must be readable by the service user. Setting any of them turns TLS on even if the box above is unchecked.</p>
+          <p class="text-muted">All optional. Plain <strong>Use TLS</strong> above already verifies the broker against the system CA store &mdash; you only need these for a self-hosted broker with a private CA, or one requiring client-certificate (mutual TLS) auth. <strong>Upload a <code>.pem</code>/<code>.crt</code> file</strong> and it's saved onto this node for you, or type a path to a file already there. Setting any of them turns TLS on even if the box above is unchecked.</p>
           <div class="form-group">
-            <label for="mqtt_{{ link.index }}_tls_ca_certs">CA certificate file</label>
-            <input type="text" id="mqtt_{{ link.index }}_tls_ca_certs" name="mqtt_{{ link.index }}_tls_ca_certs" class="form-control" value="{{ link.tls_ca_certs }}" placeholder="e.g. /etc/ssl/certs/my-broker-ca.crt — blank uses the system CA store">
+            <label for="mqtt_{{ link.index }}_tls_ca_certs">CA certificate</label>
+            <input type="file" id="mqtt_{{ link.index }}_tls_ca_certs_upload" name="mqtt_{{ link.index }}_tls_ca_certs_upload" class="form-control" accept=".pem,.crt,.cer,.ca-bundle">
+            <input type="text" id="mqtt_{{ link.index }}_tls_ca_certs" name="mqtt_{{ link.index }}_tls_ca_certs" class="form-control" value="{{ link.tls_ca_certs }}" placeholder="…or a path already on this node — blank uses the system CA store">
+            <p class="text-muted">{% if link.tls_ca_certs %}Currently: <code>{{ link.tls_ca_certs }}</code>. Uploading replaces it.{% else %}Only needed for a private/self-signed broker CA.{% endif %}</p>
           </div>
           <div class="form-group">
-            <label for="mqtt_{{ link.index }}_tls_certfile">Client certificate file (mutual TLS)</label>
-            <input type="text" id="mqtt_{{ link.index }}_tls_certfile" name="mqtt_{{ link.index }}_tls_certfile" class="form-control" value="{{ link.tls_certfile }}" placeholder="e.g. /etc/baconbs/client.crt">
+            <label for="mqtt_{{ link.index }}_tls_certfile">Client certificate (mutual TLS)</label>
+            <input type="file" id="mqtt_{{ link.index }}_tls_certfile_upload" name="mqtt_{{ link.index }}_tls_certfile_upload" class="form-control" accept=".pem,.crt,.cer">
+            <input type="text" id="mqtt_{{ link.index }}_tls_certfile" name="mqtt_{{ link.index }}_tls_certfile" class="form-control" value="{{ link.tls_certfile }}" placeholder="…or a path already on this node">
+            <p class="text-muted">{% if link.tls_certfile %}Currently: <code>{{ link.tls_certfile }}</code>. Uploading replaces it.{% endif %}</p>
           </div>
           <div class="form-group">
-            <label for="mqtt_{{ link.index }}_tls_keyfile">Client private key file (mutual TLS)</label>
-            <input type="text" id="mqtt_{{ link.index }}_tls_keyfile" name="mqtt_{{ link.index }}_tls_keyfile" class="form-control" value="{{ link.tls_keyfile }}" placeholder="e.g. /etc/baconbs/client.key — requires the certificate above">
+            <label for="mqtt_{{ link.index }}_tls_keyfile">Client private key (mutual TLS)</label>
+            <input type="file" id="mqtt_{{ link.index }}_tls_keyfile_upload" name="mqtt_{{ link.index }}_tls_keyfile_upload" class="form-control" accept=".pem,.key">
+            <input type="text" id="mqtt_{{ link.index }}_tls_keyfile" name="mqtt_{{ link.index }}_tls_keyfile" class="form-control" value="{{ link.tls_keyfile }}" placeholder="…or a path already on this node — requires the certificate above">
+            <p class="text-muted">
+              {% if link.tls_keyfile %}Currently: <code>{{ link.tls_keyfile }}</code>. Uploading replaces it.{% endif %}
+              <strong>Heads up:</strong> this web admin serves plain HTTP, so an uploaded private key travels your network unencrypted. On a trusted LAN that's usually fine; over anything less, copy the key to the node yourself and just enter its path above. Uploaded keys are stored readable only by the service user.
+            </p>
           </div>
           <div class="form-group">
             <label for="mqtt_{{ link.index }}_tls_keyfile_password">Client key password (only if the key is encrypted)</label>
@@ -302,13 +371,17 @@
       '    <input type="text" id="mqtt_' + index + '_port" name="mqtt_' + index + '_port" class="form-control" value="1883"></div>' +
       '  <div class="form-group"><label><input type="checkbox" name="mqtt_' + index + '_tls" value="1"> Use TLS</label></div>' +
       '  <details class="form-group"><summary style="cursor:pointer">Advanced TLS / Certificates</summary>' +
-      '    <p class="text-muted">All optional. Plain <strong>Use TLS</strong> above already verifies the broker against the system CA store -- you only need these for a self-hosted broker with a private CA, or one requiring client-certificate (mutual TLS) auth. Paths are read from <em>this node\'s</em> filesystem and must be readable by the service user. Setting any of them turns TLS on even if the box above is unchecked.</p>' +
-      '    <div class="form-group"><label for="mqtt_' + index + '_tls_ca_certs">CA certificate file</label>' +
-      '      <input type="text" id="mqtt_' + index + '_tls_ca_certs" name="mqtt_' + index + '_tls_ca_certs" class="form-control" placeholder="e.g. /etc/ssl/certs/my-broker-ca.crt — blank uses the system CA store"></div>' +
-      '    <div class="form-group"><label for="mqtt_' + index + '_tls_certfile">Client certificate file (mutual TLS)</label>' +
-      '      <input type="text" id="mqtt_' + index + '_tls_certfile" name="mqtt_' + index + '_tls_certfile" class="form-control" placeholder="e.g. /etc/baconbs/client.crt"></div>' +
-      '    <div class="form-group"><label for="mqtt_' + index + '_tls_keyfile">Client private key file (mutual TLS)</label>' +
-      '      <input type="text" id="mqtt_' + index + '_tls_keyfile" name="mqtt_' + index + '_tls_keyfile" class="form-control" placeholder="e.g. /etc/baconbs/client.key — requires the certificate above"></div>' +
+      '    <p class="text-muted">All optional. Plain <strong>Use TLS</strong> above already verifies the broker against the system CA store -- you only need these for a self-hosted broker with a private CA, or one requiring client-certificate (mutual TLS) auth. <strong>Upload a .pem/.crt file</strong> and it\'s saved onto this node for you, or type a path to a file already there. Setting any of them turns TLS on even if the box above is unchecked.</p>' +
+      '    <div class="form-group"><label for="mqtt_' + index + '_tls_ca_certs">CA certificate</label>' +
+      '      <input type="file" id="mqtt_' + index + '_tls_ca_certs_upload" name="mqtt_' + index + '_tls_ca_certs_upload" class="form-control" accept=".pem,.crt,.cer,.ca-bundle">' +
+      '      <input type="text" id="mqtt_' + index + '_tls_ca_certs" name="mqtt_' + index + '_tls_ca_certs" class="form-control" placeholder="…or a path already on this node — blank uses the system CA store"></div>' +
+      '    <div class="form-group"><label for="mqtt_' + index + '_tls_certfile">Client certificate (mutual TLS)</label>' +
+      '      <input type="file" id="mqtt_' + index + '_tls_certfile_upload" name="mqtt_' + index + '_tls_certfile_upload" class="form-control" accept=".pem,.crt,.cer">' +
+      '      <input type="text" id="mqtt_' + index + '_tls_certfile" name="mqtt_' + index + '_tls_certfile" class="form-control" placeholder="…or a path already on this node"></div>' +
+      '    <div class="form-group"><label for="mqtt_' + index + '_tls_keyfile">Client private key (mutual TLS)</label>' +
+      '      <input type="file" id="mqtt_' + index + '_tls_keyfile_upload" name="mqtt_' + index + '_tls_keyfile_upload" class="form-control" accept=".pem,.key">' +
+      '      <input type="text" id="mqtt_' + index + '_tls_keyfile" name="mqtt_' + index + '_tls_keyfile" class="form-control" placeholder="…or a path already on this node — requires the certificate above">' +
+      '      <p class="text-muted"><strong>Heads up:</strong> this web admin serves plain HTTP, so an uploaded private key travels your network unencrypted. On a trusted LAN that\'s usually fine; over anything less, copy the key to the node yourself and enter its path above.</p></div>' +
       '    <div class="form-group"><label for="mqtt_' + index + '_tls_keyfile_password">Client key password (only if the key is encrypted)</label>' +
       '      <input type="password" id="mqtt_' + index + '_tls_keyfile_password" name="mqtt_' + index + '_tls_keyfile_password" class="form-control"></div>' +
       '    <div class="form-group"><label><input type="checkbox" name="mqtt_' + index + '_tls_insecure" value="1"> Skip certificate hostname verification (insecure)</label>' +

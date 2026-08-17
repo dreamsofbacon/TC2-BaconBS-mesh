@@ -194,10 +194,24 @@
     var region = document.getElementById('link-status');
     if (!region) return;
 
+    /* Protocol -> glyph. Matched on a substring so a versioned/suffixed
+       protocol name ("MQTT:mqtt1") still resolves, and so adding a new
+       transport only needs a line here -- everything else about the badge,
+       the tooltip, and the toasts is protocol-agnostic. */
+    var PROTOCOL_ICONS = [
+      ['mqtt',       '☁️'],
+      ['telnet',     '⌨️'],
+      ['js8call',    '📻'],
+      ['gateway',    '🌐'],
+      ['meshcore',   '📡'],
+      ['meshtastic', '📡'],
+    ];
     function iconFor(protocol) {
       var p = String(protocol || '').toLowerCase();
-      if (p.indexOf('mqtt') === 0) return '☁️';       // ☁️
-      return '📡';                                     // 📡 (Meshtastic + MeshCore)
+      for (var i = 0; i < PROTOCOL_ICONS.length; i++) {
+        if (p.indexOf(PROTOCOL_ICONS[i][0]) !== -1) return PROTOCOL_ICONS[i][1];
+      }
+      return '🔌';  // unknown//future transport -- still shows, just generically
     }
     function stateOf(link) {
       if (link.reconnecting) return 'reconnecting';
@@ -213,18 +227,30 @@
     var prevStates = {};   // link name -> last-seen state, to detect transitions
     var haveBaseline = false;
 
+    /* Icon + status dot only -- the descriptive text lives in a hover
+       tooltip so a node with several links/services doesn't crowd the nav
+       bar. data-tooltip drives a CSS bubble (see .link-badge in app.css);
+       aria-label carries the same text for screen readers, which can't see
+       a ::after tooltip. */
     function render(links) {
       region.innerHTML = '';
       links.forEach(function(link) {
         var state = stateOf(link);
+        var description = link.name + ' (' + link.protocol + ') — ' + stateLabel(state);
         var badge = document.createElement('span');
         badge.className = 'link-badge ' + state;
-        badge.title = link.name + ' (' + link.protocol + ') — ' + stateLabel(state);
+        badge.setAttribute('data-tooltip', description);
+        badge.setAttribute('aria-label', description);
+        badge.setAttribute('role', 'img');
         var dot = document.createElement('span');
         dot.className = 'link-badge-dot';
         dot.setAttribute('aria-hidden', 'true');
         badge.appendChild(dot);
-        badge.appendChild(document.createTextNode(iconFor(link.protocol) + ' ' + link.name));
+        var icon = document.createElement('span');
+        icon.className = 'link-badge-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.textContent = iconFor(link.protocol);
+        badge.appendChild(icon);
         region.appendChild(badge);
       });
     }

@@ -1,4 +1,5 @@
 import configparser
+import io
 import json
 import os
 import re
@@ -885,6 +886,92 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertFalse(by_name["mqtt1"]["connected"])
         self.assertFalse(by_name["mqtt1"]["reconnecting"])
 
+    def test_api_status_links_includes_non_link_services_tagged_by_kind(self):
+        """Services (JS8Call, API gateway) share the status display with
+        links but are tagged 'service' so the UI knows not to offer a
+        Reconnect button for something with no connection to cycle."""
+        with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:
+            json.dump(
+                {
+                    "updated_at": "2026-03-30T01:02:03+00:00",
+                    "radios": [
+                        {"name": "primary", "radio_protocol": "Meshtastic",
+                         "connected": True, "reconnecting": False},
+                    ],
+                    "services": [
+                        {"name": "gateway", "protocol": "API Gateway",
+                         "connected": True, "reconnecting": False},
+                        {"name": "js8call", "protocol": "JS8Call",
+                         "connected": False, "reconnecting": False},
+                    ],
+                    "error": "",
+                },
+                snapshot_file,
+            )
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        links = client.get("/api/status/links").get_json()["links"]
+        by_name = {entry["name"]: entry for entry in links}
+        self.assertEqual(len(links), 3)
+        self.assertEqual(by_name["primary"]["kind"], "link")
+        self.assertEqual(by_name["gateway"]["kind"], "service")
+        self.assertEqual(by_name["js8call"]["kind"], "service")
+        self.assertFalse(by_name["js8call"]["connected"])
+
+    def test_links_card_offers_reconnect_only_for_links_not_services(self):
+        with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:
+            json.dump(
+                {
+                    "updated_at": "2026-03-30T01:02:03+00:00",
+                    "radios": [
+                        {"name": "primary", "radio_protocol": "Meshtastic",
+                         "connected": True, "reconnecting": False},
+                    ],
+                    "services": [
+                        {"name": "js8call", "protocol": "JS8Call",
+                         "connected": True, "reconnecting": False},
+                    ],
+                    "error": "",
+                },
+                snapshot_file,
+            )
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        page = client.get("/settings").get_data(as_text=True)
+        self.assertIn("JS8Call", page)
+        # The link is reconnectable; the service is listed but has no button.
+        self.assertIn('value="primary"', page)
+        self.assertNotIn('name="link_name" value="js8call"', page)
+
+    def test_api_status_links_snapshot_without_services_key_still_works(self):
+        """Back-compat: a snapshot written by a server.py from before
+        services existed must still render its links."""
+        with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:
+            json.dump(
+                {
+                    "updated_at": "2026-03-30T01:02:03+00:00",
+                    "radios": [
+                        {"name": "primary", "radio_protocol": "Meshtastic",
+                         "connected": True, "reconnecting": False},
+                    ],
+                },
+                snapshot_file,
+            )
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        links = client.get("/api/status/links").get_json()["links"]
+        self.assertEqual(len(links), 1)
+        self.assertEqual(links[0]["kind"], "link")
+
     def test_api_status_links_empty_when_no_snapshot(self):
         app = create_app()
         client = app.test_client()
@@ -1279,6 +1366,79 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(config.get("interface2", "enabled"), "false")
         self.assertEqual(config.get("interface2", "hostname"), "192.168.1.50")
 
+    def test_links_card_lists_every_link_with_reconnect_buttons(self):
+        with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:
+            json.dump(
+                {
+                    "updated_at": "2026-03-30T01:02:03+00:00",
+                    "interface_attached": True,
+                    "radios": [
+                        {"name": "primary", "radio_protocol": "Meshtastic",
+                         "connected": True, "reconnecting": False},
+                        {"name": "mqtt1", "radio_protocol": "MQTT:mqtt1",
+                         "connected": False, "reconnecting": True},
+                    ],
+                    "error": "",
+                },
+                snapshot_file,
+            )
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        page = client.get("/settings").get_data(as_text=True)
+        self.assertIn("Links &amp; Services", page)
+        self.assertIn("MQTT:mqtt1", page)
+        self.assertIn('value="reconnect_link"', page)
+        self.assertIn('value="mqtt1"', page)
+        self.assertIn('value="all"', page)
+
+    def test_reconnect_link_writes_trigger_with_link_name(self):
+        trigger_path = self.root / "reconnect_link.trigger"
+        with mock.patch.dict(os.environ, {"BBS_LINK_RECONNECT_TRIGGER_PATH": str(trigger_path)}):
+            app = create_app()
+            client = app.test_client()
+            self.assertEqual(self.login(client).status_code, 302)
+
+            response = self.post_with_csrf(
+                client, "/settings",
+                data={"settings_section": "reconnect_link", "link_name": "mqtt1"},
+                follow_redirects=False,
+            )
+            self.assertEqual(response.status_code, 302)
+            self.assertTrue(response.headers["Location"].endswith("/settings#links"))
+            self.assertTrue(trigger_path.exists())
+            self.assertEqual(trigger_path.read_text(encoding="utf-8").strip(), "mqtt1")
+
+    def test_reconnect_all_links_writes_all_sentinel(self):
+        trigger_path = self.root / "reconnect_link.trigger"
+        with mock.patch.dict(os.environ, {"BBS_LINK_RECONNECT_TRIGGER_PATH": str(trigger_path)}):
+            app = create_app()
+            client = app.test_client()
+            self.assertEqual(self.login(client).status_code, 302)
+
+            self.post_with_csrf(
+                client, "/settings",
+                data={"settings_section": "reconnect_link", "link_name": "all"},
+            )
+            self.assertEqual(trigger_path.read_text(encoding="utf-8").strip(), "all")
+
+    def test_reconnect_link_without_name_is_rejected(self):
+        trigger_path = self.root / "reconnect_link.trigger"
+        with mock.patch.dict(os.environ, {"BBS_LINK_RECONNECT_TRIGGER_PATH": str(trigger_path)}):
+            app = create_app()
+            client = app.test_client()
+            self.assertEqual(self.login(client).status_code, 302)
+
+            response = self.post_with_csrf(
+                client, "/settings",
+                data={"settings_section": "reconnect_link", "link_name": ""},
+                follow_redirects=True,
+            )
+            self.assertIn("Pick a link to reconnect", response.get_data(as_text=True))
+            self.assertFalse(trigger_path.exists())
+
     def test_mqtt_section_renders_with_defaults(self):
         app = create_app()
         client = app.test_client()
@@ -1369,6 +1529,135 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("Advanced TLS / Certificates", page)
         self.assertIn("/etc/ssl/certs/my-ca.crt", page)
         self.assertIn("/etc/baconbs/client.crt", page)
+
+    def _pem_cert_bytes(self):
+        """A structurally valid self-signed PEM certificate (generated once,
+        checked in as a literal so the tests need no crypto dependency)."""
+        return (
+            b"-----BEGIN CERTIFICATE-----\n"
+            b"MIIBITCByAIJAJ+Kx3aQ2n5cMAoGCCqGSM49BAMCMBUxEzARBgNVBAMMCnRlc3Qt\n"
+            b"Y2EtMDEwHhcNMjUwMTAxMDAwMDAwWhcNMzUwMTAxMDAwMDAwWjAVMRMwEQYDVQQD\n"
+            b"DAp0ZXN0LWNhLTAxMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEo3Gm6kFhFPBB\n"
+            b"cNlG5nHhVfBvKQFmYQvVfKXbEfPRkzKqXWXBqPQnZQZLKKmXbLPQZ8YQVLnMqLQF\n"
+            b"YQZKqLQFYTAKBggqhkjOPQQDAgNIADBFAiEA0000000000000000000000000000\n"
+            b"00000000000AiA00000000000000000000000000000000000000000A==\n"
+            b"-----END CERTIFICATE-----\n"
+        )
+
+    def test_mqtt_upload_rejects_key_uploaded_into_certificate_field(self):
+        """The mistake that actually happens -- must be caught in the form,
+        not surfaced as an opaque SSL error at connect time."""
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        key_pem = b"-----BEGIN PRIVATE KEY-----\nMIIBVQIBADANBg==\n-----END PRIVATE KEY-----\n"
+        csrf_token = self.get_csrf_token(client)
+        response = client.post(
+            "/settings",
+            data={
+                "csrf_token": csrf_token,
+                "settings_section": "mqtt",
+                "mqtt_indexes": "1",
+                "mqtt_1_host": "broker.example.com",
+                "mqtt_1_topic_prefix": "baconbs/cityA-cityB",
+                "mqtt_1_tls_ca_certs_upload": (io.BytesIO(key_pem), "oops.key"),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertIn("PRIVATE KEY", page)
+
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertFalse(config.has_section("mqtt1"))
+
+    def test_mqtt_upload_rejects_binary_der_file(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        csrf_token = self.get_csrf_token(client)
+        response = client.post(
+            "/settings",
+            data={
+                "csrf_token": csrf_token,
+                "settings_section": "mqtt",
+                "mqtt_indexes": "1",
+                "mqtt_1_host": "broker.example.com",
+                "mqtt_1_topic_prefix": "baconbs/cityA-cityB",
+                "mqtt_1_tls_ca_certs_upload": (io.BytesIO(b"\x30\x82\x01\xff\x00\xfe"), "ca.der"),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        self.assertIn("binary", response.get_data(as_text=True))
+
+    def test_mqtt_upload_saves_file_and_points_config_at_it(self):
+        cert_dir = os.path.join(self.root, "certs")
+        with mock.patch.dict(os.environ, {"BBS_MQTT_CERT_DIR": cert_dir}):
+            app = create_app()
+            client = app.test_client()
+            self.assertEqual(self.login(client).status_code, 302)
+
+            csrf_token = self.get_csrf_token(client)
+            response = client.post(
+                "/settings",
+                data={
+                    "csrf_token": csrf_token,
+                    "settings_section": "mqtt",
+                    "mqtt_indexes": "1",
+                    "mqtt_1_host": "broker.example.com",
+                    "mqtt_1_topic_prefix": "baconbs/cityA-cityB",
+                    "mqtt_1_tls_ca_certs_upload": (
+                        io.BytesIO(self._pem_cert_bytes()), "my-ca.pem"),
+                },
+                content_type="multipart/form-data",
+                follow_redirects=False,
+            )
+            self.assertEqual(response.status_code, 302)
+
+            saved = os.path.join(cert_dir, "mqtt1", "ca.pem")
+            self.assertTrue(os.path.isfile(saved), "uploaded CA was not written to disk")
+            with open(saved, "r", encoding="utf-8") as handle:
+                self.assertIn("BEGIN CERTIFICATE", handle.read())
+
+            config = configparser.ConfigParser()
+            config.read(self.config_path)
+            self.assertEqual(config.get("mqtt1", "tls_ca_certs"), saved)
+
+    def test_mqtt_upload_uses_fixed_name_ignoring_uploaded_filename(self):
+        """A crafted filename must not influence the path written to."""
+        cert_dir = os.path.join(self.root, "certs")
+        with mock.patch.dict(os.environ, {"BBS_MQTT_CERT_DIR": cert_dir}):
+            app = create_app()
+            client = app.test_client()
+            self.assertEqual(self.login(client).status_code, 302)
+
+            csrf_token = self.get_csrf_token(client)
+            client.post(
+                "/settings",
+                data={
+                    "csrf_token": csrf_token,
+                    "settings_section": "mqtt",
+                    "mqtt_indexes": "1",
+                    "mqtt_1_host": "broker.example.com",
+                    "mqtt_1_topic_prefix": "baconbs/cityA-cityB",
+                    "mqtt_1_tls_ca_certs_upload": (
+                        io.BytesIO(self._pem_cert_bytes()), "../../../../etc/evil.pem"),
+                },
+                content_type="multipart/form-data",
+                follow_redirects=False,
+            )
+            self.assertTrue(os.path.isfile(os.path.join(cert_dir, "mqtt1", "ca.pem")))
+            config = configparser.ConfigParser()
+            config.read(self.config_path)
+            self.assertEqual(
+                config.get("mqtt1", "tls_ca_certs"),
+                os.path.join(cert_dir, "mqtt1", "ca.pem"),
+            )
 
     def test_mqtt_save_rejects_client_key_without_certificate(self):
         app = create_app()

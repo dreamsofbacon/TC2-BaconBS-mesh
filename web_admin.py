@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import sqlite3
+import ssl
 import time
 import uuid
 import secrets
@@ -291,6 +292,111 @@ def load_account_settings(config_path: str) -> dict:
 
 _MQTT_SECTION_RE = re.compile(r"^mqtt(\d+)$")
 
+# Uploaded TLS material for MQTT links. Lets an operator point a broker at a
+# private CA (or set up mutual TLS) entirely from the browser instead of
+# needing shell access to scp files onto the node.
+MQTT_CERT_MAX_BYTES = 256 * 1024  # a PEM chain is a few KB; this only blocks abuse
+_PEM_CERT_MARKER = "-----BEGIN CERTIFICATE-----"
+_PEM_KEY_MARKERS = (
+  "-----BEGIN PRIVATE KEY-----",
+  "-----BEGIN RSA PRIVATE KEY-----",
+  "-----BEGIN EC PRIVATE KEY-----",
+  "-----BEGIN DSA PRIVATE KEY-----",
+  "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+)
+# role -> (stored filename, is_secret)
+_MQTT_CERT_ROLES = {
+  "tls_ca_certs": ("ca.pem", False),
+  "tls_certfile": ("client-cert.pem", False),
+  "tls_keyfile": ("client-key.pem", True),
+}
+
+
+def get_mqtt_cert_dir() -> str:
+  """Directory uploaded MQTT TLS material is stored under.
+
+  Kept out of the repo tree's tracked files (see .gitignore) so a private
+  key can never ride along in a commit -- these nodes are updated by
+  `git pull`, which makes an accidentally-tracked key a real hazard.
+  """
+  return resolve_app_path(os.getenv("BBS_MQTT_CERT_DIR"), os.path.join("data", "mqtt-certs"))
+
+
+def validate_pem_upload(raw: bytes, expect: str, label: str) -> tuple[Optional[str], Optional[str]]:
+  """Validate an uploaded PEM file. Returns (text, error_message).
+
+  Stdlib only -- deliberately no new dependency. This catches the mistake
+  that actually happens: uploading the *wrong file*. Without it, a swapped
+  cert/key or a DER-encoded file surfaces much later as an opaque SSL
+  error at connect time, which reads as "the broker is down".
+  """
+  if not raw:
+    return None, f"{label}: the uploaded file is empty."
+  if len(raw) > MQTT_CERT_MAX_BYTES:
+    return None, (
+      f"{label}: file is too large ({len(raw)} bytes). A PEM certificate or key "
+      f"is only a few KB -- is this the right file?"
+    )
+  try:
+    text = raw.decode("utf-8")
+  except UnicodeDecodeError:
+    return None, (
+      f"{label}: this looks like a binary (DER/PKCS#12) file, not PEM. Convert it "
+      f"first, e.g. `openssl x509 -inform der -in cert.der -out cert.pem`."
+    )
+
+  has_cert = _PEM_CERT_MARKER in text
+  has_key = any(marker in text for marker in _PEM_KEY_MARKERS)
+
+  if expect == "cert":
+    if not has_cert:
+      if has_key:
+        return None, (
+          f"{label}: this file contains a PRIVATE KEY, not a certificate. "
+          f"Upload it in the client private key field instead."
+        )
+      return None, f"{label}: no PEM certificate found (expected a {_PEM_CERT_MARKER} block)."
+    # Structural check on the first block -- catches truncated/corrupt base64
+    # that has the right headers but isn't a usable certificate.
+    try:
+      ssl.PEM_cert_to_DER_cert(text[text.index(_PEM_CERT_MARKER):])
+    except Exception:
+      return None, f"{label}: the PEM certificate could not be parsed (truncated or corrupt?)."
+  elif expect == "key":
+    if not has_key:
+      if has_cert:
+        return None, (
+          f"{label}: this file contains a CERTIFICATE, not a private key. "
+          f"Upload it in a certificate field instead."
+        )
+      return None, f"{label}: no PEM private key found in this file."
+
+  return text, None
+
+
+def store_mqtt_cert(index: int, role: str, text: str) -> str:
+  """Write validated PEM material for one broker and return its path.
+
+  The uploaded filename is deliberately ignored in favor of a fixed name
+  per (broker, role) -- there is no way for a crafted filename to escape
+  the directory, and re-uploading cleanly replaces the previous file.
+  """
+  filename, is_secret = _MQTT_CERT_ROLES[role]
+  directory = os.path.join(get_mqtt_cert_dir(), f"mqtt{index}")
+  os.makedirs(directory, exist_ok=True)
+  try:
+    os.chmod(directory, 0o700)
+  except OSError:
+    pass  # non-POSIX filesystem; content-level perms below still apply where supported
+  path = os.path.join(directory, filename)
+  with open(path, "w", encoding="utf-8", newline="\n") as handle:
+    handle.write(text)
+  try:
+    os.chmod(path, 0o600 if is_secret else 0o644)
+  except OSError:
+    pass
+  return path
+
 
 def load_mqtt_settings(config_path: str) -> list[dict]:
   """Read every [mqttN] section (N = 1, 2, 3, ... -- open-ended, unlike
@@ -418,6 +524,25 @@ def request_peer_resync_trigger(peer_node_id: str) -> None:
   tmp_path = f"{trigger_path}.tmp"
   with open(tmp_path, "w", encoding="utf-8") as trigger_file:
     trigger_file.write(str(peer_node_id).strip())
+  os.replace(tmp_path, trigger_path)
+
+
+def get_link_reconnect_trigger_path() -> str:
+  return resolve_app_path(os.getenv("BBS_LINK_RECONNECT_TRIGGER_PATH"), "reconnect_link.trigger")
+
+
+def request_link_reconnect_trigger(link_name: str) -> None:
+  """Ask server.py to drop and re-establish ONE link (or 'all').
+
+  Reconnecting a single link is not a restart: server.py reuses the same
+  reconnect path its automatic liveness check uses, so only that link's
+  connection is torn down and rebuilt (with backoff). Every other link, the
+  sync engine, and the BBS itself keep running untouched.
+  """
+  trigger_path = get_link_reconnect_trigger_path()
+  tmp_path = f"{trigger_path}.tmp"
+  with open(tmp_path, "w", encoding="utf-8") as trigger_file:
+    trigger_file.write(str(link_name).strip())
   os.replace(tmp_path, trigger_path)
 
 
@@ -3363,6 +3488,27 @@ def create_app(runtime_interface=None) -> Flask:
         except ValueError:
           pass
 
+      # Validate every upload BEFORE writing any of them, so a bad file in
+      # one broker can't leave another broker's cert already replaced on
+      # disk -- same all-or-nothing contract the config write below has.
+      pending_uploads = []   # (index, role, text)
+      uploaded_paths = {}    # (index, role) -> path the config should point at
+      for index in submitted_indexes:
+        for role in _MQTT_CERT_ROLES:
+          upload = request.files.get(f"mqtt_{index}_{role}_upload")
+          if upload is None or not (upload.filename or "").strip():
+            continue
+          label = f"Broker #{index} {role.replace('tls_', '').replace('_', ' ')}"
+          expect = "key" if role == "tls_keyfile" else "cert"
+          text, error = validate_pem_upload(upload.read(), expect, label)
+          if error:
+            errors.append(error)
+          else:
+            pending_uploads.append((index, role, text))
+            uploaded_paths[(index, role)] = os.path.join(
+              get_mqtt_cert_dir(), f"mqtt{index}", _MQTT_CERT_ROLES[role][0]
+            )
+
       parsed = []
       for index in submitted_indexes:
         prefix = f"mqtt_{index}_"
@@ -3372,8 +3518,12 @@ def create_app(runtime_interface=None) -> Flask:
           errors.append(f"Broker #{index}: host is required.")
         if not topic_prefix:
           errors.append(f"Broker #{index}: topic prefix is required.")
-        tls_certfile = form.get(f"{prefix}tls_certfile", "").strip()
-        tls_keyfile = form.get(f"{prefix}tls_keyfile", "").strip()
+        # An upload wins over the text path field: the operator just picked
+        # a file, so that's the more recent intent.
+        tls_certfile = uploaded_paths.get(
+          (index, "tls_certfile"), form.get(f"{prefix}tls_certfile", "").strip())
+        tls_keyfile = uploaded_paths.get(
+          (index, "tls_keyfile"), form.get(f"{prefix}tls_keyfile", "").strip())
         if tls_keyfile and not tls_certfile:
           errors.append(
             f"Broker #{index}: a client key file needs its client certificate too "
@@ -3385,7 +3535,8 @@ def create_app(runtime_interface=None) -> Flask:
           "host": host,
           "port": _parse_int_setting(form.get(f"{prefix}port", ""), 1883, minimum=1),
           "tls": _parse_bool_setting(form.get(f"{prefix}tls", ""), False),
-          "tls_ca_certs": form.get(f"{prefix}tls_ca_certs", "").strip(),
+          "tls_ca_certs": uploaded_paths.get(
+            (index, "tls_ca_certs"), form.get(f"{prefix}tls_ca_certs", "").strip()),
           "tls_certfile": tls_certfile,
           "tls_keyfile": tls_keyfile,
           "tls_keyfile_password": form.get(f"{prefix}tls_keyfile_password", "").strip(),
@@ -3418,6 +3569,13 @@ def create_app(runtime_interface=None) -> Flask:
 
       if errors:
         return errors
+
+      # Every upload validated cleanly -- safe to write them to disk now.
+      for index, role, text in pending_uploads:
+        try:
+          store_mqtt_cert(index, role, text)
+        except OSError as exc:
+          return [f"Broker #{index}: could not save the uploaded file: {exc}"]
 
       config = read_config_file(app.config["CONFIG_PATH"])
 
@@ -3705,6 +3863,7 @@ def create_app(runtime_interface=None) -> Flask:
         # run as separate processes; this path mainly matters for tests).
         # No multi-link snapshot to read in this case, just the one interface.
         return [{
+          "kind": "link",
           "name": "primary",
           "protocol": str(getattr(interface, "protocol_name", interface.__class__.__name__)),
           "connected": bool(getattr(interface, "is_connected", True)),
@@ -3713,18 +3872,40 @@ def create_app(runtime_interface=None) -> Flask:
 
       snapshot_path = resolve_app_path(os.getenv("BBS_RUNTIME_DIAG_PATH"), "runtime_diagnostics.json")
       snapshot = load_runtime_snapshot(snapshot_path)
-      radios_raw = snapshot.get("radios") if isinstance(snapshot, dict) else None
-      if not isinstance(radios_raw, list):
+      if not isinstance(snapshot, dict):
         return []
-      return [
-        {
-          "name": str(r.get("name", "primary")),
-          "protocol": str(r.get("radio_protocol", "Unknown")),
-          "connected": bool(r.get("connected", True)),
-          "reconnecting": bool(r.get("reconnecting", False)),
-        }
-        for r in radios_raw
-      ]
+
+      entries = []
+      radios_raw = snapshot.get("radios")
+      if isinstance(radios_raw, list):
+        entries.extend(
+          {
+            # 'link' carries BBS traffic and has a reconnect path, so the
+            # web admin offers a Reconnect button for it.
+            "kind": "link",
+            "name": str(r.get("name", "primary")),
+            "protocol": str(r.get("radio_protocol", "Unknown")),
+            "connected": bool(r.get("connected", True)),
+            "reconnecting": bool(r.get("reconnecting", False)),
+          }
+          for r in radios_raw
+        )
+
+      services_raw = snapshot.get("services")
+      if isinstance(services_raw, list):
+        entries.extend(
+          {
+            # 'service' is informational only -- no sync traffic, no
+            # reconnect path (see server._describe_services).
+            "kind": "service",
+            "name": str(s.get("name", "service")),
+            "protocol": str(s.get("protocol", "Unknown")),
+            "connected": bool(s.get("connected", False)),
+            "reconnecting": bool(s.get("reconnecting", False)),
+          }
+          for s in services_raw
+        )
+      return entries
 
     def build_settings_diagnostics() -> dict[str, str]:
       bbs_nodes, allowed_nodes, sync_interval_minutes, sync_zork_saves = load_sync_settings(app.config["CONFIG_PATH"])
@@ -4111,8 +4292,10 @@ def create_app(runtime_interface=None) -> Flask:
       device_settings = load_device_settings(app.config["CONFIG_PATH"])
       account_settings = load_account_settings(app.config["CONFIG_PATH"])
       mqtt_settings = load_mqtt_settings(app.config["CONFIG_PATH"])
+      link_statuses = get_link_status_list()
       return render_template(
         "settings.html",
+        link_statuses=link_statuses,
         title="Settings",
         show_nav=True,
         gateway=gateway_settings,
@@ -4290,6 +4473,20 @@ def create_app(runtime_interface=None) -> Flask:
           save_account_settings(request.form)
           flash("Account linking settings saved.", "success")
           return redirect(url_for("settings_page") + "#accounts")
+
+        if section == "reconnect_link":
+          link_name = request.form.get("link_name", "").strip()
+          if not link_name:
+            flash("Pick a link to reconnect.", "error")
+          else:
+            request_link_reconnect_trigger(link_name)
+            target = "every link" if link_name == "all" else f"link '{link_name}'"
+            flash(
+              f"Reconnect queued for {target}. The connection drops and re-establishes "
+              "within a few seconds -- the BBS and all other links keep running.",
+              "success",
+            )
+          return redirect(url_for("settings_page") + "#links")
 
         if section == "mqtt":
           errors = save_mqtt_settings(request.form)
