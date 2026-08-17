@@ -305,6 +305,64 @@ def discover_mqtt_link_names(config: configparser.ConfigParser) -> list:
     return [name for _, name in found]
 
 
+def parse_mqtt_links(config: configparser.ConfigParser) -> list:
+    """Build the mqtt_links list from a parsed config.
+
+    Shared by startup (initialize_config) and the runtime reload
+    (reload_mqtt_links) so both paths can never drift apart in how they
+    interpret an [mqttN] section.
+    """
+    links: list = []
+    for link_name in discover_mqtt_link_names(config):
+        settings = _read_mqtt_settings(config[link_name])
+        if not settings['host'] or not settings['topic_prefix']:
+            print(f"[{link_name}] Skipping MQTT link: 'host' and 'topic_prefix' are both required")
+            continue
+        local_id = settings['local_id'] or f"{link_name}-node"
+        links.append({
+            'name': link_name,
+            'host': settings['host'],
+            'port': settings['port'],
+            'username': settings['username'],
+            'password': settings['password'],
+            'tls': settings['tls'],
+            'tls_ca_certs': settings['tls_ca_certs'],
+            'tls_certfile': settings['tls_certfile'],
+            'tls_keyfile': settings['tls_keyfile'],
+            'tls_keyfile_password': settings['tls_keyfile_password'],
+            'tls_insecure': settings['tls_insecure'],
+            'topic_prefix': settings['topic_prefix'],
+            'local_id': local_id,
+            'client_id': settings['client_id'],
+            'keepalive': settings['keepalive'],
+            'sync_section': f'sync_{link_name}',
+            'allow_section': f'allow_list_{link_name}',
+            'bbs_nodes_key': f'bbs_nodes_{link_name}',
+            'allowed_nodes_key': f'allowed_nodes_{link_name}',
+            'subscriber_nodes_key': f'subscriber_nodes_{link_name}',
+        })
+    return links
+
+
+def reload_mqtt_links(system_config: dict[str, Any]) -> list:
+    """Re-read every [mqttN] section from config.ini and refresh
+    system_config['mqtt_links'] in place.
+
+    Without this, mqtt_links stays frozen at whatever was on disk when the
+    process started, so a broker edited through the web admin would be
+    rebuilt from STALE settings on reconnect -- appearing to succeed while
+    silently ignoring the change. Called by get_mqtt_interface_by_name (so
+    a plain reconnect applies edits) and by server.reload_links_from_config
+    (which also adds/removes whole links).
+    """
+    config = configparser.ConfigParser()
+    config.read(system_config.get('config_file') or resolve_app_path(
+        os.getenv("BBS_CONFIG_PATH"), "config.ini"))
+    fresh = parse_mqtt_links(config)
+    system_config['mqtt_links'] = fresh
+    return fresh
+
+
 def initialize_config(config_file: str = None) -> dict[str, Any]:
     """
     Function reads and parses system configuration file
@@ -389,37 +447,10 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
     # list -- see discover_mqtt_link_names(). Absent [mqttN] sections means
     # mqtt_links is empty and behavior is identical to before MQTT support
     # existed.
-    mqtt_links: list = []
-    for link_name in discover_mqtt_link_names(config):
-        settings = _read_mqtt_settings(config[link_name])
-        if not settings['host'] or not settings['topic_prefix']:
-            print(f"[{link_name}] Skipping MQTT link: 'host' and 'topic_prefix' are both required")
-            continue
-        local_id = settings['local_id'] or f"{link_name}-node"
-        mqtt_links.append({
-            'name': link_name,
-            'host': settings['host'],
-            'port': settings['port'],
-            'username': settings['username'],
-            'password': settings['password'],
-            'tls': settings['tls'],
-            'tls_ca_certs': settings['tls_ca_certs'],
-            'tls_certfile': settings['tls_certfile'],
-            'tls_keyfile': settings['tls_keyfile'],
-            'tls_keyfile_password': settings['tls_keyfile_password'],
-            'tls_insecure': settings['tls_insecure'],
-            'topic_prefix': settings['topic_prefix'],
-            'local_id': local_id,
-            'client_id': settings['client_id'],
-            'keepalive': settings['keepalive'],
-            'sync_section': f'sync_{link_name}',
-            'allow_section': f'allow_list_{link_name}',
-            'bbs_nodes_key': f'bbs_nodes_{link_name}',
-            'allowed_nodes_key': f'allowed_nodes_{link_name}',
-            'subscriber_nodes_key': f'subscriber_nodes_{link_name}',
-        })
-        print(f"MQTT link '{link_name}' configured: {settings['host']}:{settings['port']} "
-              f"topic_prefix={settings['topic_prefix']}")
+    mqtt_links: list = parse_mqtt_links(config)
+    for _link in mqtt_links:
+        print(f"MQTT link '{_link['name']}' configured: {_link['host']}:{_link['port']} "
+              f"topic_prefix={_link['topic_prefix']}")
 
     return {
         'config': config,
@@ -655,11 +686,12 @@ def _open_mqtt_interface(link_cfg: dict[str, Any]):
 def get_mqtt_interfaces(system_config: dict[str, Any]) -> list:
     """Open every configured [mqttN] link (see discover_mqtt_link_names).
 
-    Returns a list of dicts, one per successfully connected link, each
-    carrying everything server.py needs to build a RadioLink: 'name',
-    'interface', 'sync_section', 'allow_section', 'bbs_nodes_key',
-    'allowed_nodes_key', 'subscriber_nodes_key'. A link that fails to
-    connect at startup is skipped (logged, not fatal), matching
+    Returns a list of dicts, one per successfully connected link: the
+    link's full config (name, sync_section, allow_section, *_key, plus the
+    connection settings) with its live 'interface' added. Carrying the
+    connection settings through is what lets server.py record a baseline
+    for change detection -- see reload_links_from_config. A link that
+    fails to connect at startup is skipped (logged, not fatal), matching
     _open_mqtt_interface's give-up-without-exiting behavior.
     """
     results = []
@@ -667,15 +699,9 @@ def get_mqtt_interfaces(system_config: dict[str, Any]) -> list:
         iface = _open_mqtt_interface(link_cfg)
         if iface is None:
             continue
-        results.append({
-            'name': link_cfg['name'],
-            'interface': iface,
-            'sync_section': link_cfg['sync_section'],
-            'allow_section': link_cfg['allow_section'],
-            'bbs_nodes_key': link_cfg['bbs_nodes_key'],
-            'allowed_nodes_key': link_cfg['allowed_nodes_key'],
-            'subscriber_nodes_key': link_cfg['subscriber_nodes_key'],
-        })
+        entry = dict(link_cfg)
+        entry['interface'] = iface
+        results.append(entry)
     return results
 
 
@@ -683,10 +709,15 @@ def get_mqtt_interface_by_name(system_config: dict[str, Any], name: str):
     """Reconnect helper: rebuild ONE named MQTT link's interface from
     system_config alone (mirrors get_secondary_interface's contract) --
     used as a RadioLink.reconnect_fn closure. Returns None if the link is
-    no longer in system_config['mqtt_links'] (e.g. removed from
-    config.ini since startup -- matching interface2's existing
-    "no longer configured" reconnect behavior) or fails to reconnect."""
-    for link_cfg in system_config.get('mqtt_links', []):
+    no longer in config.ini (e.g. removed since startup -- matching
+    interface2's existing "no longer configured" reconnect behavior) or
+    fails to reconnect.
+
+    Re-reads config.ini first (reload_mqtt_links) so reconnecting a link
+    actually applies settings edited since startup. Rebuilding from the
+    startup snapshot instead would silently ignore the edit while
+    reporting success, which is worse than refusing outright."""
+    for link_cfg in reload_mqtt_links(system_config):
         if link_cfg['name'] == name:
             return _open_mqtt_interface(link_cfg)
     return None

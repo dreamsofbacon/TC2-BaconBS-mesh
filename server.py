@@ -239,6 +239,123 @@ def get_link_reconnect_trigger_path() -> str:
     return resolve_app_path(os.getenv('BBS_LINK_RECONNECT_TRIGGER_PATH'), 'reconnect_link.trigger')
 
 
+def get_links_reload_trigger_path() -> str:
+    return resolve_app_path(os.getenv('BBS_LINKS_RELOAD_TRIGGER_PATH'), 'reload_links.trigger')
+
+
+# Connection settings whose change means the link must be rebuilt. Peer
+# lists are deliberately excluded -- refresh_peer_lists_from_config already
+# picks those up every tick without dropping the connection.
+_MQTT_CONNECTION_KEYS = (
+    'host', 'port', 'username', 'password', 'tls', 'tls_ca_certs',
+    'tls_certfile', 'tls_keyfile', 'tls_keyfile_password', 'tls_insecure',
+    'topic_prefix', 'local_id', 'client_id', 'keepalive',
+)
+
+
+def reload_links_from_config(links, system_config: dict, config_path: str) -> dict:
+    """Bring the running MQTT links in line with config.ini, live.
+
+    Adds brokers added since startup, drops ones removed or disabled, and
+    flags ones whose connection settings changed for reconnect. This is
+    what makes 'save MQTT settings' take effect without restarting the
+    service -- `links` is otherwise built once in main() and never
+    revisited, so a newly-added [mqttN] simply wouldn't exist.
+
+    Mutates ``links`` in place because main() and the _active_links global
+    both alias that same list object; rebinding it would leave one of them
+    pointing at the old set.
+
+    Only MQTT links are managed here. Radios stay startup-only on purpose:
+    reopening a serial device is materially riskier than reopening a
+    socket, and a mis-set port can wedge the port rather than fail
+    cleanly. Returns {'added': [...], 'removed': [...], 'changed': [...]}.
+    """
+    from config_init import reload_mqtt_links
+
+    result = {'added': [], 'removed': [], 'changed': []}
+    try:
+        configured = reload_mqtt_links(system_config)
+    except Exception as exc:
+        logging.warning(f"Unable to re-read MQTT links from config: {exc}")
+        return result
+    configured_by_name = {entry['name']: entry for entry in configured}
+
+    # Existing MQTT links are exactly those whose name we can still resolve
+    # to an [mqttN] section, plus any we opened earlier from one.
+    existing_mqtt = [
+        link for link in links
+        if str(getattr(link, 'name', '')).startswith('mqtt')
+    ]
+    existing_by_name = {link.name: link for link in existing_mqtt}
+
+    # --- removed / disabled -------------------------------------------------
+    for link in existing_mqtt:
+        if link.name not in configured_by_name:
+            logging.info(f"[{link.name}] No longer configured; closing and dropping the link.")
+            try:
+                if link.interface is not None:
+                    link.interface.close()
+            except Exception:
+                logging.debug(f"[{link.name}] close during reload failed", exc_info=True)
+            links.remove(link)
+            result['removed'].append(link.name)
+
+    # --- changed ------------------------------------------------------------
+    for name, entry in configured_by_name.items():
+        link = existing_by_name.get(name)
+        if link is None:
+            continue
+        previous = getattr(link, 'connection_settings', None)
+        current = {key: entry.get(key) for key in _MQTT_CONNECTION_KEYS}
+        if previous is not None and previous != current:
+            logging.info(f"[{name}] Connection settings changed; reconnecting to apply them.")
+            link.reconnect_needed.set()
+            result['changed'].append(name)
+        link.connection_settings = current
+
+    # --- added --------------------------------------------------------------
+    for name, entry in configured_by_name.items():
+        if name in existing_by_name:
+            continue
+        logging.info(f"[{name}] Newly configured MQTT link; opening it.")
+        try:
+            interface = get_mqtt_interface_by_name(system_config, name)
+        except Exception as exc:
+            logging.warning(f"[{name}] Could not open newly configured MQTT link: {exc}")
+            continue
+        new_link = RadioLink(
+            name, interface,
+            sync_section=entry['sync_section'], allow_section=entry['allow_section'],
+            bbs_nodes_key=entry['bbs_nodes_key'], allowed_nodes_key=entry['allowed_nodes_key'],
+            subscriber_nodes_key=entry['subscriber_nodes_key'],
+            reconnect_fn=lambda cfg, _name=name: get_mqtt_interface_by_name(cfg, _name),
+        )
+        new_link.connection_settings = {key: entry.get(key) for key in _MQTT_CONNECTION_KEYS}
+        if interface is not None:
+            _apply_socket_timeout(interface)
+            refresh_peer_lists_from_config(
+                config_path, interface, system_config,
+                sync_section=entry['sync_section'], allow_section=entry['allow_section'],
+                bbs_nodes_key=entry['bbs_nodes_key'], allowed_nodes_key=entry['allowed_nodes_key'],
+                subscriber_nodes_key=entry['subscriber_nodes_key'],
+            )
+            start_receive = getattr(interface, 'start_receive', None)
+            if callable(start_receive):
+                start_receive()
+        else:
+            # Broker unreachable right now -- still register the link so the
+            # normal per-link reconnect loop keeps retrying it, exactly like
+            # a radio that fails at startup.
+            logging.warning(
+                f"[{name}] Broker not reachable yet; link registered and will keep retrying."
+            )
+        links.append(new_link)
+        result['added'].append(name)
+
+    return result
+
+
 def apply_link_reconnect_request(links, target: str) -> list:
     """Flag the requested link(s) for reconnect. Returns the names matched.
 
@@ -1199,6 +1316,11 @@ def main():
             subscriber_nodes_key=mqtt_entry['subscriber_nodes_key'],
             reconnect_fn=lambda cfg, _name=mqtt_entry['name']: get_mqtt_interface_by_name(cfg, _name),
         )
+        # Baseline for change detection in reload_links_from_config -- without
+        # it the first reload can't tell an edited broker from an untouched one.
+        mqtt_link.connection_settings = {
+            key: mqtt_entry.get(key) for key in _MQTT_CONNECTION_KEYS
+        }
         refresh_peer_lists_from_config(
             config_path, mqtt_iface, system_config,
             sync_section=mqtt_entry['sync_section'], allow_section=mqtt_entry['allow_section'],
@@ -1217,6 +1339,7 @@ def main():
     zork_save_resolve_trigger_path = get_zork_save_resolve_trigger_path()
     record_resolve_trigger_path = get_record_resolve_trigger_path()
     link_reconnect_trigger_path = get_link_reconnect_trigger_path()
+    links_reload_trigger_path = get_links_reload_trigger_path()
     publish_mqtt_status(links, write_runtime_diagnostics_snapshot(links, system_config))
     persist_mesh_clients(links)
 
@@ -1271,6 +1394,7 @@ def main():
         last_zork_save_resolve_trigger_mtime = 0.0
         last_record_resolve_trigger_mtime = 0.0
         last_link_reconnect_trigger_mtime = 0.0
+        last_links_reload_trigger_mtime = 0.0
         system_config['sync_last_trigger_reason'] = 'scheduled'
         system_config['sync_interval_minutes_runtime'] = int(system_config.get('sync_interval_minutes', 5))
         system_config['sync_next_run_epoch'] = int(time.time())
@@ -1449,6 +1573,28 @@ def main():
                         apply_link_reconnect_request(links, _target)
             except Exception as exc:
                 logging.debug(f"Unable to process link reconnect trigger: {exc}")
+
+            # Bring links in line with config.ini without a restart: opens
+            # newly-added brokers, drops removed ones, reconnects edited
+            # ones. Written by the web admin whenever MQTT settings are
+            # saved (see request_links_reload_trigger).
+            try:
+                if os.path.exists(links_reload_trigger_path):
+                    trigger_mtime = os.path.getmtime(links_reload_trigger_path)
+                    if trigger_mtime > last_links_reload_trigger_mtime:
+                        last_links_reload_trigger_mtime = trigger_mtime
+                        os.remove(links_reload_trigger_path)
+                        changes = reload_links_from_config(links, system_config, config_path)
+                        if any(changes.values()):
+                            logging.info(
+                                "Links reloaded from config: "
+                                f"added={changes['added']} removed={changes['removed']} "
+                                f"reconnecting={changes['changed']}"
+                            )
+                        else:
+                            logging.info("Links reloaded from config: no changes.")
+            except Exception as exc:
+                logging.debug(f"Unable to process links reload trigger: {exc}")
 
             for link in links:
                 _run_link_tick(

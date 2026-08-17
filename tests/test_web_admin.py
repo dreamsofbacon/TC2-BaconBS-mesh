@@ -1394,6 +1394,48 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn('value="mqtt1"', page)
         self.assertIn('value="all"', page)
 
+    def test_saving_mqtt_settings_requests_a_live_reload(self):
+        """Saving must apply without a restart -- otherwise a newly added
+        broker would sit in config.ini doing nothing until the service was
+        restarted, which is exactly the confusing behavior this replaced."""
+        reload_trigger = self.root / "reload_links.trigger"
+        with mock.patch.dict(os.environ, {"BBS_LINKS_RELOAD_TRIGGER_PATH": str(reload_trigger)}):
+            app = create_app()
+            client = app.test_client()
+            self.assertEqual(self.login(client).status_code, 302)
+
+            response = self.post_with_csrf(
+                client, "/settings",
+                data={
+                    "settings_section": "mqtt",
+                    "mqtt_indexes": "2",
+                    "mqtt_2_host": "broker2.example.com",
+                    "mqtt_2_topic_prefix": "baconbs/site-b",
+                },
+                follow_redirects=True,
+            )
+            self.assertEqual(response.status_code, 200)
+            page = response.get_data(as_text=True)
+            self.assertIn("no restart needed", page)
+            self.assertNotIn("Restart the mesh-bbs service", page)
+            self.assertTrue(reload_trigger.exists())
+
+    def test_reload_links_button_writes_trigger(self):
+        reload_trigger = self.root / "reload_links.trigger"
+        with mock.patch.dict(os.environ, {"BBS_LINKS_RELOAD_TRIGGER_PATH": str(reload_trigger)}):
+            app = create_app()
+            client = app.test_client()
+            self.assertEqual(self.login(client).status_code, 302)
+
+            response = self.post_with_csrf(
+                client, "/settings",
+                data={"settings_section": "reload_links"},
+                follow_redirects=False,
+            )
+            self.assertEqual(response.status_code, 302)
+            self.assertTrue(response.headers["Location"].endswith("/settings#links"))
+            self.assertTrue(reload_trigger.exists())
+
     def test_reconnect_link_writes_trigger_with_link_name(self):
         trigger_path = self.root / "reconnect_link.trigger"
         with mock.patch.dict(os.environ, {"BBS_LINK_RECONNECT_TRIGGER_PATH": str(trigger_path)}):

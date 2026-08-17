@@ -54,12 +54,26 @@
       </tbody>
     </table>
   </div>
-  <form method="post" action="{{ url_for('settings_page') }}#links" style="margin-top:1rem">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="settings_section" value="reconnect_link">
-    <input type="hidden" name="link_name" value="all">
-    <button class="btn" type="submit">Reconnect All Links</button>
-  </form>
+  <div class="row-actions" style="margin-top:1rem">
+    <form method="post" action="{{ url_for('settings_page') }}#links" style="margin:0">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="settings_section" value="reconnect_link">
+      <input type="hidden" name="link_name" value="all">
+      <button class="btn" type="submit">Reconnect All Links</button>
+    </form>
+    <form method="post" action="{{ url_for('settings_page') }}#links" style="margin:0">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="settings_section" value="reload_links">
+      <button class="btn" type="submit">Reload Links From Config</button>
+    </form>
+  </div>
+  <p class="text-muted" style="margin-top:0.5rem">
+    <strong>Reload from config</strong> picks up MQTT brokers added, removed, or edited in
+    config.ini since startup &mdash; it opens new ones, closes removed ones, and reconnects
+    changed ones, all without a restart. This runs automatically when you save MQTT settings,
+    so it's only needed if you edited <code>config.ini</code> by hand. Radio devices are
+    startup-only and still need a service restart after a change.
+  </p>
   {% else %}
   <p class="text-muted">No active links reported yet. This fills in once the mesh-bbs service is running and has written its first status snapshot.</p>
   {% endif %}
