@@ -29,12 +29,21 @@ gets the last known state immediately, without waiting for the next cycle.
 This project is an MQTT *client* only -- it connects to a broker the
 operator already runs (e.g. self-hosted Mosquitto). No broker code lives
 here.
+
+TLS: ``tls = true`` alone uses the system CA store (the right default for a
+broker with a publicly-trusted certificate). For a self-hosted broker with
+a private CA, point ``tls_ca_certs`` at that CA. For brokers requiring
+client-certificate (mutual TLS) auth, add ``tls_certfile``/``tls_keyfile``
+(plus ``tls_keyfile_password`` if the key is encrypted). Configuring any of
+those implies TLS even without ``tls = true``, so certs can never be
+silently ignored on a plaintext connection.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import threading
 from types import SimpleNamespace
@@ -56,6 +65,30 @@ _BROADCAST_LABELS = ("", "*", "0", "255")
 
 def _clean_label(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _resolve_cert_path(value: Any, setting_name: str, link_name: str) -> Optional[str]:
+    """Validate a configured TLS file path up front.
+
+    Without this, a typo'd or unreadable cert path surfaces later as an
+    opaque ssl/OSError from deep inside paho at connect time, which then
+    just looks like "the broker is down" in the retry loop. Failing here
+    instead names the exact setting and path at fault.
+    """
+    path = _clean_label(value)
+    if not path:
+        return None
+    expanded = os.path.expanduser(path)
+    if not os.path.isfile(expanded):
+        raise ValueError(
+            f"MQTT[{link_name}]: {setting_name} file not found: {expanded}"
+        )
+    if not os.access(expanded, os.R_OK):
+        raise ValueError(
+            f"MQTT[{link_name}]: {setting_name} file is not readable "
+            f"(check permissions): {expanded}"
+        )
+    return expanded
 
 
 def _mqtt_node_id(topic_prefix: str, label: str) -> str:
@@ -114,6 +147,11 @@ class MqttInterface:
         username: Optional[str] = None,
         password: Optional[str] = None,
         tls: bool = False,
+        tls_ca_certs: Optional[str] = None,
+        tls_certfile: Optional[str] = None,
+        tls_keyfile: Optional[str] = None,
+        tls_keyfile_password: Optional[str] = None,
+        tls_insecure: bool = False,
         client_id: Optional[str] = None,
         link_name: str = "mqtt",
         keepalive: int = 60,
@@ -159,8 +197,51 @@ class MqttInterface:
         )
         if username:
             self._client.username_pw_set(username, password)
-        if tls:
-            self._client.tls_set()
+
+        ca_certs = _resolve_cert_path(tls_ca_certs, "tls_ca_certs", link_name)
+        certfile = _resolve_cert_path(tls_certfile, "tls_certfile", link_name)
+        keyfile = _resolve_cert_path(tls_keyfile, "tls_keyfile", link_name)
+        key_password = _clean_label(tls_keyfile_password) or None
+
+        if keyfile and not certfile:
+            raise ValueError(
+                f"MQTT[{link_name}]: tls_keyfile is set without tls_certfile -- "
+                "client-certificate auth needs both (the cert and its private key)."
+            )
+
+        # Any TLS-specific option implies TLS even if `tls` itself wasn't set.
+        # Silently connecting in PLAINTEXT to a broker the operator clearly
+        # meant to secure (they configured certs!) is a security footgun, not
+        # a convenience -- so turn it on and say so, rather than ignoring them.
+        cert_options_present = any([ca_certs, certfile, keyfile])
+        use_tls = bool(tls) or cert_options_present
+        if use_tls and not tls:
+            logging.info(
+                "MQTT[%s]: enabling TLS because certificate options are configured "
+                "(set 'tls = true' explicitly to silence this).",
+                link_name,
+            )
+
+        if use_tls:
+            # ca_certs=None keeps paho's default: verify against the system
+            # CA store, exactly as before this option existed. A private/
+            # self-signed broker CA goes here instead.
+            self._client.tls_set(
+                ca_certs=ca_certs,
+                certfile=certfile,
+                keyfile=keyfile,
+                keyfile_password=key_password,
+            )
+            if tls_insecure:
+                # Must be called AFTER tls_set (paho requirement).
+                logging.warning(
+                    "MQTT[%s]: tls_insecure is enabled -- the broker's certificate "
+                    "hostname is NOT verified, so this connection can be "
+                    "impersonated. Use only for testing against a self-signed "
+                    "broker; prefer setting tls_ca_certs to that broker's CA.",
+                    link_name,
+                )
+                self._client.tls_insecure_set(True)
         # paho owns transient reconnects internally; is_connected below is
         # the backstop server.py's existing per-link liveness/reconnect
         # check reads for the case connect() fails outright at startup --

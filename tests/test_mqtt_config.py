@@ -133,6 +133,50 @@ bbs_nodes = mqtt:baconbs/city-a-b:node-b
         self.assertEqual(link["allow_section"], "allow_list_mqtt1")
         self.assertEqual(link["bbs_nodes_key"], "bbs_nodes_mqtt1")
 
+    def test_reads_advanced_tls_certificate_settings(self):
+        body = _BASE + """
+[mqtt1]
+host = broker.example.com
+port = 8883
+tls = true
+tls_ca_certs = /etc/ssl/certs/my-ca.crt
+tls_certfile = /etc/baconbs/client.crt
+tls_keyfile = /etc/baconbs/client.key
+tls_keyfile_password = s3cret
+tls_insecure = true
+topic_prefix = baconbs/city-a-b
+local_id = node-a
+"""
+        cfg_path = _write_config(self.tmp_path, body)
+        system_config = self.config_init.initialize_config(cfg_path)
+        link = system_config["mqtt_links"][0]
+        self.assertTrue(link["tls"])
+        self.assertEqual(link["tls_ca_certs"], "/etc/ssl/certs/my-ca.crt")
+        self.assertEqual(link["tls_certfile"], "/etc/baconbs/client.crt")
+        self.assertEqual(link["tls_keyfile"], "/etc/baconbs/client.key")
+        self.assertEqual(link["tls_keyfile_password"], "s3cret")
+        self.assertTrue(link["tls_insecure"])
+
+    def test_tls_settings_default_to_absent_when_unset(self):
+        """Back-compat: a config written before these options existed must
+        produce the same behavior as before (system CA store, no client
+        cert, verification on)."""
+        body = _BASE + """
+[mqtt1]
+host = broker.example.com
+topic_prefix = baconbs/city-a-b
+local_id = node-a
+"""
+        cfg_path = _write_config(self.tmp_path, body)
+        system_config = self.config_init.initialize_config(cfg_path)
+        link = system_config["mqtt_links"][0]
+        self.assertFalse(link["tls"])
+        self.assertIsNone(link["tls_ca_certs"])
+        self.assertIsNone(link["tls_certfile"])
+        self.assertIsNone(link["tls_keyfile"])
+        self.assertIsNone(link["tls_keyfile_password"])
+        self.assertFalse(link["tls_insecure"])
+
     def test_discovers_three_simultaneous_links_sorted_by_number(self):
         body = _BASE + """
 [mqtt3]

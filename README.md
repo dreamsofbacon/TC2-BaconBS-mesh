@@ -258,6 +258,45 @@ bbs_nodes = mqtt:baconbs/cityA-cityB:cityB-node
 allowed_nodes = mqtt:baconbs/cityA-cityB:cityB-node
 ```
 
+**TLS / certificates.** `tls = true` on its own verifies the broker against
+the system CA store — correct for any broker with a publicly-trusted
+certificate, and nothing else is needed. The following are for a
+self-hosted broker with a private CA, or one requiring client-certificate
+(mutual TLS) auth. All optional, all configurable from Settings → MQTT
+Bridges → *Advanced TLS / Certificates* as well as `config.ini`:
+
+| Setting | Purpose |
+|---|---|
+| `tls_ca_certs` | CA certificate to verify the broker against, instead of the system store (private / self-signed CA) |
+| `tls_certfile` | Client certificate, for brokers requiring mutual TLS |
+| `tls_keyfile` | Private key for that client certificate |
+| `tls_keyfile_password` | Only if the private key is encrypted |
+| `tls_insecure` | Disables broker hostname verification — leave off (see below) |
+
+```ini
+[mqtt1]
+host = broker.example.com
+port = 8883
+tls = true
+tls_ca_certs = /etc/ssl/certs/my-broker-ca.crt
+tls_certfile = /etc/baconbs/client.crt
+tls_keyfile = /etc/baconbs/client.key
+topic_prefix = baconbs/cityA-cityB
+```
+
+Paths are on **this node's** filesystem and must be readable by the user
+the service runs as (`User=` in `mesh-bbs.service`) — a common gotcha with
+keys in root-owned directories. A missing or unreadable file fails fast at
+startup naming the exact setting and path, rather than surfacing later as
+an opaque SSL error that looks like the broker being down.
+
+Setting any of these turns TLS on even without `tls = true`, so
+certificates can't be silently ignored on a plaintext connection. Avoid
+`tls_insecure = true`: it disables the check that the broker is who it
+claims to be, so the connection can be impersonated, which defeats most of
+the point of TLS — for a self-signed broker, point `tls_ca_certs` at its CA
+instead.
+
 Notes:
 
 - MQTT links get fast ("turbo-equivalent") pacing automatically, since MQTT

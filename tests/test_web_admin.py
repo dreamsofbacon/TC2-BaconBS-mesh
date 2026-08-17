@@ -1332,6 +1332,68 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("broker.example.com", page)
         self.assertIn("baconbs/cityA-cityB", page)
 
+    def test_mqtt_save_persists_advanced_tls_certificate_options(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = self.post_with_csrf(
+            client,
+            "/settings",
+            data={
+                "settings_section": "mqtt",
+                "mqtt_indexes": "1",
+                "mqtt_1_host": "broker.example.com",
+                "mqtt_1_topic_prefix": "baconbs/cityA-cityB",
+                "mqtt_1_tls": "1",
+                "mqtt_1_tls_ca_certs": "/etc/ssl/certs/my-ca.crt",
+                "mqtt_1_tls_certfile": "/etc/baconbs/client.crt",
+                "mqtt_1_tls_keyfile": "/etc/baconbs/client.key",
+                "mqtt_1_tls_keyfile_password": "s3cret",
+                "mqtt_1_tls_insecure": "1",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertEqual(config.get("mqtt1", "tls_ca_certs"), "/etc/ssl/certs/my-ca.crt")
+        self.assertEqual(config.get("mqtt1", "tls_certfile"), "/etc/baconbs/client.crt")
+        self.assertEqual(config.get("mqtt1", "tls_keyfile"), "/etc/baconbs/client.key")
+        self.assertEqual(config.get("mqtt1", "tls_keyfile_password"), "s3cret")
+        self.assertEqual(config.get("mqtt1", "tls_insecure"), "true")
+
+        # Round-trip: the saved values must come back in the form.
+        page = client.get("/settings").get_data(as_text=True)
+        self.assertIn("Advanced TLS / Certificates", page)
+        self.assertIn("/etc/ssl/certs/my-ca.crt", page)
+        self.assertIn("/etc/baconbs/client.crt", page)
+
+    def test_mqtt_save_rejects_client_key_without_certificate(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = self.post_with_csrf(
+            client,
+            "/settings",
+            data={
+                "settings_section": "mqtt",
+                "mqtt_indexes": "1",
+                "mqtt_1_host": "broker.example.com",
+                "mqtt_1_topic_prefix": "baconbs/cityA-cityB",
+                "mqtt_1_tls_keyfile": "/etc/baconbs/client.key",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("client certificate", response.get_data(as_text=True))
+
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertFalse(config.has_section("mqtt1"))
+
     def test_mqtt_save_requires_host_and_topic_prefix(self):
         app = create_app()
         client = app.test_client()
