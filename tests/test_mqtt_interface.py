@@ -721,3 +721,63 @@ class PublishClientsRecencyTests(unittest.TestCase):
         iface.publish_clients([{"node_id": "!weird", "link_name": "primary",
                                 "last_seen": "not-a-date"}])
         self.assertIn("p/n/clients/primary/!weird", self._topics(iface))
+
+
+class PublishClientsHeardVsSeenTests(unittest.TestCase):
+    """Recency must mean "the radio actually heard it", not "it was still
+    listed during our sweep".
+
+    last_seen refreshes for every node the radio still has in its table --
+    on a real mesh that is ~300 nodes, essentially all of them -- so
+    filtering on last_seen excluded almost nothing. last_heard_epoch is the
+    radio's own record of receiving a packet, which is the real signal.
+    """
+
+    def setUp(self):
+        self.broker = _FakeBroker()
+        p = patch.object(mqtt_interface.mqtt, "Client", _make_client_factory(self.broker))
+        p.start(); self.addCleanup(p.stop)
+        self.iface = MqttInterface(
+            host="b.example.com", topic_prefix="p", local_id="n", link_name="mqtt1",
+            publish_kinds={"clients": True}, publish_clients_max_age_hours=24)
+        self.addCleanup(self.iface.close)
+
+    @staticmethod
+    def _now_str():
+        from datetime import datetime
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _topics(self):
+        return [t for t, _p, _r in self.iface._client.published]
+
+    def test_fresh_last_seen_does_not_rescue_a_long_unheard_node(self):
+        """The exact production case: swept just now, but not actually
+        heard in days."""
+        import time
+        self.iface._client.published.clear()
+        self.iface.publish_clients([{
+            "node_id": "!stale", "link_name": "primary",
+            "last_seen": self._now_str(),                      # swept seconds ago
+            "last_heard_epoch": int(time.time()) - 7 * 86400,  # heard a week ago
+        }])
+        self.assertNotIn("p/n/clients/primary/!stale", self._topics())
+
+    def test_recently_heard_node_is_published(self):
+        import time
+        self.iface._client.published.clear()
+        self.iface.publish_clients([{
+            "node_id": "!live", "link_name": "primary",
+            "last_seen": self._now_str(),
+            "last_heard_epoch": int(time.time()) - 600,
+        }])
+        self.assertIn("p/n/clients/primary/!live", self._topics())
+
+    def test_node_without_last_heard_falls_back_to_last_seen(self):
+        """MeshCore/MQTT never report last_heard_epoch -- for them, being in
+        the roster is the freshest signal there is."""
+        self.iface._client.published.clear()
+        self.iface.publish_clients([{
+            "node_id": "meshcore-node", "link_name": "secondary",
+            "last_seen": self._now_str(), "last_heard_epoch": None,
+        }])
+        self.assertIn("p/n/clients/secondary/meshcore-node", self._topics())

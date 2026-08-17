@@ -623,8 +623,17 @@ class MqttInterface:
         if not max_age or max_age <= 0:
             return list(clients)
         cutoff = datetime.now() - timedelta(hours=max_age)
+        epoch_cutoff = cutoff.timestamp()
         kept = []
         for client in clients:
+            # Prefer when the radio actually HEARD the node; last_seen only
+            # says it was still listed during our sweep, which is true for
+            # nearly every node. See db_operations.get_mesh_clients.
+            heard = client.get("last_heard_epoch")
+            if isinstance(heard, (int, float)):
+                if heard >= epoch_cutoff:
+                    kept.append(client)
+                continue
             raw = str(client.get("last_seen") or "").strip()
             if not raw:
                 # No timestamp to judge by -- keep it rather than silently
