@@ -428,6 +428,118 @@ class MqttTlsOptionTests(unittest.TestCase):
         self.assertIsNone(iface._client.tls_kwargs.get("keyfile_password"))
 
 
+class TopicSanitizationTests(unittest.TestCase):
+    """Spaces are legal in MQTT topics but break CLI tooling and broker ACL
+    patterns; '+'/'#'/'/' are wildcards and separators, so leaving them in
+    a segment silently changes the topic's SHAPE instead of naming it."""
+
+    def test_spaces_become_hyphens(self):
+        self.assertEqual(
+            mqtt_interface.sanitize_topic_segment("Burlington NNE"), "Burlington-NNE")
+
+    def test_whitespace_runs_collapse_to_one_hyphen(self):
+        self.assertEqual(
+            mqtt_interface.sanitize_topic_segment("  a   b  "), "a-b")
+
+    def test_wildcards_are_neutralized(self):
+        self.assertEqual(mqtt_interface.sanitize_topic_segment("a+b#c"), "a-b-c")
+
+    def test_slash_becomes_hyphen_in_a_segment(self):
+        self.assertEqual(mqtt_interface.sanitize_topic_segment("a/b"), "a-b")
+
+    def test_slash_is_preserved_in_a_prefix(self):
+        self.assertEqual(
+            mqtt_interface.sanitize_topic_segment("baconbs/cityA cityB", allow_slash=True),
+            "baconbs/cityA-cityB")
+
+    def test_prefix_strips_redundant_slashes(self):
+        self.assertEqual(
+            mqtt_interface.sanitize_topic_segment("/a//b/", allow_slash=True), "a/b")
+
+
+class MqttPublishSelectionTests(unittest.TestCase):
+    """Per-broker control over what gets published."""
+
+    def setUp(self):
+        self.broker = _FakeBroker()
+        self.client_patch = patch.object(
+            mqtt_interface.mqtt, "Client", _make_client_factory(self.broker)
+        )
+        self.client_patch.start()
+        self.addCleanup(self.client_patch.stop)
+
+    def _make(self, **kwargs):
+        kwargs.setdefault("local_id", "node-a")
+        iface = MqttInterface(
+            host="broker.example.com", topic_prefix="baconbs/city-a-b",
+            link_name="mqtt1", **kwargs,
+        )
+        self.addCleanup(iface.close)
+        return iface
+
+    def _topics(self, iface):
+        return [topic for topic, _payload, _retain in iface._client.published]
+
+    def test_local_id_with_space_is_normalized_in_topics(self):
+        iface = self._make(local_id="Burlington NNE",
+                           publish_kinds={"status": True})
+        iface._client.published.clear()
+        iface.publish_status({"updated_at": "now", "links": {}})
+        self.assertIn("baconbs/city-a-b/Burlington-NNE/status", self._topics(iface))
+
+    def test_disabled_category_publishes_nothing(self):
+        iface = self._make(publish_kinds={"status": True, "clients": False})
+        iface._client.published.clear()
+        iface.publish_clients([{"node_id": "!abc", "link_name": "primary"}])
+        self.assertEqual(self._topics(iface), [])
+
+    def test_enabled_clients_publishes_summary_and_per_node(self):
+        iface = self._make(publish_kinds={"clients": True})
+        iface._client.published.clear()
+        iface.publish_clients([
+            {"node_id": "!abc", "link_name": "primary", "short_name": "AAA"},
+        ])
+        topics = self._topics(iface)
+        self.assertIn("baconbs/city-a-b/node-a/clients", topics)
+        self.assertIn("baconbs/city-a-b/node-a/clients/primary/!abc", topics)
+
+    def test_node_id_containing_a_slash_cannot_fan_out_topic_levels(self):
+        iface = self._make(publish_kinds={"clients": True})
+        iface._client.published.clear()
+        iface.publish_clients([
+            {"node_id": "mqtt:pre/fix:node", "link_name": "mqtt2"},
+        ])
+        per_node = [t for t in self._topics(iface) if t.endswith("node")]
+        self.assertEqual(len(per_node), 1)
+        self.assertNotIn("mqtt:pre/fix:node", per_node[0])
+        self.assertTrue(per_node[0].endswith("mqtt:pre_fix:node"))
+
+    def test_publish_prefix_overrides_only_data_not_the_sync_topic(self):
+        """The sync topic identifies the bridge relationship -- both ends
+        must agree on it, so an override must not move it."""
+        iface = self._make(publish_kinds={"status": True},
+                           publish_prefix="homeassistant/baconbbs")
+        self.assertEqual(iface._topic, "baconbs/city-a-b/bbs")  # unchanged
+        iface._client.published.clear()
+        iface.publish_status({"updated_at": "now", "links": {}})
+        self.assertIn("homeassistant/baconbbs/node-a/status", self._topics(iface))
+
+    def test_activity_events_are_not_retained(self):
+        iface = self._make(publish_kinds={"activity": True})
+        iface._client.published.clear()
+        iface.publish_activity({"kind": "bulletin", "id": 7})
+        published = [p for p in iface._client.published if "/activity/" in p[0]]
+        self.assertEqual(len(published), 1)
+        self.assertFalse(published[0][2], "an event must not be retained")
+
+    def test_status_defaults_on_when_no_kinds_given(self):
+        """Back-compat: a link built without publish_kinds keeps the
+        original status-publishing behavior."""
+        iface = self._make()
+        self.assertTrue(iface.publishes("status"))
+        self.assertFalse(iface.publishes("clients"))
+
+
 class NodeIdCollisionAvoidanceTests(unittest.TestCase):
     """Regression test: meshcore_interface._node_num truncates to the first
     8 hex chars of a public key, a real collision surface. This proves the

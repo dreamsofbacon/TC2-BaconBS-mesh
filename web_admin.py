@@ -441,6 +441,19 @@ def load_mqtt_settings(config_path: str) -> list[dict]:
       "local_id": config.get(section_name, "local_id", fallback="").strip(),
       "client_id": config.get(section_name, "client_id", fallback="").strip(),
       "keepalive": config.get(section_name, "keepalive", fallback="60").strip() or "60",
+      # publish_status defaults true (pre-existing behavior); the rest
+      # default false so adding these options changes no existing traffic.
+      "publish_status": _parse_bool_setting(
+        config.get(section_name, "publish_status", fallback="true"), True),
+      "publish_clients": _parse_bool_setting(
+        config.get(section_name, "publish_clients", fallback="false"), False),
+      "publish_telemetry": _parse_bool_setting(
+        config.get(section_name, "publish_telemetry", fallback="false"), False),
+      "publish_activity": _parse_bool_setting(
+        config.get(section_name, "publish_activity", fallback="false"), False),
+      "publish_sync_stats": _parse_bool_setting(
+        config.get(section_name, "publish_sync_stats", fallback="false"), False),
+      "publish_prefix": config.get(section_name, "publish_prefix", fallback="").strip(),
       "bbs_nodes_text": "\n".join(parse_list_input(config.get(sync_section(index), "bbs_nodes", fallback=""))),
       "allowed_nodes_text": "\n".join(parse_list_input(config.get(allow_section(index), "allowed_nodes", fallback=""))),
     })
@@ -3533,7 +3546,13 @@ def create_app(runtime_interface=None) -> Flask:
       for index in submitted_indexes:
         prefix = f"mqtt_{index}_"
         host = form.get(f"{prefix}host", "").strip()
-        topic_prefix = form.get(f"{prefix}topic_prefix", "").strip()
+        # Normalize topic-forming fields on save so config.ini stores the
+        # value that will actually be used -- spaces become '-', and MQTT
+        # wildcards/separators are neutralized. Without this the saved text
+        # and the live topic silently disagree.
+        from mqtt_interface import sanitize_topic_segment
+        raw_topic_prefix = form.get(f"{prefix}topic_prefix", "").strip()
+        topic_prefix = sanitize_topic_segment(raw_topic_prefix, allow_slash=True)
         if not host:
           errors.append(f"Broker #{index}: host is required.")
         if not topic_prefix:
@@ -3564,9 +3583,16 @@ def create_app(runtime_interface=None) -> Flask:
           "username": form.get(f"{prefix}username", "").strip(),
           "password": form.get(f"{prefix}password", "").strip(),
           "topic_prefix": topic_prefix,
-          "local_id": form.get(f"{prefix}local_id", "").strip(),
+          "local_id": sanitize_topic_segment(form.get(f"{prefix}local_id", "")),
           "client_id": form.get(f"{prefix}client_id", "").strip(),
           "keepalive": _parse_int_setting(form.get(f"{prefix}keepalive", ""), 60, minimum=5),
+          "publish_status": _parse_bool_setting(form.get(f"{prefix}publish_status", ""), False),
+          "publish_clients": _parse_bool_setting(form.get(f"{prefix}publish_clients", ""), False),
+          "publish_telemetry": _parse_bool_setting(form.get(f"{prefix}publish_telemetry", ""), False),
+          "publish_activity": _parse_bool_setting(form.get(f"{prefix}publish_activity", ""), False),
+          "publish_sync_stats": _parse_bool_setting(form.get(f"{prefix}publish_sync_stats", ""), False),
+          "publish_prefix": sanitize_topic_segment(
+            form.get(f"{prefix}publish_prefix", ""), allow_slash=True),
           "bbs_nodes": parse_list_input(form.get(f"{prefix}bbs_nodes", "")),
           "allowed_nodes": parse_list_input(form.get(f"{prefix}allowed_nodes", "")),
         })
@@ -3629,6 +3655,10 @@ def create_app(runtime_interface=None) -> Flask:
         config.set(section_name, "local_id", link["local_id"])
         config.set(section_name, "client_id", link["client_id"])
         config.set(section_name, "keepalive", str(link["keepalive"]))
+        for kind in ("status", "clients", "telemetry", "activity", "sync_stats"):
+          config.set(section_name, f"publish_{kind}",
+                     "true" if link[f"publish_{kind}"] else "false")
+        config.set(section_name, "publish_prefix", link["publish_prefix"])
 
         sync_section_name = f"sync_mqtt{link['index']}"
         if not config.has_section(sync_section_name):

@@ -351,6 +351,37 @@ Notes:
   removed from Settings → MQTT Bridges instead of hand-editing `config.ini`
   — same restart-required caveat as the Device Configuration section, since
   links are opened once at startup.
+**What each broker receives.** Beyond the sync traffic a bridge exists for,
+each broker independently opts in to telemetry — Settings → MQTT Bridges →
+*What this broker receives*, or the `publish_*` keys in `[mqttN]`. So one
+node can send full telemetry to a home broker while a remote bridge gets
+sync only.
+
+| Setting | Publishes | Topic |
+|---|---|---|
+| `publish_status` *(default on)* | Health of every radio/MQTT link | `<prefix>/<id>/status` |
+| `publish_clients` | Devices in range, one topic per node | `<prefix>/<id>/clients` |
+| `publish_telemetry` | Hardware/role counts, battery, low-battery list | `<prefix>/<id>/telemetry` |
+| `publish_activity` | New bulletins/mail/comments as events | `<prefix>/<id>/activity` |
+| `publish_sync_stats` | Sync phase/percent, record counts, DB size | `<prefix>/<id>/sync` |
+| `publish_prefix` | Overrides `<prefix>` for the above only | — |
+
+Everything except activity is **retained**, so a subscriber connecting
+later immediately gets current state. Activity events are deliberately not
+retained — replaying the last one to every new subscriber would misrepresent
+it as current. Activity is polled on the diagnostics cadence (5–30s) rather
+than hooked into the write path, so it costs the sync engine nothing; the
+tradeoff is up to one cycle of latency.
+
+`publish_prefix` moves telemetry only — **never** the sync topic, which
+identifies the bridge relationship and must stay identical on both ends.
+
+Topic-forming fields (`topic_prefix`, `local_id`, `publish_prefix`) are
+normalized: whitespace becomes `-` and MQTT wildcards (`+`, `#`) are
+replaced. `Burlington NNE` becomes `Burlington-NNE`. Spaces are legal in
+MQTT but break shell tooling and broker ACL patterns. Since `local_id` is
+also this node's id on the link, peers must use the normalized form.
+
 - Every configured MQTT link also **publishes** this node's status back to
   its broker, separate from the `{topic_prefix}/bbs` sync topic above:
   ```

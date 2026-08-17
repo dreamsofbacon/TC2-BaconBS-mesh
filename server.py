@@ -618,13 +618,187 @@ def publish_mqtt_status(links, snapshot: dict) -> None:
             for r in radios
         },
     }
-    for link in links:
-        publish = getattr(link.interface, 'publish_status', None)
-        if callable(publish):
+    publishers = [
+        link for link in links
+        if callable(getattr(link.interface, 'publishes', None))
+    ]
+    if not publishers:
+        return
+
+    def _wanted(kind: str) -> bool:
+        return any(link.interface.publishes(kind) for link in publishers)
+
+    def _send(kind: str, method_name: str, payload) -> None:
+        for link in publishers:
+            method = getattr(link.interface, method_name, None)
+            if not callable(method):
+                continue
             try:
-                publish(status)
+                method(payload)
             except Exception:
-                logging.debug(f"[{link.name}] MQTT status publish failed", exc_info=True)
+                logging.debug(f"[{link.name}] MQTT {kind} publish failed", exc_info=True)
+
+    _send('status', 'publish_status', status)
+
+    # Each payload is built only if at least one broker wants it -- the
+    # roster and record counts hit the database, so an unsubscribed
+    # category should cost nothing.
+    clients = None
+    if _wanted('clients') or _wanted('telemetry'):
+        try:
+            clients = _build_clients_payload()
+        except Exception:
+            logging.debug("MQTT: client roster payload failed", exc_info=True)
+    if clients is not None and _wanted('clients'):
+        _send('clients', 'publish_clients', clients)
+    if clients is not None and _wanted('telemetry'):
+        try:
+            _send('telemetry', 'publish_telemetry', _build_telemetry_payload(clients))
+        except Exception:
+            logging.debug("MQTT: telemetry payload failed", exc_info=True)
+    if _wanted('sync_stats'):
+        try:
+            _send('sync_stats', 'publish_sync_stats', _build_sync_stats_payload(snapshot))
+        except Exception:
+            logging.debug("MQTT: sync stats payload failed", exc_info=True)
+    if _wanted('activity'):
+        try:
+            for event in _build_activity_events():
+                _send('activity', 'publish_activity', event)
+        except Exception:
+            logging.debug("MQTT: activity events failed", exc_info=True)
+
+
+def _build_clients_payload() -> list:
+    """Mesh client roster for MQTT publishing, from the persisted table so
+    it reflects everything seen -- not just what a live interface happens
+    to hold right now."""
+    from db_operations import get_mesh_clients
+    return get_mesh_clients()
+
+
+def _build_telemetry_payload(clients: list) -> dict:
+    """Aggregate node stats, derived from the same roster rather than a
+    live interface, so it covers every link uniformly (only Meshtastic
+    reports battery/lastHeard, so those simply cover fewer nodes)."""
+    hardware: dict = {}
+    roles: dict = {}
+    batteries = []
+    low_battery = []
+    for client in clients:
+        model = str(client.get('hw_model') or 'Unknown')
+        hardware[model] = hardware.get(model, 0) + 1
+        role = str(client.get('role') or 'Unknown')
+        roles[role] = roles.get(role, 0) + 1
+        level = client.get('battery_level')
+        if isinstance(level, int):
+            batteries.append(level)
+            if level < 20:
+                low_battery.append({
+                    'node_id': client.get('node_id'),
+                    'short_name': client.get('short_name'),
+                    'battery_level': level,
+                })
+    payload = {
+        'node_count': len(clients),
+        'hardware_models': hardware,
+        'roles': roles,
+        'battery_reported_count': len(batteries),
+        'low_battery': low_battery,
+    }
+    if batteries:
+        payload['battery_min'] = min(batteries)
+        payload['battery_avg'] = round(sum(batteries) / len(batteries), 1)
+    return payload
+
+
+def _build_sync_stats_payload(snapshot: dict) -> dict:
+    """Sync progress + per-scope record counts + database size."""
+    from db_operations import get_local_record_counts
+    stats = {
+        'in_progress': bool(snapshot.get('sync_in_progress', False)),
+        'progress_percent': snapshot.get('sync_progress_percent', 0),
+        'current_phase': snapshot.get('sync_current_phase', 'never_run'),
+        'last_result': snapshot.get('sync_last_result', ''),
+        'next_run_epoch': snapshot.get('sync_next_run_epoch', 0),
+    }
+    try:
+        counts = get_local_record_counts()
+        # get_local_record_counts returns counts alongside hash fingerprints;
+        # only the numeric counts are meaningful as telemetry.
+        stats['records'] = {
+            key: value for key, value in counts.items()
+            if isinstance(value, int)
+        }
+    except Exception:
+        logging.debug("sync stats: record counts unavailable", exc_info=True)
+    try:
+        db_path = get_db_path_for_stats()
+        total = 0
+        for suffix in ('', '-wal', '-shm'):
+            candidate = f"{db_path}{suffix}"
+            if os.path.exists(candidate):
+                total += os.path.getsize(candidate)
+        stats['database_bytes'] = total
+    except Exception:
+        logging.debug("sync stats: database size unavailable", exc_info=True)
+    return stats
+
+
+def get_db_path_for_stats() -> str:
+    return resolve_app_path(os.getenv('BBS_DB_PATH'), 'bulletins.db')
+
+
+# Highest row id already published per activity scope. Seeded from the
+# current maximum at first use so a restart doesn't replay history as
+# "new" -- only records that appear afterwards are events.
+_activity_watermarks: dict = {}
+
+
+def _build_activity_events(limit: int = 25) -> list:
+    """New bulletins/mail/channel comments since the last check.
+
+    Polled on the diagnostics cadence rather than hooked into the write
+    paths: a subscriber still gets events without polling the database
+    themselves, and the sync engine's write paths stay untouched. Cost is
+    up to one cycle of latency (5-30s), which is nothing next to LoRa sync
+    times.
+    """
+    from db_operations import get_db_connection
+    scopes = (
+        ('bulletin', 'bulletins', 'board, sender_short_name, subject'),
+        ('mail', 'mail', 'sender_short_name, recipient, subject'),
+        ('channel_comment', 'channel_comments', 'channel_id, sender_short_name'),
+    )
+    events = []
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+    except Exception:
+        logging.debug("activity events: no database connection", exc_info=True)
+        return events
+
+    for kind, table, columns in scopes:
+        try:
+            if kind not in _activity_watermarks:
+                row = cursor.execute(f"SELECT COALESCE(MAX(id), 0) FROM {table}").fetchone()
+                _activity_watermarks[kind] = int(row[0]) if row else 0
+                continue  # seed only; pre-existing rows are not new events
+            last_id = _activity_watermarks[kind]
+            rows = cursor.execute(
+                f"SELECT id, {columns} FROM {table} WHERE id > ? ORDER BY id LIMIT ?",
+                (last_id, limit),
+            ).fetchall()
+            for row in rows:
+                fields = [c.strip() for c in columns.split(',')]
+                event = {'kind': kind, 'id': row[0]}
+                for offset, field in enumerate(fields, start=1):
+                    event[field] = row[offset]
+                events.append(event)
+                _activity_watermarks[kind] = max(_activity_watermarks[kind], int(row[0]))
+        except Exception:
+            logging.debug("activity events: %s scope failed", kind, exc_info=True)
+    return events
 
 
 def persist_mesh_clients(links) -> None:
