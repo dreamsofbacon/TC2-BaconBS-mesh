@@ -323,6 +323,7 @@ def reload_links_from_config(links, system_config: dict, config_path: str) -> di
                         )
                     },
                     entry.get('publish_prefix'),
+                    entry.get('publish_clients_max_age_hours'),
                 )
             except Exception:
                 logging.debug(f"[{name}] applying publish settings failed", exc_info=True)
@@ -666,7 +667,7 @@ def publish_mqtt_status(links, snapshot: dict) -> None:
     clients = None
     if _wanted('clients') or _wanted('telemetry'):
         try:
-            clients = _build_clients_payload()
+            clients = _build_clients_payload(publishers)
         except Exception:
             logging.debug("MQTT: client roster payload failed", exc_info=True)
     if clients is not None and _wanted('clients'):
@@ -689,12 +690,26 @@ def publish_mqtt_status(links, snapshot: dict) -> None:
             logging.debug("MQTT: activity events failed", exc_info=True)
 
 
-def _build_clients_payload() -> list:
+def _build_clients_payload(publishers=()) -> list:
     """Mesh client roster for MQTT publishing, from the persisted table so
     it reflects everything seen -- not just what a live interface happens
-    to hold right now."""
+    to hold right now.
+
+    Queried once with the WIDEST window any broker asks for; each interface
+    then narrows that shared result to its own window (see
+    MqttInterface._filter_recent). One query beats one-per-broker, and the
+    database filter keeps it on the last_seen index instead of loading
+    every node ever recorded.
+    """
     from db_operations import get_mesh_clients
-    return get_mesh_clients()
+    windows = [
+        int(getattr(link.interface, 'publish_clients_max_age_hours', 0) or 0)
+        for link in publishers
+        if getattr(link.interface, 'publishes', lambda _k: False)('clients')
+    ]
+    # Any broker wanting everything (0) means no database-level cutoff.
+    seconds = None if (not windows or 0 in windows) else max(windows) * 3600
+    return get_mesh_clients(seen_within_seconds=seconds)
 
 
 def _build_telemetry_payload(clients: list) -> dict:

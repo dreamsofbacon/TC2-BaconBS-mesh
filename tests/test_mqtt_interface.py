@@ -634,3 +634,90 @@ class ApplyPublishSettingsTests(unittest.TestCase):
         self.assertTrue(self.iface.is_connected)
         self.iface.apply_publish_settings({"status": True, "telemetry": True})
         self.assertTrue(self.iface.is_connected)
+
+
+class PublishClientsRecencyTests(unittest.TestCase):
+    """Only publish nodes seen recently, and clear the ones that age out.
+
+    The roster accumulates every node ever heard (hundreds on a busy mesh),
+    which is wasteful on a metered bridge link. Filtering alone isn't
+    enough: retained per-node topics persist on the broker forever, so an
+    aged-out node must be explicitly cleared or a subscriber still sees it.
+    """
+
+    def setUp(self):
+        self.broker = _FakeBroker()
+        self.client_patch = patch.object(
+            mqtt_interface.mqtt, "Client", _make_client_factory(self.broker)
+        )
+        self.client_patch.start()
+        self.addCleanup(self.client_patch.stop)
+
+    def _make(self, max_age=24):
+        iface = MqttInterface(
+            host="b.example.com", topic_prefix="p", local_id="n",
+            link_name="mqtt1", publish_kinds={"clients": True},
+            publish_clients_max_age_hours=max_age,
+        )
+        self.addCleanup(iface.close)
+        return iface
+
+    @staticmethod
+    def _client(node_id, hours_ago):
+        from datetime import datetime, timedelta
+        return {
+            "node_id": node_id, "link_name": "primary",
+            "last_seen": (datetime.now() - timedelta(hours=hours_ago)
+                          ).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    def _topics(self, iface):
+        return [t for t, _p, _r in iface._client.published]
+
+    def test_old_nodes_are_excluded(self):
+        iface = self._make(max_age=24)
+        iface._client.published.clear()
+        iface.publish_clients([self._client("!new", 1), self._client("!old", 100)])
+        topics = self._topics(iface)
+        self.assertIn("p/n/clients/primary/!new", topics)
+        self.assertNotIn("p/n/clients/primary/!old", topics)
+
+    def test_summary_count_reflects_the_filtered_set(self):
+        iface = self._make(max_age=24)
+        iface._client.published.clear()
+        iface.publish_clients([self._client("!a", 1), self._client("!b", 100)])
+        summary = [p for t, p, _r in iface._client.published if t == "p/n/clients"][0]
+        self.assertEqual(json.loads(summary)["count"], 1)
+
+    def test_zero_means_no_limit(self):
+        iface = self._make(max_age=0)
+        iface._client.published.clear()
+        iface.publish_clients([self._client("!ancient", 10000)])
+        self.assertIn("p/n/clients/primary/!ancient", self._topics(iface))
+
+    def test_aged_out_node_topic_is_cleared_with_empty_retained_payload(self):
+        iface = self._make(max_age=24)
+        iface.publish_clients([self._client("!x", 1)])
+        iface._client.published.clear()
+        # Next cycle: !x has aged out entirely.
+        iface.publish_clients([])
+        cleared = [(t, p, r) for t, p, r in iface._client.published
+                   if t == "p/n/clients/primary/!x"]
+        self.assertEqual(len(cleared), 1)
+        self.assertEqual(cleared[0][1], "", "must be an empty payload to delete the retained message")
+        self.assertTrue(cleared[0][2], "the clear must itself be retained")
+
+    def test_still_present_node_is_not_cleared(self):
+        iface = self._make(max_age=24)
+        iface.publish_clients([self._client("!x", 1)])
+        iface._client.published.clear()
+        iface.publish_clients([self._client("!x", 1)])
+        empties = [t for t, p, _r in iface._client.published if p == ""]
+        self.assertEqual(empties, [])
+
+    def test_unparseable_timestamp_is_kept_not_dropped(self):
+        iface = self._make(max_age=24)
+        iface._client.published.clear()
+        iface.publish_clients([{"node_id": "!weird", "link_name": "primary",
+                                "last_seen": "not-a-date"}])
+        self.assertIn("p/n/clients/primary/!weird", self._topics(iface))

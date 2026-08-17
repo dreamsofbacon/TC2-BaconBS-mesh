@@ -293,6 +293,12 @@ def _read_mqtt_settings(section) -> dict[str, Any]:
         # tree) without touching topic_prefix, which identifies the bridge
         # relationship and must stay stable for sync to work.
         'publish_prefix': section.get('publish_prefix', fallback=None),
+        # Only publish devices seen this recently. The roster accumulates
+        # every node ever heard, which on a busy mesh is hundreds of
+        # entries -- far more than a bridge needs, and expensive on a
+        # metered link. 0 = no limit (publish everything ever recorded).
+        'publish_clients_max_age_hours': section.getint(
+            'publish_clients_max_age_hours', fallback=24),
     }
 
 
@@ -356,6 +362,7 @@ def parse_mqtt_links(config: configparser.ConfigParser) -> list:
             'publish_activity': settings['publish_activity'],
             'publish_sync_stats': settings['publish_sync_stats'],
             'publish_prefix': settings['publish_prefix'],
+            'publish_clients_max_age_hours': settings['publish_clients_max_age_hours'],
             'sync_section': f'sync_{link_name}',
             'allow_section': f'allow_list_{link_name}',
             'bbs_nodes_key': f'bbs_nodes_{link_name}',
@@ -685,6 +692,8 @@ def _open_mqtt_interface(link_cfg: dict[str, Any]):
                     )
                 },
                 publish_prefix=link_cfg.get('publish_prefix'),
+                publish_clients_max_age_hours=link_cfg.get(
+                    'publish_clients_max_age_hours', 24),
                 client_id=link_cfg.get('client_id'),
                 link_name=name,
                 keepalive=link_cfg.get('keepalive', 60),

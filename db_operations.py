@@ -3245,23 +3245,37 @@ def upsert_mesh_clients(rows: list[dict]) -> None:
     conn.commit()
 
 
-def get_mesh_clients(link_name: Optional[str] = None) -> list[dict]:
-    """Every known mesh client, most-recently-seen first. Pass link_name to
-    scope to one radio/MQTT link; omit for the whole-node roster across all
-    links (web_admin.py's Clients page)."""
+def get_mesh_clients(
+    link_name: Optional[str] = None,
+    seen_within_seconds: Optional[int] = None,
+) -> list[dict]:
+    """Known mesh clients, most-recently-seen first.
+
+    ``link_name`` scopes to one radio/MQTT link; omit for the whole-node
+    roster (web_admin.py's Clients page). ``seen_within_seconds`` returns
+    only devices seen that recently -- used by MQTT publishing so a metered
+    bridge carries currently-present nodes rather than everything ever
+    recorded. Filtering here (not in Python) keeps it on the
+    idx_mesh_clients_last_seen index.
+    """
     conn = get_db_connection()
     c = conn.cursor()
     columns = (
         'link_name, node_id, node_num, protocol, short_name, long_name, '
         'hw_model, role, battery_level, last_heard_epoch, first_seen, last_seen'
     )
+    clauses = []
+    params: list = []
     if link_name:
-        c.execute(
-            f'SELECT {columns} FROM mesh_clients WHERE link_name = ? ORDER BY last_seen DESC',
-            (link_name,),
-        )
-    else:
-        c.execute(f'SELECT {columns} FROM mesh_clients ORDER BY last_seen DESC')
+        clauses.append('link_name = ?')
+        params.append(link_name)
+    if seen_within_seconds and seen_within_seconds > 0:
+        cutoff = (datetime.now() - timedelta(seconds=int(seen_within_seconds))
+                  ).strftime('%Y-%m-%d %H:%M:%S')
+        clauses.append('last_seen >= ?')
+        params.append(cutoff)
+    where = (' WHERE ' + ' AND '.join(clauses)) if clauses else ''
+    c.execute(f'SELECT {columns} FROM mesh_clients{where} ORDER BY last_seen DESC', params)
     keys = [
         'link_name', 'node_id', 'node_num', 'protocol', 'short_name', 'long_name',
         'hw_model', 'role', 'battery_level', 'last_heard_epoch', 'first_seen', 'last_seen',
