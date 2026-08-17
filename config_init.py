@@ -278,6 +278,21 @@ def _read_mqtt_settings(section) -> dict[str, Any]:
         'local_id': section.get('local_id', fallback=None),
         'client_id': section.get('client_id', fallback=None),
         'keepalive': section.getint('keepalive', fallback=60),
+        # What this broker receives, beyond the sync traffic the bridge
+        # exists for. Each is independent so one node can send full
+        # telemetry to a home broker while a remote bridge gets sync only.
+        # publish_status defaults true (the pre-existing behavior); the
+        # rest default false so an existing config's traffic is unchanged.
+        'publish_status': section.getboolean('publish_status', fallback=True),
+        'publish_clients': section.getboolean('publish_clients', fallback=False),
+        'publish_telemetry': section.getboolean('publish_telemetry', fallback=False),
+        'publish_activity': section.getboolean('publish_activity', fallback=False),
+        'publish_sync_stats': section.getboolean('publish_sync_stats', fallback=False),
+        # Root for PUBLISHED DATA only. Blank = use topic_prefix. Lets
+        # telemetry slot into an existing hierarchy (e.g. a Home Assistant
+        # tree) without touching topic_prefix, which identifies the bridge
+        # relationship and must stay stable for sync to work.
+        'publish_prefix': section.get('publish_prefix', fallback=None),
     }
 
 
@@ -335,6 +350,12 @@ def parse_mqtt_links(config: configparser.ConfigParser) -> list:
             'local_id': local_id,
             'client_id': settings['client_id'],
             'keepalive': settings['keepalive'],
+            'publish_status': settings['publish_status'],
+            'publish_clients': settings['publish_clients'],
+            'publish_telemetry': settings['publish_telemetry'],
+            'publish_activity': settings['publish_activity'],
+            'publish_sync_stats': settings['publish_sync_stats'],
+            'publish_prefix': settings['publish_prefix'],
             'sync_section': f'sync_{link_name}',
             'allow_section': f'allow_list_{link_name}',
             'bbs_nodes_key': f'bbs_nodes_{link_name}',
@@ -656,6 +677,14 @@ def _open_mqtt_interface(link_cfg: dict[str, Any]):
                 tls_keyfile=link_cfg.get('tls_keyfile'),
                 tls_keyfile_password=link_cfg.get('tls_keyfile_password'),
                 tls_insecure=link_cfg.get('tls_insecure', False),
+                publish_kinds={
+                    kind: bool(link_cfg.get(f'publish_{kind}', default))
+                    for kind, default in (
+                        ('status', True), ('clients', False), ('telemetry', False),
+                        ('activity', False), ('sync_stats', False),
+                    )
+                },
+                publish_prefix=link_cfg.get('publish_prefix'),
                 client_id=link_cfg.get('client_id'),
                 link_name=name,
                 keepalive=link_cfg.get('keepalive', 60),

@@ -45,6 +45,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -65,6 +66,30 @@ _BROADCAST_LABELS = ("", "*", "0", "255")
 
 def _clean_label(value: Any) -> str:
     return str(value or "").strip()
+
+
+def sanitize_topic_segment(value: Any, allow_slash: bool = False) -> str:
+    """Normalize a value used as an MQTT topic segment.
+
+    Whitespace becomes '-' (runs collapse to one). Spaces are technically
+    legal in MQTT topics but break shell/CLI tooling that doesn't quote,
+    and trip up broker ACL patterns -- a node published under
+    'baconbbs/Burlington NNE/status' is needlessly painful to work with.
+
+    '+' and '#' are MQTT WILDCARDS and '/' is the level separator, so
+    leaving them in a segment silently changes the topic's shape rather
+    than naming it. Prefixes legitimately contain '/', hence allow_slash.
+    """
+    text = _clean_label(value)
+    if not text:
+        return ""
+    text = re.sub(r"\s+", "-", text)
+    text = text.replace("+", "-").replace("#", "-")
+    if allow_slash:
+        text = re.sub(r"/{2,}", "/", text).strip("/")
+    else:
+        text = text.replace("/", "-")
+    return text
 
 
 def _resolve_cert_path(value: Any, setting_name: str, link_name: str) -> Optional[str]:
@@ -152,6 +177,8 @@ class MqttInterface:
         tls_keyfile: Optional[str] = None,
         tls_keyfile_password: Optional[str] = None,
         tls_insecure: bool = False,
+        publish_kinds: Optional[dict] = None,
+        publish_prefix: Optional[str] = None,
         client_id: Optional[str] = None,
         link_name: str = "mqtt",
         keepalive: int = 60,
@@ -167,8 +194,27 @@ class MqttInterface:
 
         self.host = host
         self.port = int(port)
-        self.topic_prefix = topic_prefix.strip().strip("/")
-        self.local_id = _clean_label(local_id)
+        # Normalized rather than rejected: a hand-edited config.ini with a
+        # space in it should still work, just on a sane topic. Logged so
+        # the effective value is never a silent surprise.
+        self.topic_prefix = sanitize_topic_segment(topic_prefix, allow_slash=True)
+        self.local_id = sanitize_topic_segment(local_id)
+        if self.topic_prefix != _clean_label(topic_prefix).strip("/"):
+            logging.info(
+                "MQTT[%s]: topic_prefix normalized to %r for topic safety.",
+                link_name, self.topic_prefix,
+            )
+        if self.local_id != _clean_label(local_id):
+            logging.info(
+                "MQTT[%s]: local_id normalized to %r for topic safety "
+                "(this is also the node's id on this link, so peers must use the "
+                "normalized form).",
+                link_name, self.local_id,
+            )
+        if not self.topic_prefix:
+            raise ValueError("MQTT interface requires a topic_prefix")
+        if not self.local_id:
+            raise ValueError("MQTT interface requires a local_id")
         self.link_name = link_name
         self.receive_topic = receive_topic
         # Unique per configured link (not a shared "MQTT" bucket) so
@@ -184,6 +230,16 @@ class MqttInterface:
         self._self_node_id = _mqtt_node_id(self.topic_prefix, self.local_id)
         self.myInfo = SimpleNamespace(my_node_num=_node_num(self._self_node_id))
         self._num_to_label[self.myInfo.my_node_num] = self.local_id
+
+        # What this broker gets beyond sync traffic, and where published
+        # data lives. publish_prefix intentionally does NOT affect the sync
+        # topic below -- topic_prefix identifies the bridge relationship and
+        # both ends must agree on it, whereas published data is one-way
+        # telemetry that an operator may want slotted elsewhere.
+        self.publish_kinds = dict(publish_kinds or {'status': True})
+        self.publish_prefix = (
+            sanitize_topic_segment(publish_prefix, allow_slash=True) or self.topic_prefix
+        )
 
         self._topic = f"{self.topic_prefix}/bbs"
         self._closed = False
@@ -433,45 +489,109 @@ class MqttInterface:
             raise IOError(f"MQTT publish failed: rc={info.rc}")
         return SimpleNamespace(id=str(info.mid))
 
-    def publish_status(self, status: dict[str, Any]) -> None:
-        """Publish node status telemetry (see module docstring for the
-        topic tree). ``status`` is expected to look like
-        ``{"updated_at": ..., "links": {name: {...}, ...}}`` -- server.py's
-        publish_mqtt_status builds this from the same per-link data the
-        Settings > Diagnostics page and the nav-bar status badges use, so
-        all three always agree.
+    def publishes(self, kind: str) -> bool:
+        """True if this broker is configured to receive ``kind``.
 
-        Deliberately swallows every exception (logged at debug, not
-        raised): status telemetry is a nice-to-have side effect of the
-        periodic diagnostics cycle, never allowed to disrupt it or the sync
-        engine that shares this connection.
+        server.py checks this across all links before doing the work to
+        build a payload, so a category nobody subscribes to costs nothing
+        (some require database queries).
+        """
+        return bool(self.publish_kinds.get(kind, False))
+
+    def _publish_json(self, topic: str, payload: Any, retain: bool = True) -> bool:
+        """One published telemetry message. Never raises.
+
+        Published data is a side effect of the periodic diagnostics cycle;
+        a broker refusing it (ACL) or a dropped connection must never
+        disturb that cycle or the sync engine sharing this connection.
         """
         if self._closed:
-            return
-        base = f"{self.topic_prefix}/{self.local_id}/status"
+            return False
         try:
             self._client.publish(
-                base, json.dumps(status, separators=(",", ":")), qos=0, retain=True,
+                topic, json.dumps(payload, separators=(",", ":")), qos=0, retain=retain,
             )
+            return True
         except Exception:
-            logging.debug("MQTT[%s] status publish failed", self.link_name, exc_info=True)
-            return
+            logging.debug(
+                "MQTT[%s] publish failed for %s", self.link_name, topic, exc_info=True
+            )
+            return False
 
+    @property
+    def _publish_base(self) -> str:
+        return f"{self.publish_prefix}/{self.local_id}"
+
+    def publish_status(self, status: dict[str, Any]) -> None:
+        """Node/link health -- one master message plus a sub-topic per link.
+        ``status`` looks like ``{"updated_at": ..., "links": {name: {...}}}``,
+        built by server.py from the same per-link data the Settings >
+        Diagnostics page and the nav-bar badges use, so all three agree.
+        """
+        if not self.publishes("status"):
+            return
+        base = f"{self._publish_base}/status"
+        if not self._publish_json(base, status):
+            return
         links = status.get("links")
         if not isinstance(links, dict):
             return
         for name, link_status in links.items():
-            try:
-                self._client.publish(
-                    f"{base}/links/{name}",
-                    json.dumps(link_status, separators=(",", ":")),
-                    qos=0, retain=True,
-                )
-            except Exception:
-                logging.debug(
-                    "MQTT[%s] status sub-topic publish failed for %s",
-                    self.link_name, name, exc_info=True,
-                )
+            self._publish_json(f"{base}/links/{name}", link_status)
+
+    def publish_clients(self, clients: list) -> None:
+        """Mesh devices seen in range: a summary plus one topic per node.
+
+        Per-node topics are keyed by link and node id so a subscriber can
+        watch one specific device without parsing the whole roster.
+        """
+        if not self.publishes("clients"):
+            return
+        base = f"{self._publish_base}/clients"
+        self._publish_json(base, {"count": len(clients), "clients": clients})
+        for client in clients:
+            node_id = str(client.get("node_id", "")).strip()
+            link_name = str(client.get("link_name", "")).strip()
+            if not node_id:
+                continue
+            # '/' and '+' are MQTT topic separators/wildcards -- a node id
+            # containing one would silently fan out into extra topic levels.
+            safe_id = node_id.replace("/", "_").replace("+", "_").replace("#", "_")
+            self._publish_json(f"{base}/{link_name}/{safe_id}", client)
+
+    def publish_telemetry(self, telemetry: dict[str, Any]) -> None:
+        """Aggregate node stats (hardware models, roles, battery) -- the
+        data behind Node Statistics and Wall of Shame, as topics suitable
+        for graphing or a Home Assistant sensor."""
+        if not self.publishes("telemetry"):
+            return
+        base = f"{self._publish_base}/telemetry"
+        self._publish_json(base, telemetry)
+        for key in ("hardware_models", "roles"):
+            section = telemetry.get(key)
+            if isinstance(section, dict):
+                for name, count in section.items():
+                    safe = str(name).replace("/", "_").replace("+", "_").replace("#", "_")
+                    self._publish_json(f"{base}/{key}/{safe}", count)
+
+    def publish_sync_stats(self, stats: dict[str, Any]) -> None:
+        """Sync progress, peer convergence, record counts, database size --
+        for monitoring whether nodes are actually catching up."""
+        if not self.publishes("sync_stats"):
+            return
+        self._publish_json(f"{self._publish_base}/sync", stats)
+
+    def publish_activity(self, event: dict[str, Any]) -> None:
+        """One BBS activity event (new bulletin / mail / channel comment).
+
+        Deliberately NOT retained: an event describes something that
+        happened at a moment, so replaying the last one to every new
+        subscriber would be misleading.
+        """
+        if not self.publishes("activity"):
+            return
+        kind = str(event.get("kind", "event"))
+        self._publish_json(f"{self._publish_base}/activity/{kind}", event, retain=False)
 
     def getMyNodeInfo(self) -> dict[str, Any]:
         return {

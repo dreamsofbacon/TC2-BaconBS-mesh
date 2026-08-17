@@ -336,6 +336,35 @@
           <label for="mqtt_{{ link.index }}_keepalive">Keepalive (seconds)</label>
           <input type="text" id="mqtt_{{ link.index }}_keepalive" name="mqtt_{{ link.index }}_keepalive" class="form-control" value="{{ link.keepalive }}">
         </div>
+        <details class="form-group" {% if link.publish_clients or link.publish_telemetry or link.publish_activity or link.publish_sync_stats or link.publish_prefix %}open{% endif %}>
+          <summary style="cursor:pointer">What this broker receives</summary>
+          <p class="text-muted">
+            Beyond the BBS sync traffic this bridge exists for, choose what telemetry this
+            node publishes here. Each broker is independent &mdash; you might send full
+            telemetry to a home broker and sync only to a remote bridge. Topics live under
+            <code>&lt;prefix&gt;/&lt;this node's label&gt;/…</code>.
+          </p>
+          <div class="form-group">
+            <label><input type="checkbox" name="mqtt_{{ link.index }}_publish_status" value="1" {% if link.publish_status %}checked{% endif %}> Node &amp; link status <span class="text-muted">— health of every radio/MQTT link (<code>/status</code>)</span></label>
+          </div>
+          <div class="form-group">
+            <label><input type="checkbox" name="mqtt_{{ link.index }}_publish_clients" value="1" {% if link.publish_clients %}checked{% endif %}> Mesh client roster <span class="text-muted">— devices in range, one topic each (<code>/clients</code>)</span></label>
+          </div>
+          <div class="form-group">
+            <label><input type="checkbox" name="mqtt_{{ link.index }}_publish_telemetry" value="1" {% if link.publish_telemetry %}checked{% endif %}> Node telemetry &amp; stats <span class="text-muted">— hardware/role counts, battery, low-battery list (<code>/telemetry</code>)</span></label>
+          </div>
+          <div class="form-group">
+            <label><input type="checkbox" name="mqtt_{{ link.index }}_publish_activity" value="1" {% if link.publish_activity %}checked{% endif %}> BBS activity events <span class="text-muted">— new bulletins/mail/comments as they appear (<code>/activity</code>, not retained)</span></label>
+          </div>
+          <div class="form-group">
+            <label><input type="checkbox" name="mqtt_{{ link.index }}_publish_sync_stats" value="1" {% if link.publish_sync_stats %}checked{% endif %}> Sync progress &amp; database stats <span class="text-muted">— phase, percent, record counts, DB size (<code>/sync</code>)</span></label>
+          </div>
+          <div class="form-group">
+            <label for="mqtt_{{ link.index }}_publish_prefix">Publish topic prefix (optional)</label>
+            <input type="text" id="mqtt_{{ link.index }}_publish_prefix" name="mqtt_{{ link.index }}_publish_prefix" class="form-control" value="{{ link.publish_prefix }}" placeholder="blank = use the topic prefix above — e.g. homeassistant/baconbbs">
+            <p class="text-muted">Only affects the telemetry above, not sync traffic &mdash; the sync topic must stay on the shared topic prefix or the bridge breaks. Spaces are converted to <code>-</code>.</p>
+          </div>
+        </details>
         <div class="form-group">
           <label for="mqtt_{{ link.index }}_bbs_nodes">Sync peers on this link</label>
           <textarea id="mqtt_{{ link.index }}_bbs_nodes" name="mqtt_{{ link.index }}_bbs_nodes" class="form-control" placeholder="One per line or comma separated -- e.g. mqtt:baconbs/cityA-cityB:cityB-node">{{ link.bbs_nodes_text }}</textarea>
@@ -414,6 +443,17 @@
       '    <input type="text" id="mqtt_' + index + '_client_id" name="mqtt_' + index + '_client_id" class="form-control" placeholder="leave blank to auto-generate"></div>' +
       '  <div class="form-group"><label for="mqtt_' + index + '_keepalive">Keepalive (seconds)</label>' +
       '    <input type="text" id="mqtt_' + index + '_keepalive" name="mqtt_' + index + '_keepalive" class="form-control" value="60"></div>' +
+      '  <details class="form-group"><summary style="cursor:pointer">What this broker receives</summary>' +
+      '    <p class="text-muted">Beyond the BBS sync traffic this bridge exists for, choose what telemetry this node publishes here. Each broker is independent. Topics live under &lt;prefix&gt;/&lt;this node\'s label&gt;/…</p>' +
+      '    <div class="form-group"><label><input type="checkbox" name="mqtt_' + index + '_publish_status" value="1" checked> Node &amp; link status</label></div>' +
+      '    <div class="form-group"><label><input type="checkbox" name="mqtt_' + index + '_publish_clients" value="1"> Mesh client roster</label></div>' +
+      '    <div class="form-group"><label><input type="checkbox" name="mqtt_' + index + '_publish_telemetry" value="1"> Node telemetry &amp; stats</label></div>' +
+      '    <div class="form-group"><label><input type="checkbox" name="mqtt_' + index + '_publish_activity" value="1"> BBS activity events</label></div>' +
+      '    <div class="form-group"><label><input type="checkbox" name="mqtt_' + index + '_publish_sync_stats" value="1"> Sync progress &amp; database stats</label></div>' +
+      '    <div class="form-group"><label for="mqtt_' + index + '_publish_prefix">Publish topic prefix (optional)</label>' +
+      '      <input type="text" id="mqtt_' + index + '_publish_prefix" name="mqtt_' + index + '_publish_prefix" class="form-control" placeholder="blank = use the topic prefix above — e.g. homeassistant/baconbbs">' +
+      '      <p class="text-muted">Only affects the telemetry above, not sync traffic. Spaces are converted to -.</p></div>' +
+      '  </details>' +
       '  <div class="form-group"><label for="mqtt_' + index + '_bbs_nodes">Sync peers on this link</label>' +
       '    <textarea id="mqtt_' + index + '_bbs_nodes" name="mqtt_' + index + '_bbs_nodes" class="form-control" placeholder="One per line or comma separated -- e.g. mqtt:baconbs/cityA-cityB:cityB-node"></textarea></div>' +
       '  <div class="form-group"><label for="mqtt_' + index + '_allowed_nodes">Urgent board allow-list on this link</label>' +

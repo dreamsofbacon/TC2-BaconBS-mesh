@@ -1725,6 +1725,58 @@ class WebAdminSettingsTests(unittest.TestCase):
         config.read(self.config_path)
         self.assertFalse(config.has_section("mqtt1"))
 
+    def test_mqtt_save_persists_publish_selection_and_prefix(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        self.post_with_csrf(
+            client, "/settings",
+            data={
+                "settings_section": "mqtt",
+                "mqtt_indexes": "1",
+                "mqtt_1_host": "broker.example.com",
+                "mqtt_1_topic_prefix": "baconbs/cityA",
+                "mqtt_1_publish_clients": "1",
+                "mqtt_1_publish_telemetry": "1",
+                "mqtt_1_publish_prefix": "homeassistant/baconbbs",
+            },
+        )
+
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertEqual(config.get("mqtt1", "publish_clients"), "true")
+        self.assertEqual(config.get("mqtt1", "publish_telemetry"), "true")
+        # Unchecked boxes must persist as false, not silently stay on.
+        self.assertEqual(config.get("mqtt1", "publish_activity"), "false")
+        self.assertEqual(config.get("mqtt1", "publish_status"), "false")
+        self.assertEqual(config.get("mqtt1", "publish_prefix"), "homeassistant/baconbbs")
+
+    def test_mqtt_save_normalizes_spaces_in_topic_fields(self):
+        """Spaces break CLI tooling and broker ACL patterns -- config.ini
+        must store the value that will actually be used as a topic."""
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        self.post_with_csrf(
+            client, "/settings",
+            data={
+                "settings_section": "mqtt",
+                "mqtt_indexes": "1",
+                "mqtt_1_host": "broker.example.com",
+                "mqtt_1_topic_prefix": "bacon bbs/city A",
+                "mqtt_1_local_id": "Burlington NNE",
+                "mqtt_1_publish_prefix": "home assistant/bacon bbs",
+            },
+        )
+
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertEqual(config.get("mqtt1", "topic_prefix"), "bacon-bbs/city-A")
+        self.assertEqual(config.get("mqtt1", "local_id"), "Burlington-NNE")
+        self.assertEqual(config.get("mqtt1", "publish_prefix"), "home-assistant/bacon-bbs")
+
     def test_mqtt_save_requires_host_and_topic_prefix(self):
         app = create_app()
         client = app.test_client()

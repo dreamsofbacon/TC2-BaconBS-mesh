@@ -177,6 +177,46 @@ local_id = node-a
         self.assertIsNone(link["tls_keyfile_password"])
         self.assertFalse(link["tls_insecure"])
 
+    def test_reads_per_broker_publish_selection(self):
+        body = _BASE + """
+[mqtt1]
+host = broker.example.com
+topic_prefix = baconbs/city-a-b
+local_id = node-a
+publish_status = false
+publish_clients = true
+publish_telemetry = true
+publish_activity = true
+publish_sync_stats = true
+publish_prefix = homeassistant/baconbbs
+"""
+        cfg_path = _write_config(self.tmp_path, body)
+        link = self.config_init.initialize_config(cfg_path)["mqtt_links"][0]
+        self.assertFalse(link["publish_status"])
+        self.assertTrue(link["publish_clients"])
+        self.assertTrue(link["publish_telemetry"])
+        self.assertTrue(link["publish_activity"])
+        self.assertTrue(link["publish_sync_stats"])
+        self.assertEqual(link["publish_prefix"], "homeassistant/baconbbs")
+
+    def test_publish_defaults_preserve_existing_behavior(self):
+        """A config written before these options existed must keep sending
+        exactly what it sent before: status only."""
+        body = _BASE + """
+[mqtt1]
+host = broker.example.com
+topic_prefix = baconbs/city-a-b
+local_id = node-a
+"""
+        cfg_path = _write_config(self.tmp_path, body)
+        link = self.config_init.initialize_config(cfg_path)["mqtt_links"][0]
+        self.assertTrue(link["publish_status"])
+        self.assertFalse(link["publish_clients"])
+        self.assertFalse(link["publish_telemetry"])
+        self.assertFalse(link["publish_activity"])
+        self.assertFalse(link["publish_sync_stats"])
+        self.assertIsNone(link["publish_prefix"])
+
     def test_discovers_three_simultaneous_links_sorted_by_number(self):
         body = _BASE + """
 [mqtt3]
