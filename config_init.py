@@ -3,7 +3,7 @@ import gc
 import os
 import re
 import time
-from typing import Any
+from typing import Any, Optional
 from app_paths import resolve_app_path
 import meshtastic.mesh_interface
 import meshtastic.stream_interface
@@ -56,6 +56,45 @@ def _reset_serial_radio(device: str) -> bool:
     except Exception as e:
         print(f"Radio reset pulse failed on {device}: {e}")
         return False
+
+
+def _print_serial_device_diagnostic(device: Optional[str]) -> None:
+    """Explain a serial connect failure in terms of what's actually on the
+    system right now.
+
+    A configured /dev/ttyUSBn can silently become wrong: those numbers are
+    assigned in enumeration order, so a reboot/USB reconnect can renumber
+    them or swap which radio is which. Both produce failures that look
+    nothing like their cause -- a missing path reads as "radio is dead",
+    and a swapped path reads as "radio is broken" while the BBS actually
+    handshakes the wrong protocol at a perfectly healthy board. Printing
+    the real device list plus the stable-alias hint turns either into an
+    obvious fix. Best-effort: never allowed to disturb the connect loop.
+    """
+    try:
+        if not device:
+            return
+        exists = os.path.exists(device)
+        print(f"  Configured port: {device} ({'present' if exists else 'DOES NOT EXIST'})")
+        try:
+            ports = sorted(p.device for p in serial.tools.list_ports.comports())
+            print(f"  Serial devices present: {', '.join(ports) if ports else '(none)'}")
+        except Exception:
+            pass
+        by_id_dir = '/dev/serial/by-id'
+        if os.path.isdir(by_id_dir):
+            aliases = sorted(os.listdir(by_id_dir))
+            if aliases:
+                print("  Stable aliases (prefer these over /dev/ttyUSBn):")
+                for alias in aliases:
+                    full = os.path.join(by_id_dir, alias)
+                    print(f"    {full} -> {os.path.realpath(full)}")
+        if not exists:
+            print("  Hint: the device path changed. Set 'port' to a "
+                  "/dev/serial/by-id/... or /dev/serial/by-path/... alias so it "
+                  "survives renumbering (see the README's 'Use stable device paths').")
+    except Exception:
+        pass
 
 
 def _resolve_serial_device(system_config: dict) -> str:
@@ -482,6 +521,11 @@ def _open_interface(cfg: dict[str, Any]) -> Any:
                 ConnectionResetError, ConnectionRefusedError, OSError) as e:
             failures += 1
             print(f"Radio connect attempt {failures} failed: {type(e).__name__}: {e}")
+            # Once per connect cycle, not per attempt -- the device list
+            # can't change between back-to-back retries, so repeating it
+            # would just bury the actual error.
+            if failures == 1 and interface_type in ('serial', 'meshcore_serial'):
+                _print_serial_device_diagnostic(device)
             # Force release of any serial handle left open by the failed attempt
             # (meshtastic may not close pyserial on handshake failure → the next
             # attempt would hit 'could not exclusively lock port' forever).
