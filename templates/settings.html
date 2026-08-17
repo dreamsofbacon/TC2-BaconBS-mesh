@@ -360,6 +360,11 @@
             <label><input type="checkbox" name="mqtt_{{ link.index }}_publish_sync_stats" value="1" {% if link.publish_sync_stats %}checked{% endif %}> Sync progress &amp; database stats <span class="text-muted">— phase, percent, record counts, DB size (<code>/sync</code>)</span></label>
           </div>
           <div class="form-group">
+            <label for="mqtt_{{ link.index }}_publish_clients_max_age_hours">Only publish devices seen in the last (hours)</label>
+            <input type="text" id="mqtt_{{ link.index }}_publish_clients_max_age_hours" name="mqtt_{{ link.index }}_publish_clients_max_age_hours" class="form-control" value="{{ link.publish_clients_max_age_hours }}">
+            <p class="text-muted">Applies to the client roster above. The roster keeps every node ever heard &mdash; hundreds on a busy mesh &mdash; which is far more than a bridge needs and costly on a metered link. <code>0</code> publishes everything ever recorded. Nodes that age out have their retained topics cleared automatically.</p>
+          </div>
+          <div class="form-group">
             <label for="mqtt_{{ link.index }}_publish_prefix">Publish topic prefix (optional)</label>
             <input type="text" id="mqtt_{{ link.index }}_publish_prefix" name="mqtt_{{ link.index }}_publish_prefix" class="form-control" value="{{ link.publish_prefix }}" placeholder="blank = use the topic prefix above — e.g. homeassistant/baconbbs">
             <p class="text-muted">Only affects the telemetry above, not sync traffic &mdash; the sync topic must stay on the shared topic prefix or the bridge breaks. Spaces are converted to <code>-</code>.</p>
@@ -450,6 +455,9 @@
       '    <div class="form-group"><label><input type="checkbox" name="mqtt_' + index + '_publish_telemetry" value="1"> Node telemetry &amp; stats</label></div>' +
       '    <div class="form-group"><label><input type="checkbox" name="mqtt_' + index + '_publish_activity" value="1"> BBS activity events</label></div>' +
       '    <div class="form-group"><label><input type="checkbox" name="mqtt_' + index + '_publish_sync_stats" value="1"> Sync progress &amp; database stats</label></div>' +
+      '    <div class="form-group"><label for="mqtt_' + index + '_publish_clients_max_age_hours">Only publish devices seen in the last (hours)</label>' +
+      '      <input type="text" id="mqtt_' + index + '_publish_clients_max_age_hours" name="mqtt_' + index + '_publish_clients_max_age_hours" class="form-control" value="24">' +
+      '      <p class="text-muted">Applies to the client roster. 0 publishes everything ever recorded.</p></div>' +
       '    <div class="form-group"><label for="mqtt_' + index + '_publish_prefix">Publish topic prefix (optional)</label>' +
       '      <input type="text" id="mqtt_' + index + '_publish_prefix" name="mqtt_' + index + '_publish_prefix" class="form-control" placeholder="blank = use the topic prefix above — e.g. homeassistant/baconbbs">' +
       '      <p class="text-muted">Only affects the telemetry above, not sync traffic. Spaces are converted to -.</p></div>' +

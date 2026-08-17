@@ -454,6 +454,8 @@ def load_mqtt_settings(config_path: str) -> list[dict]:
       "publish_sync_stats": _parse_bool_setting(
         config.get(section_name, "publish_sync_stats", fallback="false"), False),
       "publish_prefix": config.get(section_name, "publish_prefix", fallback="").strip(),
+      "publish_clients_max_age_hours": config.get(
+        section_name, "publish_clients_max_age_hours", fallback="24").strip() or "24",
       "bbs_nodes_text": "\n".join(parse_list_input(config.get(sync_section(index), "bbs_nodes", fallback=""))),
       "allowed_nodes_text": "\n".join(parse_list_input(config.get(allow_section(index), "allowed_nodes", fallback=""))),
     })
@@ -3593,6 +3595,8 @@ def create_app(runtime_interface=None) -> Flask:
           "publish_sync_stats": _parse_bool_setting(form.get(f"{prefix}publish_sync_stats", ""), False),
           "publish_prefix": sanitize_topic_segment(
             form.get(f"{prefix}publish_prefix", ""), allow_slash=True),
+          "publish_clients_max_age_hours": _parse_int_setting(
+            form.get(f"{prefix}publish_clients_max_age_hours", ""), 24, minimum=0),
           "bbs_nodes": parse_list_input(form.get(f"{prefix}bbs_nodes", "")),
           "allowed_nodes": parse_list_input(form.get(f"{prefix}allowed_nodes", "")),
         })
@@ -3659,6 +3663,8 @@ def create_app(runtime_interface=None) -> Flask:
           config.set(section_name, f"publish_{kind}",
                      "true" if link[f"publish_{kind}"] else "false")
         config.set(section_name, "publish_prefix", link["publish_prefix"])
+        config.set(section_name, "publish_clients_max_age_hours",
+                   str(link["publish_clients_max_age_hours"]))
 
         sync_section_name = f"sync_mqtt{link['index']}"
         if not config.has_section(sync_section_name):

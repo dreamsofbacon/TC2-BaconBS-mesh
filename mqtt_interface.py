@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timedelta
 import os
 import queue
 import re
@@ -179,6 +180,7 @@ class MqttInterface:
         tls_insecure: bool = False,
         publish_kinds: Optional[dict] = None,
         publish_prefix: Optional[str] = None,
+        publish_clients_max_age_hours: int = 24,
         client_id: Optional[str] = None,
         link_name: str = "mqtt",
         keepalive: int = 60,
@@ -237,6 +239,13 @@ class MqttInterface:
         # both ends must agree on it, whereas published data is one-way
         # telemetry that an operator may want slotted elsewhere.
         self.publish_kinds = dict(publish_kinds or {'status': True})
+        self.publish_clients_max_age_hours = int(publish_clients_max_age_hours or 0)
+        # Per-node client topics published last cycle. Retained messages
+        # persist on the broker forever, so a node that ages out of the
+        # window must be explicitly cleared -- otherwise "publish only
+        # recent nodes" would shrink nothing that a subscriber actually
+        # sees.
+        self._published_client_topics: set = set()
         self.publish_prefix = (
             sanitize_topic_segment(publish_prefix, allow_slash=True) or self.topic_prefix
         )
@@ -490,7 +499,8 @@ class MqttInterface:
         return SimpleNamespace(id=str(info.mid))
 
     def apply_publish_settings(
-        self, publish_kinds: dict, publish_prefix: Optional[str] = None
+        self, publish_kinds: dict, publish_prefix: Optional[str] = None,
+        max_age_hours: Optional[int] = None,
     ) -> None:
         """Update what this broker receives, WITHOUT reconnecting.
 
@@ -505,6 +515,8 @@ class MqttInterface:
         self.publish_prefix = (
             sanitize_topic_segment(publish_prefix, allow_slash=True) or self.topic_prefix
         )
+        if max_age_hours is not None:
+            self.publish_clients_max_age_hours = int(max_age_hours or 0)
 
     def publishes(self, kind: str) -> bool:
         """True if this broker is configured to receive ``kind``.
@@ -559,13 +571,25 @@ class MqttInterface:
     def publish_clients(self, clients: list) -> None:
         """Mesh devices seen in range: a summary plus one topic per node.
 
+        Filtered to this broker's ``publish_clients_max_age_hours`` window
+        (0 = no limit). The roster accumulates every node ever heard, which
+        on a busy mesh is hundreds of entries -- far more than a bridge
+        needs and expensive on a metered link.
+
         Per-node topics are keyed by link and node id so a subscriber can
-        watch one specific device without parsing the whole roster.
+        watch one device without parsing the whole roster. Topics for nodes
+        that have since aged out are cleared with an empty retained payload
+        (the MQTT convention for deleting a retained message), otherwise
+        they would linger on the broker indefinitely and the filtering
+        would reduce nothing a subscriber actually sees.
         """
         if not self.publishes("clients"):
             return
+        clients = self._filter_recent(clients)
         base = f"{self._publish_base}/clients"
         self._publish_json(base, {"count": len(clients), "clients": clients})
+
+        current: set = set()
         for client in clients:
             node_id = str(client.get("node_id", "")).strip()
             link_name = str(client.get("link_name", "")).strip()
@@ -574,7 +598,49 @@ class MqttInterface:
             # '/' and '+' are MQTT topic separators/wildcards -- a node id
             # containing one would silently fan out into extra topic levels.
             safe_id = node_id.replace("/", "_").replace("+", "_").replace("#", "_")
-            self._publish_json(f"{base}/{link_name}/{safe_id}", client)
+            topic = f"{base}/{link_name}/{safe_id}"
+            current.add(topic)
+            self._publish_json(topic, client)
+
+        for stale in self._published_client_topics - current:
+            try:
+                self._client.publish(stale, "", qos=0, retain=True)
+            except Exception:
+                logging.debug(
+                    "MQTT[%s] could not clear stale client topic %s",
+                    self.link_name, stale, exc_info=True,
+                )
+        self._published_client_topics = current
+
+    def _filter_recent(self, clients: list) -> list:
+        """Keep only clients seen within this broker's window.
+
+        server.py queries the database with the widest window any broker
+        needs, so each link narrows that shared result to its own -- the
+        alternative, one query per broker, would repeat the same work.
+        """
+        max_age = self.publish_clients_max_age_hours
+        if not max_age or max_age <= 0:
+            return list(clients)
+        cutoff = datetime.now() - timedelta(hours=max_age)
+        kept = []
+        for client in clients:
+            raw = str(client.get("last_seen") or "").strip()
+            if not raw:
+                # No timestamp to judge by -- keep it rather than silently
+                # dropping a node, same as the unparseable case below.
+                kept.append(client)
+                continue
+            try:
+                seen = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                # Unparseable timestamp: keep it rather than silently
+                # dropping a node over a formatting quirk.
+                kept.append(client)
+                continue
+            if seen >= cutoff:
+                kept.append(client)
+        return kept
 
     def publish_telemetry(self, telemetry: dict[str, Any]) -> None:
         """Aggregate node stats (hardware models, roles, battery) -- the

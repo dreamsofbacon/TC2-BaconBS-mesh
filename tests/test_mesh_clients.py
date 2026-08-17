@@ -283,3 +283,44 @@ class PersistMeshClientsTests(_FreshServerCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MeshClientsRecencyQueryTests(unittest.TestCase):
+    """Database-level recency filter used by MQTT publishing."""
+
+    def setUp(self):
+        db_operations.thread_local.connection = sqlite3.connect(":memory:")
+        db_operations.initialize_database()
+
+    def tearDown(self):
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
+
+    def _insert(self, node_id, hours_ago):
+        from datetime import datetime, timedelta
+        ts = (datetime.now() - timedelta(hours=hours_ago)).strftime('%Y-%m-%d %H:%M:%S')
+        conn = db_operations.get_db_connection()
+        conn.execute(
+            "INSERT INTO mesh_clients (link_name, node_id, protocol, first_seen, last_seen) "
+            "VALUES (?, ?, 'Meshtastic', ?, ?)", ("primary", node_id, ts, ts))
+        conn.commit()
+
+    def test_filters_to_the_requested_window(self):
+        self._insert("!recent", 1)
+        self._insert("!stale", 100)
+        ids = [c["node_id"] for c in db_operations.get_mesh_clients(seen_within_seconds=24*3600)]
+        self.assertEqual(ids, ["!recent"])
+
+    def test_no_window_returns_everything(self):
+        self._insert("!recent", 1)
+        self._insert("!stale", 100)
+        self.assertEqual(len(db_operations.get_mesh_clients()), 2)
+
+    def test_window_combines_with_link_filter(self):
+        self._insert("!recent", 1)
+        self.assertEqual(
+            len(db_operations.get_mesh_clients(link_name="primary", seen_within_seconds=24*3600)), 1)
+        self.assertEqual(
+            len(db_operations.get_mesh_clients(link_name="other", seen_within_seconds=24*3600)), 0)
