@@ -177,6 +177,21 @@ def perform_http(method: str, url: str, body: str) -> Tuple[str, str]:
         return "ERR", f"request failed: {e}"
 
 
+# Mapped rather than passed through raw: these are the failures an operator
+# actually hits when pointing the relay at a new endpoint, and each one has a
+# different fix.
+_AI_STATUS_HINTS = {
+    401: "endpoint requires authentication; set an API key in Settings > Gateway",
+    403: "endpoint rejected the key; check the API key in Settings > Gateway",
+    404: "no chat endpoint at that path; check the API dialect setting",
+    429: "endpoint is rate limiting; try again shortly",
+    500: "endpoint hit an internal error",
+    502: "endpoint is up but its AI backend is down",
+    503: "endpoint is unavailable; the model may still be loading",
+    504: "endpoint timed out; the model may be too slow for the request timeout",
+}
+
+
 def perform_ai_chat(prompt: str) -> Tuple[str, str]:
     """Relay a prompt to the configured Ollama / OpenAI-compatible chat endpoint."""
     base = (_config_raw('gateway', 'ai_base_url') or '').rstrip('/')
@@ -219,6 +234,11 @@ def perform_ai_chat(prompt: str) -> Tuple[str, str]:
         if len(reply.encode('utf-8')) > cap:
             reply = reply.encode('utf-8')[:cap].decode('utf-8', errors='ignore') + "…[truncated]"
         return "200", reply
+    except urllib.error.HTTPError as e:
+        # A bare "HTTP Error 403" over a mesh radio is a dead end -- the user
+        # can't open devtools. Name the likely cause instead.
+        hint = _AI_STATUS_HINTS.get(e.code)
+        return "ERR", f"AI endpoint returned {e.code}" + (f" -- {hint}" if hint else "")
     except Exception as e:
         return "ERR", f"AI request failed: {e}"
 

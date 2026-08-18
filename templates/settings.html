@@ -678,6 +678,12 @@
       </select>
     </div>
     <div class="form-group">
+      <label for="gateway_ai_api_key">API key (optional)</label>
+      <input type="password" id="gateway_ai_api_key" name="gateway_ai_api_key" class="form-control"
+             value="{{ gateway.ai_api_key }}">
+      <p class="text-muted">Sent as <code>Authorization: Bearer &lt;key&gt;</code> for the Project N.O.M.A.D and OpenAI-compatible dialects. A plain Ollama server usually needs none, but a N.O.M.A.D / Open WebUI front end normally rejects unauthenticated requests with a 403.</p>
+    </div>
+    <div class="form-group">
       <label for="gateway_ai_model">Model</label>
       <input type="text" id="gateway_ai_model" name="gateway_ai_model" class="form-control"
              placeholder="llama3.2" value="{{ gateway.ai_model }}">

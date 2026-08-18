@@ -181,6 +181,61 @@ class GatewayDispatchTests(unittest.TestCase):
         self.assertEqual(status, "200")
         self.assertIn("Hello there", body)
 
+    def _ai_cfg(self, **overrides):
+        cfg = {
+            ('gateway', 'ai_base_url'): 'https://ai.example.com',
+            ('gateway', 'ai_dialect'): 'nomad',
+            ('gateway', 'ai_model'): 'qwen2.5:3b',
+            ('gateway', 'ai_system_prompt'): '',
+            ('gateway', 'ai_api_key'): '',
+        }
+        cfg.update({('gateway', k): v for k, v in overrides.items()})
+        return cfg
+
+    def _ai_chat_with_status(self, code, cfg=None):
+        import urllib.error
+
+        def _raise(req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, code, "Forbidden", {}, None)
+
+        with patch.object(gateway, "_config_raw", lambda s, o: (cfg or self._ai_cfg()).get((s, o))),              patch.object(gateway, "_max_response_bytes", lambda: 800),              patch("urllib.request.urlopen", _raise):
+            return gateway.perform_ai_chat("hi")
+
+    def test_http_error_names_the_likely_cause(self):
+        """A bare "HTTP Error 403" over a mesh radio is a dead end -- the
+        user has no way to inspect the response."""
+        for code, expected in ((401, "API key"), (403, "API key"),
+                               (404, "dialect"), (502, "backend is down")):
+            with self.subTest(code=code):
+                status, body = self._ai_chat_with_status(code)
+                self.assertEqual(status, "ERR")
+                self.assertIn(str(code), body)
+                self.assertIn(expected, body)
+
+    def test_unmapped_http_error_still_reports_its_status(self):
+        status, body = self._ai_chat_with_status(418)
+        self.assertEqual(status, "ERR")
+        self.assertIn("418", body)
+
+    def test_api_key_is_sent_as_a_bearer_token(self):
+        """Without this the relay hits an authenticated endpoint anonymously,
+        which is what a 403 from a N.O.M.A.D front end actually means."""
+        captured = {}
+
+        def _fake_urlopen(req, timeout=None):
+            captured['headers'] = dict(req.header_items())
+            resp = io.BytesIO(json.dumps({"message": {"content": "ok"}}).encode())
+            resp.__enter__ = lambda *_: resp
+            resp.__exit__ = lambda *_: False
+            return resp
+
+        cfg = self._ai_cfg(ai_api_key='sk-secret')
+        with patch.object(gateway, "_config_raw", lambda s, o: cfg.get((s, o))),              patch.object(gateway, "_max_response_bytes", lambda: 800),              patch("urllib.request.urlopen", _fake_urlopen):
+            status, _body = gateway.perform_ai_chat("hi")
+        self.assertEqual(status, "200")
+        auth = {k.lower(): v for k, v in captured['headers'].items()}.get('authorization')
+        self.assertEqual(auth, "Bearer sk-secret")
+
     def test_unauthorized_requester_rejected(self):
         iface = _Iface(allowed=["!someone_else"])
         with patch.object(gateway, "is_gateway_enabled", lambda: True):
