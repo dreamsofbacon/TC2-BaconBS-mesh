@@ -42,7 +42,7 @@ class AccountsSchemaTests(unittest.TestCase):
     def test_tables_exist_with_expected_columns(self):
         conn = db_operations.get_db_connection()
         cols = {row[1] for row in conn.execute("PRAGMA table_info(accounts)")}
-        self.assertEqual(cols, {"account_id", "alias", "created_at"})
+        self.assertEqual(cols, {"account_id", "alias", "alias_normalized", "created_at"})
         cols = {row[1] for row in conn.execute("PRAGMA table_info(linked_nodes)")}
         self.assertEqual(cols, {"node_id", "account_id", "network", "linked_at"})
 
@@ -104,6 +104,117 @@ class AccountLifecycleTests(unittest.TestCase):
         account_id = db_operations.create_account()
         db_operations.set_account_alias(account_id, "X" * 100)
         self.assertLessEqual(len(db_operations.get_account_alias(account_id)), 20)
+
+    def test_alias_cannot_be_taken_by_another_account(self):
+        """The alias is the byline on everything an account posts, so a
+        shared one is impersonation, not just a display clash."""
+        first = db_operations.create_account()
+        second = db_operations.create_account()
+        self.assertTrue(db_operations.set_account_alias(first, "BaconFan"))
+        self.assertFalse(db_operations.set_account_alias(second, "BaconFan"))
+        self.assertEqual(db_operations.get_account_alias(second), "")
+        self.assertEqual(db_operations.get_account_alias(first), "BaconFan")
+
+    def test_collision_check_ignores_case_and_extra_whitespace(self):
+        """Exact-string matching would make the rule trivial to sidestep."""
+        first = db_operations.create_account()
+        second = db_operations.create_account()
+        db_operations.set_account_alias(first, "BaconFan")
+        for evasion in ("baconfan", "BACONFAN", " BaconFan ", "BaconFan"):
+            with self.subTest(evasion=evasion):
+                self.assertFalse(db_operations.set_account_alias(second, evasion))
+
+    def test_spacing_is_collapsed_not_stripped(self):
+        """'Bacon Fan' is a different name from 'BaconFan', not an evasion."""
+        first = db_operations.create_account()
+        second = db_operations.create_account()
+        db_operations.set_account_alias(first, "BaconFan")
+        self.assertTrue(db_operations.set_account_alias(second, "Bacon Fan"))
+        third = db_operations.create_account()
+        self.assertFalse(db_operations.set_account_alias(third, "Bacon  Fan"))
+
+    def test_account_can_restyle_its_own_alias(self):
+        """Changing only case/spacing normalizes onto the key you own."""
+        account_id = db_operations.create_account()
+        db_operations.set_account_alias(account_id, "baconfan")
+        self.assertTrue(db_operations.set_account_alias(account_id, "BaconFan"))
+        self.assertEqual(db_operations.get_account_alias(account_id), "BaconFan")
+
+    def test_many_accounts_may_have_no_alias(self):
+        """Every account starts at '' -- a plain UNIQUE index would allow
+        exactly one of them to exist."""
+        ids = [db_operations.create_account() for _ in range(3)]
+        for account_id in ids:
+            self.assertEqual(db_operations.get_account_alias(account_id), "")
+        self.assertTrue(db_operations.set_account_alias(ids[0], "Named"))
+        self.assertTrue(db_operations.set_account_alias(ids[0], ""))
+        self.assertTrue(db_operations.set_account_alias(ids[1], "Named"))
+
+    def test_alias_owner_reports_the_holder(self):
+        account_id = db_operations.create_account()
+        db_operations.set_account_alias(account_id, "BaconFan")
+        self.assertEqual(db_operations.alias_owner("baconfan"), account_id)
+        self.assertIsNone(db_operations.alias_owner("Nobody"))
+        self.assertIsNone(db_operations.alias_owner(""))
+
+
+class AliasUniquenessMigrationTests(unittest.TestCase):
+    """A node that ran before the constraint existed may already hold
+    duplicates, which would make the unique index impossible to build."""
+
+    def _legacy_db(self, rows):
+        conn = sqlite3.connect(":memory:")
+        conn.execute(
+            """CREATE TABLE accounts (account_id TEXT PRIMARY KEY,
+               alias TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)"""
+        )
+        conn.executemany("INSERT INTO accounts VALUES (?,?,?)", rows)
+        conn.commit()
+        db_operations.thread_local.connection = conn
+        db_operations.initialize_database()
+        return conn
+
+    def tearDown(self):
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
+
+    def test_first_claimant_keeps_the_alias_and_the_rest_are_suffixed(self):
+        conn = self._legacy_db([
+            ("acc1", "BaconFan", "2026-01-01 00:00:00"),
+            ("acc2", "baconfan", "2026-02-01 00:00:00"),
+            ("acc3", "BACONFAN", "2026-03-01 00:00:00"),
+        ])
+        aliases = dict(conn.execute("SELECT account_id, alias FROM accounts"))
+        self.assertEqual(aliases["acc1"], "BaconFan")
+        self.assertNotEqual(aliases["acc2"], "baconfan")
+        self.assertNotEqual(aliases["acc3"], "BACONFAN")
+        normalized = [r[0] for r in conn.execute("SELECT alias_normalized FROM accounts")]
+        self.assertEqual(len(normalized), len(set(normalized)))
+
+    def test_renamed_aliases_stay_within_the_length_cap(self):
+        conn = self._legacy_db([
+            (f"acc{i}", "X" * 20, f"2026-0{i}-01 00:00:00") for i in range(1, 4)
+        ])
+        for (alias,) in conn.execute("SELECT alias FROM accounts"):
+            self.assertLessEqual(len(alias), 20)
+
+    def test_empty_aliases_are_left_alone(self):
+        conn = self._legacy_db([
+            ("acc1", "", "2026-01-01 00:00:00"),
+            ("acc2", "", "2026-02-01 00:00:00"),
+        ])
+        aliases = [r[0] for r in conn.execute("SELECT alias FROM accounts")]
+        self.assertEqual(aliases, ["", ""])
+
+    def test_migration_leaves_a_clean_db_untouched(self):
+        conn = self._legacy_db([
+            ("acc1", "BaconFan", "2026-01-01 00:00:00"),
+            ("acc2", "Someone", "2026-02-01 00:00:00"),
+        ])
+        aliases = dict(conn.execute("SELECT account_id, alias FROM accounts"))
+        self.assertEqual(aliases, {"acc1": "BaconFan", "acc2": "Someone"})
 
 
 class LinkCodeTests(unittest.TestCase):

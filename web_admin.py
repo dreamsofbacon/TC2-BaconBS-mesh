@@ -5116,8 +5116,10 @@ def create_app(runtime_interface=None) -> Flask:
         action = request.form.get("action", "").strip()
         if action == "set_alias":
           alias = request.form.get("alias", "").strip()[:20]
-          set_account_alias(account_id, alias)
-          flash(f'Alias set to "{alias}".' if alias else "Alias cleared.", "success")
+          if not set_account_alias(account_id, alias):
+            flash(f'"{alias}" is already used by another account.', "error")
+          else:
+            flash(f'Alias set to "{alias}".' if alias else "Alias cleared.", "success")
         elif action == "unlink":
           node_id = request.form.get("node_id", "").strip()
           if node_id and unlink_node(node_id):

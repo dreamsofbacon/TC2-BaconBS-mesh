@@ -699,6 +699,62 @@ def initialize_database():
     print(f"Database schema initialized at {get_database_path()}.")
 
 
+def normalize_alias(alias: str) -> str:
+    """Comparison key for alias uniqueness.
+
+    Aliases are the byline on bulletins, mail and channel comments
+    (utils.resolve_display_name), so a duplicate is an impersonation, not a
+    cosmetic clash. Case and runs of whitespace are folded, because
+    "BaconFan", "baconfan" and " BaconFan " read as the same person and
+    matching the exact string would make the rule trivial to sidestep.
+    Spacing is collapsed, not stripped: "Bacon Fan" stays distinct from
+    "BaconFan", which are genuinely different names rather than an evasion.
+    """
+    return ' '.join(str(alias or '').split()).casefold()
+
+
+def _dedupe_account_aliases(cursor) -> None:
+    """Resolve pre-existing duplicates so the unique index can be built.
+
+    Nodes that already ran without this constraint may hold collisions.
+    The account that claimed a name first keeps it; later ones get a
+    numeric suffix. Suffixing rather than clearing keeps the alias
+    recognizable to its owner, and bylines on already-posted content are
+    snapshotted at authorship time, so nothing already published changes.
+    """
+    cursor.execute(
+        """SELECT alias_normalized FROM accounts WHERE alias_normalized != ''
+           GROUP BY alias_normalized HAVING COUNT(*) > 1"""
+    )
+    collisions = [row[0] for row in cursor.fetchall()]
+    if not collisions:
+        return
+    cursor.execute("SELECT alias_normalized FROM accounts WHERE alias_normalized != ''")
+    taken = {row[0] for row in cursor.fetchall()}
+    for norm in collisions:
+        cursor.execute(
+            """SELECT account_id, alias FROM accounts WHERE alias_normalized = ?
+               ORDER BY created_at, account_id""",
+            (norm,)
+        )
+        rows = cursor.fetchall()
+        for suffix_n, (account_id, alias) in enumerate(rows[1:], start=2):
+            while True:
+                candidate = f"{alias[:20 - len(str(suffix_n)) - 1]}-{suffix_n}"
+                if normalize_alias(candidate) not in taken:
+                    break
+                suffix_n += 1
+            taken.add(normalize_alias(candidate))
+            cursor.execute(
+                "UPDATE accounts SET alias = ?, alias_normalized = ? WHERE account_id = ?",
+                (candidate, normalize_alias(candidate), account_id)
+            )
+            logging.warning(
+                "Account %s had duplicate alias %r; renamed to %r to enforce uniqueness.",
+                account_id, alias, candidate
+            )
+
+
 def _ensure_accounts_tables(cursor) -> None:
     """Multi-device user accounts: a human can link several physical node
     ids (across protocols) to one account, with a shared display alias.
@@ -714,8 +770,23 @@ def _ensure_accounts_tables(cursor) -> None:
     cursor.execute('''CREATE TABLE IF NOT EXISTS accounts (
                     account_id TEXT PRIMARY KEY,
                     alias TEXT NOT NULL DEFAULT '',
+                    alias_normalized TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL
                 );''')
+    cursor.execute("PRAGMA table_info(accounts)")
+    _account_cols = {row[1] for row in cursor.fetchall()}
+    if 'alias_normalized' not in _account_cols:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN alias_normalized TEXT NOT NULL DEFAULT ''")
+        cursor.execute("SELECT account_id, alias FROM accounts WHERE alias != ''")
+        for _acct_id, _alias in cursor.fetchall():
+            cursor.execute("UPDATE accounts SET alias_normalized = ? WHERE account_id = ?",
+                           (normalize_alias(_alias), _acct_id))
+    _dedupe_account_aliases(cursor)
+    # Partial index so the '' default (every account starts with no alias)
+    # is exempt -- SQLite treats '' as a real value, unlike NULL, so a plain
+    # UNIQUE index would let exactly one account exist without an alias.
+    cursor.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_alias_unique
+                    ON accounts (alias_normalized) WHERE alias_normalized != '';''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS linked_nodes (
                     node_id TEXT PRIMARY KEY,
                     account_id TEXT NOT NULL,
@@ -3390,7 +3461,8 @@ def create_account() -> str:
     account_id = uuid.uuid4().hex
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     c.execute(
-        "INSERT INTO accounts (account_id, alias, created_at) VALUES (?, '', ?)",
+        "INSERT INTO accounts (account_id, alias, alias_normalized, created_at)"
+        " VALUES (?, '', '', ?)",
         (account_id, now)
     )
     conn.commit()
@@ -3475,11 +3547,45 @@ def get_account_alias(account_id: str) -> str:
     return row[0] if row else ''
 
 
-def set_account_alias(account_id: str, alias: str) -> None:
+def alias_owner(alias: str) -> Optional[str]:
+    """account_id currently holding this alias (normalized), or None."""
+    normalized = normalize_alias(alias)
+    if not normalized:
+        return None
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("UPDATE accounts SET alias = ? WHERE account_id = ?", (str(alias).strip()[:20], account_id))
+    c.execute("SELECT account_id FROM accounts WHERE alias_normalized = ?", (normalized,))
+    row = c.fetchone()
+    return row[0] if row else None
+
+
+def set_account_alias(account_id: str, alias: str) -> bool:
+    """Set an account's display alias. False if another account holds it.
+
+    Clearing (empty alias) is always allowed, and so is re-setting your own
+    alias -- including changing only its case or spacing, which normalizes
+    to the same key you already own.
+    """
+    alias = str(alias).strip()[:20]
+    normalized = normalize_alias(alias)
+    if normalized:
+        owner = alias_owner(alias)
+        if owner is not None and owner != account_id:
+            return False
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            "UPDATE accounts SET alias = ?, alias_normalized = ? WHERE account_id = ?",
+            (alias, normalized, account_id)
+        )
+    except sqlite3.IntegrityError:
+        # The unique index is the real authority; the check above can lose a
+        # race between two nodes claiming the same alias at once.
+        conn.rollback()
+        return False
     conn.commit()
+    return True
 
 
 def create_link_code(account_id: str, requested_by_node_id: str, ttl_minutes: int = 10) -> str:
