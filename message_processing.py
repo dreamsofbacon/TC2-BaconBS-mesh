@@ -27,6 +27,7 @@ from command_handlers import (
     handle_ask_nomad_command, handle_ask_nomad_steps,
     handle_account_steps,
     handle_settings_command, handle_settings_steps,
+    number_alias, MAIN_NUMBER_MAP, BBS_NUMBER_MAP, UTILITIES_NUMBER_MAP,
 )
 from db_operations import (
     add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel,
@@ -83,6 +84,16 @@ from utils import (
     send_api_response, pop_api_request, get_api_request,
     _send_one_sync, get_max_text_bytes,
 )
+
+# Digit shortcuts, derived from the same label tables build_menu renders, so
+# a menu entry can never show a number the input handler then ignores.
+_MAIN_NUMBER_ALIAS = number_alias(MAIN_NUMBER_MAP)
+_BBS_NUMBER_ALIAS = number_alias(BBS_NUMBER_MAP)
+_UTILITIES_NUMBER_ALIAS = number_alias(UTILITIES_NUMBER_MAP)
+# The API Gateway moved to the main menu, so it no longer has a Utilities
+# number -- but 5 meant "API Gateway" here for a long time, so keep honoring
+# it rather than silently dropping people back to the menu.
+_UTILITIES_NUMBER_ALIAS.setdefault('5', 'a')
 
 main_menu_handlers = {
     "q": handle_quick_help_command,
@@ -2254,23 +2265,13 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 menu_name = state.get('menu', 'main')
                 if menu_name == 'bbs':
                     handlers = bbs_menu_handlers
-                    _bbs_alias = {'1': 'm', '2': 'b', '3': 'c', '4': 'j', '0': 'x'}
-                    message_lower = _bbs_alias.get(message_lower, message_lower)
+                    message_lower = _BBS_NUMBER_ALIAS.get(message_lower, message_lower)
                 elif menu_name == 'utilities':
                     handlers = utilities_menu_handlers
-                    number_alias = {
-                        '1': 's',
-                        '2': 'f',
-                        '3': 'w',
-                        '4': 'g',
-                        '5': 'a',
-                        '0': 'x',
-                    }
-                    message_lower = number_alias.get(message_lower, message_lower)
+                    message_lower = _UTILITIES_NUMBER_ALIAS.get(message_lower, message_lower)
                 else:
                     handlers = main_menu_handlers
-                    _main_alias = {'1': 'q', '2': 'b', '3': 'u', '4': 'p', '0': 'x'}
-                    message_lower = _main_alias.get(message_lower, message_lower)
+                    message_lower = _MAIN_NUMBER_ALIAS.get(message_lower, message_lower)
             elif state and state['command'] == 'BULLETIN_MENU':
                 if message_lower in ('x', '0'):
                     handle_help_command(sender_id, interface)
