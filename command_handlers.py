@@ -837,8 +837,13 @@ def _handle_set_alias(sender_id, interface, sender_node_id, alias_text):
         handle_account_command(sender_id, interface)
         return
     alias = alias_text.strip()[:20]
-    set_account_alias(account_id, alias)
-    send_message(f'Alias set to "{alias}".', sender_id, interface)
+    if not set_account_alias(account_id, alias):
+        # The alias is the byline on everything this account posts, so
+        # letting two accounts share one would be impersonation.
+        send_message(f'"{alias}" is already taken. Pick a different alias.', sender_id, interface)
+        handle_account_command(sender_id, interface)
+        return
+    send_message(f'Alias set to "{alias}".' if alias else 'Alias cleared.', sender_id, interface)
     handle_account_command(sender_id, interface)
 
 
