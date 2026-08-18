@@ -115,6 +115,40 @@ class WebAdminSettingsTests(unittest.TestCase):
         form["csrf_token"] = csrf_token
         return client.post(path, data=form, follow_redirects=follow_redirects)
 
+    def _settings_page(self):
+        app = create_app()
+        client = app.test_client()
+        self.login(client)
+        return client.get("/settings").get_data(as_text=True)
+
+    def test_every_settings_nav_link_has_a_panel_and_vice_versa(self):
+        """The sidebar is the only way to reach a section once panels are
+        tabbed, so a link with no panel is a dead end and a panel with no
+        link is unreachable."""
+        import re
+        page = self._settings_page()
+        links = set(re.findall(r'data-panel-link="([\w-]+)"', page))
+        panels = set(re.findall(r'data-settings-panel="([\w-]+)"', page))
+        self.assertTrue(panels, "no settings panels rendered")
+        self.assertEqual(links, panels)
+
+    def test_settings_panels_keep_their_anchor_ids(self):
+        """Section forms POST back to <url>#section and the sidebar reads
+        the hash to restore the panel, so the ids are load-bearing."""
+        page = self._settings_page()
+        for section in ("links", "devices", "mqtt", "boards", "sync", "gateway",
+                        "accounts", "subscribers", "storage", "admin",
+                        "diagnostics", "danger"):
+            with self.subTest(section=section):
+                self.assertIn(f'id="{section}"', page)
+
+    def test_settings_sections_render_without_javascript(self):
+        """Single-panel mode is applied by settings-nav.js, so with
+        scripting off the page must still render every section stacked."""
+        page = self._settings_page()
+        self.assertNotIn("is-tabbed", page)
+        self.assertIn("settings-nav.js", page)
+
     def test_settings_page_contains_all_sections(self):
         app = create_app()
         client = app.test_client()

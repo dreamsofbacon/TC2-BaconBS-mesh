@@ -1,11 +1,63 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="card">
-  <h2>Settings</h2>
-  <p class="text-muted">Manage radio devices, boards, sync peers, allowed nodes, and web admin credentials from one place.</p>
-</div>
+<div class="settings-layout" id="settings-layout">
+  <nav class="settings-nav" id="settings-nav" aria-label="Settings sections">
+    <div class="settings-nav-inner">
+      <h2 class="settings-nav-heading">Settings</h2>
+      <a class="settings-nav-link" href="#links" data-panel-link="links">
+        <span class="settings-nav-title">Links &amp; Services</span>
+        <span class="settings-nav-hint">Radio and MQTT link health, reconnect</span>
+      </a>
+      <a class="settings-nav-link" href="#devices" data-panel-link="devices">
+        <span class="settings-nav-title">Device Configuration</span>
+        <span class="settings-nav-hint">Primary and secondary radio</span>
+      </a>
+      <a class="settings-nav-link" href="#mqtt" data-panel-link="mqtt">
+        <span class="settings-nav-title">MQTT Bridges</span>
+        <span class="settings-nav-hint">Brokers, TLS, what each one receives</span>
+      </a>
+      <a class="settings-nav-link" href="#boards" data-panel-link="boards">
+        <span class="settings-nav-title">Board Settings</span>
+        <span class="settings-nav-hint">Bulletin board names</span>
+      </a>
+      <a class="settings-nav-link" href="#sync" data-panel-link="sync">
+        <span class="settings-nav-title">Sync Settings</span>
+        <span class="settings-nav-hint">Peers, pacing, manual resync</span>
+      </a>
+      <a class="settings-nav-link" href="#gateway" data-panel-link="gateway">
+        <span class="settings-nav-title">API Gateway</span>
+        <span class="settings-nav-hint">HTTP proxy and Project Nomad AI</span>
+      </a>
+      <a class="settings-nav-link" href="#accounts" data-panel-link="accounts">
+        <span class="settings-nav-title">Account Linking</span>
+        <span class="settings-nav-hint">Multi-device accounts</span>
+      </a>
+      <a class="settings-nav-link" href="#subscribers" data-panel-link="subscribers">
+        <span class="settings-nav-title">Subscriber Nodes</span>
+        <span class="settings-nav-hint">Pull-only cache clients</span>
+      </a>
+      <a class="settings-nav-link" href="#storage" data-panel-link="storage">
+        <span class="settings-nav-title">Storage</span>
+        <span class="settings-nav-hint">Database size cap</span>
+      </a>
+      <a class="settings-nav-link" href="#admin" data-panel-link="admin">
+        <span class="settings-nav-title">Admin Credentials</span>
+        <span class="settings-nav-hint">Web admin login</span>
+      </a>
+      <a class="settings-nav-link" href="#diagnostics" data-panel-link="diagnostics">
+        <span class="settings-nav-title">Diagnostics</span>
+        <span class="settings-nav-hint">Sync state, database counts</span>
+      </a>
+      <a class="settings-nav-link danger" href="#danger" data-panel-link="danger">
+        <span class="settings-nav-title">Danger Zone</span>
+        <span class="settings-nav-hint">Destructive operations</span>
+      </a>
+    </div>
+  </nav>
 
-<div class="card" id="links" style="max-width:800px">
+  <div class="settings-panels" id="settings-panels">
+
+<section class="card settings-panel" id="links" data-settings-panel="links" style="max-width:800px">
   <h2>Links &amp; Services</h2>
   <p class="text-muted">
     Everything this node is connected to. <strong>Links</strong> carry BBS traffic (radios,
@@ -77,9 +129,9 @@
   {% else %}
   <p class="text-muted">No active links reported yet. This fills in once the mesh-bbs service is running and has written its first status snapshot.</p>
   {% endif %}
-</div>
+</section>
 
-<div class="card" id="devices" style="max-width:800px">
+<section class="card settings-panel" id="devices" data-settings-panel="devices" style="max-width:800px">
   <h2>Device Configuration</h2>
   <p class="text-muted">Choose the radio(s) this BBS talks over. <strong>Changes here require restarting the mesh-bbs service</strong> to take effect — the radio connection is opened once at startup, so this form doesn't apply live.</p>
 
@@ -186,7 +238,7 @@
 
     <button class="btn btn-primary" type="submit">Save Device Settings</button>
   </form>
-</div>
+</section>
 
 <script>
 (function () {
@@ -231,7 +283,7 @@
 })();
 </script>
 
-<div class="card" id="mqtt" style="max-width:800px">
+<section class="card settings-panel" id="mqtt" data-settings-panel="mqtt" style="max-width:800px">
   <h2>MQTT Bridges</h2>
   <p class="text-muted">
     Bridge this node to BBS peers you can't reach over RF at all (a separate mesh
@@ -388,7 +440,7 @@
       <button class="btn btn-primary" type="submit">Save MQTT Bridge Settings</button>
     </div>
   </form>
-</div>
+</section>
 
 <script>
 (function () {
@@ -497,7 +549,7 @@
 })();
 </script>
 
-<div class="card" id="boards">
+<section class="card settings-panel" id="boards" data-settings-panel="boards">
   <h2>Board Settings</h2>
   <p class="text-muted">Manage bulletin board categories used by create/edit dropdowns.</p>
   {% if env_override %}
@@ -512,9 +564,9 @@
     </div>
     <button class="btn btn-primary" type="submit">Save Boards</button>
   </form>
-</div>
+</section>
 
-<div class="card" id="sync" style="max-width:800px">
+<section class="card settings-panel" id="sync" data-settings-panel="sync" style="max-width:800px">
   <h2>Sync Settings</h2>
   <p class="text-muted">Manage BBS peer sync targets, sync pacing, and the node IDs allowed to post to the Urgent board.</p>
   <form method="post" action="{{ url_for('settings_page') }}#sync">
@@ -626,9 +678,9 @@
     </div>
     <button class="btn" type="submit">Force Full Resync to Peer</button>
   </form>
-</div>
+</section>
 
-<div class="card" id="gateway" style="max-width:800px">
+<section class="card settings-panel" id="gateway" data-settings-panel="gateway" style="max-width:800px">
   <h2>API Gateway / Project Nomad</h2>
   <p class="text-muted">
     When enabled, this internet-connected node fulfills API requests from offline
@@ -724,9 +776,9 @@
     </div>
     <button class="btn btn-primary" type="submit">Save Gateway Settings</button>
   </form>
-</div>
+</section>
 
-<div class="card" id="admin" style="max-width:600px">
+<section class="card settings-panel" id="admin" data-settings-panel="admin" style="max-width:600px">
   <h2>Admin Credentials</h2>
   <p class="text-muted">Change the username and password for the web admin interface.</p>
   {% if username_env_override or password_env_override %}
@@ -753,9 +805,9 @@
     </div>
     <button class="btn btn-primary" type="submit">Update Credentials</button>
   </form>
-</div>
+</section>
 
-<div class="card" id="danger" style="max-width:700px;border-color:#6b2323">
+<section class="card settings-panel" id="danger" data-settings-panel="danger" style="max-width:700px;border-color:#6b2323">
   <h2>Danger Zone</h2>
   <p class="text-muted">Wipe all local bulletin, mail, channel, profile, score, save, diagnostics, peer-state, and tombstone data from the SQLite database.</p>
   <p class="text-muted">Type <strong>WIPE DATABASE</strong> exactly to confirm. If peer sync remains enabled, remote nodes may repopulate data on later sync cycles.</p>
@@ -769,9 +821,9 @@
     </div>
     <button class="btn" type="submit" style="background:#521c1c;border-color:#8d3434;color:#ffd7d7">Wipe Database</button>
   </form>
-</div>
+</section>
 
-<div class="card" id="subscribers" style="max-width:600px">
+<section class="card settings-panel" id="subscribers" data-settings-panel="subscribers" style="max-width:600px">
   <h2>Subscriber Nodes (cache clients)</h2>
   <p class="text-muted">
     Node IDs of <strong>pull-only</strong> clients — e.g. a low-power Pico cache
@@ -790,9 +842,9 @@
     </div>
     <button class="btn" type="submit">Save subscriber nodes</button>
   </form>
-</div>
+</section>
 
-<div class="card" id="accounts" style="max-width:600px">
+<section class="card settings-panel" id="accounts" data-settings-panel="accounts" style="max-width:600px">
   <h2>Account Linking</h2>
   <p class="text-muted">
     Tunables for the self-service multi-device account system (Profile &gt;
@@ -827,9 +879,9 @@
     </div>
     <button class="btn btn-primary" type="submit">Save Account Settings</button>
   </form>
-</div>
+</section>
 
-<div class="card" id="storage" style="max-width:600px">
+<section class="card settings-panel" id="storage" data-settings-panel="storage" style="max-width:600px">
   <h2>Storage / Database Size Cap</h2>
   <p class="text-muted">
     Keep the database under a size limit on long-running unattended nodes. When
@@ -854,9 +906,9 @@
     </div>
     <button class="btn" type="submit">Save storage cap</button>
   </form>
-</div>
+</section>
 
-<div class="card" id="diagnostics" style="max-width:900px">
+<section class="card settings-panel" id="diagnostics" data-settings-panel="diagnostics" style="max-width:900px">
   <h2>Diagnostics</h2>
   <p class="text-muted">Quick runtime and BBS status details for troubleshooting.</p>
 
@@ -972,5 +1024,10 @@
   {% if diagnostics.error %}
   <p class="text-muted">Diagnostics note: {{ diagnostics.error }}</p>
   {% endif %}
-</div>
+</section>
+  </div><!-- /.settings-panels -->
+</div><!-- /.settings-layout -->
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='js/settings-nav.js', v=asset_version) }}"></script>
+{% endblock %}
 {% endblock %}
