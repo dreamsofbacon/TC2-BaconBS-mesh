@@ -814,6 +814,11 @@
       <label for="max_linked_devices">Max linked devices per account</label>
       <input type="text" id="max_linked_devices" name="max_linked_devices" class="form-control" value="{{ accounts.max_linked_devices }}">
     </div>
+    <div class="form-group">
+      <label for="link_code_delay_minutes">Delayed link-code wait (minutes)</label>
+      <input type="text" id="link_code_delay_minutes" name="link_code_delay_minutes" class="form-control" value="{{ accounts.link_code_delay_minutes }}">
+      <p class="text-muted">Used by <em>Linked Devices &gt; [6] Request code, delayed</em>. A dual-boot device can't receive anything while it reboots into its other protocol, so the code is held this long, then sent to every device already linked to the account. The code's lifetime is extended by the same amount, so the time available to redeem it is unchanged.</p>
+    </div>
     <button class="btn btn-primary" type="submit">Save Account Settings</button>
   </form>
 </div>

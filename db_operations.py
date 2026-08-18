@@ -629,6 +629,22 @@ def initialize_database():
                     PRIMARY KEY (link_name, node_id)
                 );''')
     c.execute('CREATE INDEX IF NOT EXISTS idx_mesh_clients_last_seen ON mesh_clients (last_seen);')
+    # Link codes whose delivery is deliberately held back (see
+    # command_handlers' delayed link-code option). A dual-boot device has to
+    # reboot into its other protocol before it can receive anything, so the
+    # code is queued here and delivered to the account's linked devices once
+    # the device has had time to come back. The code itself already lives in
+    # link_codes; this row only says who to tell and when.
+    c.execute('''CREATE TABLE IF NOT EXISTS pending_link_codes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    requested_by_node_id TEXT NOT NULL,
+                    deliver_after_epoch INTEGER NOT NULL,
+                    ttl_minutes INTEGER NOT NULL DEFAULT 10,
+                    created_at TEXT NOT NULL
+                );''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_pending_link_codes_due ON pending_link_codes (deliver_after_epoch);')
     c.execute('''CREATE TABLE IF NOT EXISTS peer_sync_state (
                     peer_node_id TEXT PRIMARY KEY,
                     bulletins INTEGER NOT NULL DEFAULT 0,
@@ -3293,6 +3309,48 @@ def get_mesh_clients(
         'hw_model', 'role', 'battery_level', 'last_heard_epoch', 'first_seen', 'last_seen',
     ]
     return [dict(zip(keys, row)) for row in c.fetchall()]
+
+
+def queue_delayed_link_code(account_id: str, code: str, requested_by_node_id: str,
+                            delay_minutes: int, ttl_minutes: int) -> None:
+    """Hold a link code for later delivery to the account's linked devices."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """INSERT INTO pending_link_codes
+           (account_id, code, requested_by_node_id, deliver_after_epoch, ttl_minutes, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (str(account_id), str(code), str(requested_by_node_id),
+         int(time.time()) + int(delay_minutes) * 60, int(ttl_minutes),
+         datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+    )
+    conn.commit()
+
+
+def take_due_link_codes() -> list[dict]:
+    """Pop every queued link code whose delay has elapsed.
+
+    Rows are deleted as they're returned so a delivery is attempted exactly
+    once -- a code re-sent on every tick would be both noisy and a needless
+    widening of how often the secret crosses the mesh.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    now = int(time.time())
+    rows = c.execute(
+        """SELECT id, account_id, code, requested_by_node_id, ttl_minutes
+           FROM pending_link_codes WHERE deliver_after_epoch <= ? ORDER BY id""",
+        (now,),
+    ).fetchall()
+    if not rows:
+        return []
+    c.executemany("DELETE FROM pending_link_codes WHERE id = ?", [(r[0],) for r in rows])
+    conn.commit()
+    return [
+        {'id': r[0], 'account_id': r[1], 'code': r[2],
+         'requested_by_node_id': r[3], 'ttl_minutes': r[4]}
+        for r in rows
+    ]
 
 
 def get_user_profile(user_id: int):

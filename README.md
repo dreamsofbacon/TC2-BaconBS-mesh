@@ -17,6 +17,7 @@ Forked from [TC²-BBS-mesh](https://github.com/TheCommsChannel/TC2-BBS-mesh) wit
 - **Node Statistics** — View node counts, hardware types, and roles on the mesh
 - **Wall of Shame** — Devices with low battery levels
 - **Mesh Client Roster** — Every device seen on any active radio/MQTT link, persisted to the database (not just held in memory) so it survives a restart; browsable from Web Admin → Clients
+- **Delayed Link Codes** — Request an account link code that's held for a couple of minutes and then sent to your already-linked devices, so a dual-boot node has time to reboot into its other protocol first
 - **Per-Link Reconnect** — Drop and re-establish any single radio or MQTT link from Web Admin → Settings → Links & Services, without restarting the service or disturbing the other links
 - **Fortune Teller** — Random fortunes from a configurable text file
 - **Web Admin Dashboard** — Full moderation interface at `localhost:8081` with real-time sync monitoring, peer hash visualizations, transmission logs, and manual sync controls
