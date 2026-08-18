@@ -205,6 +205,7 @@ def load_gateway_settings(config_path: str) -> dict:
     "enabled": _parse_bool_setting(config.get("gateway", "enabled", fallback="false"), False),
     "ai_base_url": g("ai_base_url"),
     "ai_dialect": g("ai_dialect", "ollama") or "ollama",
+    "ai_api_key": g("ai_api_key"),
     "ai_model": g("ai_model", "llama3.2"),
     "ai_system_prompt": g("ai_system_prompt"),
     "allowed_hosts": g("allowed_hosts"),
@@ -3385,7 +3386,7 @@ def create_app(runtime_interface=None) -> Flask:
       enabled = _parse_bool_setting(form.get("gateway_enabled", ""), False)
       config.set("gateway", "enabled", "true" if enabled else "false")
       # Free-text / list fields.
-      for key in ("ai_base_url", "ai_model", "ai_system_prompt",
+      for key in ("ai_base_url", "ai_model", "ai_system_prompt", "ai_api_key",
                   "allowed_hosts", "allowed_schemes", "allowed_nodes"):
         config.set("gateway", key, form.get(f"gateway_{key}", "").strip())
       dialect = form.get("gateway_ai_dialect", "ollama").strip().lower()
