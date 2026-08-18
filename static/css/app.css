@@ -1247,6 +1247,104 @@ kbd {
   margin: 80px auto 0;
 }
 
+/* ── Settings: sidebar table of contents ─────────────────────── */
+/* The page carries twelve independent sections. Stacked, it ran long
+   enough that finding one meant scrolling past the rest -- including the
+   Danger Zone. The sidebar turns them into a picker; settings-nav.js then
+   shows one panel at a time. Without JS the panels simply all render, which
+   is exactly the old page, so nothing here can strand a section. */
+.settings-layout {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.settings-nav-inner {
+  position: sticky;
+  top: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 10px;
+  /* Never taller than the viewport, so a long list still scrolls its own
+     way rather than pushing the sticky box off-screen. */
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+
+.settings-nav-heading {
+  margin: 4px 8px 10px;
+  font-size: 1.1rem;
+}
+
+.settings-nav-link {
+  display: block;
+  padding: 7px 10px;
+  margin-bottom: 2px;
+  border-radius: var(--radius-md);
+  border-left: 2px solid transparent;
+  color: var(--text);
+  text-decoration: none;
+  line-height: 1.25;
+}
+
+.settings-nav-link:hover { background: var(--surface-2); }
+
+.settings-nav-link:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+}
+
+.settings-nav-link.active {
+  background: var(--surface-3);
+  border-left-color: var(--accent);
+}
+
+.settings-nav-title { display: block; font-weight: 600; font-size: 0.9rem; }
+
+.settings-nav-hint {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  margin-top: 1px;
+}
+
+/* Destructive section stays visually apart even when it isn't selected. */
+.settings-nav-link.danger { margin-top: 8px; }
+.settings-nav-link.danger .settings-nav-title { color: var(--error-fg); }
+
+.settings-panels > .settings-panel:last-child { margin-bottom: 0; }
+
+/* Single-panel mode -- only added by settings-nav.js. */
+.settings-layout.is-tabbed .settings-panel { display: none; }
+.settings-layout.is-tabbed .settings-panel.is-active { display: block; }
+
+@media (max-width: 900px) {
+  /* Sidebar becomes a horizontal strip of chips above the panel. Below
+     this width a 232px column leaves the forms too cramped to use. */
+  .settings-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .settings-nav-inner {
+    position: static;
+    max-height: none;
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding: 8px;
+  }
+  .settings-nav-heading { display: none; }
+  .settings-nav-link {
+    flex: 0 0 auto;
+    margin-bottom: 0;
+    border-left: none;
+    border: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .settings-nav-link.active { border-color: var(--accent); }
+  .settings-nav-hint { display: none; }
+  .settings-nav-link.danger { margin-top: 0; }
+}
+
 /* ── Responsive / Mobile ─────────────────────────────────────── */
 @media (max-width: 760px) {
   .nav-links    { display: none; }
