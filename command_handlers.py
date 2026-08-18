@@ -77,7 +77,7 @@ def _urgent_board_allow_lists(interface) -> list:
     return lists
 
 
-main_menu_items = _parse_menu_items(config.get('menu', 'main_menu_items', fallback='Q,B,U,P,N,X'))
+main_menu_items = _parse_menu_items(config.get('menu', 'main_menu_items', fallback='Q,B,U,P,N,A,S,X'))
 bbs_menu_items = _parse_menu_items(config.get('menu', 'bbs_menu_items', fallback='M,B,C,J,X'))
 utilities_menu_items = _parse_menu_items(config.get('menu', 'utilities_menu_items', fallback='S,F,W,G,X'))
 
@@ -107,6 +107,11 @@ def get_bulletin_boards() -> list[str]:
     return ['General', 'Info', 'News', 'Urgent']
 
 
+# Newline for menu strings, kept as a name so patch tooling never has to
+# embed a raw escape sequence in these multi-line menu definitions.
+LINE_BREAK = chr(10)
+
+
 def build_menu(items, menu_name):
     menu_items = [item.strip().upper() for item in items if item and item.strip()]
     if menu_name == "🛠️Utilities Menu🛠️":
@@ -124,7 +129,6 @@ def build_menu(items, menu_name):
             'F': "[2] Fortune",
             'W': "[3] Wall of Shame",
             'G': "[4] Games",
-            'A': "[5] API Gateway",
             'X': "[0] Exit",
         }
         menu_str = f"{menu_name}\n"
@@ -132,6 +136,18 @@ def build_menu(items, menu_name):
             if item in number_map:
                 menu_str += number_map[item] + "\n"
         return menu_str
+
+    if menu_name.startswith("💾"):
+        # An existing config.ini lists main_menu_items explicitly, so new
+        # entries would never appear for anyone upgrading -- exactly how the
+        # API Gateway stayed invisible under Utilities. Same approach the
+        # Utilities menu already uses for 'G'.
+        for required in ('A', 'S'):
+            if required not in menu_items:
+                if 'X' in menu_items:
+                    menu_items.insert(menu_items.index('X'), required)
+                else:
+                    menu_items.append(required)
 
     if menu_name == "📰BBS Menu📰":
         number_map = {
@@ -143,12 +159,17 @@ def build_menu(items, menu_name):
         }
     else:
         # Main menu
+        # Numbers are deliberately append-only: renumbering Quick Commands
+        # or BBS would break every user's muscle memory and every doc that
+        # references them.
         number_map = {
             'Q': "[1] Quick Commands",
             'B': "[2] BBS",
             'U': "[3] Utilities",
             'P': "[4] Profile",
             'N': "[5] Ask Nomad",
+            'A': "[6] API Gateway",
+            'S': "[7] Settings",
             'X': "[0] Exit",
         }
     menu_str = f"{menu_name}\n"
@@ -494,6 +515,32 @@ def handle_scoreboard_steps(sender_id, message, interface):
     update_user_state(sender_id, {'command': 'SCOREBOARD', 'step': 1})
 
 
+_SETTINGS_MENU_TEXT = (
+    "⚙️ Settings" + LINE_BREAK
+    + "[1] Linked Devices" + LINE_BREAK
+    + "[0] Back"
+)
+
+
+def handle_settings_command(sender_id, interface):
+    """User-facing settings. Account linking lives here because Profile >
+    Linked Devices was effectively undiscoverable -- nothing on the main
+    menu suggested that linking a second device existed at all."""
+    send_message(_SETTINGS_MENU_TEXT, sender_id, interface)
+    update_user_state(sender_id, {'command': 'SETTINGS', 'step': 1})
+
+
+def handle_settings_steps(sender_id, message, interface, sender_node_id):
+    choice = message.strip().lower()
+    if choice in ('0', 'x', 'back', 'exit'):
+        handle_help_command(sender_id, interface)
+        return
+    if choice == '1':
+        handle_account_command(sender_id, interface)
+        return
+    send_message(_SETTINGS_MENU_TEXT, sender_id, interface)
+
+
 def handle_profile_command(sender_id, interface):
     profile = get_user_profile(sender_id)
     if not profile:
@@ -557,8 +604,6 @@ def handle_profile_steps(sender_id, message, interface):
 # threaded in from message_processing.py's routing, which already has it
 # in scope from on_receive().
 # ---------------------------------------------------------------------------
-
-LINE_BREAK = chr(10)
 
 _ACCOUNT_MENU_TEXT = (
     "\U0001F517 Linked Devices\n"
