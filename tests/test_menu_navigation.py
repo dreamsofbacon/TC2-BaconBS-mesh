@@ -110,5 +110,52 @@ class MenuHandlerWiringTests(unittest.TestCase):
         self.assertIn("a", mp.utilities_menu_handlers)
 
 
+class MenuNumberAliasTests(unittest.TestCase):
+    """Every number a menu prints must actually do something.
+
+    The rendered labels and the digit shortcuts were two hand-maintained
+    tables. They drifted: the main menu printed "[5] Ask Nomad" while the
+    alias table stopped at 4, so 5, 6 and 7 fell through to the catch-all
+    and bounced the user back to the menu. They share one source now, and
+    these tests fail if that ever comes apart again.
+    """
+
+    def _menus(self):
+        import message_processing as mp
+        return (
+            ("main", ch.MAIN_NUMBER_MAP, mp._MAIN_NUMBER_ALIAS, mp.main_menu_handlers),
+            ("bbs", ch.BBS_NUMBER_MAP, mp._BBS_NUMBER_ALIAS, mp.bbs_menu_handlers),
+            ("utilities", ch.UTILITIES_NUMBER_MAP, mp._UTILITIES_NUMBER_ALIAS,
+             mp.utilities_menu_handlers),
+        )
+
+    def test_every_rendered_number_resolves_to_a_handler(self):
+        for name, number_map, alias, handlers in self._menus():
+            for letter, label in number_map.items():
+                digit = label.split("]")[0].lstrip("[")
+                with self.subTest(menu=name, label=label):
+                    self.assertEqual(alias.get(digit), letter.lower(),
+                                     f"{name} menu prints {label} but {digit} is unmapped")
+                    self.assertIn(letter.lower(), handlers)
+
+    def test_the_numbers_that_regressed(self):
+        """5/6/7 on the main menu -- the reported symptom."""
+        import message_processing as mp
+        self.assertEqual(mp._MAIN_NUMBER_ALIAS["5"], "n")
+        self.assertEqual(mp._MAIN_NUMBER_ALIAS["6"], "a")
+        self.assertEqual(mp._MAIN_NUMBER_ALIAS["7"], "s")
+
+    def test_utilities_5_still_reaches_the_api_gateway(self):
+        """It moved to the main menu, but 5 meant that here for a long time."""
+        import message_processing as mp
+        self.assertEqual(mp._UTILITIES_NUMBER_ALIAS["5"], "a")
+
+    def test_no_digit_is_claimed_twice(self):
+        for name, number_map, _alias, _handlers in self._menus():
+            digits = [label.split("]")[0].lstrip("[") for label in number_map.values()]
+            with self.subTest(menu=name):
+                self.assertEqual(len(digits), len(set(digits)))
+
+
 if __name__ == "__main__":
     unittest.main()

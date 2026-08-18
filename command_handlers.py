@@ -2,6 +2,7 @@ import configparser
 import logging
 import os
 import random
+import re
 import time
 
 from meshtastic import BROADCAST_NUM
@@ -112,6 +113,57 @@ def get_bulletin_boards() -> list[str]:
 LINE_BREAK = chr(10)
 
 
+# Menu label tables. These are the single source of truth for BOTH the
+# rendered menu text and the digit shortcuts message_processing accepts --
+# the two used to be maintained separately, which is how "[5] Ask Nomad"
+# ended up rendering while typing 5 did nothing.
+UTILITIES_NUMBER_MAP = {
+    'S': "[1] Stats",
+    'F': "[2] Fortune",
+    'W': "[3] Wall of Shame",
+    'G': "[4] Games",
+    'X': "[0] Exit",
+}
+
+BBS_NUMBER_MAP = {
+    'M': "[1] Mail",
+    'B': "[2] Bulletins",
+    'C': "[3] Channel Dir",
+    'J': "[4] JS8CALL",
+    'X': "[0] Exit",
+}
+
+# Numbers are deliberately append-only: renumbering Quick Commands or BBS
+# would break every user's muscle memory and every doc that references them.
+MAIN_NUMBER_MAP = {
+    'Q': "[1] Quick Commands",
+    'B': "[2] BBS",
+    'U': "[3] Utilities",
+    'P': "[4] Profile",
+    'N': "[5] Ask Nomad",
+    'A': "[6] API Gateway",
+    'S': "[7] Settings",
+    'X': "[0] Exit",
+}
+
+
+def number_alias(number_map):
+    """Digit -> lowercase letter shortcuts, read off the menu labels.
+
+    Derived rather than hand-written so a new menu entry cannot render with
+    a number that the input handler refuses to accept.
+    """
+    alias = {}
+    for letter, label in number_map.items():
+        match = _MENU_NUMBER_RE.match(label)
+        if match:
+            alias[match.group(1)] = letter.lower()
+    return alias
+
+
+_MENU_NUMBER_RE = re.compile(r"\[(\d+)\]")
+
+
 def build_menu(items, menu_name):
     menu_items = [item.strip().upper() for item in items if item and item.strip()]
     if menu_name == "🛠️Utilities Menu🛠️":
@@ -124,13 +176,7 @@ def build_menu(items, menu_name):
             else:
                 menu_items.append('G')
 
-        number_map = {
-            'S': "[1] Stats",
-            'F': "[2] Fortune",
-            'W': "[3] Wall of Shame",
-            'G': "[4] Games",
-            'X': "[0] Exit",
-        }
+        number_map = UTILITIES_NUMBER_MAP
         menu_str = f"{menu_name}\n"
         for item in menu_items:
             if item in number_map:
@@ -150,28 +196,9 @@ def build_menu(items, menu_name):
                     menu_items.append(required)
 
     if menu_name == "📰BBS Menu📰":
-        number_map = {
-            'M': "[1] Mail",
-            'B': "[2] Bulletins",
-            'C': "[3] Channel Dir",
-            'J': "[4] JS8CALL",
-            'X': "[0] Exit",
-        }
+        number_map = BBS_NUMBER_MAP
     else:
-        # Main menu
-        # Numbers are deliberately append-only: renumbering Quick Commands
-        # or BBS would break every user's muscle memory and every doc that
-        # references them.
-        number_map = {
-            'Q': "[1] Quick Commands",
-            'B': "[2] BBS",
-            'U': "[3] Utilities",
-            'P': "[4] Profile",
-            'N': "[5] Ask Nomad",
-            'A': "[6] API Gateway",
-            'S': "[7] Settings",
-            'X': "[0] Exit",
-        }
+        number_map = MAIN_NUMBER_MAP
     menu_str = f"{menu_name}\n"
     for item in menu_items:
         if item in number_map:
