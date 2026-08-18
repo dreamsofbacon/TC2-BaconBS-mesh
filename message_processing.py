@@ -26,6 +26,7 @@ from command_handlers import (
     handle_apigw_command, handle_apigw_steps,
     handle_ask_nomad_command, handle_ask_nomad_steps,
     handle_account_steps,
+    handle_settings_command, handle_settings_steps,
 )
 from db_operations import (
     add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel,
@@ -89,6 +90,8 @@ main_menu_handlers = {
     "u": lambda sender_id, interface: handle_help_command(sender_id, interface, 'utilities'),
     "p": handle_profile_command,
     "n": handle_ask_nomad_command,
+    "a": handle_apigw_command,
+    "s": handle_settings_command,
     "x": handle_help_command
 }
 
@@ -2343,6 +2346,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     handle_profile_steps(sender_id, message, interface)
                 elif command == 'ACCOUNT':
                     handle_account_steps(sender_id, message, interface, sender_node_id)
+                elif command == 'SETTINGS':
+                    handle_settings_steps(sender_id, message, interface, sender_node_id)
                 elif command == 'APIGW':
                     handle_apigw_steps(sender_id, message, interface)
                 elif command == 'ASK_NOMAD':
