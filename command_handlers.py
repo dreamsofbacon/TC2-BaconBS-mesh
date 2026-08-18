@@ -19,6 +19,7 @@ from db_operations import (
     get_linked_nodes_detail, link_node_to_account, unlink_node,
     get_account_alias, set_account_alias, create_link_code, redeem_link_code,
     record_link_attempt, link_rate_limit_ok, account_authorized,
+    queue_delayed_link_code,
 )
 from utils import (
     get_node_id_from_num, get_node_info,
@@ -557,6 +558,8 @@ def handle_profile_steps(sender_id, message, interface):
 # in scope from on_receive().
 # ---------------------------------------------------------------------------
 
+LINE_BREAK = chr(10)
+
 _ACCOUNT_MENU_TEXT = (
     "\U0001F517 Linked Devices\n"
     "[1] Request link code\n"
@@ -564,12 +567,17 @@ _ACCOUNT_MENU_TEXT = (
     "[3] List my devices\n"
     "[4] Set shared alias\n"
     "[5] Unlink a device\n"
+    "[6] Request code, delayed (dual-boot)\n"
     "[0] Back"
 )
 
 
 def _account_link_code_ttl_minutes() -> int:
     return _config_int('accounts', 'link_code_ttl_minutes', 10)
+
+
+def _account_link_code_delay_minutes() -> int:
+    return _config_int('accounts', 'link_code_delay_minutes', 2)
 
 
 def _account_link_requests_per_hour() -> int:
@@ -629,6 +637,9 @@ def handle_account_steps(sender_id, message, interface, sender_node_id=None):
         if choice == '5':
             _handle_start_unlink(sender_id, interface, sender_node_id)
             return
+        if choice == '6':
+            _handle_request_link_code(sender_id, interface, sender_node_id, delayed=True)
+            return
         send_message(_ACCOUNT_MENU_TEXT, sender_id, interface)
         return
 
@@ -651,7 +662,19 @@ def handle_account_steps(sender_id, message, interface, sender_node_id=None):
     handle_account_command(sender_id, interface)
 
 
-def _handle_request_link_code(sender_id, interface, sender_node_id):
+def _handle_request_link_code(sender_id, interface, sender_node_id, delayed=False):
+    """Issue a link code.
+
+    ``delayed`` holds the code back by link_code_delay_minutes and then
+    sends it to every device already linked to the account, rather than
+    replying immediately to the requester. That exists for a dual-boot
+    device: it has to reboot into its other protocol before it can receive
+    anything, and an immediate reply is simply gone by then.
+
+    The TTL is extended by the delay so the window to actually redeem the
+    code is the same as an ordinary request -- otherwise waiting for the
+    message would eat most of it.
+    """
     if not link_rate_limit_ok(sender_node_id, 'request_code', _account_link_requests_per_hour()):
         send_message("Too many link-code requests recently. Try again later.", sender_id, interface)
         handle_account_command(sender_id, interface)
@@ -663,15 +686,44 @@ def _handle_request_link_code(sender_id, interface, sender_node_id):
         # same code path, so no separate "create account" step is needed.
         account_id = create_account()
         link_node_to_account(sender_node_id, account_id, home_network(sender_node_id))
-    code = create_link_code(account_id, sender_node_id, ttl_minutes=_account_link_code_ttl_minutes())
+
+    delay = _account_link_code_delay_minutes() if delayed else 0
+    ttl = _account_link_code_ttl_minutes() + delay
+    code = create_link_code(account_id, sender_node_id, ttl_minutes=ttl)
     record_link_attempt(sender_node_id, 'request_code', True)
-    send_message(
-        f"Your link code: {code}\n"
-        f"Valid for {_account_link_code_ttl_minutes()} minutes, one-time use. "
-        "Enter it from your OTHER device: Profile > Linked Devices > "
-        "[2] Enter a code.",
-        sender_id, interface,
-    )
+
+    if not delayed:
+        send_message(
+            "Your link code: " + str(code) + LINE_BREAK
+            + "Valid for " + str(ttl) + " minutes, one-time use. "
+            "Enter it from your OTHER device: Profile > Linked Devices > "
+            "[2] Enter a code.",
+            sender_id, interface,
+        )
+        handle_account_command(sender_id, interface)
+        return
+
+    queue_delayed_link_code(account_id, code, sender_node_id, delay, ttl)
+    others = [n for n in get_linked_node_ids(account_id) if n != sender_node_id]
+    if others:
+        send_message(
+            "Link code queued. In " + str(delay) + " minute(s) it will be sent to "
+            "your " + str(len(others)) + " other linked device(s). Reboot into the "
+            "other protocol now; the code stays valid for " + str(ttl) + " minutes.",
+            sender_id, interface,
+        )
+    else:
+        # Nothing else is linked yet, so a delayed send can only come back to
+        # this same node. Say so plainly rather than implying it will reach an
+        # identity the account has never seen.
+        send_message(
+            "Link code queued and will be sent here in " + str(delay) + " minute(s). "
+            "NOTE: no other devices are linked yet, so it can only come back to "
+            "THIS node -- if this device reboots into another protocol it returns "
+            "as a new identity and will not receive it. For a first-time link, "
+            "use [1] instead.",
+            sender_id, interface,
+        )
     handle_account_command(sender_id, interface)
 
 

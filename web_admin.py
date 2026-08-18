@@ -287,6 +287,8 @@ def load_account_settings(config_path: str) -> dict:
     "link_requests_per_hour": config.get("accounts", "link_requests_per_hour", fallback="3").strip() or "3",
     "link_attempts_per_hour": config.get("accounts", "link_attempts_per_hour", fallback="5").strip() or "5",
     "max_linked_devices": config.get("accounts", "max_linked_devices", fallback="6").strip() or "6",
+    "link_code_delay_minutes": config.get(
+      "accounts", "link_code_delay_minutes", fallback="2").strip() or "2",
   }
 
 
@@ -3488,6 +3490,7 @@ def create_app(runtime_interface=None) -> Flask:
         ("link_requests_per_hour", 3, 0),
         ("link_attempts_per_hour", 5, 0),
         ("max_linked_devices", 6, 1),
+        ("link_code_delay_minutes", 2, 1),
       ):
         raw = form.get(key, "").strip()
         try:
