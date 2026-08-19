@@ -385,3 +385,87 @@ class ClientNameFlatteningTests(unittest.TestCase):
             "SELECT short_name, long_name FROM mesh_clients WHERE node_id='!stale'"
         ).fetchone()
         self.assertEqual(row, ("A B", "USM Auriga Solar USM Auriga"))
+
+
+class NodeRoleResolutionTests(unittest.TestCase):
+    """The Role column mixed readable names with a bare '1' and a lot of
+    blanks, because two transports were storing whatever they received.
+
+    Meshtastic sends role as a protobuf enum and MessageToDict omits any
+    field at its default, so role 0 (CLIENT) -- the most common one --
+    arrived as no key at all. MeshCore reads its advert type as a raw byte
+    (meshcore/reader.py: dbuf.read(1)[0]), so it arrived as an int.
+    """
+
+    def test_meshtastic_omitted_role_means_client(self):
+        self.assertEqual(db_operations.resolve_node_role({"id": "!a"}, "Meshtastic"), "CLIENT")
+
+    def test_no_user_packet_is_unknown_rather_than_client(self):
+        """An absent user dict means we never heard the node's User packet;
+        filling in CLIENT there would be inventing a fact."""
+        self.assertEqual(db_operations.resolve_node_role({}, "Meshtastic"), "")
+
+    def test_numeric_meshtastic_role_resolves_to_its_name(self):
+        self.assertEqual(db_operations.resolve_node_role({"id": "!a", "role": 1}, "Meshtastic"),
+                         "CLIENT_MUTE")
+        self.assertEqual(db_operations.resolve_node_role({"id": "!a", "role": "12"}, "Meshtastic"),
+                         "CLIENT_BASE")
+
+    def test_named_roles_pass_through(self):
+        self.assertEqual(db_operations.resolve_node_role({"id": "!a", "role": "ROUTER_LATE"},
+                                                   "Meshtastic"), "ROUTER_LATE")
+
+    def test_unknown_role_number_is_reported_not_guessed(self):
+        """A firmware addition should read as unrecognized rather than be
+        silently mislabelled as an existing role."""
+        self.assertEqual(db_operations.resolve_node_role({"id": "!a", "role": 99}, "Meshtastic"),
+                         "role 99")
+
+    def test_role_table_comes_from_the_protobuf(self):
+        self.assertEqual(db_operations.MESHTASTIC_ROLE_NAMES[0], "CLIENT")
+        self.assertEqual(db_operations.MESHTASTIC_ROLE_NAMES[11], "ROUTER_LATE")
+
+    def test_meshcore_blank_role_is_not_forced_to_client(self):
+        """Only Meshtastic omits a role to mean the default."""
+        self.assertEqual(db_operations.resolve_node_role({"id": "key"}, "MeshCore"), "")
+
+    def test_meshcore_advert_type_byte_becomes_a_name(self):
+        import meshcore_interface
+        self.assertEqual(meshcore_interface._adv_type_name(1), "Companion")
+        self.assertEqual(meshcore_interface._adv_type_name(2), "Repeater")
+        self.assertEqual(meshcore_interface._adv_type_name("3"), "Room Server")
+
+    def test_unknown_advert_type_is_reported_not_guessed(self):
+        import meshcore_interface
+        self.assertEqual(meshcore_interface._adv_type_name(7), "type 7")
+
+    def test_existing_numeric_roles_are_backfilled(self):
+        """Stale rows are never re-swept, so the sweep alone would leave a
+        node that has gone quiet showing '1' forever."""
+        db_operations.thread_local.connection = sqlite3.connect(":memory:")
+        try:
+            db_operations.initialize_database()
+            conn = db_operations.thread_local.connection
+            for protocol, node_id, role in (
+                ("MeshCore", "key1", "1"),
+                ("Meshtastic", "!aaa", "1"),
+                ("Meshtastic", "!bbb", "ROUTER"),
+                ("Meshtastic", "!ccc", ""),
+            ):
+                conn.execute(
+                    "INSERT INTO mesh_clients (link_name, node_id, protocol, short_name,"
+                    " long_name, hw_model, role, first_seen, last_seen)"
+                    " VALUES ('L', ?, ?, '', '', '', ?, 'x', 'y')",
+                    (node_id, protocol, role),
+                )
+            conn.commit()
+            db_operations.initialize_database()
+            stored = dict(conn.execute("SELECT node_id, role FROM mesh_clients"))
+            self.assertEqual(stored["key1"], "Companion")
+            self.assertEqual(stored["!aaa"], "CLIENT_MUTE")
+            self.assertEqual(stored["!bbb"], "ROUTER")
+            # Blank is genuinely ambiguous, so the backfill must not guess.
+            self.assertEqual(stored["!ccc"], "")
+        finally:
+            db_operations.thread_local.connection.close()
+            del db_operations.thread_local.connection
