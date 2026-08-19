@@ -629,6 +629,19 @@ def initialize_database():
                     PRIMARY KEY (link_name, node_id)
                 );''')
     c.execute('CREATE INDEX IF NOT EXISTS idx_mesh_clients_last_seen ON mesh_clients (last_seen);')
+    # One-time backfill for names stored before they were flattened on
+    # write. The sweep only rewrites nodes still in range, so a device that
+    # has since gone quiet would keep its multi-line name indefinitely --
+    # which is exactly the row that has it here.
+    c.execute(
+        """UPDATE mesh_clients
+           SET long_name = TRIM(REPLACE(REPLACE(REPLACE(long_name, CHAR(13), ' '), CHAR(10), ' '), CHAR(9), ' ')),
+               short_name = TRIM(REPLACE(REPLACE(REPLACE(short_name, CHAR(13), ' '), CHAR(10), ' '), CHAR(9), ' '))
+           WHERE long_name GLOB '*' || CHAR(10) || '*' OR long_name GLOB '*' || CHAR(13) || '*'
+              OR long_name GLOB '*' || CHAR(9) || '*'
+              OR short_name GLOB '*' || CHAR(10) || '*' OR short_name GLOB '*' || CHAR(13) || '*'
+              OR short_name GLOB '*' || CHAR(9) || '*'"""
+    )
     # Link codes whose delivery is deliberately held back (see
     # command_handlers' delayed link-code option). A dual-boot device has to
     # reboot into its other protocol before it can receive anything, so the

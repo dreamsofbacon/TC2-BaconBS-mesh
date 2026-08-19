@@ -367,3 +367,21 @@ class ClientNameFlatteningTests(unittest.TestCase):
 
     def test_missing_name_stays_empty(self):
         self.assertEqual(self._store(long_name=None)["long_name"], "")
+
+    def test_existing_multiline_names_are_backfilled(self):
+        """The sweep only rewrites nodes still in range, so a device that
+        has gone quiet keeps whatever was stored before names were
+        flattened -- which is the case that actually had one."""
+        conn = db_operations.thread_local.connection
+        conn.execute(
+            "INSERT INTO mesh_clients (link_name, node_id, protocol, short_name,"
+            " long_name, hw_model, role, first_seen, last_seen)"
+            " VALUES ('primary', '!stale', 'Meshtastic', 'A'||CHAR(10)||'B',"
+            " 'USM Auriga Solar'||CHAR(10)||'USM Auriga', 'HW', '', 'x', 'y')"
+        )
+        conn.commit()
+        db_operations.initialize_database()
+        row = conn.execute(
+            "SELECT short_name, long_name FROM mesh_clients WHERE node_id='!stale'"
+        ).fetchone()
+        self.assertEqual(row, ("A B", "USM Auriga Solar USM Auriga"))
