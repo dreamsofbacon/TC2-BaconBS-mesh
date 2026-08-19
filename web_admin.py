@@ -3160,6 +3160,29 @@ def create_app(runtime_interface=None) -> Flask:
         return f"{seconds // 3600}h ago"
       return f"{seconds // 86400}d ago"
 
+    @app.template_filter("age_seconds")
+    def age_seconds_filter(value) -> str:
+      """Seconds since a stored timestamp, for the client-side filters.
+
+      Computed here rather than in the browser because the stored values
+      are the server's local time; comparing them against the viewer's
+      clock would skew the "seen within" filter by the offset between the
+      two. Empty when unparseable, and the filter keeps such rows rather
+      than hiding a real device over a missing field.
+      """
+      text = str(value or "").strip()
+      if not text:
+        return ""
+      for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+          when = datetime.strptime(text[:19], fmt)
+          break
+        except ValueError:
+          continue
+      else:
+        return ""
+      return str(max(0, int((datetime.now() - when).total_seconds())))
+
     @app.template_filter("middle_ellipsis")
     def middle_ellipsis_filter(value, keep: int = 8) -> str:
       """Shorten from the middle, keeping both ends legible.

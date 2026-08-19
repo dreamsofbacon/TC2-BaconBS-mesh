@@ -3,7 +3,67 @@
 <div class="card">
   <h2>Known Mesh Clients</h2>
   <p class="text-muted">Every device seen in range on any active radio/MQTT link, persisted to the database so a restart doesn't forget them. Refreshed every 5-30s from each link's live node roster.</p>
-  <p class="text-muted">{{ mesh_clients|length }} known device(s).</p>
+  <p class="text-muted" data-filter-count="mesh-clients">{{ mesh_clients|length }} known device(s).</p>
+
+  {# Options are built from the rows actually present, so a value that
+     never appears is never offered -- an empty result from a dropdown is
+     the one filter outcome with no explanation on screen. #}
+  {% set links = mesh_clients | map(attribute='link_name') | reject('equalto', '') | unique | sort | list %}
+  {% set protocols = mesh_clients | map(attribute='protocol') | reject('equalto', '') | unique | sort | list %}
+  {% set roles = mesh_clients | map(attribute='role') | reject('equalto', '') | unique | sort | list %}
+  <div class="filter-grid" data-table-filter="mesh-clients">
+    <div>
+      <label for="mc-search">Search</label>
+      <input type="search" id="mc-search" class="form-control" data-filter-search
+             placeholder="ID, name, hardware…" autocomplete="off">
+    </div>
+    {% if links | length > 1 %}
+    <div>
+      <label for="mc-link">Link</label>
+      <select id="mc-link" class="form-control" data-filter-field="link">
+        <option value="">All links</option>
+        {% for value in links %}
+        <option value="{{ value }}">{{ value }} ({{ mesh_clients | selectattr('link_name', 'equalto', value) | list | length }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+    {% if protocols | length > 1 %}
+    <div>
+      <label for="mc-protocol">Protocol</label>
+      <select id="mc-protocol" class="form-control" data-filter-field="protocol">
+        <option value="">All protocols</option>
+        {% for value in protocols %}
+        <option value="{{ value }}">{{ value }} ({{ mesh_clients | selectattr('protocol', 'equalto', value) | list | length }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+    {% if roles %}
+    <div>
+      <label for="mc-role">Role</label>
+      <select id="mc-role" class="form-control" data-filter-field="role">
+        <option value="">All roles</option>
+        {% for value in roles %}
+        <option value="{{ value }}">{{ value }} ({{ mesh_clients | selectattr('role', 'equalto', value) | list | length }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+    <div>
+      <label for="mc-seen">Seen within</label>
+      <select id="mc-seen" class="form-control" data-filter-max-age>
+        <option value="">Any time</option>
+        <option value="3600">Last hour</option>
+        <option value="21600">Last 6 hours</option>
+        <option value="86400">Last 24 hours</option>
+        <option value="604800">Last 7 days</option>
+      </select>
+    </div>
+    <div style="display:flex;align-items:end">
+      <button type="button" class="btn btn-sm" data-filter-clear hidden>Clear filters</button>
+    </div>
+  </div>
   <div class="table-scroll-container">
     {# Ten columns of raw values ran ~200 characters wide. Link/Protocol and
        the two timestamps are paired facts that read better stacked in one
@@ -11,7 +71,7 @@
        because a single 64-char MeshCore key was setting the column width
        for 300+ nine-character Meshtastic ids. Every shortened value keeps
        its full text in a title attribute. #}
-    <table class="data-table clients-table">
+    <table id="mesh-clients" class="data-table clients-table">
       <thead>
         <tr>
           <th>Device</th>
@@ -24,7 +84,9 @@
       </thead>
       <tbody>
         {% for client in mesh_clients %}
-        <tr>
+        <tr data-link="{{ client.link_name }}" data-protocol="{{ client.protocol }}"
+            data-role="{{ client.role }}" data-age-seconds="{{ client.last_seen | age_seconds }}"
+            data-search="{{ client.node_id }} {{ client.short_name }} {{ client.long_name }} {{ client.hw_model }} {{ client.role }} {{ client.link_name }} {{ client.protocol }}">
           <td class="cell-stack">
             <span class="cell-primary">{{ client.link_name }} <span class="cell-sep">·</span> {{ client.protocol }}</span>
             <span class="cell-secondary">
@@ -43,6 +105,9 @@
           </td>
         </tr>
         {% endfor %}
+        <tr data-filter-empty class="is-filtered-out">
+          <td colspan="6" class="text-muted empty-state">No devices match these filters.</td>
+        </tr>
         {% if not mesh_clients %}
         <tr>
           <td colspan="6" class="text-muted empty-state">No devices seen yet -- the roster fills in on the next periodic sweep (every 5-30s) once a radio or MQTT link is connected.</td>

@@ -2094,6 +2094,57 @@ class ClientsTableWidthTests(unittest.TestCase):
         self.assertIn('colspan="6"', page)
 
 
+class ClientsFilterMarkupTests(ClientsTableWidthTests):
+    """The filter controls are inert without the data- attributes they read,
+    and the two live in different files -- so the contract between
+    clients.html and table-filter.js is what these check."""
+
+    def test_every_row_carries_the_fields_the_filters_read(self):
+        page = self._page()
+        rows = re.findall(r"<tr ([^>]*data-search=[^>]*)>", page)
+        self.assertEqual(len(rows), 2)
+        for attrs in rows:
+            for field in ("data-link=", "data-protocol=", "data-role=",
+                          "data-age-seconds=", "data-search="):
+                with self.subTest(field=field):
+                    self.assertIn(field, attrs)
+
+    def test_search_haystack_covers_the_advertised_fields(self):
+        """The placeholder promises id, name and hardware."""
+        page = self._page()
+        haystack = re.search(r'data-search="([^"]*BACN[^"]*)"', page).group(1)
+        for token in ("!04058ac8", "BACN", "Bacon BBS", "HELTEC_V3"):
+            with self.subTest(token=token):
+                self.assertIn(token, haystack)
+
+    def test_filter_panel_targets_the_table_by_id(self):
+        page = self._page()
+        self.assertIn('data-table-filter="mesh-clients"', page)
+        self.assertIn('id="mesh-clients"', page)
+
+    def test_dropdowns_only_offer_values_present_in_the_data(self):
+        """An option that matches nothing produces an empty table with no
+        explanation of why."""
+        page = self._page()
+        panel = page[page.index('data-table-filter'):page.index('table-scroll-container')]
+        offered = re.findall(r'<option value="([^"]+)">', panel)
+        self.assertIn("CLIENT", offered)   # the Meshtastic row
+        self.assertIn("ROUTER", offered)   # the MeshCore row
+        self.assertNotIn("SENSOR", offered)      # no row has this role
+        self.assertNotIn("CLIENT_MUTE", offered) # nor this one
+
+    def test_a_no_matches_row_exists_and_starts_hidden(self):
+        page = self._page()
+        self.assertIn("data-filter-empty", page)
+        self.assertRegex(page, r'data-filter-empty[^>]*class="is-filtered-out"')
+
+    def test_age_seconds_is_rendered_for_the_recency_filter(self):
+        page = self._page()
+        ages = re.findall(r'data-age-seconds="(\d*)"', page)
+        self.assertTrue(ages)
+        self.assertTrue(all(a == "" or a.isdigit() for a in ages), ages)
+
+
 class TemplateFilterTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -2135,6 +2186,20 @@ class TemplateFilterTests(unittest.TestCase):
             with self.subTest(stamp=stamp):
                 self.assertTrue(
                     self._render("{{ '" + stamp + "' | relative_age }}").endswith(suffix))
+
+    def test_age_seconds_is_computed_server_side(self):
+        """Stored timestamps are the server's local time; comparing them
+        against the viewer's clock would skew the recency filter."""
+        from datetime import timedelta
+        stamp = (datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+        value = int(self._render("{{ '" + stamp + "' | age_seconds }}"))
+        self.assertAlmostEqual(value, 7200, delta=120)
+
+    def test_age_seconds_is_blank_when_unparseable(self):
+        """table-filter.js keeps rows with no usable age rather than
+        hiding a real device over a missing field."""
+        self.assertEqual(self._render("{{ 'not a date' | age_seconds }}"), "")
+        self.assertEqual(self._render("{{ '' | age_seconds }}"), "")
 
     def test_relative_age_passes_through_what_it_cannot_parse(self):
         """An empty cell would hide that a timestamp exists but is wrong."""
