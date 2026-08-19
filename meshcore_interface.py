@@ -42,6 +42,34 @@ def _node_num(public_key: str) -> int:
         return value
 
 
+# MeshCore reports a contact's advertisement type as a raw byte
+# (meshcore/reader.py reads it with dbuf.read(1)[0]), so it arrives as an
+# int and was being stored verbatim -- a bare "1" sitting in the roster's
+# Role column next to Meshtastic's readable names. Unknown codes are shown
+# as "type <n>" rather than guessed at, so a firmware addition reads as
+# unrecognized instead of being silently mislabelled as something else.
+_ADV_TYPE_NAMES = {
+    1: "Companion",
+    2: "Repeater",
+    3: "Room Server",
+    4: "Sensor",
+}
+
+
+def _adv_type_name(value, default: str = "Companion") -> str:
+    """Human-readable name for a MeshCore advertisement type."""
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return _ADV_TYPE_NAMES.get(value, f"type {value}")
+    text = str(value).strip()
+    if text.isdigit():
+        return _ADV_TYPE_NAMES.get(int(text), f"type {text}")
+    return text
+
+
 class MeshCoreInterface:
     """Expose the subset of Meshtastic's interface used by Bacon BBS."""
 
@@ -203,7 +231,7 @@ class MeshCoreInterface:
                     "shortName": name[:4],
                     "longName": name,
                     "hwModel": "MeshCore",
-                    "role": contact.get("type", "companion"),
+                    "role": _adv_type_name(contact.get("type")),
                 },
                 "position": {
                     "latitude": contact.get("adv_lat"),
@@ -224,7 +252,7 @@ class MeshCoreInterface:
                     "shortName": name[:4],
                     "longName": name,
                     "hwModel": "MeshCore",
-                    "role": local.get("adv_type", "companion"),
+                    "role": _adv_type_name(local.get("adv_type")),
                 },
             }
             num_to_key[number] = local_key
@@ -407,7 +435,7 @@ class MeshCoreInterface:
                 "shortName": name[:4],
                 "longName": name,
                 "hwModel": "MeshCore",
-                "role": info.get("adv_type", "companion"),
+                "role": _adv_type_name(info.get("adv_type")),
             },
         }
 

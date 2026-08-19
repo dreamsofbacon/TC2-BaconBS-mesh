@@ -642,6 +642,26 @@ def initialize_database():
               OR short_name GLOB '*' || CHAR(10) || '*' OR short_name GLOB '*' || CHAR(13) || '*'
               OR short_name GLOB '*' || CHAR(9) || '*'"""
     )
+    # Roles stored before they were resolved to names: MeshCore advert
+    # types arrived as raw bytes ('1'), and Meshtastic's most common role
+    # arrived as nothing at all, because protobuf omits a field sitting at
+    # its default. Numeric values are unambiguous and safe to rewrite here;
+    # blanks are not (they mean either CLIENT or "no User packet ever
+    # seen"), so those are left for the sweep to fill in with the context
+    # it has.
+    _MESHCORE_ADV_TYPES = {'1': 'Companion', '2': 'Repeater',
+                           '3': 'Room Server', '4': 'Sensor'}
+    _MESHTASTIC_ROLES = {'0': 'CLIENT', '1': 'CLIENT_MUTE', '2': 'ROUTER',
+                         '3': 'ROUTER_CLIENT', '4': 'REPEATER', '5': 'TRACKER',
+                         '6': 'SENSOR', '7': 'TAK', '8': 'CLIENT_HIDDEN',
+                         '9': 'LOST_AND_FOUND', '10': 'TAK_TRACKER',
+                         '11': 'ROUTER_LATE', '12': 'CLIENT_BASE'}
+    for _code, _name in _MESHCORE_ADV_TYPES.items():
+        c.execute("UPDATE mesh_clients SET role = ? WHERE protocol = 'MeshCore' AND role = ?",
+                  (_name, _code))
+    for _code, _name in _MESHTASTIC_ROLES.items():
+        c.execute("UPDATE mesh_clients SET role = ? WHERE protocol != 'MeshCore' AND role = ?",
+                  (_name, _code))
     # Link codes whose delivery is deliberately held back (see
     # command_handlers' delayed link-code option). A dual-boot device has to
     # reboot into its other protocol before it can receive anything, so the
@@ -3300,6 +3320,49 @@ def _flatten_client_text(value) -> str:
     a name is displayed.
     """
     return ' '.join(str(value or '').split())
+
+
+# Meshtastic sends a node's role as a protobuf enum, and MessageToDict
+# omits any field sitting at its default -- so role 0 (CLIENT), by far the
+# most common, arrives as no key at all rather than as "CLIENT". Stored
+# verbatim that left the roster's Role column blank for most devices.
+#
+# The distinction that matters: a user dict WITHOUT a role key means the
+# node told us it is a plain CLIENT, while no user dict at all means we
+# have never received its User packet and genuinely do not know. Only the
+# first is filled in; the second stays empty rather than inventing a role.
+MESHTASTIC_ROLE_NAMES = {
+    0: "CLIENT", 1: "CLIENT_MUTE", 2: "ROUTER", 3: "ROUTER_CLIENT",
+    4: "REPEATER", 5: "TRACKER", 6: "SENSOR", 7: "TAK", 8: "CLIENT_HIDDEN",
+    9: "LOST_AND_FOUND", 10: "TAK_TRACKER", 11: "ROUTER_LATE",
+    12: "CLIENT_BASE",
+}
+try:  # Prefer the installed protobuf's own table over the literal above.
+    from meshtastic.protobuf import config_pb2 as _config_pb2
+    MESHTASTIC_ROLE_NAMES = {
+        number: name for name, number in _config_pb2.Config.DeviceConfig.Role.items()
+    }
+except Exception:  # pragma: no cover - protobuf layout moved
+    pass
+
+
+def resolve_node_role(user: dict, protocol: str) -> str:
+    """Canonical role name for one node's user dict."""
+    if not user:
+        return ''  # no User packet seen; unknown, not CLIENT
+    raw = user.get('role')
+    if raw is None or raw == '':
+        # Only Meshtastic omits a role to mean "the default one". Other
+        # transports set it explicitly, so a blank there is really blank.
+        return "CLIENT" if str(protocol).startswith(("Meshtastic", "MQTT")) else ''
+    if isinstance(raw, bool):
+        return str(raw)
+    if isinstance(raw, int):
+        return MESHTASTIC_ROLE_NAMES.get(raw, f"role {raw}")
+    text = str(raw).strip()
+    if text.isdigit():
+        return MESHTASTIC_ROLE_NAMES.get(int(text), f"role {text}")
+    return text
 
 
 def upsert_mesh_clients(rows: list[dict]) -> None:

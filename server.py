@@ -55,6 +55,7 @@ from db_operations import (
     run_op_log_backfill,
     get_peer_sync_states,
     upsert_mesh_clients,
+    resolve_node_role,
 )
 from js8call_integration import JS8CallClient
 from message_processing import (
@@ -930,7 +931,7 @@ def persist_mesh_clients(links) -> None:
                 'short_name': user.get('shortName', ''),
                 'long_name': user.get('longName', ''),
                 'hw_model': user.get('hwModel', ''),
-                'role': user.get('role', ''),
+                'role': resolve_node_role(user, protocol),
                 'battery_level': device_metrics.get('batteryLevel'),
                 'last_heard_epoch': node.get('lastHeard'),
             })
