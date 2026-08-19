@@ -867,6 +867,12 @@ td[data-col="name"]     { max-width: 180px; }
 td[data-col="recipient"],
 td[data-col="sender_short_name"] { white-space: nowrap; width: 1%; }
 
+/* Rows hidden by table-filter.js. A class, not an inline style: the
+   mobile card stack restyles rows to display:block, and clearing an
+   inline display would put those two in conflict. !important because it
+   has to beat that stacking rule too. */
+.is-filtered-out { display: none !important; }
+
 /* ── Two-line table cells ────────────────────────────────────
    Pairs of facts that belong together (link + protocol, node id +
    short name, last seen + first seen) stacked in one cell instead of
