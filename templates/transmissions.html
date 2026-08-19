@@ -192,6 +192,7 @@
       if (hasGaps) html += '<span style="margin-left:auto;font-size:0.8em;color:#b45309;font-weight:600;">' + peer.gaps.length + ' scope(s) out of sync</span>';
       else         html += '<span style="margin-left:auto;font-size:0.8em;color:#166534;font-weight:600;">&#10003; All scopes in sync</span>';
       html += '</div>';
+      html += '<div class="table-scroll-container">';
       html += '<table style="width:100%;border-collapse:collapse;font-size:0.88em;">';
       html += '<thead><tr style="background:var(--surface-2);border-bottom:1px solid var(--border);">';
       html += '<th style="padding:6px 10px;text-align:left;">Scope</th><th style="padding:6px 10px;text-align:right;">Local</th><th style="padding:6px 10px;text-align:right;">Peer</th><th style="padding:6px 10px;">Status</th>';
@@ -218,9 +219,13 @@
         html += '<td style="padding:5px 10px;">' + statusHtml + '</td>';
         html += '</tr>';
       });
-      html += '</tbody></table></div>';
+      html += '</tbody></table></div></div>';
     });
-    document.getElementById('sync-progress-peers').innerHTML = html;
+    var peersEl = document.getElementById('sync-progress-peers');
+    peersEl.innerHTML = html;
+    // Rebuilt from scratch on every poll, so the mobile card labels have to
+    // be reapplied -- they live on the cells this just replaced.
+    if (window.BaconTables) window.BaconTables.labelStacked(peersEl);
   }
 
   function renderActiveItems(data) {
@@ -372,7 +377,7 @@
       el.innerHTML = '<p class="text-muted" style="font-size:0.9em">No completed sync sessions recorded yet in the last 24 hours.</p>';
       return;
     }
-    var html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.88em;">';
+    var html = '<div class="table-scroll-container"><table style="width:100%;border-collapse:collapse;font-size:0.88em;">';
     html += '<thead><tr style="background:var(--surface-2);border-bottom:2px solid var(--border);">';
     html += '<th style="padding:7px 8px;text-align:left;">Peer</th><th style="padding:7px 8px;text-align:left;">Ended</th><th style="padding:7px 8px;text-align:right;">Duration</th><th style="padding:7px 8px;text-align:right;">Sent</th><th style="padding:7px 8px;text-align:right;">Received</th><th style="padding:7px 8px;text-align:right;">Total</th><th style="padding:7px 8px;text-align:right;">Speed</th><th style="padding:7px 8px;text-align:right;">Frames</th>';
     html += '</tr></thead><tbody>';
@@ -391,6 +396,7 @@
     });
     html += '</tbody></table></div>';
     el.innerHTML = html;
+    if (window.BaconTables) window.BaconTables.labelStacked(el);
   }
 
   function refreshSessions() {
@@ -429,7 +435,7 @@
     });
     var avg = sumDur / n;
     sumEl.textContent = n + ' sessions \u2014 avg ' + fmtDur(avg) + ', min ' + fmtDur(minDur) + ', max ' + fmtDur(maxDur) + ', total ' + fmtBytes(sumBytes);
-    var html = '<div style="overflow-x:auto;max-height:480px;overflow-y:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.85em;">';
+    var html = '<div class="table-scroll-container" style="max-height:480px;overflow-y:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.85em;">';
     html += '<thead style="position:sticky;top:0;"><tr style="background:var(--surface-2);border-bottom:2px solid var(--border);">';
     html += '<th style="padding:6px 8px;text-align:left;">Peer</th><th style="padding:6px 8px;text-align:left;">Ended</th><th style="padding:6px 8px;text-align:right;">Duration</th><th style="padding:6px 8px;text-align:right;">Total</th><th style="padding:6px 8px;text-align:right;">Speed</th><th style="padding:6px 8px;text-align:right;">Frames</th>';
     html += '</tr></thead><tbody>';
@@ -446,6 +452,7 @@
     });
     html += '</tbody></table></div>';
     el.innerHTML = html;
+    if (window.BaconTables) window.BaconTables.labelStacked(el);
   }
 
   function refreshHistory() {

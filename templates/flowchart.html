@@ -193,6 +193,7 @@
 <div class="card">
   <h3>Sync Protocol Frame Reference</h3>
   <p class="text-muted">All frames travel as Meshtastic text messages on the channel where the BBS node is listening. Maximum payload per frame is approximately 220 bytes; larger records are split into base + META + CONT frames.</p>
+  <div class="table-scroll-container">
   <table>
     <thead><tr><th>Frame</th><th>Direction</th><th>Purpose</th></tr></thead>
     <tbody>
@@ -212,12 +213,14 @@
       <tr><td><code>CANDREQ</code> / <code>CANDRSP</code></td><td>peer&rarr;peer</td><td>Best-candidate resolver: ask all peers for one save key, rank candidates by newest timestamp / largest payload / stable hash, then replay the winner.</td></tr>
     </tbody>
   </table>
+  </div>
   <p class="text-muted">Pacing knobs (env or Settings &rarr; Sync Settings): <code>BBS_SYNC_TURBO</code>, <code>BBS_SYNC_PAUSE_SECONDS</code>, <code>BBS_HASH_REPAIR_PAUSE_SECONDS</code>, <code>BBS_FULL_SYNC_DELAY_MS</code>, <code>BBS_HASHMISS_REQUEST_TTL_SECONDS</code>.</p>
 </div>
 
 <div class="card">
   <h3>BBS Commands (over the mesh)</h3>
   <p class="text-muted">Send a direct message to the BBS node. Any message returns the main menu. Make selections by sending the bracketed letter or number.</p>
+  <div class="table-scroll-container">
   <table>
     <thead><tr><th>Menu</th><th>Selections</th></tr></thead>
     <tbody>
@@ -231,10 +234,12 @@
       <tr><td>Profile</td><td>View / set short name, long name, callsign, location.</td></tr>
     </tbody>
   </table>
+  </div>
 </div>
 
 <div class="card">
   <h3>Web Admin Pages</h3>
+  <div class="table-scroll-container">
   <table>
     <thead><tr><th>Page</th><th>Purpose</th></tr></thead>
     <tbody>
@@ -248,11 +253,13 @@
       <tr><td><a href="{{ url_for('mesh_ui_index') }}" target="_blank">Mesh UI</a></td><td>Embedded build of the official Meshtastic Web client served from <code>meshtastic-web-dist/</code>.</td></tr>
     </tbody>
   </table>
+  </div>
 </div>
 
 <div class="card">
   <h3>Configuration</h3>
   <p class="text-muted">Effective values come from environment variables first (when set) and then from <code>config.ini</code> in the application root. Environment overrides for credentials and pacing remain authoritative until removed.</p>
+  <div class="table-scroll-container">
   <table>
     <thead><tr><th>Section / Variable</th><th>Description</th></tr></thead>
     <tbody>
@@ -271,11 +278,13 @@
       <tr><td><code>BBS_FULL_SYNC_DELAY_MS</code></td><td>Per-record delay during full database push (default 500, turbo 0).</td></tr>
     </tbody>
   </table>
+  </div>
 </div>
 
 <div class="card">
   <h3>Database Schema (highlights)</h3>
   <p class="text-muted">SQLite at <code>BBS_DB_PATH</code> (default <code>bulletins.db</code>). The web admin opens it in WAL mode with a busy timeout; both processes can run concurrently.</p>
+  <div class="table-scroll-container">
   <table>
     <thead><tr><th>Table</th><th>Notes</th></tr></thead>
     <tbody>
@@ -290,6 +299,7 @@
       <tr><td><code>sync_transmissions</code></td><td>Rolling log of sent/received sync frames shown on the Transmission Stats page.</td></tr>
     </tbody>
   </table>
+  </div>
 </div>
 
 <div class="card">

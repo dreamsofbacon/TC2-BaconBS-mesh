@@ -695,10 +695,18 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
   flex-wrap: wrap;
 }
 
-/* Table scroll container */
+/* Table scroll container.
+   Both names are listed on purpose: the templates have always written
+   .table-scroll-container while this rule only claimed .table-scroll, so
+   no table on any page has ever actually had overflow-x -- a wide one just
+   drew straight out of its card. max-width is what makes the overflow
+   actually contained; without it a grid/flex child still refuses to shrink
+   below its content's width. */
+.table-scroll-container,
 .table-scroll {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+  max-width: 100%;
 }
 
 table {
@@ -1351,17 +1359,27 @@ kbd {
   .hamburger-btn{ display: flex; }
   .main-content { padding: 16px 12px 32px; }
 
-  /* Stack tables as cards */
-  table, thead, tbody, th, td, tr { display: block; }
-  thead tr { display: none; }
-  tbody tr {
+  /* Stack tables as cards.
+     Gated on [data-stacked], which data-table.js sets only after it has
+     labelled every cell from the table's own <thead>. A row of values with
+     no column names is worse than a table you scroll sideways, so an
+     unlabelled table (no thead, or no JS) keeps the scroll container
+     instead of stacking anonymously. */
+  table[data-stacked],
+  table[data-stacked] thead,
+  table[data-stacked] tbody,
+  table[data-stacked] th,
+  table[data-stacked] td,
+  table[data-stacked] tr { display: block; }
+  table[data-stacked] thead tr { display: none; }
+  table[data-stacked] tbody tr {
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     margin-bottom: 10px;
     background: var(--surface);
     overflow: hidden;
   }
-  td {
+  table[data-stacked] td {
     display: flex;
     gap: 8px;
     padding: 8px 12px;
@@ -1369,9 +1387,15 @@ kbd {
     border-bottom: 1px solid var(--border);
     font-size: 0.85rem;
     text-align: left;
+    /* The value is an anonymous flex item, which defaults to min-width:auto
+       and so refuses to shrink below its longest word. Node IDs, public
+       keys and URLs have no break opportunity, so without these two they
+       push straight out through the side of the card. */
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
-  td:last-child { border-bottom: none; }
-  td::before {
+  table[data-stacked] td:last-child { border-bottom: none; }
+  table[data-stacked] td::before {
     content: attr(data-label);
     font-weight: 600;
     color: var(--text-muted);
@@ -1380,7 +1404,21 @@ kbd {
     flex-shrink: 0;
     padding-top: 1px;
   }
-  td:first-child::before { content: ''; min-width: 0; }
+  /* First cell is the card's title strip -- it carries no label. */
+  table[data-stacked] td:first-child {
+    background: var(--surface-2);
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+  table[data-stacked] td:first-child::before { content: ''; min-width: 0; }
+  /* An empty header (the actions column) yields no label, so the value
+     should take the full width rather than sit in an empty gutter. */
+  table[data-stacked] td[data-label=""]::before { content: ''; min-width: 0; }
+
+  /* Drag-to-reorder can't work on a stacked card, and the expand toggle
+     duplicates what the card already shows. */
+  table[data-stacked] .col-handle,
+  table[data-stacked] .col-expand { display: none; }
 
   .table-toolbar { top: 0; position: relative; }
 
