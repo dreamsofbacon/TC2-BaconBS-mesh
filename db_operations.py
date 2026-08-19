@@ -3276,6 +3276,19 @@ def auto_upsert_user_profile(user_id: int, short_name: str, long_name: str) -> N
 # in initialize_database() for why this exists and how 'last_seen' works.
 # ---------------------------------------------------------------------------
 
+def _flatten_client_text(value) -> str:
+    """Collapse whitespace in a name reported by a node.
+
+    Node-supplied names are free text and some firmware sends multi-line
+    values (one real device reports its long name as three lines). Stored
+    raw, that renders as a tall ragged table cell that drags the whole
+    row's height with it. Nothing downstream wants the line structure, so
+    it is flattened on the way in rather than papered over at every place
+    a name is displayed.
+    """
+    return ' '.join(str(value or '').split())
+
+
 def upsert_mesh_clients(rows: list[dict]) -> None:
     """Bulk-upsert one sweep's worth of a link's node roster in a single
     transaction. Called once per link per periodic sweep (server.py's
@@ -3318,8 +3331,8 @@ def upsert_mesh_clients(rows: list[dict]) -> None:
                 'node_id': row.get('node_id', ''),
                 'node_num': str(row['node_num']) if row.get('node_num') is not None else None,
                 'protocol': row.get('protocol') or '',
-                'short_name': row.get('short_name') or '',
-                'long_name': row.get('long_name') or '',
+                'short_name': _flatten_client_text(row.get('short_name')),
+                'long_name': _flatten_client_text(row.get('long_name')),
                 'hw_model': row.get('hw_model') or '',
                 'role': row.get('role') or '',
                 'battery_level': row.get('battery_level'),

@@ -867,6 +867,53 @@ td[data-col="name"]     { max-width: 180px; }
 td[data-col="recipient"],
 td[data-col="sender_short_name"] { white-space: nowrap; width: 1%; }
 
+/* ── Two-line table cells ────────────────────────────────────
+   Pairs of facts that belong together (link + protocol, node id +
+   short name, last seen + first seen) stacked in one cell instead of
+   spread across separate columns. Four columns of mostly-short values
+   cost far more width than two lines of text do. */
+.cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.3;
+}
+.cell-primary { white-space: nowrap; }
+.cell-secondary {
+  color: var(--text-muted);
+  font-size: 0.82em;
+  white-space: nowrap;
+}
+.cell-sep { color: var(--text-faint); }
+
+/* Values with no natural width limit. max-width is on the cell rather
+   than a wrapper so the ellipsis is computed against the column. */
+.cell-clip {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Middle-truncated node id. A button, not a span, so it is reachable by
+   keyboard and announced as activatable -- clicking copies the full
+   value, which the visible text no longer shows. */
+.node-id {
+  font-family: Consolas, 'Courier New', monospace;
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  border-bottom: 1px dotted var(--border);
+}
+.node-id:hover { color: var(--link); }
+.node-id:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
 /* Pin-width columns */
 .col-actions,
 td[data-col="board"],
