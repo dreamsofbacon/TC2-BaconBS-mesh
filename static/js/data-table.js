@@ -156,6 +156,52 @@
     });
   }
 
+  /* ── Stacked-card labels (mobile) ──────────────────────────── */
+  /* On narrow screens app.css turns each row into a card and prints the
+     column name from data-label. Only table_list.html ever wrote that
+     attribute, so every other table stacked into a column of values with
+     nothing saying which column each one was.
+     Deriving the labels from the table's own <thead> here rather than
+     hand-writing them into eight templates keeps them in sync with the
+     headers for free, and reaches the tables transmissions.html builds as
+     HTML strings, which no template edit could. */
+  function labelStacked(root) {
+    var scope = root || document;
+    var tables = scope.querySelectorAll ? scope.querySelectorAll('table') : [];
+    Array.prototype.forEach.call(tables, function (table) {
+      // No <thead> means a key-value table (client_profile.html renders
+      // <tr><th>Label</th><td>value</td></tr>), which reads fine already
+      // and must not be stacked -- its labels are the row headers.
+      var headRow = table.querySelector('thead tr');
+      if (!headRow) return;
+
+      var headers = [];
+      Array.prototype.forEach.call(headRow.cells, function (th) {
+        var text = (th.textContent || '').trim();
+        // Sort links append an arrow glyph to the header text.
+        text = text.replace(/[↑↓⇅]\s*$/, '').trim();
+        for (var i = 0; i < (th.colSpan || 1); i++) headers.push(text);
+      });
+      if (!headers.length) return;
+
+      Array.prototype.forEach.call(table.querySelectorAll('tbody tr'), function (tr) {
+        if (tr.classList.contains('row-detail')) return;
+        var col = 0;
+        Array.prototype.forEach.call(tr.cells, function (cell) {
+          // A colspan cell spans the whole row (the "nothing here yet"
+          // empty state), so no single header describes it.
+          var span = cell.colSpan || 1;
+          if (span === 1 && !cell.hasAttribute('data-label')) {
+            cell.setAttribute('data-label', headers[col] || '');
+          }
+          col += span;
+        });
+      });
+
+      table.setAttribute('data-stacked', 'true');
+    });
+  }
+
   /* ── Init ──────────────────────────────────────────────────── */
   function init() {
     initDensity();
@@ -164,7 +210,13 @@
     initSortColumns();
     initPageSize();
     initTableSearch();
+    labelStacked(document);
   }
+
+  // Exposed so re-rendered tables (transmissions.html rebuilds several on a
+  // poll) can be relabelled after they land in the DOM.
+  window.BaconTables = window.BaconTables || {};
+  window.BaconTables.labelStacked = labelStacked;
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);

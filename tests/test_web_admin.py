@@ -2013,5 +2013,89 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(count, 1)
 
 
+class ResponsiveTableMarkupTests(unittest.TestCase):
+    """Static checks on the table markup and stylesheet.
+
+    These are string-level rather than request-level on purpose: the bug
+    that made every table overflow its card was a class name in the
+    templates ('table-scroll-container') that no CSS rule ever matched
+    ('table-scroll'). Both files were individually fine, so nothing that
+    rendered a page could catch it -- only comparing the two can.
+    """
+
+    REPO = Path(__file__).resolve().parent.parent
+
+    def _templates(self):
+        return sorted((self.REPO / "templates").glob("*.html"))
+
+    def _css(self):
+        return (self.REPO / "static" / "css" / "app.css").read_text(encoding="utf-8")
+
+    def test_every_wrapper_class_used_in_a_template_exists_in_the_css(self):
+        css = self._css()
+        used = set()
+        for path in self._templates():
+            text = path.read_text(encoding="utf-8")
+            used.update(re.findall(r'class="(table-scroll[\w-]*)"', text))
+        self.assertTrue(used, "no table scroll wrappers found in templates")
+        for cls in sorted(used):
+            with self.subTest(css_class=cls):
+                self.assertIn(f".{cls}", css,
+                              f"templates use .{cls} but app.css defines no such rule")
+
+    def test_the_scroll_wrapper_actually_scrolls_and_is_bounded(self):
+        """max-width is what contains the overflow; overflow-x alone still
+        lets a grid/flex child grow to its content's width."""
+        css = self._css()
+        rule = css[css.index(".table-scroll-container"):]
+        rule = rule[:rule.index("}")]
+        self.assertIn("overflow-x: auto", rule)
+        self.assertIn("max-width: 100%", rule)
+
+    def test_every_table_sits_inside_a_scroll_wrapper(self):
+        """The convention is that the wrapper div directly encloses the
+        table, so look immediately behind each <table> rather than tracking
+        nesting depth -- these files mix Jinja and JS-built HTML strings,
+        which no cheap tag counter parses correctly."""
+        for path in self._templates():
+            text = path.read_text(encoding="utf-8")
+            for match in re.finditer(r"<table[\s>]", text):
+                preceding = text[max(0, match.start() - 200):match.start()]
+                with self.subTest(template=path.name, line=text[:match.start()].count("\n") + 1):
+                    self.assertIn(
+                        "table-scroll", preceding,
+                        f"{path.name} has a <table> with no scroll wrapper directly around it")
+
+    def test_mobile_stacking_is_gated_on_labelled_tables(self):
+        """A row of values with no column names is worse than sideways
+        scrolling, so stacking must never apply to an unlabelled table."""
+        css = self._css()
+        block = css[css.index("@media (max-width: 760px)"):]
+        block = block[:block.index("@media (max-width: 480px)")]
+        self.assertIn("table[data-stacked]", block)
+        # The old rule stacked every table unconditionally.
+        self.assertNotRegex(block, r"(?m)^\s*table,\s*thead")
+
+    def test_stacked_cells_can_wrap_long_unbreakable_values(self):
+        """Node IDs and public keys have no break opportunity, and the
+        value is an anonymous flex item that will not shrink without these."""
+        css = self._css()
+        block = css[css.index("@media (max-width: 760px)"):]
+        block = block[:block.index("@media (max-width: 480px)")]
+        cell = block[block.index("table[data-stacked] td {"):]
+        cell = cell[:cell.index("}")]
+        self.assertIn("min-width: 0", cell)
+        self.assertIn("overflow-wrap: anywhere", cell)
+
+    def test_labeller_is_exposed_for_rerendered_tables(self):
+        js = (self.REPO / "static" / "js" / "data-table.js").read_text(encoding="utf-8")
+        self.assertIn("window.BaconTables", js)
+        self.assertIn("labelStacked", js)
+        transmissions = (self.REPO / "templates" / "transmissions.html").read_text(encoding="utf-8")
+        # Its tables are rebuilt from strings on a poll, so labels applied
+        # at page load are destroyed on the first refresh.
+        self.assertIn("BaconTables", transmissions)
+
+
 if __name__ == "__main__":
     unittest.main()

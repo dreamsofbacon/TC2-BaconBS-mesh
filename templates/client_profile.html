@@ -3,17 +3,19 @@
 <div class="card">
   <h2>Client Profile</h2>
   {% if profile %}
-  <table class="data-table" style="max-width:600px">
-    <tbody>
-      <tr><th style="width:160px">Short name</th><td>{{ profile['short_name'] or '—' }}</td></tr>
-      <tr><th>Long name</th><td>{{ profile['long_name'] or '—' }}</td></tr>
-      <tr><th>Node ID</th><td>{{ profile['user_id'] }}</td></tr>
-      <tr><th>First seen</th><td>{{ profile['first_seen'] }}</td></tr>
-      <tr><th>Last seen</th><td>{{ profile['last_seen'] }}</td></tr>
-      <tr><th>Messages sent</th><td>{{ profile['messages_sent'] }}</td></tr>
-      <tr><th>Bio</th><td>{{ profile['bio'] or '—' }}</td></tr>
-    </tbody>
-  </table>
+  <div class="table-scroll-container">
+    <table class="data-table" style="max-width:600px">
+      <tbody>
+        <tr><th style="width:160px">Short name</th><td>{{ profile['short_name'] or '—' }}</td></tr>
+        <tr><th>Long name</th><td>{{ profile['long_name'] or '—' }}</td></tr>
+        <tr><th>Node ID</th><td>{{ profile['user_id'] }}</td></tr>
+        <tr><th>First seen</th><td>{{ profile['first_seen'] }}</td></tr>
+        <tr><th>Last seen</th><td>{{ profile['last_seen'] }}</td></tr>
+        <tr><th>Messages sent</th><td>{{ profile['messages_sent'] }}</td></tr>
+        <tr><th>Bio</th><td>{{ profile['bio'] or '—' }}</td></tr>
+      </tbody>
+    </table>
+  </div>
   {% else %}
   <p class="text-muted">No profile on record for node <strong>{{ node_id }}</strong>.</p>
   {% endif %}
