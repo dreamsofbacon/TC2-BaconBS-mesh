@@ -436,6 +436,42 @@
     initDragReorder();
     initBoardSelector();
     initFlowchart();
+    initCopyValues();
+  }
+
+  /* ── Click-to-copy ─────────────────────────────────────────── */
+  /* For values shown truncated (node ids), where selecting the text on
+     screen would only get you the shortened form. Delegated from the
+     document so table rows re-rendered later keep working. */
+  function initCopyValues() {
+    document.addEventListener('click', function (ev) {
+      var el = ev.target.closest ? ev.target.closest('[data-copy]') : null;
+      if (!el) return;
+      ev.preventDefault();
+      var value = el.getAttribute('data-copy') || '';
+      var done = function () {
+        if (BBS.toast) BBS.toast('Copied ' + value, 'success');
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(value).then(done, function () {
+          if (BBS.toast) BBS.toast('Could not copy to clipboard', 'error');
+        });
+        return;
+      }
+      // Older browsers, and any page not served over a secure context --
+      // navigator.clipboard is undefined there, so fall back rather than
+      // silently doing nothing.
+      var scratch = document.createElement('textarea');
+      scratch.value = value;
+      scratch.setAttribute('readonly', '');
+      scratch.style.position = 'absolute';
+      scratch.style.left = '-9999px';
+      document.body.appendChild(scratch);
+      scratch.select();
+      try { document.execCommand('copy'); done(); }
+      catch (e) { if (BBS.toast) BBS.toast('Could not copy to clipboard', 'error'); }
+      document.body.removeChild(scratch);
+    });
   }
 
   if (document.readyState === 'loading') {

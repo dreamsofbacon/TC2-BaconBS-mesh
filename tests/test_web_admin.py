@@ -2013,6 +2013,135 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(count, 1)
 
 
+class ClientsTableWidthTests(unittest.TestCase):
+    """The Clients table ran ~200 characters wide and scrolled off its card.
+
+    The cause was lopsided rather than general: 318 of 319 rows had a
+    9-character Meshtastic node id, and the single MeshCore row's 64-char
+    public key set the width of the column for all of them.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.temp_dir.name, "bulletins.db")
+        os.environ["BBS_DB_PATH"] = self.db_path
+        self.app = create_app()
+        self.conn = sqlite3.connect(self.db_path)
+        db_operations.thread_local.connection = self.conn
+        db_operations.initialize_database()
+
+    def tearDown(self):
+        self.conn.close()
+        if getattr(db_operations.thread_local, "connection", None) is not None:
+            del db_operations.thread_local.connection
+        try:
+            self.temp_dir.cleanup()
+        except PermissionError:
+            pass  # Windows holds the sqlite file briefly after close.
+
+    LONG_ID = "78cb1cc70466915f74e30e7050162165d52cbb3f6574a1b2c3d4e5f60718293a"
+
+    def _page(self):
+        db_operations.upsert_mesh_clients([
+            {"link_name": "primary", "node_id": "!04058ac8", "node_num": 67328712,
+             "protocol": "Meshtastic", "short_name": "BACN", "long_name": "Bacon BBS",
+             "hw_model": "HELTEC_V3", "role": "CLIENT", "battery_level": 84,
+             "last_heard_epoch": None},
+            {"link_name": "secondary", "node_id": self.LONG_ID, "node_num": None,
+             "protocol": "MeshCore", "short_name": "DKSM",
+             "long_name": "USM Auriga Solar", "hw_model": "HELTEC_VISION_MASTER_T190",
+             "role": "ROUTER", "battery_level": None, "last_heard_epoch": None},
+        ])
+        self.conn.commit()
+        client = self.app.test_client()
+        with client.session_transaction() as sess:
+            sess["logged_in"] = True
+        return client.get("/clients").get_data(as_text=True)
+
+    def test_paired_columns_are_merged(self):
+        page = self._page()
+        headers = re.findall(r"<th>([^<]*)</th>", page)[:6]
+        self.assertEqual(headers, ["Device", "Name", "Hardware", "Role", "Battery", "Seen"])
+
+    def test_long_node_id_is_truncated_on_screen(self):
+        page = self._page()
+        self.assertNotIn(self.LONG_ID + "<", page)  # never rendered as cell text
+        self.assertIn("78cb1cc7…", page)
+
+    def test_truncated_id_keeps_the_full_value_reachable(self):
+        """The visible text no longer contains the whole key, so selecting
+        it on screen would silently give you a shortened id."""
+        page = self._page()
+        self.assertIn(f'data-copy="{self.LONG_ID}"', page)
+        self.assertIn(f'title="{self.LONG_ID} (click to copy)"', page)
+
+    def test_short_node_ids_are_left_intact(self):
+        """Truncating a 9-character id would cost readability for nothing;
+        318 of 319 real rows are this shape."""
+        page = self._page()
+        self.assertIn(">!04058ac8<", page)
+
+    def test_timestamps_render_relatively_with_exact_values_on_hover(self):
+        page = self._page()
+        self.assertRegex(page, r">\s*\d+[smhd] ago\s*<")
+        self.assertRegex(page, r'title="Last seen \d{4}-\d{2}-\d{2} ')
+
+    def test_empty_state_colspan_matches_the_new_column_count(self):
+        client = self.app.test_client()
+        with client.session_transaction() as sess:
+            sess["logged_in"] = True
+        page = client.get("/clients").get_data(as_text=True)
+        self.assertIn('colspan="6"', page)
+
+
+class TemplateFilterTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        os.environ["BBS_DB_PATH"] = os.path.join(self.temp_dir.name, "bulletins.db")
+        self.app = create_app()
+
+    def tearDown(self):
+        try:
+            self.temp_dir.cleanup()
+        except PermissionError:
+            pass
+
+    def _render(self, template):
+        with self.app.app_context():
+            return self.app.jinja_env.from_string(template).render()
+
+    def test_middle_ellipsis_keeps_both_ends(self):
+        """The tail is what distinguishes two keys sharing a prefix, so a
+        trailing ellipsis would discard the useful half."""
+        out = self._render("{{ '" + "a" * 30 + "bcdefghi' | middle_ellipsis }}")
+        self.assertTrue(out.startswith("aaaaaaaa"), out)
+        self.assertTrue(out.endswith("bcdefghi"), out)
+        self.assertIn("…", out)
+
+    def test_middle_ellipsis_leaves_short_values_alone(self):
+        self.assertEqual(self._render("{{ '!04058ac8' | middle_ellipsis }}"), "!04058ac8")
+
+    def test_relative_age_buckets(self):
+        from datetime import timedelta
+        now = datetime.now()
+        cases = [
+            (now - timedelta(seconds=5), "s ago"),
+            (now - timedelta(minutes=5), "m ago"),
+            (now - timedelta(hours=5), "h ago"),
+            (now - timedelta(days=5), "d ago"),
+        ]
+        for when, suffix in cases:
+            stamp = when.strftime("%Y-%m-%d %H:%M:%S")
+            with self.subTest(stamp=stamp):
+                self.assertTrue(
+                    self._render("{{ '" + stamp + "' | relative_age }}").endswith(suffix))
+
+    def test_relative_age_passes_through_what_it_cannot_parse(self):
+        """An empty cell would hide that a timestamp exists but is wrong."""
+        self.assertEqual(self._render("{{ 'not a date' | relative_age }}"), "not a date")
+        self.assertEqual(self._render("{{ '' | relative_age }}"), "")
+
+
 class ResponsiveTableMarkupTests(unittest.TestCase):
     """Static checks on the table markup and stylesheet.
 
@@ -2059,6 +2188,9 @@ class ResponsiveTableMarkupTests(unittest.TestCase):
         which no cheap tag counter parses correctly."""
         for path in self._templates():
             text = path.read_text(encoding="utf-8")
+            # Jinja comments are not markup and can sit between the wrapper
+            # and the table; drop them so they don't push the two apart.
+            text = re.sub(r"\{#.*?#\}", "", text, flags=re.S)
             for match in re.finditer(r"<table[\s>]", text):
                 preceding = text[max(0, match.start() - 200):match.start()]
                 with self.subTest(template=path.name, line=text[:match.start()].count("\n") + 1):

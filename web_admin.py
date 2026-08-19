@@ -3129,6 +3129,52 @@ def create_app(runtime_interface=None) -> Flask:
         "csrf_token": get_csrf_token(),
       }
 
+    @app.template_filter("relative_age")
+    def relative_age_filter(value) -> str:
+      """'2m ago' for a stored 'YYYY-MM-DD HH:MM:SS' timestamp.
+
+      Rendered server-side rather than by script so the table never shows
+      a flash of raw timestamps, and still reads correctly with scripting
+      off. The exact value stays available in the cell's title attribute.
+      """
+      text = str(value or "").strip()
+      if not text:
+        return ""
+      for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+          when = datetime.strptime(text[:19], fmt)
+          break
+        except ValueError:
+          continue
+      else:
+        # Unparseable: show what we have rather than an empty cell.
+        return text
+      seconds = int((datetime.now() - when).total_seconds())
+      if seconds < 0:
+        return "just now"
+      if seconds < 60:
+        return f"{seconds}s ago"
+      if seconds < 3600:
+        return f"{seconds // 60}m ago"
+      if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+      return f"{seconds // 86400}d ago"
+
+    @app.template_filter("middle_ellipsis")
+    def middle_ellipsis_filter(value, keep: int = 8) -> str:
+      """Shorten from the middle, keeping both ends legible.
+
+      MeshCore node ids are 64-character public keys while Meshtastic ids
+      are 9 characters, so one MeshCore row would otherwise set the width
+      of the whole column. Both ends are kept because the head identifies
+      the key and the tail is what distinguishes two keys with a shared
+      prefix -- a trailing ellipsis would throw away the useful half.
+      """
+      text = str(value or "")
+      if len(text) <= keep * 2 + 1:
+        return text
+      return f"{text[:keep]}…{text[-keep:]}"
+
     _CSRF_SESSION_KEY = "_csrf_token"
     _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 

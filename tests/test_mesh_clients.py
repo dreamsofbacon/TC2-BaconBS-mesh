@@ -324,3 +324,46 @@ class MeshClientsRecencyQueryTests(unittest.TestCase):
             len(db_operations.get_mesh_clients(link_name="primary", seen_within_seconds=24*3600)), 1)
         self.assertEqual(
             len(db_operations.get_mesh_clients(link_name="other", seen_within_seconds=24*3600)), 0)
+
+
+class ClientNameFlatteningTests(unittest.TestCase):
+    """Node-supplied names are free text, and at least one real device
+    reports a long name spread over three lines. Stored raw it renders as a
+    tall ragged cell that drags the whole table row's height with it."""
+
+    def setUp(self):
+        db_operations.thread_local.connection = sqlite3.connect(":memory:")
+        db_operations.initialize_database()
+
+    def tearDown(self):
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
+
+    def _store(self, **fields):
+        row = {
+            "link_name": "primary", "node_id": "!aaa11111", "node_num": 1,
+            "protocol": "Meshtastic", "short_name": "AAA", "long_name": "A",
+            "hw_model": "HELTEC_V3", "role": "CLIENT",
+            "battery_level": None, "last_heard_epoch": None,
+        }
+        row.update(fields)
+        db_operations.upsert_mesh_clients([row])
+        return db_operations.get_mesh_clients()[0]
+
+    def test_newlines_in_long_name_are_collapsed(self):
+        stored = self._store(long_name="USM Auriga Solar\nUSM Auriga\nUSM Auriga")
+        self.assertEqual(stored["long_name"], "USM Auriga Solar USM Auriga USM Auriga")
+
+    def test_short_name_is_flattened_too(self):
+        self.assertEqual(self._store(short_name="A\nB")["short_name"], "A B")
+
+    def test_surrounding_and_repeated_whitespace_collapses(self):
+        self.assertEqual(self._store(long_name="  Bacon   BBS \t ")["long_name"], "Bacon BBS")
+
+    def test_ordinary_names_are_untouched(self):
+        self.assertEqual(self._store(long_name="Bacon BBS")["long_name"], "Bacon BBS")
+
+    def test_missing_name_stays_empty(self):
+        self.assertEqual(self._store(long_name=None)["long_name"], "")
