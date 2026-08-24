@@ -595,7 +595,6 @@
   <p class="text-muted">Everything about who this node syncs with and how fast. Peers used to be configured per link &mdash; primary radio here, secondary radio under Device Configuration, and one list per MQTT broker &mdash; which made it impossible to see the whole picture in one place.</p>
 
   <h3>Peers</h3>
-<h3>Sync Peers</h3>
   <p class="text-muted">
     Every peer this node syncs with, gathered from the primary radio, the secondary radio and
     each MQTT broker &mdash; the places they are configured separately. Peers the database still
@@ -604,7 +603,7 @@
     behind until it is cleared here.
   </p>
   {% if sync_peers %}
-  <form method="post" action="{{ url_for('settings_page') }}#peers">
+  <form method="post" action="{{ url_for('settings_page') }}#sync">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="settings_section" value="remove_peers">
     <div class="table-scroll-container">
@@ -679,7 +678,6 @@
   <p class="text-muted">An MQTT peer must be on the same topic as the link you pick, or the two never meet &mdash; that is checked before saving.</p>
 
   <h3>Subscriber nodes (pull-only)</h3>
-<h3>Subscriber Nodes (cache clients)</h3>
   <p class="text-muted">
     Node IDs of <strong>pull-only</strong> clients — e.g. a low-power Pico cache
     node. This gateway will answer their sync requests (<code>WANT</code> /
@@ -687,7 +685,7 @@
     to them, so they never cause reconcile churn. Put cache nodes here, <em>not</em>
     in the BBS sync-peers list. One node ID per line (or comma-separated).
   </p>
-  <form method="post" action="{{ url_for('settings_page') }}#subscribers">
+  <form method="post" action="{{ url_for('settings_page') }}#sync">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="settings_section" value="subscribers">
     <div class="form-group">
@@ -698,7 +696,7 @@
     <button class="btn" type="submit">Save subscriber nodes</button>
   </form>
 
-  <h3>Peer lists &amp; intervals</h3>
+  <h3>Interval &amp; content</h3>
   <p class="text-muted">Manage BBS peer sync targets, sync pacing, and the node IDs allowed to post to the Urgent board.</p>
   <form method="post" action="{{ url_for('settings_page') }}#sync">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

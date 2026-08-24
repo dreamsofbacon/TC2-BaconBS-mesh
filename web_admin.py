@@ -4916,7 +4916,7 @@ def create_app(runtime_interface=None) -> Flask:
 
         if section == "remove_peers":
           remove_sync_peers(request.form.getlist("remove_peer"))
-          return redirect(url_for("settings_page") + "#peers")
+          return redirect(url_for("settings_page") + "#sync")
 
         if section == "reload_links":
           request_links_reload_trigger()
@@ -5016,7 +5016,7 @@ def create_app(runtime_interface=None) -> Flask:
         if section == "subscribers":
           save_subscriber_settings(request.form)
           flash("Subscriber nodes saved. These nodes can pull (WANT/HASHMISS) but are not push-synced to.", "success")
-          return redirect(url_for("settings_page") + "#subscribers")
+          return redirect(url_for("settings_page") + "#sync")
 
         if section == "storage":
           save_storage_settings(request.form)
