@@ -236,6 +236,44 @@ class GatewayDispatchTests(unittest.TestCase):
         auth = {k.lower(): v for k, v in captured['headers'].items()}.get('authorization')
         self.assertEqual(auth, "Bearer sk-secret")
 
+    def _ai_chat_returning(self, doc, cfg=None):
+        def _fake(req, timeout=None):
+            resp = io.BytesIO(json.dumps(doc).encode())
+            resp.__enter__ = lambda *_: resp
+            resp.__exit__ = lambda *_: False
+            return resp
+
+        with patch.object(gateway, "_config_raw", lambda s, o: (cfg or self._ai_cfg()).get((s, o))),              patch.object(gateway, "_max_response_bytes", lambda: 800),              patch("urllib.request.urlopen", _fake):
+            return gateway.perform_ai_chat("hi")
+
+    def test_empty_answer_is_an_error_not_a_successful_blank(self):
+        """A zero-length body sends NOTHING (utils._split_into_chunks
+        yields no chunks), so relaying this as 200 left the user with the
+        follow-up prompt, no answer, and no error explaining the gap."""
+        blank = "  " + chr(10) + " "
+        for doc in ({"message": {"content": ""}},
+                    {"message": {"content": blank}}):
+            with self.subTest(doc=doc):
+                status, body = self._ai_chat_returning(doc)
+                self.assertEqual(status, "ERR")
+                self.assertIn("empty answer", body)
+                self.assertTrue(body.strip(), "the error itself must not be blank")
+
+    def test_empty_answer_reports_the_endpoint_s_reason(self):
+        """Ollama answers with empty content and done_reason 'load' when a
+        request only served to load the model, which is the normal way to
+        hit this."""
+        status, body = self._ai_chat_returning(
+            {"message": {"content": ""}, "done_reason": "load"})
+        self.assertEqual(status, "ERR")
+        self.assertIn("load", body)
+
+    def test_a_real_answer_is_still_passed_through(self):
+        status, body = self._ai_chat_returning(
+            {"message": {"content": "A repeater extends range."}})
+        self.assertEqual(status, "200")
+        self.assertEqual(body, "A repeater extends range.")
+
     def test_unauthorized_requester_rejected(self):
         iface = _Iface(allowed=["!someone_else"])
         with patch.object(gateway, "is_gateway_enabled", lambda: True):

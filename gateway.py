@@ -231,6 +231,20 @@ def perform_ai_chat(prompt: str) -> Tuple[str, str]:
             reply = doc['message']['content']
         cap = _max_response_bytes()
         reply = str(reply).strip()
+        if not reply:
+            # An empty answer used to be relayed as a successful "200",
+            # and a zero-length body sends nothing at all -- the user got
+            # the follow-up prompt with no answer above it and no error to
+            # explain the gap. Ollama returns this when it served the
+            # request only to load the model, so it is a normal thing to
+            # hit on the first question after the model is evicted.
+            reason = doc.get('done_reason') or doc.get('finish_reason') or ''
+            logging.warning(
+                "AI endpoint returned an empty answer (model=%s, done_reason=%r)",
+                model, reason)
+            detail = f" (done_reason: {reason})" if reason else ""
+            return "ERR", ("AI endpoint returned an empty answer" + detail
+                           + " — the model may still be loading; ask again")
         if len(reply.encode('utf-8')) > cap:
             reply = reply.encode('utf-8')[:cap].decode('utf-8', errors='ignore') + "…[truncated]"
         return "200", reply

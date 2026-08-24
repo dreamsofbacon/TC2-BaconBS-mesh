@@ -479,8 +479,19 @@ def send_message(message, destination, interface) -> bool:
     learn it never landed, and the user is left staring at silence.
     Callers that send inline can go on ignoring it.
     """
+    chunks = _split_into_chunks(message, max_len=get_max_text_bytes(interface))
+    if not chunks:
+        # An empty or whitespace-only body yields no chunks, so the loop
+        # below never runs: nothing is sent, nothing is raised, and the
+        # caller is told it succeeded. Whoever asked to send this meant to
+        # say something, so treat it as a failed send and say where from.
+        logging.warning(
+            f"send_message called with an empty body for {destination}; "
+            f"nothing was sent")
+        return False
+
     delivered = True
-    for chunk in _split_into_chunks(message, max_len=get_max_text_bytes(interface)):
+    for chunk in chunks:
         try:
             d = interface.sendText(
                 text=chunk,
