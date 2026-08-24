@@ -20,3 +20,9 @@ data/mqtt-certs/
 # consume (manual sync, reconnect, links reload). Transient, never source.
 *.trigger
 .manual_sync_trigger
+
+# Live link/sync snapshot server.py rewrites on every main-loop pass
+# (write_runtime_diagnostics_snapshot) for the web admin to read. Machine
+# state of one node, regenerated on the next tick -- committing it would
+# push one node's momentary status onto every other node on `git pull`.
+runtime_diagnostics.json
