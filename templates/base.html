@@ -69,6 +69,9 @@
           <a href="{{ url_for('meshtastic_device') }}"
              class="nav-dropdown-item{% if request.endpoint == 'meshtastic_device' %} active{% endif %}"
              role="menuitem">Meshtastic</a>
+          <a href="{{ url_for('deleted_content') }}"
+             class="nav-dropdown-item{% if request.endpoint in ['deleted_content'] %} active{% endif %}"
+             role="menuitem">Deleted</a>
           <a href="{{ url_for('mesh_ui_index') }}"
              class="nav-dropdown-item"
              role="menuitem"
@@ -119,6 +122,7 @@
     <a href="{{ url_for('settings_page') }}" class="drawer-link">Settings</a>
     <a href="{{ url_for('system_transmissions') }}" class="drawer-link">Transmissions</a>
     <a href="{{ url_for('system_flowchart') }}" class="drawer-link">Docs</a>
+    <a href="{{ url_for('deleted_content') }}" class="drawer-link">Deleted</a>
     <a href="{{ url_for('meshtastic_device') }}" class="drawer-link">Meshtastic</a>
     <a href="{{ url_for('mesh_ui_index') }}" class="drawer-link" target="_blank" rel="noopener">Mesh UI ↗</a>
   </div>

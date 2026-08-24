@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Deleted Content</h2>
+  <p class="text-muted">
+    Every record deleted on this node. The tombstone is what stops a peer re-sending
+    it &mdash; without one, the next sync pass sees a record the peer has and this node
+    doesn't, and puts it straight back.
+  </p>
+  <p class="text-muted">
+    Deletes made before snapshots existed, and those replayed from a peer, have nothing
+    stored to bring back. Those show as <em>no copy stored</em> and can only be forgotten.
+  </p>
+  <p class="text-muted" data-deleted-count>{{ tombstones|length }} deleted record(s).</p>
+
+  {% if tombstones %}
+  <div class="table-scroll-container">
+    <table id="deleted-table" class="data-table">
+      <thead>
+        <tr><th>Scope</th><th>Record</th><th>Deleted</th><th>Restore</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for t in tombstones %}
+        <tr>
+          <td>{{ t.scope }}</td>
+          <td class="cell-clip" title="{{ t.record_key }}">
+            {% if t.snapshot %}
+              <strong>{{ t.snapshot.get('subject') or t.snapshot.get('name') or t.record_key }}</strong>
+              {% if t.snapshot.get('url') %}<span class="text-muted"> {{ t.snapshot.get('url') }}</span>{% endif %}
+            {% else %}
+              <code>{{ t.record_key }}</code>
+            {% endif %}
+          </td>
+          <td class="text-muted">{{ t.deleted_at }}</td>
+          <td>
+            {% if t.restorable %}
+            <form method="post" action="{{ url_for('deleted_restore') }}" class="inline-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="tombstone_key" value="{{ t.tombstone_key }}">
+              <button class="btn btn-sm" type="submit">Restore</button>
+            </form>
+            {% else %}
+            <span class="text-muted">no copy stored</span>
+            {% endif %}
+          </td>
+          <td>
+            <form method="post" action="{{ url_for('deleted_forget') }}" class="inline-form"
+                  onsubmit="return confirm('Forget this tombstone? The record can come back from a peer that still has it.');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="tombstone_key" value="{{ t.tombstone_key }}">
+              <button class="btn btn-sm btn-danger" type="submit">Forget</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-muted">Nothing has been deleted on this node.</p>
+  {% endif %}
+</div>
+{% endblock %}

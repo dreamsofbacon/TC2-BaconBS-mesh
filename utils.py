@@ -1011,6 +1011,20 @@ def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_da
         )
 
 
+def send_delete_channel_to_bbs_nodes(manifest_key, bbs_nodes, interface):
+    """Tell peers a channel directory entry was deleted.
+
+    Keyed by the channel's manifest key (base64 of name+url) rather than a
+    row id, because that is what identifies the record across nodes -- ids
+    are local. A peer on older code does not recognise this frame and
+    ignores it, so it simply keeps the channel, which is the behaviour
+    before this existed.
+    """
+    message = f"DELETE_CHANNEL|{manifest_key}"
+    for node_id in bbs_nodes:
+        _send_one_sync(message, node_id, interface)
+
+
 def send_delete_channel_comment_to_bbs_nodes(unique_id, bbs_nodes, interface):
     message = f"DELETE_CHANNELCOMMENT|{unique_id}"
     for node_id in bbs_nodes:

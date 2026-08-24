@@ -5483,6 +5483,39 @@ def create_app(runtime_interface=None) -> Flask:
       rows = list_accounts()
       return render_template("accounts.html", title="Accounts", show_nav=True, rows=rows)
 
+    @app.route("/deleted")
+    @login_required
+    def deleted_content():
+      from db_operations import get_sync_tombstones
+      return render_template("deleted.html", title="Deleted Content", show_nav=True,
+                             tombstones=get_sync_tombstones())
+
+    @app.post("/deleted/restore")
+    @login_required
+    def deleted_restore():
+      from db_operations import restore_sync_tombstone
+      key = request.form.get("tombstone_key", "").strip()
+      if not key:
+        flash("No record selected.", "error")
+      elif restore_sync_tombstone(key):
+        # Clearing the tombstone is part of restoring: leaving it would let
+        # the next sync pass delete the record again.
+        flash("Restored. It will sync back out to peers on the next pass.", "success")
+      else:
+        flash("Could not restore that record — no stored copy of it.", "error")
+      return redirect(url_for("deleted_content"))
+
+    @app.post("/deleted/forget")
+    @login_required
+    def deleted_forget():
+      from db_operations import forget_sync_tombstone
+      key = request.form.get("tombstone_key", "").strip()
+      if key and forget_sync_tombstone(key):
+        flash("Tombstone forgotten. A peer that still has the record may send it back.", "success")
+      else:
+        flash("No such tombstone.", "error")
+      return redirect(url_for("deleted_content"))
+
     @app.route("/accounts/<account_id>", methods=["GET", "POST"])
     @login_required
     def account_detail(account_id):
@@ -6305,6 +6338,19 @@ def create_app(runtime_interface=None) -> Flask:
             else:
               from db_operations import delete_mail
               delete_mail(str(row["unique_id"]), None, [], None)
+          else:
+            execute_write(f"DELETE FROM {table} WHERE id = ?", (row_id,))
+        elif table == "channels":
+          # A bare DELETE here left no tombstone, so the next sync pass saw a
+          # record the peer had and this node did not and put it straight
+          # back -- deleting a channel appeared to do nothing.
+          with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name, url FROM channels WHERE id = ?", (row_id,))
+            row = cursor.fetchone()
+          if row:
+            from db_operations import delete_channel
+            delete_channel(str(row["name"]), str(row["url"]), [], None)
           else:
             execute_write(f"DELETE FROM {table} WHERE id = ?", (row_id,))
         else:
