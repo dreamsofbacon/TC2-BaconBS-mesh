@@ -407,12 +407,28 @@ def _apigw_submit(sender_id, interface, kind, payload, label):
     rid = _uuid.uuid4().hex[:6]
 
     if gateway.is_gateway_enabled():
+        # The reply comes back on a worker thread, up to the gateway's
+        # request timeout later. Hold the LINK, not this interface object:
+        # if the radio reconnects in that window the link gets a brand-new
+        # interface and the one captured here is a closed port, so every
+        # send on it fails -- silently, from the user's side.
+        try:
+            import server as _server
+            link = _server.link_for_interface(interface)
+        except Exception:
+            link = None
+
         # Local fast path: no mesh round-trip; DM the result straight back.
         def _reply(status, body):
+            live = getattr(link, 'interface', None) or interface
             prefix = "" if str(status) in ("200", "OK") else f"[{status}] "
-            send_message(f"{prefix}{body}", sender_id, interface)
+            if not send_message(f"{prefix}{body}", sender_id, live):
+                logging.warning(
+                    f"apigw rid={rid}: {label} answered but the reply could not "
+                    f"be delivered to {node_id}")
+                return  # no point prompting for another question
             if kind == 'r':
-                _prompt_ask_nomad_followup(sender_id, interface)
+                _prompt_ask_nomad_followup(sender_id, live)
         gateway.handle_apireq(rid, node_id, kind, payload,
                               getattr(interface, 'allowed_nodes', None), _reply)
         send_message(f"Asked {label}… reply will arrive shortly.", sender_id, interface)
