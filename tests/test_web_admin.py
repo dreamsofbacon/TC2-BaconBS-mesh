@@ -2013,6 +2013,115 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(count, 1)
 
 
+class MqttPeerDiscoveryUiTests(unittest.TestCase):
+    """Pairing over MQTT means typing the other node's address by hand, and
+    every way of mistyping it fails silently. The running BBS already knows
+    who is on the topic (from the retained status messages every node
+    publishes) and reports it in the diagnostics snapshot -- the settings
+    page offers those as one-click peers.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.config_path = root / "config.ini"
+        self.runtime_diag_path = root / "runtime_diagnostics.json"
+        config = configparser.ConfigParser()
+        config["admin"] = {"username": "admin", "password": "oldpass"}
+        with open(self.config_path, "w", encoding="utf-8") as handle:
+            config.write(handle)
+        self.env_patch = mock.patch.dict(os.environ, {
+            "BBS_CONFIG_PATH": str(self.config_path),
+            "BBS_DB_PATH": str(root / "bulletins.db"),
+            "BBS_RUNTIME_DIAG_PATH": str(self.runtime_diag_path),
+            "BBS_WEBGUI_SECRET": "test-secret",
+        }, clear=False)
+        self.env_patch.start()
+
+    def tearDown(self):
+        self.env_patch.stop()
+        try:
+            self.temp_dir.cleanup()
+        except PermissionError:
+            pass  # Windows holds the sqlite file briefly after close.
+
+    def login(self, client):
+        with client.session_transaction() as session:
+            session["logged_in"] = True
+
+    def _write_mqtt_config_and_snapshot(self, bbs_nodes="", peers=None):
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        config["mqtt1"] = {
+            "enabled": "true", "host": "broker.example.com", "port": "1883",
+            "topic_prefix": "baconbbs", "local_id": "bbs-main",
+        }
+        config["sync_mqtt1"] = {"bbs_nodes": bbs_nodes}
+        with open(self.config_path, "w", encoding="utf-8") as handle:
+            config.write(handle)
+
+        snapshot = {
+            "updated_at": "2026-08-24T19:00:00Z",
+            "radios": [{
+                "name": "mqtt1",
+                "radio_protocol": "MQTT:mqtt1",
+                "connected": True,
+                "discovered_peers": list(peers or []),
+            }],
+        }
+        with open(self.runtime_diag_path, "w", encoding="utf-8") as handle:
+            json.dump(snapshot, handle)
+
+    def _settings_html(self):
+        app = create_app()
+        client = app.test_client()
+        self.login(client)
+        return client.get("/settings").get_data(as_text=True)
+
+    def test_a_discovered_peer_is_offered_with_its_full_address(self):
+        self._write_mqtt_config_and_snapshot(peers=[
+            {"label": "forgecam", "node_id": "mqtt:baconbbs:forgecam",
+             "last_seen": "2026-08-24T19:00:00Z"},
+        ])
+        page = self._settings_html()
+        self.assertIn("mqtt:baconbbs:forgecam", page)
+        self.assertIn('data-peer-id="mqtt:baconbbs:forgecam"', page)
+        self.assertIn("Add as sync peer", page)
+
+    def test_an_existing_peer_is_not_offered_again(self):
+        """Adding a duplicate is the obvious next mistake."""
+        self._write_mqtt_config_and_snapshot(
+            bbs_nodes="mqtt:baconbbs:forgecam",
+            peers=[{"label": "forgecam", "node_id": "mqtt:baconbbs:forgecam",
+                    "last_seen": "2026-08-24T19:00:00Z"}],
+        )
+        page = self._settings_html()
+        self.assertIn("already a peer", page)
+        self.assertNotIn('data-peer-id="mqtt:baconbbs:forgecam"', page)
+
+    def test_this_node_shows_its_own_address_to_copy(self):
+        """The other node needs this string; nobody should retype it."""
+        self._write_mqtt_config_and_snapshot()
+        page = self._settings_html()
+        self.assertIn('data-copy="mqtt:baconbbs:bbs-main"', page)
+
+    def test_empty_discovery_explains_the_likely_cause(self):
+        """An empty list IS the diagnostic for a mismatched topic prefix."""
+        self._write_mqtt_config_and_snapshot(peers=[])
+        page = self._settings_html()
+        self.assertIn("topic prefix", page)
+
+    def test_a_missing_snapshot_does_not_break_the_page(self):
+        """mesh-bbs may be stopped, or never have written one."""
+        self._write_mqtt_config_and_snapshot(peers=[])
+        os.remove(self.runtime_diag_path)
+        app = create_app()
+        client = app.test_client()
+        self.login(client)
+        response = client.get("/settings")
+        self.assertEqual(response.status_code, 200)
+
+
 class ClientsTableWidthTests(unittest.TestCase):
     """The Clients table ran ~200 characters wide and scrolled off its card.
 

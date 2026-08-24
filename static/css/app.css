@@ -920,6 +920,32 @@ td[data-col="sender_short_name"] { white-space: nowrap; width: 1%; }
   outline-offset: 2px;
 }
 
+/* ── MQTT pairing box ────────────────────────────────────────
+   Shows this node's own address and the nodes discovered on the same
+   topic, so a peer address is picked rather than typed -- every way of
+   mistyping one fails silently. */
+.pairing-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.pairing-self { margin-bottom: 8px; }
+.pairing-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+.pairing-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 3px 0;
+}
+.pairing-list code { overflow-wrap: anywhere; }
+
 /* Pin-width columns */
 .col-actions,
 td[data-col="board"],

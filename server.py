@@ -499,7 +499,17 @@ def _describe_radio(interface, system_config: dict, *, bbs_nodes_key='bbs_nodes'
         'bbs_nodes': list(getattr(interface, 'bbs_nodes', system_config.get(bbs_nodes_key, [])) or []),
         'allowed_nodes': list(getattr(interface, 'allowed_nodes', system_config.get(allowed_nodes_key, [])) or []),
         'connected': interface is not None,
+        # Other BBS nodes an MQTT link has noticed on its topic, so Settings
+        # can offer them as sync peers instead of making someone type an
+        # address. Empty for radios, which have no equivalent roster.
+        'discovered_peers': [],
     }
+    try:
+        discover = getattr(interface, 'discovered_peers', None)
+        if callable(discover):
+            entry['discovered_peers'] = list(discover() or [])
+    except Exception:
+        logging.debug("discovered_peers unavailable for diagnostics", exc_info=True)
     try:
         connected = getattr(interface, 'is_connected', None)
         if isinstance(connected, bool):
