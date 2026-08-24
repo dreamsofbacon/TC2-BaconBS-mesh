@@ -115,3 +115,56 @@ def _empty_config():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SyncIntervalIsPerTransportTests(unittest.TestCase):
+    """Everything INSIDE a sync was already transport-aware, but the schedule
+    was not: one global [sync] sync_interval_minutes applied to every link,
+    so an MQTT bridge sat idle for a radio's five or ten minutes before it
+    even looked. That wait was almost all of its sync latency.
+    """
+
+    def setUp(self):
+        import os
+        self._saved = os.environ.pop("BBS_LOW_LATENCY_SYNC_INTERVAL_SECONDS", None)
+
+    def tearDown(self):
+        import os
+        os.environ.pop("BBS_LOW_LATENCY_SYNC_INTERVAL_SECONDS", None)
+        if self._saved is not None:
+            os.environ["BBS_LOW_LATENCY_SYNC_INTERVAL_SECONDS"] = self._saved
+
+    def test_a_radio_keeps_the_configured_interval_exactly(self):
+        with patch.object(utils, "_is_sync_turbo_enabled", return_value=False):
+            self.assertEqual(
+                utils.get_sync_interval_seconds(_FakeNormalInterface(), 5), 300.0)
+            self.assertEqual(
+                utils.get_sync_interval_seconds(_FakeNormalInterface(), 10), 600.0)
+
+    def test_a_low_latency_link_checks_far_more_often(self):
+        with patch.object(utils, "_is_sync_turbo_enabled", return_value=False):
+            interval = utils.get_sync_interval_seconds(_FakeLowLatencyInterface(), 10)
+        self.assertEqual(interval, 30.0)
+
+    def test_the_fast_interval_is_tunable(self):
+        import os
+        os.environ["BBS_LOW_LATENCY_SYNC_INTERVAL_SECONDS"] = "5"
+        with patch.object(utils, "_is_sync_turbo_enabled", return_value=False):
+            self.assertEqual(
+                utils.get_sync_interval_seconds(_FakeLowLatencyInterface(), 10), 5.0)
+
+    def test_it_never_ends_up_slower_than_the_configured_interval(self):
+        """Raising sync_interval_minutes should slow every link down, not
+        leave the fast ones running at a hidden faster default."""
+        with patch.object(utils, "_is_sync_turbo_enabled", return_value=False):
+            # Configured interval of 10 seconds is shorter than the 30s default.
+            interval = utils.get_sync_interval_seconds(_FakeLowLatencyInterface(), 10 / 60.0)
+        self.assertEqual(interval, 10.0)
+
+    def test_a_turbo_radio_keeps_the_slow_interval(self):
+        """sync_turbo speeds LoRa frame pacing; it does not remove airtime
+        limits. A radio checking every 30s would flood a busy mesh -- and
+        turbo nodes are the busy ones, so this is where it would hurt most."""
+        with patch.object(utils, "_is_sync_turbo_enabled", return_value=True):
+            interval = utils.get_sync_interval_seconds(_FakeNormalInterface(), 5)
+        self.assertEqual(interval, 300.0)
