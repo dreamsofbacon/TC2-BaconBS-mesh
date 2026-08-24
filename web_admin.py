@@ -268,6 +268,31 @@ def load_sync_peers(config_path: str) -> list[dict]:
   return peers
 
 
+def load_peer_link_targets(config_path: str) -> list[dict]:
+  """Sections a peer can be added to, with the address shape each expects.
+
+  Built from what is actually configured -- offering "Secondary radio" on a
+  single-radio node, or a broker that does not exist, would only invite an
+  entry that can never be reached.
+  """
+  config = read_config_file(config_path)
+  targets = [{"section": "sync", "label": "Primary radio", "hint": "e.g. !a1b2c3d4"}]
+  if config.has_section("interface2") and config.get("interface2", "type", fallback="").strip():
+    targets.append({"section": "sync2", "label": "Secondary radio", "hint": "e.g. !a1b2c3d4"})
+  for section in config.sections():
+    match = _MQTT_SECTION_RE.match(section)
+    if not match:
+      continue
+    index = match.group(1)
+    prefix = config.get(section, "topic_prefix", fallback="").strip()
+    targets.append({
+      "section": f"sync_mqtt{index}",
+      "label": f"MQTT broker #{index}" + (f" ({prefix})" if prefix else ""),
+      "hint": f"mqtt:{prefix}:<name>" if prefix else "mqtt:<topic>:<name>",
+    })
+  return targets
+
+
 def load_subscriber_settings(config_path: str) -> dict:
   """Read the [sync] subscriber_nodes (pull-only nodes, e.g. a Pico cache)."""
   config = read_config_file(config_path)
@@ -3648,7 +3673,12 @@ def create_app(runtime_interface=None) -> Flask:
 
         if not config.has_section("sync2"):
           config.add_section("sync2")
-        config.set("sync2", "bbs_nodes", ",".join(parse_list_input(form.get("bbs_nodes2", ""))))
+        # Peers are edited on the Sync page now, so this form no longer
+        # carries them. Absent must mean "leave alone" -- reading a missing
+        # field as empty would silently wipe every secondary-radio peer on
+        # any unrelated save from this form.
+        if "bbs_nodes2" in form:
+          config.set("sync2", "bbs_nodes", ",".join(parse_list_input(form.get("bbs_nodes2", ""))))
         if not config.has_section("allow_list2"):
           config.add_section("allow_list2")
         config.set("allow_list2", "allowed_nodes", ",".join(parse_list_input(form.get("allowed_nodes2", ""))))
@@ -3783,7 +3813,10 @@ def create_app(runtime_interface=None) -> Flask:
             form.get(f"{prefix}publish_prefix", ""), allow_slash=True),
           "publish_clients_max_age_hours": _parse_int_setting(
             form.get(f"{prefix}publish_clients_max_age_hours", ""), 24, minimum=0),
-          "bbs_nodes": parse_list_input(form.get(f"{prefix}bbs_nodes", "")),
+          # Same as above: absent means keep what is configured, since the
+          # Sync page owns peer lists now.
+          "bbs_nodes": (parse_list_input(form.get(f"{prefix}bbs_nodes", ""))
+                        if f"{prefix}bbs_nodes" in form else None),
           "allowed_nodes": parse_list_input(form.get(f"{prefix}allowed_nodes", "")),
         })
 
@@ -3855,7 +3888,10 @@ def create_app(runtime_interface=None) -> Flask:
         sync_section_name = f"sync_mqtt{link['index']}"
         if not config.has_section(sync_section_name):
           config.add_section(sync_section_name)
-        config.set(sync_section_name, "bbs_nodes", ",".join(link["bbs_nodes"]))
+        # None means the form did not carry peers (they are edited on the
+        # Sync page); anything else replaces the list.
+        if link["bbs_nodes"] is not None:
+          config.set(sync_section_name, "bbs_nodes", ",".join(link["bbs_nodes"]))
 
         allow_section_name = f"allow_list_mqtt{link['index']}"
         if not config.has_section(allow_section_name):
@@ -3917,6 +3953,47 @@ def create_app(runtime_interface=None) -> Flask:
       flash("Board list saved.", "success")
       return True
 
+    def add_sync_peer(section: str, node_id: str) -> None:
+      """Append one peer to one link's list, from the Sync page."""
+      section = str(section or "").strip()
+      node_id = str(node_id or "").strip()
+      if not node_id:
+        flash("Enter a peer node ID.", "error")
+        return
+      valid = {t["section"] for t in load_peer_link_targets(app.config["CONFIG_PATH"])}
+      if section not in valid:
+        flash("Pick which link this peer is reachable on.", "error")
+        return
+
+      config = read_config_file(app.config["CONFIG_PATH"])
+      if not config.has_section(section):
+        config.add_section(section)
+      existing = parse_list_input(config.get(section, "bbs_nodes", fallback=""))
+      if node_id in existing:
+        flash(f"{node_id} is already a peer on that link.", "error")
+        return
+
+      # An MQTT peer's address embeds the topic it lives on; one that does
+      # not match the link's own prefix can never be reached, and saying so
+      # now beats it silently never syncing.
+      mqtt_match = re.match(r"^sync_mqtt(\d+)$", section)
+      if mqtt_match:
+        link_prefix = config.get(f"mqtt{mqtt_match.group(1)}", "topic_prefix", fallback="").strip()
+        if not node_id.startswith("mqtt:") or node_id.count(":") < 2:
+          flash(f"{node_id} is not an MQTT address — expected mqtt:<topic>:<name>.", "error")
+          return
+        peer_prefix = node_id.split(":", 2)[1]
+        if link_prefix and peer_prefix != link_prefix:
+          flash(
+            f"{node_id} is on topic '{peer_prefix}' but that link uses '{link_prefix}', "
+            "so they would never reach each other.", "error")
+          return
+
+      existing.append(node_id)
+      config.set(section, "bbs_nodes", ",".join(existing))
+      write_config_file(config, app.config["CONFIG_PATH"])
+      flash(f"Added {node_id}. Restart the mesh-bbs service to start syncing with it.", "success")
+
     def remove_sync_peers(selected: list) -> None:
       """Drop chosen peers from config and forget their sync state.
 
@@ -3969,7 +4046,7 @@ def create_app(runtime_interface=None) -> Flask:
       flash(note + ".", "success")
 
     def update_sync_settings(
-      raw_bbs_nodes: str,
+      raw_bbs_nodes,          # str, or None to keep the configured peers
       raw_allowed_nodes: str,
       raw_sync_interval_minutes: str,
       raw_sync_zork_saves: str,
@@ -3978,7 +4055,14 @@ def create_app(runtime_interface=None) -> Flask:
       raw_hash_repair_pause_seconds: str,
       raw_full_sync_delay_ms: str,
     ) -> bool:
-      bbs_nodes = parse_list_input(raw_bbs_nodes)
+      # None means "not in the form" -- peers are edited on the Sync
+      # page's peer table now, and treating a missing field as empty would
+      # wipe every primary peer whenever the pacing form is saved.
+      if raw_bbs_nodes is None:
+        bbs_nodes = parse_list_input(
+          read_config_file(app.config["CONFIG_PATH"]).get("sync", "bbs_nodes", fallback=""))
+      else:
+        bbs_nodes = parse_list_input(raw_bbs_nodes)
       allowed_nodes = parse_list_input(raw_allowed_nodes)
       try:
         sync_interval_minutes = int((raw_sync_interval_minutes or "").strip())
@@ -4641,6 +4725,7 @@ def create_app(runtime_interface=None) -> Flask:
       mqtt_settings = load_mqtt_settings(app.config["CONFIG_PATH"])
       attach_discovered_mqtt_peers(mqtt_settings)
       sync_peers = load_sync_peers(app.config["CONFIG_PATH"])
+      peer_link_targets = load_peer_link_targets(app.config["CONFIG_PATH"])
       link_statuses = get_link_status_list()
       return render_template(
         "settings.html",
@@ -4654,6 +4739,7 @@ def create_app(runtime_interface=None) -> Flask:
         accounts=account_settings,
         mqtt_links=mqtt_settings,
         sync_peers=sync_peers,
+        peer_link_targets=peer_link_targets,
         boards_text=",".join(app.config["BULLETIN_BOARDS"]),
         env_override=bool(os.getenv("BBS_BULLETIN_BOARDS", "").strip()),
         bbs_nodes_text="\n".join(bbs_nodes),
@@ -4824,6 +4910,10 @@ def create_app(runtime_interface=None) -> Flask:
           flash("Account linking settings saved.", "success")
           return redirect(url_for("settings_page") + "#accounts")
 
+        if section == "add_peer":
+          add_sync_peer(request.form.get("peer_section", ""), request.form.get("peer_node_id", ""))
+          return redirect(url_for("settings_page") + "#sync")
+
         if section == "remove_peers":
           remove_sync_peers(request.form.getlist("remove_peer"))
           return redirect(url_for("settings_page") + "#peers")
@@ -4869,7 +4959,7 @@ def create_app(runtime_interface=None) -> Flask:
 
         if section == "sync":
           update_sync_settings(
-            request.form.get("bbs_nodes", ""),
+            request.form.get("bbs_nodes") if "bbs_nodes" in request.form else None,
             request.form.get("allowed_nodes", ""),
             request.form.get("sync_interval_minutes", "5"),
             request.form.get("sync_zork_saves", ""),
@@ -4961,7 +5051,7 @@ def create_app(runtime_interface=None) -> Flask:
     def sync_settings():
       if request.method == "POST":
         update_sync_settings(
-          request.form.get("bbs_nodes", ""),
+          request.form.get("bbs_nodes") if "bbs_nodes" in request.form else None,
           request.form.get("allowed_nodes", ""),
           request.form.get("sync_interval_minutes", "5"),
           request.form.get("sync_zork_saves", ""),

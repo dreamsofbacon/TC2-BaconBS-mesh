@@ -24,10 +24,6 @@
         <span class="settings-nav-title">Sync Settings</span>
         <span class="settings-nav-hint">Peers, pacing, manual resync</span>
       </a>
-      <a class="settings-nav-link" href="#peers" data-panel-link="peers">
-        <span class="settings-nav-title">Sync Peers</span>
-        <span class="settings-nav-hint">Every peer, across all links</span>
-      </a>
       <a class="settings-nav-link" href="#gateway" data-panel-link="gateway">
         <span class="settings-nav-title">API Gateway</span>
         <span class="settings-nav-hint">HTTP proxy and Project Nomad AI</span>
@@ -35,10 +31,6 @@
       <a class="settings-nav-link" href="#accounts" data-panel-link="accounts">
         <span class="settings-nav-title">Account Linking</span>
         <span class="settings-nav-hint">Multi-device accounts</span>
-      </a>
-      <a class="settings-nav-link" href="#subscribers" data-panel-link="subscribers">
-        <span class="settings-nav-title">Subscriber Nodes</span>
-        <span class="settings-nav-hint">Pull-only cache clients</span>
       </a>
       <a class="settings-nav-link" href="#storage" data-panel-link="storage">
         <span class="settings-nav-title">Storage</span>
@@ -229,11 +221,7 @@
         <label for="secondary_channel_index">MeshCore broadcast channel index</label>
         <input type="text" id="secondary_channel_index" name="secondary_channel_index" class="form-control" value="{{ devices.secondary.channel_index }}">
       </div>
-      <div class="form-group">
-        <label for="bbs_nodes2">Secondary radio's sync peers</label>
-        <textarea id="bbs_nodes2" name="bbs_nodes2" class="form-control" placeholder="One per line or comma separated — peer IDs on the secondary radio's network only">{{ devices.bbs_nodes2_text }}</textarea>
-        <p class="text-muted">These must be peers reachable on the <em>secondary</em> radio's network, not the primary's.</p>
-      </div>
+      <p class="text-muted">This radio's sync peers are managed on the <a href="#sync" data-panel-link="sync">Sync</a> page, together with every other link's.</p>
       <div class="form-group">
         <label for="allowed_nodes2">Secondary radio's Urgent board allow-list</label>
         <textarea id="allowed_nodes2" name="allowed_nodes2" class="form-control" placeholder="Leave blank to allow all nodes on this radio">{{ devices.allowed_nodes2_text }}</textarea>
@@ -441,43 +429,11 @@
             {% endif %}
           </div>
           <div class="pairing-peers">
-            <span class="text-muted">Nodes seen on this topic:</span>
-            {% if link.discovered_peers %}
-            <ul class="pairing-list">
-              {% for peer in link.discovered_peers %}
-              <li>
-                <code>{{ peer.node_id }}</code>
-                <span class="text-muted" style="font-size:0.82em">reported {{ peer.reported_age }}</span>
-                {% if peer.already_peer %}
-                <span class="badge">already a peer</span>
-                {% else %}
-                <button type="button" class="btn btn-sm add-peer-btn"
-                        data-peer-target="mqtt_{{ link.index }}_bbs_nodes"
-                        data-peer-id="{{ peer.node_id }}">+ Add as sync peer</button>
-                {% endif %}
-              </li>
-              {% endfor %}
-            </ul>
-            <p class="text-muted" style="margin:6px 0 0;font-size:0.85em">
-              Status messages are retained by the broker, so a node that has since been
-              renamed can linger here. Check &ldquo;reported&rdquo; before adding one.
-            </p>
-            {% else %}
-            <p class="text-muted" style="margin:4px 0 0">
-              None yet. Every node publishes itself here, so an empty list usually means
-              the other node's <strong>topic prefix</strong> doesn't match this one exactly
-              &mdash; or it has <code>publish_status</code> turned off, or a different
-              <code>publish_prefix</code>. It also stays empty until the BBS service has
-              connected to the broker.
-            </p>
-            {% endif %}
+            <span class="text-muted">Nodes discovered on this topic are listed on the
+              <a href="#sync" data-panel-link="sync">Sync</a> page, where peers are managed.</span>
           </div>
         </div>
-        <div class="form-group">
-          <label for="mqtt_{{ link.index }}_bbs_nodes">Sync peers on this link</label>
-          <textarea id="mqtt_{{ link.index }}_bbs_nodes" name="mqtt_{{ link.index }}_bbs_nodes" class="form-control" placeholder="One per line or comma separated -- e.g. mqtt:baconbs/cityA-cityB:cityB-node">{{ link.bbs_nodes_text }}</textarea>
-          <p class="text-muted">Sync is mutual: the other node must list this one too. Adding a peer here takes effect when you save and the BBS service restarts.</p>
-        </div>
+        <p class="text-muted">Sync peers for this broker are managed on the <a href="#sync" data-panel-link="sync">Sync</a> page.</p>
         <div class="form-group">
           <label for="mqtt_{{ link.index }}_allowed_nodes">Urgent board allow-list on this link</label>
           <textarea id="mqtt_{{ link.index }}_allowed_nodes" name="mqtt_{{ link.index }}_allowed_nodes" class="form-control" placeholder="Leave blank to allow all nodes on this link">{{ link.allowed_nodes_text }}</textarea>
@@ -566,8 +522,7 @@
       '      <input type="text" id="mqtt_' + index + '_publish_prefix" name="mqtt_' + index + '_publish_prefix" class="form-control" placeholder="blank = use the topic prefix above — e.g. homeassistant/baconbbs">' +
       '      <p class="text-muted">Only affects the telemetry above, not sync traffic. Spaces are converted to -.</p></div>' +
       '  </details>' +
-      '  <div class="form-group"><label for="mqtt_' + index + '_bbs_nodes">Sync peers on this link</label>' +
-      '    <textarea id="mqtt_' + index + '_bbs_nodes" name="mqtt_' + index + '_bbs_nodes" class="form-control" placeholder="One per line or comma separated -- e.g. mqtt:baconbs/cityA-cityB:cityB-node"></textarea></div>' +
+      '  <p class="text-muted">Sync peers for this broker are managed on the Sync page.</p>' +
       '  <div class="form-group"><label for="mqtt_' + index + '_allowed_nodes">Urgent board allow-list on this link</label>' +
       '    <textarea id="mqtt_' + index + '_allowed_nodes" name="mqtt_' + index + '_allowed_nodes" class="form-control" placeholder="Leave blank to allow all nodes on this link"></textarea></div>' +
       '  <button type="button" class="btn btn-danger btn-sm mqtt-remove-btn">Remove This Broker</button>' +
@@ -635,17 +590,119 @@
   </form>
 </section>
 
-<section class="card settings-panel" id="sync" data-settings-panel="sync" style="max-width:800px">
-  <h2>Sync Settings</h2>
+<section class="card settings-panel" id="sync" data-settings-panel="sync" style="max-width:900px">
+  <h2>Sync</h2>
+  <p class="text-muted">Everything about who this node syncs with and how fast. Peers used to be configured per link &mdash; primary radio here, secondary radio under Device Configuration, and one list per MQTT broker &mdash; which made it impossible to see the whole picture in one place.</p>
+
+  <h3>Peers</h3>
+<h3>Sync Peers</h3>
+  <p class="text-muted">
+    Every peer this node syncs with, gathered from the primary radio, the secondary radio and
+    each MQTT broker &mdash; the places they are configured separately. Peers the database still
+    tracks but nothing is configured to talk to are listed too: removing a peer from config
+    stops the traffic, but its stored state keeps it showing up in Diagnostics as permanently
+    behind until it is cleared here.
+  </p>
+  {% if sync_peers %}
+  <form method="post" action="{{ url_for('settings_page') }}#peers">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="remove_peers">
+    <div class="table-scroll-container">
+      <table class="data-table">
+        <thead>
+          <tr><th></th><th>Peer</th><th>Configured under</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          {% for peer in sync_peers %}
+          <tr>
+            <td><input type="checkbox" name="remove_peer" value="{{ peer.section }}|{{ peer.node_id }}"
+                       aria-label="Remove {{ peer.node_id }}"></td>
+            <td class="cell-clip" title="{{ peer.node_id }}"><code>{{ peer.node_id }}</code></td>
+            <td>{{ peer.section_label }}</td>
+            <td>
+              {% if peer.problem %}
+              <span class="badge badge-error">{{ peer.problem }}</span>
+              {% else %}
+              <span class="text-muted">OK</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <button class="btn btn-danger" type="submit"
+            onclick="return confirm('Remove the selected sync peers?');">Remove Selected Peers</button>
+    <p class="text-muted">Config changes take effect when the mesh-bbs service restarts. Clearing stored state applies immediately.</p>
+  </form>
+  {% else %}
+  <p class="text-muted">No sync peers configured, and none tracked in the database.</p>
+  {% endif %}
+
+  <h3>Discovered on MQTT</h3>
+  {% set ns = namespace(any=false) %}
+  {% for link in mqtt_links %}
+    {% for peer in link.discovered_peers if not peer.already_peer %}
+      {% set ns.any = true %}
+  <form method="post" action="{{ url_for('settings_page') }}#sync" class="peer-add-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="add_peer">
+    <input type="hidden" name="peer_section" value="sync_mqtt{{ link.index }}">
+    <input type="hidden" name="peer_node_id" value="{{ peer.node_id }}">
+    <code>{{ peer.node_id }}</code>
+    <span class="text-muted">broker #{{ link.index }} &middot; reported {{ peer.reported_age }}</span>
+    <button class="btn btn-sm" type="submit">+ Add as peer</button>
+  </form>
+    {% endfor %}
+  {% endfor %}
+  {% if not ns.any %}
+  <p class="text-muted">Nothing new. Nodes appear here automatically once they publish on a topic
+    this node is connected to &mdash; an empty list usually means no other node shares your topic prefix.</p>
+  {% endif %}
+  <p class="text-muted">Status messages are retained by the broker, so a node that has since been
+    renamed can linger. Check &ldquo;reported&rdquo; before adding one.</p>
+
+  <h3>Add a peer</h3>
+  <form method="post" action="{{ url_for('settings_page') }}#sync" class="peer-add-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="add_peer">
+    <label for="peer_link">Reachable on</label>
+    <select id="peer_link" name="peer_section" class="form-control" style="width:auto">
+      {% for target in peer_link_targets %}
+      <option value="{{ target.section }}" data-hint="{{ target.hint }}">{{ target.label }}</option>
+      {% endfor %}
+    </select>
+    <input type="text" name="peer_node_id" id="peer_node_id_add" class="form-control"
+           placeholder="{{ peer_link_targets[0].hint if peer_link_targets else 'node id' }}" style="max-width:320px">
+    <button class="btn" type="submit">Add Peer</button>
+  </form>
+  <p class="text-muted">An MQTT peer must be on the same topic as the link you pick, or the two never meet &mdash; that is checked before saving.</p>
+
+  <h3>Subscriber nodes (pull-only)</h3>
+<h3>Subscriber Nodes (cache clients)</h3>
+  <p class="text-muted">
+    Node IDs of <strong>pull-only</strong> clients — e.g. a low-power Pico cache
+    node. This gateway will answer their sync requests (<code>WANT</code> /
+    <code>HASHMISS</code>) but will <strong>not</strong> push-sync or hash-repair
+    to them, so they never cause reconcile churn. Put cache nodes here, <em>not</em>
+    in the BBS sync-peers list. One node ID per line (or comma-separated).
+  </p>
+  <form method="post" action="{{ url_for('settings_page') }}#subscribers">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="subscribers">
+    <div class="form-group">
+      <label for="subscriber_nodes">Subscriber node IDs</label>
+      <textarea id="subscriber_nodes" name="subscriber_nodes" class="form-control"
+                rows="3" placeholder="!a1b2c3d4">{{ subscribers.subscriber_nodes_text }}</textarea>
+    </div>
+    <button class="btn" type="submit">Save subscriber nodes</button>
+  </form>
+
+  <h3>Peer lists &amp; intervals</h3>
   <p class="text-muted">Manage BBS peer sync targets, sync pacing, and the node IDs allowed to post to the Urgent board.</p>
   <form method="post" action="{{ url_for('settings_page') }}#sync">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="settings_section" value="sync">
-    <div class="form-group">
-      <label for="bbs_nodes">Sync BBS Nodes</label>
-      <textarea id="bbs_nodes" name="bbs_nodes" class="form-control" placeholder="One per line or comma separated">{{ bbs_nodes_text }}</textarea>
-      <p class="text-muted">These nodes receive bulletin, mail, delete, and channel sync traffic.</p>
-    </div>
     <div class="form-group">
       <label for="allowed_nodes">Allowed Urgent Board Nodes</label>
       <textarea id="allowed_nodes" name="allowed_nodes" class="form-control" placeholder="Leave blank to allow all nodes">{{ allowed_nodes_text }}</textarea>
@@ -747,52 +804,6 @@
     </div>
     <button class="btn" type="submit">Force Full Resync to Peer</button>
   </form>
-</section>
-
-<section class="card settings-panel" id="peers" data-settings-panel="peers" style="max-width:800px">
-  <h2>Sync Peers</h2>
-  <p class="text-muted">
-    Every peer this node syncs with, gathered from the primary radio, the secondary radio and
-    each MQTT broker &mdash; the places they are configured separately. Peers the database still
-    tracks but nothing is configured to talk to are listed too: removing a peer from config
-    stops the traffic, but its stored state keeps it showing up in Diagnostics as permanently
-    behind until it is cleared here.
-  </p>
-  {% if sync_peers %}
-  <form method="post" action="{{ url_for('settings_page') }}#peers">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="settings_section" value="remove_peers">
-    <div class="table-scroll-container">
-      <table class="data-table">
-        <thead>
-          <tr><th></th><th>Peer</th><th>Configured under</th><th>Status</th></tr>
-        </thead>
-        <tbody>
-          {% for peer in sync_peers %}
-          <tr>
-            <td><input type="checkbox" name="remove_peer" value="{{ peer.section }}|{{ peer.node_id }}"
-                       aria-label="Remove {{ peer.node_id }}"></td>
-            <td class="cell-clip" title="{{ peer.node_id }}"><code>{{ peer.node_id }}</code></td>
-            <td>{{ peer.section_label }}</td>
-            <td>
-              {% if peer.problem %}
-              <span class="badge badge-error">{{ peer.problem }}</span>
-              {% else %}
-              <span class="text-muted">OK</span>
-              {% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    <button class="btn btn-danger" type="submit"
-            onclick="return confirm('Remove the selected sync peers?');">Remove Selected Peers</button>
-    <p class="text-muted">Config changes take effect when the mesh-bbs service restarts. Clearing stored state applies immediately.</p>
-  </form>
-  {% else %}
-  <p class="text-muted">No sync peers configured, and none tracked in the database.</p>
-  {% endif %}
 </section>
 
 <section class="card settings-panel" id="gateway" data-settings-panel="gateway" style="max-width:800px">
@@ -936,27 +947,6 @@
       <input type="text" id="wipe_confirmation" name="wipe_confirmation" placeholder="Type WIPE DATABASE" class="form-control" required>
     </div>
     <button class="btn" type="submit" style="background:#521c1c;border-color:#8d3434;color:#ffd7d7">Wipe Database</button>
-  </form>
-</section>
-
-<section class="card settings-panel" id="subscribers" data-settings-panel="subscribers" style="max-width:600px">
-  <h2>Subscriber Nodes (cache clients)</h2>
-  <p class="text-muted">
-    Node IDs of <strong>pull-only</strong> clients — e.g. a low-power Pico cache
-    node. This gateway will answer their sync requests (<code>WANT</code> /
-    <code>HASHMISS</code>) but will <strong>not</strong> push-sync or hash-repair
-    to them, so they never cause reconcile churn. Put cache nodes here, <em>not</em>
-    in the BBS sync-peers list. One node ID per line (or comma-separated).
-  </p>
-  <form method="post" action="{{ url_for('settings_page') }}#subscribers">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="settings_section" value="subscribers">
-    <div class="form-group">
-      <label for="subscriber_nodes">Subscriber node IDs</label>
-      <textarea id="subscriber_nodes" name="subscriber_nodes" class="form-control"
-                rows="3" placeholder="!a1b2c3d4">{{ subscribers.subscriber_nodes_text }}</textarea>
-    </div>
-    <button class="btn" type="submit">Save subscriber nodes</button>
   </form>
 </section>
 
