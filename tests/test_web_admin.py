@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 import db_operations
+import web_admin
 from web_admin import create_app
 
 
@@ -2110,6 +2111,30 @@ class MqttPeerDiscoveryUiTests(unittest.TestCase):
         self._write_mqtt_config_and_snapshot(peers=[])
         page = self._settings_html()
         self.assertIn("topic prefix", page)
+
+    def test_a_stale_ghost_is_shown_with_its_age(self):
+        """Status messages are retained, so a node that was renamed leaves
+        its old identity on the broker forever. It must not read as live."""
+        from datetime import datetime, timedelta, timezone as tz
+        old = (datetime.now(tz.utc) - timedelta(days=9)).isoformat()
+        self._write_mqtt_config_and_snapshot(peers=[
+            {"label": "mqtt1-node", "node_id": "mqtt:baconbbs:mqtt1-node",
+             "last_seen": "2026-08-24T19:00:00Z", "updated_at": old},
+        ])
+        page = self._settings_html()
+        self.assertIn("9d ago", page)
+        self.assertIn("retained", page)
+
+    def test_peer_age_is_read_as_utc_not_local_time(self):
+        """The publisher stamps UTC; comparing against local time would make
+        a node in a behind-UTC timezone look permanently fresh."""
+        from datetime import datetime, timedelta, timezone as tz
+        stamp = (datetime.now(tz.utc) - timedelta(hours=3)).isoformat()
+        self.assertEqual(web_admin._peer_reported_age(stamp), "3h ago")
+
+    def test_unusable_peer_timestamps_do_not_raise(self):
+        self.assertEqual(web_admin._peer_reported_age(None), "never reported")
+        self.assertEqual(web_admin._peer_reported_age("not-a-date"), "unknown")
 
     def test_a_missing_snapshot_does_not_break_the_page(self):
         """mesh-bbs may be stopped, or never have written one."""

@@ -8,7 +8,7 @@ import time
 import uuid
 import secrets
 import configparser
-from datetime import datetime
+from datetime import datetime, timezone as dt_timezone
 from functools import wraps
 from typing import Optional
 from app_paths import resolve_app_path
@@ -399,6 +399,40 @@ def store_mqtt_cert(index: int, role: str, text: str) -> str:
   except OSError:
     pass
   return path
+
+
+def _peer_reported_age(updated_at) -> str:
+  """How long ago a discovered peer last reported, from its own status.
+
+  Status messages are RETAINED, so the broker replays the last one a node
+  ever published -- including one from a node that no longer exists under
+  that name. A node whose local_id was later changed leaves its old
+  identity on the broker forever. Showing the node's own timestamp is what
+  makes such a ghost obvious instead of it looking like a live peer.
+
+  Parsed as UTC: the publisher writes an aware UTC timestamp, and
+  comparing that against local time would report a node in a
+  behind-UTC timezone as being in the future, i.e. always fresh.
+  """
+  text = str(updated_at or "").strip()
+  if not text:
+    return "never reported"
+  try:
+    when = datetime.fromisoformat(text.replace("Z", "+00:00"))
+  except ValueError:
+    return "unknown"
+  if when.tzinfo is None:
+    when = when.replace(tzinfo=dt_timezone.utc)
+  seconds = int((datetime.now(dt_timezone.utc) - when).total_seconds())
+  if seconds < 0:
+    return "just now"
+  if seconds < 120:
+    return "just now"
+  if seconds < 3600:
+    return f"{seconds // 60}m ago"
+  if seconds < 86400:
+    return f"{seconds // 3600}h ago"
+  return f"{seconds // 86400}d ago"
 
 
 def load_mqtt_settings(config_path: str) -> list[dict]:
@@ -4023,6 +4057,7 @@ def create_app(runtime_interface=None) -> Flask:
             "label": str(peer.get("label", "")),
             "node_id": str(peer.get("node_id", "")),
             "last_seen": str(peer.get("last_seen") or ""),
+            "reported_age": _peer_reported_age(peer.get("updated_at")),
             "already_peer": str(peer.get("node_id", "")) in existing,
           }
           for peer in peers

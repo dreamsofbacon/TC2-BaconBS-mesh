@@ -443,6 +443,7 @@
               {% for peer in link.discovered_peers %}
               <li>
                 <code>{{ peer.node_id }}</code>
+                <span class="text-muted" style="font-size:0.82em">reported {{ peer.reported_age }}</span>
                 {% if peer.already_peer %}
                 <span class="badge">already a peer</span>
                 {% else %}
@@ -453,6 +454,10 @@
               </li>
               {% endfor %}
             </ul>
+            <p class="text-muted" style="margin:6px 0 0;font-size:0.85em">
+              Status messages are retained by the broker, so a node that has since been
+              renamed can linger here. Check &ldquo;reported&rdquo; before adding one.
+            </p>
             {% else %}
             <p class="text-muted" style="margin:4px 0 0">
               None yet. Every node publishes itself here, so an empty list usually means
