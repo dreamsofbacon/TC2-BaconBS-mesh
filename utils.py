@@ -562,6 +562,36 @@ def interface_send_lock(interface) -> threading.Lock:
     return lock
 
 
+def _pace_radio_send(interface, pause: float) -> None:
+    """Enforce the inter-message gap across THREADS, not just within one call.
+
+    send_message's old trailing sleep only paced consecutive chunks of a
+    single call. Two calls from different threads -- the radio thread's
+    "Asked Project Nomad… reply will arrive shortly" ack and the gateway
+    worker's answer one second later -- reached the radio back-to-back,
+    and on a multi-hop mesh the second DM collided with the first one's
+    relay/ack traffic and was lost. Radio logs showed it plainly: a warm
+    AI answer sent 1s after the ack never got a routing ack back, while
+    the slow first answer after boot (model cold-load, ~20s, ack long
+    cleared) always did. Stamping the last send time on the interface
+    makes every sender wait out the gap no matter which thread it is on.
+
+    Must be called with the interface send lock held, so the stamp and
+    the send it paces stay atomic.
+    """
+    if pause <= 0:
+        return
+    last = getattr(interface, '_bbs_last_send_monotonic', None)
+    if last is not None:
+        wait = pause - (time.monotonic() - last)
+        if wait > 0:
+            time.sleep(wait)
+    try:
+        interface._bbs_last_send_monotonic = time.monotonic()
+    except Exception:
+        pass  # interface refuses attributes; per-call pacing still applies
+
+
 def send_message(message, destination, interface) -> bool:
     """Send (chunked to the transport's limit). True if every chunk went.
 
@@ -587,6 +617,7 @@ def send_message(message, destination, interface) -> bool:
     for chunk in chunks:
         try:
             with send_lock:
+                _pace_radio_send(interface, pause)
                 d = interface.sendText(
                     text=chunk,
                     destinationId=destination,
@@ -605,7 +636,6 @@ def send_message(message, destination, interface) -> bool:
             logging.warning(
                 f"REPLY SEND ERROR to {destination} over {protocol}: {e}")
 
-        time.sleep(pause)
     return delivered
 
 

@@ -3,6 +3,7 @@ import logging
 import os
 import random
 import re
+import threading
 import time
 
 from meshtastic import BROADCAST_NUM
@@ -393,6 +394,18 @@ def handle_apigw_command(sender_id, interface):
 
 _APIGW_UNIT_SEP = "\x1f"
 
+# "Asked … reply will arrive shortly" is only worth a packet when the answer
+# is genuinely slow (e.g. the model is cold-loading). A warm endpoint answers
+# in a second or two, and sending the ack first put the answer on the air
+# while the ack -- a reliable multi-hop DM -- was still being relayed; the
+# two collided and the answer was lost, every time, until the model was
+# evicted again. So the ack is armed on a timer and cancelled if the answer
+# wins the race.
+APIGW_SLOW_ACK_SECONDS = 8.0
+# If the slow ack DID go out, hold the answer until the ack's relay/ack
+# traffic has cleared the mesh (a 2-hop ack cycle was observed at ~17s).
+APIGW_ACK_CLEAR_SECONDS = 15.0
+
 
 def _apigw_submit(sender_id, interface, kind, payload, label):
     """Dispatch a composed request: fulfill locally if this node is a gateway,
@@ -418,8 +431,30 @@ def _apigw_submit(sender_id, interface, kind, payload, label):
         except Exception:
             link = None
 
+        ack_lock = threading.Lock()
+        ack_state = {'sent_at': None, 'answered': False}
+
+        def _send_slow_ack():
+            with ack_lock:
+                if ack_state['answered']:
+                    return
+                ack_state['sent_at'] = time.monotonic()
+            live = getattr(link, 'interface', None) or interface
+            send_message(f"Asked {label}… reply will arrive shortly.", sender_id, live)
+
+        ack_timer = threading.Timer(APIGW_SLOW_ACK_SECONDS, _send_slow_ack)
+        ack_timer.daemon = True
+
         # Local fast path: no mesh round-trip; DM the result straight back.
         def _reply(status, body):
+            ack_timer.cancel()
+            with ack_lock:
+                ack_state['answered'] = True
+                acked_at = ack_state['sent_at']
+            if acked_at is not None:
+                wait = APIGW_ACK_CLEAR_SECONDS - (time.monotonic() - acked_at)
+                if wait > 0:
+                    time.sleep(wait)  # on the gateway worker thread
             live = getattr(link, 'interface', None) or interface
             prefix = "" if str(status) in ("200", "OK") else f"[{status}] "
             text = f"{prefix}{body}"
@@ -432,9 +467,9 @@ def _apigw_submit(sender_id, interface, kind, payload, label):
                 logging.warning(
                     f"apigw rid={rid}: {label} answered but the reply could not "
                     f"be delivered to {node_id}")
+        ack_timer.start()
         gateway.handle_apireq(rid, node_id, kind, payload,
                               getattr(interface, 'allowed_nodes', None), _reply)
-        send_message(f"Asked {label}… reply will arrive shortly.", sender_id, interface)
         update_user_state(sender_id, None)
         return
 

@@ -141,7 +141,8 @@ class AskNomadFollowUpLocalGatewayTests(unittest.TestCase):
         messages = _sent(sm)
         # The answer and the invitation must share one packet -- a separate
         # second DM races the first one's relay traffic and loses. The
-        # "asked shortly" ack is a separate, earlier message.
+        # "asked shortly" ack only exists on the slow-answer path (see
+        # ApigwSlowAckTests).
         answer = [m for m in messages if "42" in m]
         self.assertEqual(len(answer), 1, f"answer split across packets: {messages}")
         self.assertIn("another question", answer[0])
@@ -155,6 +156,84 @@ class AskNomadFollowUpLocalGatewayTests(unittest.TestCase):
             command_handlers._apigw_submit(111, self.interface, "h", "GET\x1fhttp://x\x1f", "HTTP")
         messages = _sent(sm)
         self.assertFalse(any("another question" in m for m in messages))
+
+
+class ApigwSlowAckTests(unittest.TestCase):
+    """The 'Asked … reply will arrive shortly' ack must only go out when the
+    answer is genuinely slow. Sending it first put a warm answer (arriving a
+    second later) on the air while the ack -- a reliable multi-hop DM -- was
+    still being relayed; they collided and the answer was lost every time
+    the model was warm, which is every question except the first after boot.
+    """
+
+    def setUp(self):
+        db_operations.thread_local.connection = sqlite3.connect(":memory:")
+        db_operations.initialize_database()
+        command_handlers.update_user_state(111, None)
+        self.interface = _Iface()
+
+    def tearDown(self):
+        command_handlers.update_user_state(111, None)
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
+
+    def _submit(self, sm_side_effect=None):
+        captured = {}
+
+        def fake_dispatch(rid, node_id, kind, payload, allowed, reply_fn):
+            captured["reply_fn"] = reply_fn
+
+        patcher = mock.patch.object(command_handlers, "send_message",
+                                    side_effect=sm_side_effect)
+        sm = patcher.start()
+        self.addCleanup(patcher.stop)
+        with mock.patch("gateway.is_gateway_enabled", return_value=True), \
+             mock.patch("gateway.handle_apireq", side_effect=fake_dispatch):
+            command_handlers._apigw_submit(
+                111, self.interface, "r", "ai\x1fq", "Project Nomad")
+        return captured["reply_fn"], sm
+
+    def test_fast_answer_sends_no_asked_ack(self):
+        reply_fn, sm = self._submit()
+        reply_fn("200", "42")
+        messages = _sent(sm)
+        self.assertFalse(any("reply will arrive shortly" in m for m in messages),
+                         f"ack sent despite a fast answer: {messages}")
+        self.assertTrue(any("42" in m for m in messages))
+
+    def test_slow_answer_sends_the_ack_then_waits_before_the_answer(self):
+        ack_sent = threading.Event()
+
+        def record(message, *a, **kw):
+            if "reply will arrive shortly" in message:
+                ack_sent.set()
+            return True
+
+        slept = []
+        with mock.patch.object(command_handlers, "APIGW_SLOW_ACK_SECONDS", 0.05), \
+             mock.patch.object(command_handlers, "APIGW_ACK_CLEAR_SECONDS", 30.0):
+            reply_fn, sm = self._submit(sm_side_effect=record)
+            self.assertTrue(ack_sent.wait(timeout=5), "slow ack never fired")
+            with mock.patch.object(command_handlers.time, "sleep",
+                                   side_effect=lambda s: slept.append(s)):
+                reply_fn("200", "42")
+        messages = _sent(sm)
+        self.assertTrue(any("reply will arrive shortly" in m for m in messages))
+        self.assertTrue(any("42" in m for m in messages))
+        self.assertTrue(slept and slept[0] > 0,
+                        "answer was not held clear of the ack's relay traffic")
+
+    def test_ack_never_follows_an_already_delivered_answer(self):
+        """If the answer wins the race at the timer boundary, the timer must
+        not fire a late ack behind it (that is just the collision reversed)."""
+        with mock.patch.object(command_handlers, "APIGW_SLOW_ACK_SECONDS", 0.05):
+            reply_fn, sm = self._submit()
+            reply_fn("200", "42")
+            time.sleep(0.2)  # give a not-yet-cancelled timer time to misfire
+        messages = _sent(sm)
+        self.assertFalse(any("reply will arrive shortly" in m for m in messages))
 
 
 class AskNomadFollowUpMeshRelayTests(unittest.TestCase):
