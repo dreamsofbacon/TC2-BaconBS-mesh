@@ -8,6 +8,8 @@
 """
 import sqlite3
 import sys
+import threading
+import time
 import types
 import unittest
 from unittest import mock
@@ -362,3 +364,65 @@ class SendMessageDeliveryReportingTests(unittest.TestCase):
                 self.assertFalse(ok)
                 self.assertIn("empty body", " ".join(logs.output))
         self.assertEqual(iface.sent, [])
+
+
+class ConcurrentSendSerializationTests(unittest.TestCase):
+    """meshtastic-python's _sendToRadio is a retransmit queue, not a write:
+    it mutates a shared self.queue while draining it and decrements
+    queueStatus.free via _queueClaim(). Two threads inside it pop each
+    other's packets and over-claim queue slots, and free only refills from
+    the radio's QueueStatus messages -- so once it goes wrong every later
+    send parks in time.sleep(0.5) forever, silently, until a restart.
+
+    The API gateway answering on a worker thread is the one place this
+    project has two threads at the radio at once.
+    """
+
+    class _OverlapDetectingIface:
+        protocol_name = "Meshtastic"
+        max_text_bytes = 220
+        nodes = {}
+
+        def __init__(self):
+            self.inside = 0
+            self.max_concurrent = 0
+            self.sent = []
+            self._guard = threading.Lock()
+
+        def sendText(self, text, destinationId, wantAck, wantResponse):
+            with self._guard:
+                self.inside += 1
+                self.max_concurrent = max(self.max_concurrent, self.inside)
+            try:
+                time.sleep(0.01)  # widen the window a real radio write has
+                self.sent.append(text)
+                return types.SimpleNamespace(id=len(self.sent))
+            finally:
+                with self._guard:
+                    self.inside -= 1
+
+    def test_concurrent_senders_never_overlap_in_sendtext(self):
+        iface = self._OverlapDetectingIface()
+
+        def worker(n):
+            with mock.patch.object(utils.time, "sleep"):
+                utils.send_message(f"message {n}", 111, iface)
+
+        threads = [threading.Thread(target=worker, args=(n,)) for n in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        self.assertEqual(iface.max_concurrent, 1,
+                         "two threads were inside sendText at once")
+        self.assertEqual(len(iface.sent), 6, "a message was lost")
+
+    def test_each_interface_serializes_independently(self):
+        """One radio stalling must not block sends on the other."""
+        a, b = self._OverlapDetectingIface(), self._OverlapDetectingIface()
+        self.assertIsNot(utils.interface_send_lock(a), utils.interface_send_lock(b))
+
+    def test_the_lock_is_stable_across_calls(self):
+        iface = self._OverlapDetectingIface()
+        self.assertIs(utils.interface_send_lock(iface), utils.interface_send_lock(iface))
