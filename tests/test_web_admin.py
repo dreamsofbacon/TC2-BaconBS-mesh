@@ -137,8 +137,10 @@ class WebAdminSettingsTests(unittest.TestCase):
         """Section forms POST back to <url>#section and the sidebar reads
         the hash to restore the panel, so the ids are load-bearing."""
         page = self._settings_page()
+        # 'peers' and 'subscribers' were folded into 'sync' -- every sync
+        # setting lives on one page now.
         for section in ("links", "devices", "mqtt", "boards", "sync", "gateway",
-                        "accounts", "subscribers", "storage", "admin",
+                        "accounts", "storage", "admin",
                         "diagnostics", "danger"):
             with self.subTest(section=section):
                 self.assertIn(f'id="{section}"', page)
@@ -2244,6 +2246,149 @@ class SyncPeerRemovalTests(_WebAdminHarness):
         self.assertIn("Nothing to remove", response.get_data(as_text=True))
 
 
+class SyncPeerAddTests(_WebAdminHarness):
+    """Peers are added from the Sync page now, for every link."""
+
+    def _seed(self):
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        config["sync"] = {"bbs_nodes": "!existing"}
+        config["interface2"] = {"type": "meshcore_serial"}
+        config["mqtt1"] = {"topic_prefix": "baconbbs", "host": "b", "local_id": "me"}
+        config["sync_mqtt1"] = {"bbs_nodes": ""}
+        with open(self.config_path, "w", encoding="utf-8") as handle:
+            config.write(handle)
+
+    def _config(self):
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        return config
+
+    def _add(self, section, node_id):
+        app = create_app()
+        client = app.test_client()
+        self.login(client)
+        return self.post_with_csrf(client, "/settings", data={
+            "settings_section": "add_peer",
+            "peer_section": section,
+            "peer_node_id": node_id,
+        }, follow_redirects=True)
+
+    def test_a_radio_peer_is_appended(self):
+        self._seed()
+        self._add("sync", "!newpeer1")
+        nodes = self._config().get("sync", "bbs_nodes")
+        self.assertIn("!existing", nodes)
+        self.assertIn("!newpeer1", nodes)
+
+    def test_an_mqtt_peer_goes_to_its_own_section(self):
+        self._seed()
+        self._add("sync_mqtt1", "mqtt:baconbbs:forgecam")
+        self.assertEqual(self._config().get("sync_mqtt1", "bbs_nodes"),
+                         "mqtt:baconbbs:forgecam")
+        # The radio's peers and the broker's own settings are untouched.
+        self.assertEqual(self._config().get("sync", "bbs_nodes"), "!existing")
+        self.assertEqual(self._config().get("mqtt1", "host"), "b")
+        self.assertEqual(self._config().get("sync", "bbs_nodes"), "!existing")
+
+    def test_an_mqtt_peer_on_the_wrong_topic_is_refused(self):
+        """Silently accepting it would mean a peer that never syncs and
+        never explains why -- the exact failure this page exists to end."""
+        self._seed()
+        page = self._add("sync_mqtt1", "mqtt:othertopic:node").get_data(as_text=True)
+        self.assertIn("never reach each other", page)
+        self.assertEqual(self._config().get("sync_mqtt1", "bbs_nodes"), "")
+
+    def test_a_non_mqtt_address_is_refused_for_an_mqtt_link(self):
+        self._seed()
+        page = self._add("sync_mqtt1", "!aaa11111").get_data(as_text=True)
+        self.assertIn("not an MQTT address", page)
+
+    def test_a_duplicate_is_refused(self):
+        self._seed()
+        page = self._add("sync", "!existing").get_data(as_text=True)
+        self.assertIn("already a peer", page)
+        self.assertEqual(self._config().get("sync", "bbs_nodes"), "!existing")
+
+    def test_an_unknown_link_is_refused(self):
+        self._seed()
+        page = self._add("sync_mqtt9", "mqtt:x:y").get_data(as_text=True)
+        self.assertIn("Pick which link", page)
+
+
+class PeerListsSurviveUnrelatedSavesTests(_WebAdminHarness):
+    """Peers moved off the device/MQTT/sync forms onto the Sync page. Those
+    forms no longer post a peer field, and reading a missing field as empty
+    would wipe the list on every unrelated save -- silently."""
+
+    def _seed(self):
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        config["sync"] = {"bbs_nodes": "!primary1", "sync_interval_minutes": "5"}
+        config["sync2"] = {"bbs_nodes": "!secondary"}
+        config["interface"] = {"type": "serial", "port": "/dev/ttyUSB0"}
+        config["interface2"] = {"type": "meshcore_serial", "port": "/dev/ttyUSB1"}
+        config["mqtt1"] = {"topic_prefix": "baconbbs", "host": "b", "local_id": "me"}
+        config["sync_mqtt1"] = {"bbs_nodes": "mqtt:baconbbs:forgecam"}
+        with open(self.config_path, "w", encoding="utf-8") as handle:
+            config.write(handle)
+
+    def _config(self):
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        return config
+
+    def _post(self, data):
+        app = create_app()
+        client = app.test_client()
+        self.login(client)
+        return self.post_with_csrf(client, "/settings", data=data, follow_redirects=True)
+
+    def test_saving_pacing_keeps_primary_peers(self):
+        self._seed()
+        self._post({
+            "settings_section": "sync",
+            "allowed_nodes": "",
+            "sync_interval_minutes": "7",
+            "sync_pause_seconds": "1.0",
+            "hash_repair_pause_seconds": "1.0",
+            "full_sync_delay_ms": "100",
+        })
+        self.assertEqual(self._config().get("sync", "bbs_nodes"), "!primary1")
+        self.assertEqual(self._config().get("sync", "sync_interval_minutes"), "7")
+
+    def test_saving_device_settings_keeps_secondary_peers(self):
+        self._seed()
+        self._post({
+            "settings_section": "devices",
+            "primary_type": "serial",
+            "primary_port": "/dev/ttyUSB0",
+            "secondary_enabled": "1",
+            "secondary_type": "meshcore_serial",
+            "secondary_port": "/dev/ttyUSB9",
+        })
+        # Written to a NEW value, so this cannot pass by the handler
+        # rejecting the form and touching nothing -- which is exactly how
+        # an earlier version of this test passed for the wrong reason.
+        self.assertEqual(self._config().get("interface2", "port"), "/dev/ttyUSB9")
+        self.assertEqual(self._config().get("sync2", "bbs_nodes"), "!secondary")
+
+    def test_saving_broker_settings_keeps_mqtt_peers(self):
+        self._seed()
+        self._post({
+            "settings_section": "mqtt",
+            "mqtt_indexes": "1",
+            "mqtt_1_enabled": "1",
+            "mqtt_1_host": "broker.example.com",
+            "mqtt_1_port": "1883",
+            "mqtt_1_topic_prefix": "baconbbs",
+            "mqtt_1_local_id": "me",
+        })
+        self.assertEqual(self._config().get("sync_mqtt1", "bbs_nodes"),
+                         "mqtt:baconbbs:forgecam")
+        self.assertEqual(self._config().get("mqtt1", "host"), "broker.example.com")
+
+
 class MqttPeerDiscoveryUiTests(_WebAdminHarness):
     """Pairing over MQTT means typing the other node's address by hand, and
     every way of mistyping it fails silently. The running BBS already knows
@@ -2282,25 +2427,30 @@ class MqttPeerDiscoveryUiTests(_WebAdminHarness):
         return client.get("/settings").get_data(as_text=True)
 
     def test_a_discovered_peer_is_offered_with_its_full_address(self):
+        """Offered on the Sync page, where peers are managed, as a real
+        form -- the MQTT card's textarea it used to fill is gone."""
         self._write_mqtt_config_and_snapshot(peers=[
             {"label": "forgecam", "node_id": "mqtt:baconbbs:forgecam",
              "last_seen": "2026-08-24T19:00:00Z"},
         ])
         page = self._settings_html()
-        self.assertIn("mqtt:baconbbs:forgecam", page)
-        self.assertIn('data-peer-id="mqtt:baconbbs:forgecam"', page)
-        self.assertIn("Add as sync peer", page)
+        self.assertIn('value="mqtt:baconbbs:forgecam"', page)
+        self.assertIn('value="add_peer"', page)
+        self.assertIn('value="sync_mqtt1"', page)
+        self.assertIn("+ Add as peer", page)
 
     def test_an_existing_peer_is_not_offered_again(self):
-        """Adding a duplicate is the obvious next mistake."""
+        """A configured peer belongs in the peers table, not in the list of
+        things you could still add."""
         self._write_mqtt_config_and_snapshot(
             bbs_nodes="mqtt:baconbbs:forgecam",
             peers=[{"label": "forgecam", "node_id": "mqtt:baconbbs:forgecam",
                     "last_seen": "2026-08-24T19:00:00Z"}],
         )
         page = self._settings_html()
-        self.assertIn("already a peer", page)
-        self.assertNotIn('data-peer-id="mqtt:baconbbs:forgecam"', page)
+        self.assertNotIn("+ Add as peer", page)
+        # Still visible as a configured peer.
+        self.assertIn("mqtt:baconbbs:forgecam", page)
 
     def test_this_node_shows_its_own_address_to_copy(self):
         """The other node needs this string; nobody should retype it."""
