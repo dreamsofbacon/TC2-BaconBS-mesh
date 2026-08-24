@@ -743,7 +743,8 @@
     <div class="form-group">
       <label for="gateway_ai_system_prompt">System prompt (optional)</label>
       <textarea id="gateway_ai_system_prompt" name="gateway_ai_system_prompt" class="form-control"
-                placeholder="You are a concise assistant on an off-grid mesh. Keep replies short.">{{ gateway.ai_system_prompt }}</textarea>
+                placeholder="You are a helpful assistant reachable over an off-grid mesh radio. Answer conversationally and directly. Keep replies under 170 characters.">{{ gateway.ai_system_prompt }}</textarea>
+      <p class="text-muted">Ask for brevity, but don't tell a small model to drop conversational openers (&ldquo;No preamble&rdquo;, &ldquo;answer only&rdquo;). A 3B model takes it literally and stops <em>replying</em> to a greeting, completing it instead &mdash; &ldquo;Hello&rdquo; comes back as <code>Hello, World! in C&hellip;</code>. Factual questions still work, so it reads like dropped radio replies rather than a prompt problem.</p>
     </div>
 
     <hr style="margin:1.5rem 0">
