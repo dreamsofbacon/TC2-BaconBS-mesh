@@ -348,3 +348,17 @@ class SendMessageDeliveryReportingTests(unittest.TestCase):
             ok = utils.send_message(long_text, 111, iface)
         self.assertFalse(ok)
         self.assertGreater(calls["n"], 1)
+
+    def test_an_empty_body_reports_failure_instead_of_sending_nothing(self):
+        """_split_into_chunks yields nothing for a blank body, so the send
+        loop never runs: no message, no exception, and the caller told it
+        worked. That is how an empty AI answer became silence."""
+        iface = self._LiveIface()
+        for body in ("", "   ", "\n\n"):
+            with self.subTest(body=repr(body)):
+                with mock.patch.object(utils.time, "sleep"), \
+                     self.assertLogs(level="WARNING") as logs:
+                    ok = utils.send_message(body, 111, iface)
+                self.assertFalse(ok)
+                self.assertIn("empty body", " ".join(logs.output))
+        self.assertEqual(iface.sent, [])
