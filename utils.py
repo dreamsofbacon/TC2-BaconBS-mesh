@@ -471,6 +471,49 @@ def _split_into_chunks(text, max_len=200):
     return chunks
 
 
+_send_lock_registry_lock = threading.Lock()
+
+
+def interface_send_lock(interface) -> threading.Lock:
+    """Per-interface lock held across every sendText call.
+
+    meshtastic-python's MeshInterface._sendToRadio is not a write -- it is a
+    retransmit queue. It appends to a shared self.queue dict, then drains it
+    with popitem() while decrementing queueStatus.free through _queueClaim(),
+    and re-queues whatever was not acked. Two threads in there at once pop
+    each other's packets, mutate the dict mid-iteration, and both claim queue
+    slots. free only refills from the radio's QueueStatus messages, so once
+    it is driven below what the radio reports, _queueHasFreeSpace() is
+    permanently false and every later send parks in `time.sleep(0.5)` -- no
+    exception, no log line, just silence until the process restarts.
+
+    Almost everything here sends from the main loop, so it never showed. The
+    API gateway answers on a worker thread (gateway.handle_apireq), which is
+    the one place two threads reach the radio at once -- and the symptom was
+    exactly that: one gateway answer worked, then no further reply reached
+    the user until a reboot.
+
+    The lock lives on the interface so each radio serializes independently;
+    MeshCore and MQTT already serialize internally, so this is a no-op cost
+    for them.
+    """
+    lock = getattr(interface, '_bbs_send_lock', None)
+    if lock is not None:
+        return lock
+    with _send_lock_registry_lock:
+        lock = getattr(interface, '_bbs_send_lock', None)
+        if lock is None:
+            lock = threading.Lock()
+            try:
+                setattr(interface, '_bbs_send_lock', lock)
+            except Exception:
+                # Interface refuses attributes; fall back to a private lock.
+                # Worse than nothing only if two threads race here, which the
+                # registry lock above already prevents.
+                pass
+    return lock
+
+
 def send_message(message, destination, interface) -> bool:
     """Send (chunked to the transport's limit). True if every chunk went.
 
@@ -491,14 +534,16 @@ def send_message(message, destination, interface) -> bool:
         return False
 
     delivered = True
+    send_lock = interface_send_lock(interface)
     for chunk in chunks:
         try:
-            d = interface.sendText(
-                text=chunk,
-                destinationId=destination,
-                wantAck=True,
-                wantResponse=False
-            )
+            with send_lock:
+                d = interface.sendText(
+                    text=chunk,
+                    destinationId=destination,
+                    wantAck=True,
+                    wantResponse=False
+                )
             destid = get_node_id_from_num(destination, interface)
             log_chunk = chunk.replace('\n', '\\n')
             logging.info(f"Sending message to user '{get_node_short_name(destid, interface)}' ({destid}) with sendID {d.id}: \"{log_chunk}\"")
@@ -1459,12 +1504,16 @@ def _send_one_sync(message, destination, interface, pause_seconds=None):
     _result: list = [None]   # True on success, Exception on error
     def _do_send():
         try:
-            interface.sendText(
-                text=message,
-                destinationId=destination,
-                wantAck=True,
-                wantResponse=False,
-            )
+            # Same lock as send_message: sync frames go out from the main
+            # loop and from per-peer sync threads, so this is the other half
+            # of what must not overlap inside _sendToRadio's queue.
+            with interface_send_lock(interface):
+                interface.sendText(
+                    text=message,
+                    destinationId=destination,
+                    wantAck=True,
+                    wantResponse=False,
+                )
             _result[0] = True
         except Exception as exc:
             _result[0] = exc
