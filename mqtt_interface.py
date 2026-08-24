@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import queue
 import re
@@ -229,6 +229,15 @@ class MqttInterface:
         self.nodes: dict[str, dict[str, Any]] = {}
         self._num_to_label: dict[int, str] = {}
 
+        # Other BBS nodes noticed on this topic, keyed by their label. Filled
+        # from the retained status messages every node already publishes (see
+        # publish_status), so pairing does not require anyone to type a peer
+        # address by hand -- every way of mistyping one fails silently.
+        # Retained means the broker replays them the moment we subscribe, so
+        # this is populated on connect rather than after a peer next speaks.
+        self.peers_seen: dict[str, dict[str, Any]] = {}
+        self._peers_lock = threading.Lock()
+
         self._self_node_id = _mqtt_node_id(self.topic_prefix, self.local_id)
         self.myInfo = SimpleNamespace(my_node_num=_node_num(self._self_node_id))
         self._num_to_label[self.myInfo.my_node_num] = self.local_id
@@ -341,10 +350,29 @@ class MqttInterface:
             self.close()
             raise ConnectionError(f"MQTT connect failed: {error}") from error
 
+    def _status_discovery_topics(self) -> list[str]:
+        """Wildcard topics that carry other nodes' retained status messages.
+
+        '+' is single-level, so this matches '{prefix}/{label}/status' and
+        deliberately NOT the '{prefix}/{label}/status/links/<name>'
+        sub-topics -- one message per node, not one per link.
+
+        publish_prefix is watched as well as topic_prefix because a node
+        that overrides it publishes its status there instead. A peer whose
+        publish_prefix differs from ours is still undiscoverable; that is
+        documented in Settings rather than guessed at.
+        """
+        topics = [f"{self.topic_prefix}/+/status"]
+        if self.publish_prefix and self.publish_prefix != self.topic_prefix:
+            topics.append(f"{self.publish_prefix}/+/status")
+        return topics
+
     def _on_connect(self, client, userdata, flags, reason_code, properties=None) -> None:
         del userdata, flags, properties
         if reason_code == 0:
             client.subscribe(self._topic, qos=1)
+            for topic in self._status_discovery_topics():
+                client.subscribe(topic, qos=0)
             self._connect_error = None
         else:
             self._connect_error = ConnectionError(str(reason_code))
@@ -352,6 +380,40 @@ class MqttInterface:
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties=None) -> None:
         del client, userdata, flags, reason_code, properties
+
+    def _record_peer_status(self, topic: str, data: Any) -> None:
+        """Note another node publishing status on this topic.
+
+        The label is the segment before 'status'. Our own retained status is
+        echoed straight back to us on subscribe, so skipping self is the
+        case that matters here -- without it every node would list itself as
+        an available peer.
+        """
+        parts = str(topic).split("/")
+        if len(parts) < 2 or parts[-1] != "status":
+            return
+        label = _clean_label(parts[-2])
+        if not label or label == self.local_id:
+            return
+        updated_at = None
+        if isinstance(data, dict):
+            updated_at = data.get("updated_at")
+        with self._peers_lock:
+            self.peers_seen[label] = {
+                "label": label,
+                # Built with the same helper the sync layer uses, so a
+                # discovered address can never drift from an accepted one.
+                "node_id": _mqtt_node_id(self.topic_prefix, label),
+                "last_seen": datetime.now(timezone.utc).isoformat(),
+                "updated_at": updated_at,
+            }
+
+    def discovered_peers(self) -> list[dict[str, Any]]:
+        """Peers noticed on this topic, most recently seen first."""
+        with self._peers_lock:
+            peers = [dict(entry) for entry in self.peers_seen.values()]
+        peers.sort(key=lambda entry: str(entry.get("last_seen") or ""), reverse=True)
+        return peers
 
     def _on_message(self, client, userdata, msg) -> None:
         del client, userdata
@@ -361,6 +423,13 @@ class MqttInterface:
             logging.debug(
                 "MQTT[%s]: ignoring malformed payload on %s", self.link_name, msg.topic
             )
+            return
+        # Route by topic before parsing as a sync frame. Status payloads have
+        # no 'from' field and would fall out of the parser below anyway, but
+        # depending on that would make the sync path quietly sensitive to
+        # anything else we ever subscribe to.
+        if msg.topic != self._topic:
+            self._record_peer_status(msg.topic, data)
             return
         from_label = _clean_label(data.get("from"))
         if not from_label or from_label == self.local_id:

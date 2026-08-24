@@ -422,9 +422,52 @@
             <p class="text-muted">Only affects the telemetry above, not sync traffic &mdash; the sync topic must stay on the shared topic prefix or the bridge breaks. Spaces are converted to <code>-</code>.</p>
           </div>
         </details>
+        {# Pairing. Every way of hand-typing a peer address fails silently --
+           wrong prefix, duplicate name, a typo -- so the addresses are
+           offered rather than typed. Nodes are found from the retained
+           status messages each one already publishes. #}
+        <div class="pairing-box">
+          <div class="pairing-self">
+            <span class="text-muted">This node on this topic:</span>
+            {% if link.self_node_id %}
+            <button type="button" class="node-id copy-value" data-copy="{{ link.self_node_id }}"
+                    title="{{ link.self_node_id }} (click to copy)">{{ link.self_node_id }}</button>
+            {% else %}
+            <em class="text-muted">set a topic prefix and a name below, then save</em>
+            {% endif %}
+          </div>
+          <div class="pairing-peers">
+            <span class="text-muted">Nodes seen on this topic:</span>
+            {% if link.discovered_peers %}
+            <ul class="pairing-list">
+              {% for peer in link.discovered_peers %}
+              <li>
+                <code>{{ peer.node_id }}</code>
+                {% if peer.already_peer %}
+                <span class="badge">already a peer</span>
+                {% else %}
+                <button type="button" class="btn btn-sm add-peer-btn"
+                        data-peer-target="mqtt_{{ link.index }}_bbs_nodes"
+                        data-peer-id="{{ peer.node_id }}">+ Add as sync peer</button>
+                {% endif %}
+              </li>
+              {% endfor %}
+            </ul>
+            {% else %}
+            <p class="text-muted" style="margin:4px 0 0">
+              None yet. Every node publishes itself here, so an empty list usually means
+              the other node's <strong>topic prefix</strong> doesn't match this one exactly
+              &mdash; or it has <code>publish_status</code> turned off, or a different
+              <code>publish_prefix</code>. It also stays empty until the BBS service has
+              connected to the broker.
+            </p>
+            {% endif %}
+          </div>
+        </div>
         <div class="form-group">
           <label for="mqtt_{{ link.index }}_bbs_nodes">Sync peers on this link</label>
           <textarea id="mqtt_{{ link.index }}_bbs_nodes" name="mqtt_{{ link.index }}_bbs_nodes" class="form-control" placeholder="One per line or comma separated -- e.g. mqtt:baconbs/cityA-cityB:cityB-node">{{ link.bbs_nodes_text }}</textarea>
+          <p class="text-muted">Sync is mutual: the other node must list this one too. Adding a peer here takes effect when you save and the BBS service restarts.</p>
         </div>
         <div class="form-group">
           <label for="mqtt_{{ link.index }}_allowed_nodes">Urgent board allow-list on this link</label>
@@ -530,6 +573,23 @@
         if (ev.target && ev.target.classList.contains('mqtt-remove-btn')) {
           var row = ev.target.closest('[data-mqtt-index]');
           if (row) { row.remove(); syncIndexes(); }
+          return;
+        }
+        // Adding a discovered peer only fills in the textarea; the existing
+        // Save button still writes it. That reuses the whole save path
+        // rather than adding an endpoint, and lets you see the pending
+        // change (and undo it) before committing.
+        var addPeer = ev.target && ev.target.closest ? ev.target.closest('.add-peer-btn') : null;
+        if (addPeer) {
+          var box = document.getElementById(addPeer.getAttribute('data-peer-target'));
+          var peerId = addPeer.getAttribute('data-peer-id');
+          if (!box || !peerId) return;
+          var lines = box.value.split(/[\n,]/).map(function (s) { return s.trim(); })
+                               .filter(function (s) { return s; });
+          if (lines.indexOf(peerId) === -1) lines.push(peerId);
+          box.value = lines.join('\n');
+          addPeer.disabled = true;
+          addPeer.textContent = 'Added — save to apply';
         }
       });
     }

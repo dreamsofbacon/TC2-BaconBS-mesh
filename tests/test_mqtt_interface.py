@@ -25,9 +25,30 @@ class _FakeBroker:
     def subscribe(self, topic, client):
         self.subscribers.setdefault(topic, []).append(client)
 
+    @staticmethod
+    def _matches(filter_topic, topic):
+        """Single-level '+' wildcard matching, as a real broker does.
+
+        Peer discovery subscribes to '{prefix}/+/status', and the point of
+        using '+' is that it must NOT also match the deeper
+        '{prefix}/{node}/status/links/<name>' sub-topics -- so the fake has
+        to model level counts, not substrings, or the test would pass for
+        the wrong reason.
+        """
+        if "+" not in filter_topic:
+            return filter_topic == topic
+        f_parts = filter_topic.split("/")
+        t_parts = topic.split("/")
+        if len(f_parts) != len(t_parts):
+            return False
+        return all(f == "+" or f == t for f, t in zip(f_parts, t_parts))
+
     def publish(self, topic, payload):
-        for client in self.subscribers.get(topic, []):
-            client._deliver(topic, payload)
+        for filter_topic, clients in list(self.subscribers.items()):
+            if not self._matches(filter_topic, topic):
+                continue
+            for client in clients:
+                client._deliver(topic, payload)
 
 
 class _FakeMqttClient:
@@ -781,3 +802,105 @@ class PublishClientsHeardVsSeenTests(unittest.TestCase):
             "last_seen": self._now_str(), "last_heard_epoch": None,
         }])
         self.assertIn("p/n/clients/secondary/meshcore-node", self._topics())
+
+
+class MqttPeerDiscoveryTests(unittest.TestCase):
+    """Pairing two nodes means typing the other's address by hand, and every
+    way of getting it wrong -- mismatched prefix, duplicate name, a typo --
+    fails silently. Every node already publishes a RETAINED status message
+    to '{prefix}/{local_id}/status', so subscribing to '{prefix}/+/status'
+    yields the roster for free and the address can be offered instead.
+    """
+
+    def setUp(self):
+        self.broker = _FakeBroker()
+        self.client_patch = patch.object(
+            mqtt_interface.mqtt, "Client", _make_client_factory(self.broker)
+        )
+        self.client_patch.start()
+        self.addCleanup(self.client_patch.stop)
+
+    def _make(self, local_id, topic_prefix="baconbbs", **kwargs):
+        iface = MqttInterface(
+            host="broker.example.com",
+            topic_prefix=topic_prefix,
+            local_id=local_id,
+            link_name="mqtt1",
+            **kwargs,
+        )
+        self.addCleanup(iface.close)
+        return iface
+
+    def test_a_peers_status_makes_it_discoverable(self):
+        iface = self._make("bbs-main")
+        self.broker.publish("baconbbs/forgecam/status",
+                            json.dumps({"updated_at": "2026-08-24T19:00:00Z"}))
+        peers = iface.discovered_peers()
+        self.assertEqual([p["label"] for p in peers], ["forgecam"])
+        self.assertEqual(peers[0]["node_id"], "mqtt:baconbbs:forgecam")
+        self.assertEqual(peers[0]["updated_at"], "2026-08-24T19:00:00Z")
+
+    def test_our_own_retained_status_is_not_offered_as_a_peer(self):
+        """Retained means the broker replays our own status straight back at
+        us on subscribe, so without this every node lists itself."""
+        iface = self._make("bbs-main")
+        self.broker.publish("baconbbs/bbs-main/status", json.dumps({"updated_at": "x"}))
+        self.assertEqual(iface.discovered_peers(), [])
+
+    def test_per_link_status_subtopics_are_not_mistaken_for_nodes(self):
+        """'+' is single-level on purpose: one entry per node, not one per
+        link that node happens to have."""
+        iface = self._make("bbs-main")
+        self.broker.publish("baconbbs/forgecam/status/links/primary", json.dumps({}))
+        self.assertEqual(iface.discovered_peers(), [])
+
+    def test_status_traffic_never_reaches_the_sync_parser(self):
+        """The new subscription must not change what sync sees."""
+        iface = self._make("bbs-main")
+        self.broker.publish("baconbbs/forgecam/status", json.dumps({"updated_at": "x"}))
+        self.assertTrue(iface._incoming.empty(), "status leaked into the sync queue")
+        self.assertEqual(iface.nodes, {}, "status invented a mesh node")
+
+    def test_malformed_status_payload_is_ignored(self):
+        iface = self._make("bbs-main")
+        self.broker.publish("baconbbs/forgecam/status", b"\xff not json")
+        self.assertEqual(iface.discovered_peers(), [])
+
+    def test_sync_traffic_still_works_alongside_discovery(self):
+        """The extra subscription must not disturb the sync path."""
+        a = self._make("node-a")
+        b = self._make("node-b")
+        # A configured peer's id is known before any message arrives; this
+        # is what lets sendText resolve a numeric destination (mirrors
+        # test_send_text_direct_round_trips_between_two_links).
+        a.bbs_nodes = [b._self_node_id]
+        a.sendText("hello", b.myInfo.my_node_num)
+        packet = b._incoming.get_nowait()
+        self.assertEqual(packet["decoded"]["payload"], b"hello")
+
+    def test_publish_prefix_override_is_also_watched(self):
+        """A node that publishes telemetry elsewhere still publishes its
+        status under that prefix, so watch both."""
+        iface = self._make("bbs-main", publish_prefix="homeassistant/baconbbs")
+        self.assertIn("baconbbs/+/status", iface._status_discovery_topics())
+        self.assertIn("homeassistant/baconbbs/+/status", iface._status_discovery_topics())
+
+    def test_every_peer_on_the_topic_is_listed(self):
+        iface = self._make("bbs-main")
+        for label in ("alpha", "bravo", "charlie"):
+            self.broker.publish(f"baconbbs/{label}/status", json.dumps({}))
+        self.assertEqual({p["label"] for p in iface.discovered_peers()},
+                         {"alpha", "bravo", "charlie"})
+
+    def test_most_recently_seen_peer_is_listed_first(self):
+        """Ordering is asserted against explicit timestamps -- three real
+        publishes in a loop can land in the same microsecond and would make
+        this pass or fail on clock resolution rather than on the sort."""
+        iface = self._make("bbs-main")
+        for label in ("alpha", "bravo", "charlie"):
+            self.broker.publish(f"baconbbs/{label}/status", json.dumps({}))
+        iface.peers_seen["alpha"]["last_seen"] = "2026-08-24T10:00:00+00:00"
+        iface.peers_seen["bravo"]["last_seen"] = "2026-08-24T12:00:00+00:00"
+        iface.peers_seen["charlie"]["last_seen"] = "2026-08-24T11:00:00+00:00"
+        self.assertEqual([p["label"] for p in iface.discovered_peers()],
+                         ["bravo", "charlie", "alpha"])

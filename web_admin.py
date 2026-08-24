@@ -3976,6 +3976,59 @@ def create_app(runtime_interface=None) -> Flask:
       except Exception:
         return snapshot
 
+    def attach_discovered_mqtt_peers(mqtt_links: list[dict]) -> None:
+      """Add each broker card's 'discovered_peers' and 'self_node_id'.
+
+      The running BBS notices other nodes from the retained status messages
+      on its topic and reports them in the diagnostics snapshot it already
+      writes every main-loop pass. Reading that here means the web process
+      needs no broker connection of its own, and no second place handling
+      MQTT passwords and TLS material.
+
+      Best-effort: a missing or stale snapshot (mesh-bbs stopped, first run
+      before one is written) just yields an empty list, and the card falls
+      back to the hand-typed peer box it has always had.
+      """
+      for link in mqtt_links:
+        link.setdefault("discovered_peers", [])
+        prefix = str(link.get("topic_prefix", "")).strip()
+        local_id = str(link.get("local_id", "")).strip()
+        link["self_node_id"] = f"mqtt:{prefix}:{local_id}" if prefix and local_id else ""
+
+      snapshot_path = resolve_app_path(os.getenv("BBS_RUNTIME_DIAG_PATH"), "runtime_diagnostics.json")
+      snapshot = load_runtime_snapshot(snapshot_path)
+      if not isinstance(snapshot, dict):
+        return
+      radios = snapshot.get("radios")
+      if not isinstance(radios, list):
+        return
+
+      by_link_name = {
+        str(radio.get("name", "")): radio
+        for radio in radios
+        if isinstance(radio, dict)
+      }
+      for link in mqtt_links:
+        radio = by_link_name.get(f"mqtt{link['index']}")
+        if not isinstance(radio, dict):
+          continue
+        peers = radio.get("discovered_peers")
+        if not isinstance(peers, list):
+          continue
+        # Already-configured peers are shown as such rather than offered
+        # again -- adding a duplicate is the obvious next mistake.
+        existing = {line.strip() for line in str(link.get("bbs_nodes_text", "")).splitlines() if line.strip()}
+        link["discovered_peers"] = [
+          {
+            "label": str(peer.get("label", "")),
+            "node_id": str(peer.get("node_id", "")),
+            "last_seen": str(peer.get("last_seen") or ""),
+            "already_peer": str(peer.get("node_id", "")) in existing,
+          }
+          for peer in peers
+          if isinstance(peer, dict) and peer.get("node_id")
+        ]
+
     def get_link_status_list() -> list[dict]:
       """Per-link connection status (name, protocol, connected, reconnecting)
       for every active radio/MQTT link -- shared by the nav-bar status badges'
@@ -4421,6 +4474,7 @@ def create_app(runtime_interface=None) -> Flask:
       device_settings = load_device_settings(app.config["CONFIG_PATH"])
       account_settings = load_account_settings(app.config["CONFIG_PATH"])
       mqtt_settings = load_mqtt_settings(app.config["CONFIG_PATH"])
+      attach_discovered_mqtt_peers(mqtt_settings)
       link_statuses = get_link_status_list()
       return render_template(
         "settings.html",
