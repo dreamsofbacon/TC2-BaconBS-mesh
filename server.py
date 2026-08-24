@@ -217,6 +217,23 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
+# Radio-library diagnostics. meshtastic-python logs its TX queue and ack
+# handling at DEBUG ("Waiting for free space in TX Queue", resends, acks) --
+# the layer below our own send logging, and the only place to see whether a
+# packet actually left the radio rather than just reaching sendText. Off by
+# default because it is extremely chatty; set BBS_MESHTASTIC_DEBUG=1 to
+# enable while reproducing a delivery problem.
+if os.getenv('BBS_MESHTASTIC_DEBUG', '').strip().lower() in ('1', 'true', 'yes', 'on'):
+    logging.getLogger('meshtastic').setLevel(logging.DEBUG)
+    _mesh_debug_handler = logging.StreamHandler()
+    _mesh_debug_handler.setLevel(logging.DEBUG)
+    _mesh_debug_handler.setFormatter(
+        logging.Formatter('%(asctime)s - MESHDBG - %(levelname)s - %(message)s',
+                          '%Y-%m-%d %H:%M:%S'))
+    logging.getLogger('meshtastic').addHandler(_mesh_debug_handler)
+    logging.getLogger('meshtastic').propagate = False
+    logging.warning("BBS_MESHTASTIC_DEBUG enabled — meshtastic library DEBUG logging is ON")
+
 # JS8Call logging
 js8call_logger = logging.getLogger('js8call')
 js8call_logger.setLevel(logging.DEBUG)
