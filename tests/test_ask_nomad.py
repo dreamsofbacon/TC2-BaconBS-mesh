@@ -6,6 +6,7 @@
   specifically (not Utilities, which the shared API-gateway HTTP flow still
   uses).
 """
+import os
 import sqlite3
 import sys
 import threading
@@ -138,8 +139,12 @@ class AskNomadFollowUpLocalGatewayTests(unittest.TestCase):
             command_handlers._apigw_submit(111, self.interface, "r", "ai\x1fwhat is the answer", "Project Nomad")
             captured["reply_fn"]("200", "42")
         messages = _sent(sm)
-        self.assertTrue(any("42" in m for m in messages))
-        self.assertTrue(any("another question" in m for m in messages))
+        # The answer and the invitation must share one packet -- a separate
+        # second DM races the first one's relay traffic and loses. The
+        # "asked shortly" ack is a separate, earlier message.
+        answer = [m for m in messages if "42" in m]
+        self.assertEqual(len(answer), 1, f"answer split across packets: {messages}")
+        self.assertIn("another question", answer[0])
         self.assertEqual(command_handlers.get_user_state(111), {"command": "ASK_NOMAD", "step": 1})
 
     def test_http_reply_shows_no_follow_up_prompt(self):
@@ -172,16 +177,21 @@ class AskNomadFollowUpMeshRelayTests(unittest.TestCase):
             conn.close()
             del db_operations.thread_local.connection
 
-    def test_ai_response_over_mesh_shows_follow_up(self):
+    def test_ai_response_over_mesh_arrives_as_one_message(self):
+        """Answer and invitation must share a packet: two DMs two seconds
+        apart race the first one's relay traffic on a multi-hop mesh, and
+        the second loses. The AI path delegates to command_handlers, so the
+        send happens there rather than in message_processing."""
         utils.register_api_request("rid1", 111, gateway_node_id="!gw", kind="r")
-        with mock.patch.object(message_processing, "send_message") as sm:
+        with mock.patch.object(command_handlers, "send_message") as sm:
             message_processing.process_message(
                 111, "APIRESP|rid1|200|2|42", self.interface,
                 is_sync_message=True, sender_node_id="!gw",
             )
         messages = _sent(sm)
-        self.assertTrue(any("42" in m for m in messages))
-        self.assertTrue(any("another question" in m for m in messages))
+        self.assertEqual(len(messages), 1, f"expected one packet, got {messages}")
+        self.assertIn("42", messages[0])
+        self.assertIn("another question", messages[0])
         self.assertEqual(command_handlers.get_user_state(111), {"command": "ASK_NOMAD", "step": 1})
 
     def test_http_response_over_mesh_shows_no_follow_up(self):
@@ -426,3 +436,44 @@ class ConcurrentSendSerializationTests(unittest.TestCase):
     def test_the_lock_is_stable_across_calls(self):
         iface = self._OverlapDetectingIface()
         self.assertIs(utils.interface_send_lock(iface), utils.interface_send_lock(iface))
+
+
+class UserMessagePacingTests(unittest.TestCase):
+    """Consecutive DMs to one node must not race each other's relay traffic."""
+
+    class _Lora:
+        protocol_name = "Meshtastic"
+
+    class _LowLatency:
+        protocol_name = "MQTT"
+        is_low_latency = True
+
+    def setUp(self):
+        self._saved = os.environ.pop("BBS_USER_MESSAGE_PAUSE_SECONDS", None)
+        utils._user_pause_cache = None  # the value is cached for a few seconds
+
+    def tearDown(self):
+        os.environ.pop("BBS_USER_MESSAGE_PAUSE_SECONDS", None)
+        utils._user_pause_cache = None
+        if self._saved is not None:
+            os.environ["BBS_USER_MESSAGE_PAUSE_SECONDS"] = self._saved
+
+    def test_lora_keeps_a_gap_by_default(self):
+        self.assertEqual(utils.get_user_message_pause_seconds(self._Lora()), 2.0)
+
+    def test_low_latency_transport_needs_no_gap(self):
+        self.assertEqual(utils.get_user_message_pause_seconds(self._LowLatency()), 0.0)
+
+    def test_the_gap_is_tunable_for_a_slow_mesh(self):
+        os.environ["BBS_USER_MESSAGE_PAUSE_SECONDS"] = "5"
+        self.assertEqual(utils.get_user_message_pause_seconds(self._Lora()), 5.0)
+
+    def test_a_bad_value_falls_back_rather_than_crashing_every_send(self):
+        os.environ["BBS_USER_MESSAGE_PAUSE_SECONDS"] = "not-a-number"
+        self.assertEqual(utils.get_user_message_pause_seconds(self._Lora()), 2.0)
+
+    def test_sync_turbo_does_not_remove_the_gap(self):
+        """sync_turbo speeds SYNC pacing; the radio's airtime limits are
+        unchanged, and turbo nodes are the busiest ones."""
+        with mock.patch.object(utils, "_is_sync_turbo_enabled", return_value=True):
+            self.assertEqual(utils.get_user_message_pause_seconds(self._Lora()), 2.0)

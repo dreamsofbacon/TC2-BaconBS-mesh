@@ -471,6 +471,54 @@ def _split_into_chunks(text, max_len=200):
     return chunks
 
 
+_user_pause_cache = None
+_USER_PAUSE_CACHE_SECONDS = 5.0
+
+
+def get_user_message_pause_seconds(interface=None) -> float:
+    """Gap after each user-facing message, so consecutive DMs to one node
+    do not race each other.
+
+    A DM across several hops needs seconds to arrive and be acked, and the
+    mesh is busy relaying it the whole time. Send the next one too soon and
+    it collides with the first one's own relay traffic -- radio logs showed
+    three replies accepted by the radio two seconds apart, and only the
+    first ever acked by the destination.
+
+    Two seconds is fine on a quiet or single-hop mesh and too tight on a
+    busy multi-hop one, so it is tunable rather than guessed:
+    [sync] user_message_pause_seconds, or BBS_USER_MESSAGE_PAUSE_SECONDS.
+    Low-latency transports (MQTT) have no airtime to protect and skip it.
+    """
+    # Deliberately NOT _effective_turbo: the global [sync] sync_turbo flag
+    # speeds up SYNC pacing, but a LoRa radio still has the same airtime and
+    # half-duplex limits either way. Keying on it here would remove this gap
+    # for exactly the busiest nodes, which is where it matters most. Only a
+    # transport with genuinely no airtime to protect skips it.
+    if getattr(interface, 'is_low_latency', False):
+        return 0.0
+    env = os.getenv('BBS_USER_MESSAGE_PAUSE_SECONDS', '').strip()
+    if env:
+        try:
+            return max(0.0, float(env))
+        except ValueError:
+            pass
+    # Cached briefly. send_message runs on every outbound message from
+    # several threads, and re-reading config.ini there put a file open in
+    # the hot path -- enough, on Windows, to keep a directory busy while
+    # something else tried to remove it. A few seconds of staleness on a
+    # pacing knob costs nothing; an edit still takes effect without a
+    # restart, which is the property worth keeping.
+    global _user_pause_cache
+    now = time.monotonic()
+    cached = _user_pause_cache
+    if cached is not None and now - cached[0] < _USER_PAUSE_CACHE_SECONDS:
+        return cached[1]
+    value = _config_float('sync', 'user_message_pause_seconds', 2.0)
+    _user_pause_cache = (now, value)
+    return value
+
+
 _send_lock_registry_lock = threading.Lock()
 
 
@@ -535,6 +583,7 @@ def send_message(message, destination, interface) -> bool:
 
     delivered = True
     send_lock = interface_send_lock(interface)
+    pause = get_user_message_pause_seconds(interface)
     for chunk in chunks:
         try:
             with send_lock:
@@ -556,7 +605,7 @@ def send_message(message, destination, interface) -> bool:
             logging.warning(
                 f"REPLY SEND ERROR to {destination} over {protocol}: {e}")
 
-        time.sleep(2)
+        time.sleep(pause)
     return delivered
 
 

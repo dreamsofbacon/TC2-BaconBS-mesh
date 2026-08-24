@@ -27,6 +27,7 @@ from command_handlers import (
     handle_ask_nomad_command, handle_ask_nomad_steps,
     handle_account_steps,
     handle_settings_command, handle_settings_steps,
+    deliver_ask_nomad_reply,
     number_alias, MAIN_NUMBER_MAP, BBS_NUMBER_MAP, UTILITIES_NUMBER_MAP,
 )
 from db_operations import (
@@ -835,10 +836,14 @@ def _deliver_api_response(rid, status, body, interface):
     if sender_id is None:
         return  # no waiter (already timed out / unknown rid)
     prefix = "" if str(status) in ("200", "OK") else f"[{status}] "
-    send_message(f"{prefix}{body}", sender_id, interface)
+    text = f"{prefix}{body}"
     if pending and pending.get('kind') == 'r':
-        send_message("Reply with another question, or [0] for the main menu.", sender_id, interface)
-        update_user_state(sender_id, {'command': 'ASK_NOMAD', 'step': 1})
+        # Answer and invitation in ONE message: two DMs two seconds apart
+        # race each other's relay traffic on a multi-hop mesh, and the
+        # second one loses. See command_handlers.deliver_ask_nomad_reply.
+        deliver_ask_nomad_reply(text, sender_id, interface)
+    else:
+        send_message(text, sender_id, interface)
 
 
 def _mark_hashreq_pending(peer_id: str, scope: str) -> None:

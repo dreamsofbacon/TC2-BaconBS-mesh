@@ -422,13 +422,16 @@ def _apigw_submit(sender_id, interface, kind, payload, label):
         def _reply(status, body):
             live = getattr(link, 'interface', None) or interface
             prefix = "" if str(status) in ("200", "OK") else f"[{status}] "
-            if not send_message(f"{prefix}{body}", sender_id, live):
+            text = f"{prefix}{body}"
+            # AI replies carry the follow-up invitation in the SAME message
+            # -- see deliver_ask_nomad_reply for why a second packet here
+            # loses races against the first one's relay traffic.
+            ok = (deliver_ask_nomad_reply(text, sender_id, live) if kind == 'r'
+                  else send_message(text, sender_id, live))
+            if not ok:
                 logging.warning(
                     f"apigw rid={rid}: {label} answered but the reply could not "
                     f"be delivered to {node_id}")
-                return  # no point prompting for another question
-            if kind == 'r':
-                _prompt_ask_nomad_followup(sender_id, live)
         gateway.handle_apireq(rid, node_id, kind, payload,
                               getattr(interface, 'allowed_nodes', None), _reply)
         send_message(f"Asked {label}… reply will arrive shortly.", sender_id, interface)
@@ -501,14 +504,39 @@ def handle_ask_nomad_command(sender_id, interface):
     update_user_state(sender_id, {'command': 'ASK_NOMAD', 'step': 1})
 
 
+ASK_NOMAD_FOLLOWUP = "Reply with another question, or [0] for the main menu."
+
+
+def deliver_ask_nomad_reply(body, sender_id, interface) -> bool:
+    """Send a Project Nomad answer WITH the follow-up invitation attached.
+
+    One radio message, not two, and that matters more than it looks. A DM to
+    a multi-hop node takes several seconds to arrive and be acked, but
+    send_message paces at two seconds -- so a burst of three (the "asked
+    shortly" ack, the answer, the invitation) puts packets two and three on
+    the air while the first is still being relayed, and they collide with
+    its own relay traffic. Radio-level logs showed exactly that: all three
+    accepted by the radio, only the first ever acked by the destination.
+
+    Menu traffic never hit this because a human takes longer than the mesh
+    does between selections. This reply is the only burst the BBS emits.
+    """
+    text = str(body or "").rstrip()
+    combined = (text + LINE_BREAK + ASK_NOMAD_FOLLOWUP) if text else ASK_NOMAD_FOLLOWUP
+    delivered = send_message(combined, sender_id, interface)
+    update_user_state(sender_id, {'command': 'ASK_NOMAD', 'step': 1})
+    return delivered
+
+
 def _prompt_ask_nomad_followup(sender_id, interface) -> None:
-    """Shown right after a Project Nomad reply is delivered (from either the
-    local-gateway fast path or the mesh-relay path). Reusing 'ASK_NOMAD'
-    state here (same as the homescreen shortcut) means the very next message
-    is either treated as a new question or, for [0]/x/exit, sent back to the
-    MAIN menu specifically -- not Utilities -- which the shared
-    handle_apigw_steps() always does regardless of entry point."""
-    send_message("Reply with another question, or [0] for the main menu.", sender_id, interface)
+    """Invitation on its own, for paths with no answer text to attach it to.
+
+    Reusing 'ASK_NOMAD' state here (same as the homescreen shortcut) means
+    the very next message is either treated as a new question or, for
+    [0]/x/exit, sent back to the MAIN menu specifically -- not Utilities,
+    which the shared handle_apigw_steps() always does regardless of entry
+    point."""
+    send_message(ASK_NOMAD_FOLLOWUP, sender_id, interface)
     update_user_state(sender_id, {'command': 'ASK_NOMAD', 'step': 1})
 
 
