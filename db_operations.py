@@ -1,6 +1,7 @@
 import configparser
 import base64
 import hashlib
+import json
 import logging
 import os
 import secrets
@@ -19,6 +20,7 @@ from utils import (
     send_bulletin_to_bbs_nodes,
     send_delete_bulletin_to_bbs_nodes,
     send_delete_channel_comment_to_bbs_nodes,
+    send_delete_channel_to_bbs_nodes,
     send_delete_mail_to_bbs_nodes,
     send_delete_zork_save_to_bbs_nodes,
     send_mail_to_bbs_nodes, send_message, send_channel_to_bbs_nodes,
@@ -710,8 +712,16 @@ def initialize_database():
         c.execute("ALTER TABLE peer_sync_state ADD COLUMN caps_observed_at TEXT NOT NULL DEFAULT ''")
     c.execute('''CREATE TABLE IF NOT EXISTS deleted_sync_tombstones (
                     tombstone_key TEXT PRIMARY KEY,
-                    deleted_at TEXT NOT NULL
+                    deleted_at TEXT NOT NULL,
+                    payload TEXT NOT NULL DEFAULT ''
                 );''')
+    # 'payload' holds a JSON snapshot of the row that was deleted, so the web
+    # admin can restore it. A tombstone alone only records THAT something was
+    # deleted, which is enough to stop a peer re-sending it but leaves nothing
+    # to bring back.
+    c.execute("PRAGMA table_info(deleted_sync_tombstones)")
+    if 'payload' not in {row[1] for row in c.fetchall()}:
+        c.execute("ALTER TABLE deleted_sync_tombstones ADD COLUMN payload TEXT NOT NULL DEFAULT ''")
     c.execute('''CREATE TABLE IF NOT EXISTS sync_transmissions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     transmission_time TEXT NOT NULL,
@@ -928,8 +938,16 @@ def _ensure_deleted_sync_tombstones_table() -> None:
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS deleted_sync_tombstones (
                     tombstone_key TEXT PRIMARY KEY,
-                    deleted_at TEXT NOT NULL
+                    deleted_at TEXT NOT NULL,
+                    payload TEXT NOT NULL DEFAULT ''
                 );''')
+    # 'payload' holds a JSON snapshot of the row that was deleted, so the web
+    # admin can restore it. A tombstone alone only records THAT something was
+    # deleted, which is enough to stop a peer re-sending it but leaves nothing
+    # to bring back.
+    c.execute("PRAGMA table_info(deleted_sync_tombstones)")
+    if 'payload' not in {row[1] for row in c.fetchall()}:
+        c.execute("ALTER TABLE deleted_sync_tombstones ADD COLUMN payload TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
 
@@ -1681,26 +1699,87 @@ def _build_tombstone_key(scope: str, record_key: str) -> str:
     return f"{scope}:{record_key}"
 
 
-def record_sync_tombstone(scope: str, record_key: str) -> None:
-    record_sync_tombstone_at(scope, record_key, None)
+def record_sync_tombstone(scope: str, record_key: str, payload: Optional[dict] = None) -> None:
+    record_sync_tombstone_at(scope, record_key, None, payload=payload)
 
 
-def record_sync_tombstone_at(scope: str, record_key: str, deleted_at: Optional[str]) -> None:
+def record_sync_tombstone_at(scope: str, record_key: str, deleted_at: Optional[str],
+                             payload: Optional[dict] = None) -> None:
+    """Record that a record was deleted, optionally keeping a copy of it.
+
+    The key alone is what stops a peer re-sending the record. ``payload`` is
+    a snapshot of the row so the web admin can restore it later -- without
+    it a delete is unrecoverable, since the row itself is gone.
+
+    An existing snapshot is never overwritten with nothing: a delete
+    replayed from a peer carries no payload, and letting that blank out the
+    copy we made locally would silently make the record unrestorable.
+    """
     _ensure_deleted_sync_tombstones_table()
     conn = get_db_connection()
     c = conn.cursor()
     normalized_deleted_at = str(deleted_at or datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    encoded = ''
+    if payload:
+        try:
+            encoded = json.dumps(payload, ensure_ascii=False)
+        except (TypeError, ValueError):
+            encoded = ''
     c.execute(
-        '''INSERT INTO deleted_sync_tombstones (tombstone_key, deleted_at)
-           VALUES (?, ?)
+        '''INSERT INTO deleted_sync_tombstones (tombstone_key, deleted_at, payload)
+           VALUES (?, ?, ?)
            ON CONFLICT(tombstone_key) DO UPDATE SET
                          deleted_at = CASE
                              WHEN excluded.deleted_at > deleted_sync_tombstones.deleted_at THEN excluded.deleted_at
                              ELSE deleted_sync_tombstones.deleted_at
+                         END,
+                         payload = CASE
+                             WHEN excluded.payload != '' THEN excluded.payload
+                             ELSE deleted_sync_tombstones.payload
                          END''',
-                (_build_tombstone_key(scope, record_key), normalized_deleted_at),
+                (_build_tombstone_key(scope, record_key), normalized_deleted_at, encoded),
     )
     conn.commit()
+
+
+def get_sync_tombstones(limit: int = 500) -> list[dict]:
+    """Deleted records, most recent first, for the web admin's restore view."""
+    _ensure_deleted_sync_tombstones_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT tombstone_key, deleted_at, payload FROM deleted_sync_tombstones "
+        "ORDER BY deleted_at DESC LIMIT ?", (int(limit),)
+    )
+    out = []
+    for key, deleted_at, payload in c.fetchall():
+        scope, _, record_key = str(key).partition(':')
+        try:
+            snapshot = json.loads(payload) if payload else None
+        except ValueError:
+            snapshot = None
+        out.append({
+            'tombstone_key': str(key),
+            'scope': scope,
+            'record_key': record_key,
+            'deleted_at': str(deleted_at),
+            'snapshot': snapshot,
+            'restorable': bool(snapshot),
+        })
+    return out
+
+
+def forget_sync_tombstone(tombstone_key: str) -> bool:
+    """Drop a tombstone by its full 'scope:key' string, leaving the record
+    deleted. A peer that still holds it is then free to send it back --
+    which is the point when a delete was a mistake and a peer has the copy.
+    """
+    _ensure_deleted_sync_tombstones_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM deleted_sync_tombstones WHERE tombstone_key = ?", (str(tombstone_key),))
+    conn.commit()
+    return c.rowcount > 0
 
 
 def clear_sync_tombstone(scope: str, record_key: str) -> None:
@@ -2634,6 +2713,10 @@ def _dedupe_messages_and_create_unique_indexes(cursor) -> None:
 def add_channel(name, url, bbs_nodes=None, interface=None, local_only: bool = False):
     conn = get_db_connection()
     c = conn.cursor()
+    # Adding a channel that was previously deleted here is a deliberate
+    # decision to bring it back, so the tombstone has to go -- otherwise the
+    # next sync pass would honour it and delete the entry again.
+    clear_sync_tombstone('channels', make_channel_manifest_key(name, url))
     c.execute("INSERT OR IGNORE INTO channels (name, url, local_only) VALUES (?, ?, ?)", (name, url, 1 if local_only else 0))
     conn.commit()
 
@@ -2829,6 +2912,100 @@ def get_channel_comment_by_unique_id(unique_id: str):
         (str(unique_id),),
     )
     return c.fetchone()
+
+
+def delete_channel(name: str, url: str, bbs_nodes=None, interface=None) -> bool:
+    """Delete a channel directory entry, tombstone it, and tell peers.
+
+    The web admin used to delete channels with a bare DELETE, which left no
+    tombstone -- so the next sync pass saw a record the peer had and this
+    node did not, and put it straight back. Deleting it again did the same
+    thing. Mirrors delete_bulletin / delete_mail: tombstone first so the
+    record cannot return, then propagate.
+
+    The tombstone key is make_channel_manifest_key(name, url), which is what
+    the hash manifest uses for channels -- a tombstone under any other key
+    would not match the record being offered and would suppress nothing.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT id, name, url, local_only FROM channels WHERE name = ? AND url = ?",
+              (str(name), str(url)))
+    row = c.fetchone()
+    if row is None:
+        return False
+    channel_id, real_name, real_url, local_only = row[0], row[1], row[2], row[3]
+
+    # Snapshot before deleting: the tombstone is the only place the content
+    # survives, and it is what makes a restore possible.
+    snapshot = {'name': real_name, 'url': real_url, 'local_only': int(local_only or 0)}
+
+    c.execute("DELETE FROM channel_comments WHERE channel_id = ?", (channel_id,))
+    c.execute("DELETE FROM channels WHERE id = ?", (channel_id,))
+    conn.commit()
+
+    key = make_channel_manifest_key(real_name, real_url)
+    record_sync_tombstone('channels', key, payload=snapshot)
+
+    _local_nid = get_local_node_id()
+    if _local_nid:
+        try:
+            try_dual_write(
+                c, origin_node_id=_local_nid,
+                event_type='delete', scope='channels', target_uid=key, payload={},
+            )
+            conn.commit()
+        except Exception:
+            logging.debug("op_log dual-write failed for channel delete", exc_info=True)
+
+    if bbs_nodes and interface:
+        send_delete_channel_to_bbs_nodes(key, bbs_nodes, interface)
+    return True
+
+
+def restore_sync_tombstone(tombstone_key: str) -> bool:
+    """Bring back a deleted record from its tombstone snapshot.
+
+    Clears the tombstone as well as re-inserting -- leaving it in place
+    would let the next sync pass delete the record again, which is exactly
+    the loop this feature exists to make visible.
+    """
+    _ensure_deleted_sync_tombstones_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT deleted_at, payload FROM deleted_sync_tombstones WHERE tombstone_key = ?",
+              (str(tombstone_key),))
+    row = c.fetchone()
+    if row is None or not row[1]:
+        return False
+    try:
+        snapshot = json.loads(row[1])
+    except ValueError:
+        return False
+    scope, _, record_key = str(tombstone_key).partition(':')
+
+    if scope == 'channels' and not record_key.startswith('comment:'):
+        c.execute("INSERT OR IGNORE INTO channels (name, url, local_only) VALUES (?, ?, ?)",
+                  (snapshot.get('name'), snapshot.get('url'), int(snapshot.get('local_only') or 0)))
+    elif scope == 'bulletins':
+        c.execute(
+            "INSERT OR IGNORE INTO bulletins (board, sender_short_name, date, subject, content, unique_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (snapshot.get('board'), snapshot.get('sender_short_name'), snapshot.get('date'),
+             snapshot.get('subject'), snapshot.get('content'), snapshot.get('unique_id')))
+    elif scope == 'mail':
+        c.execute(
+            "INSERT OR IGNORE INTO mail (sender, sender_short_name, recipient, date, subject, content, unique_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (snapshot.get('sender'), snapshot.get('sender_short_name'), snapshot.get('recipient'),
+             snapshot.get('date'), snapshot.get('subject'), snapshot.get('content'),
+             snapshot.get('unique_id')))
+    else:
+        return False
+
+    c.execute("DELETE FROM deleted_sync_tombstones WHERE tombstone_key = ?", (str(tombstone_key),))
+    conn.commit()
+    return True
 
 
 def delete_channel_comment(unique_id, bbs_nodes, interface):

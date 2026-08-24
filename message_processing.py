@@ -32,7 +32,8 @@ from command_handlers import (
 )
 from db_operations import (
     add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel,
-    add_channel_comment_by_manifest_key, delete_channel_comment,
+    add_channel_comment_by_manifest_key, delete_channel_comment, delete_channel,
+    decode_channel_manifest_key, make_channel_manifest_key,
     append_bulletin_content, append_mail_content,
     append_channel_comment_content,
     flush_pending_bulletin_continuations, flush_pending_mail_continuations,
@@ -1469,6 +1470,18 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             unique_id = parts[1]
             logging.info(f"Processing delete mail with unique_id: {unique_id}")
             delete_mail(unique_id, None, [], interface)
+        elif message.startswith("DELETE_CHANNEL|"):
+            parts = message.split("|", 1)
+            if len(parts) != 2 or not parts[1]:
+                logging.warning(f"Malformed DELETE_CHANNEL sync message ignored: {message}")
+                return
+            decoded = decode_channel_manifest_key(parts[1])
+            if not decoded:
+                logging.warning(f"Undecodable DELETE_CHANNEL key ignored: {parts[1]}")
+                return
+            # No bbs_nodes/interface: applying a peer's delete must not
+            # re-broadcast it, or two nodes bounce the same delete forever.
+            delete_channel(decoded[0], decoded[1], [], None)
         elif message.startswith("DELETE_CHANNELCOMMENT|"):
             parts = message.split("|", 1)
             if len(parts) != 2 or not parts[1]:
@@ -1496,6 +1509,14 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed CHANNEL sync message ignored: {message}")
                 return
             channel_name, channel_url = parts[1], parts[2]
+            # A peer that has not seen our delete keeps offering the channel.
+            # Without this the record comes straight back and deleting it
+            # again achieves nothing -- the reported repropagation loop.
+            # Hash repair already checks this; the direct frame did not.
+            if has_sync_tombstone('channels', make_channel_manifest_key(channel_name, channel_url)):
+                logging.info(
+                    f"Ignoring CHANNEL sync for deleted channel {channel_name!r} (tombstoned locally)")
+                return
             add_channel(channel_name, channel_url)
         elif message.startswith("CHANNELCOMMENT|"):
             # Wire format: CHANNELCOMMENT|{manifest_key}|{b64_sender}|{date}|{content}|{unique_id}[|source_node_id|source_timestamp]
@@ -2381,7 +2402,7 @@ def on_receive(packet, interface):
             bbs_nodes = interface.bbs_nodes
             is_sync_message = any(message_string.startswith(prefix) for prefix in
                                   ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|", "DELETE_ZORKSAVE|",
-                                   "CHANNEL|", "CHANNELCOMMENT|", "CHANNELCOMMENTCONT|", "CHANNELCOMMENTMETA|", "DELETE_CHANNELCOMMENT|",
+                                   "CHANNEL|", "DELETE_CHANNEL|", "CHANNELCOMMENT|", "CHANNELCOMMENTCONT|", "CHANNELCOMMENTMETA|", "DELETE_CHANNELCOMMENT|",
                                    "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
                                    "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|", "HASHZGAP|",
