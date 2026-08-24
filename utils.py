@@ -315,6 +315,37 @@ def get_repair_cycle_seconds(interface=None) -> int:
     return _config_int("sync", "repair_cycle_seconds", default)
 
 
+def get_sync_interval_seconds(interface=None, configured_minutes: int = 5) -> float:
+    """How long a link waits between scheduled sync checks.
+
+    Every other pacing knob here already branches on the transport, but the
+    schedule itself did not: one global [sync] sync_interval_minutes was
+    applied to every link, so an MQTT bridge sat idle for the same five or
+    ten minutes as a LoRa radio before it even looked. Once a sync starts
+    MQTT is already fast -- turbo pacing, 32KB frames, a higher per-pass
+    cap -- so the wait to begin was almost all of the latency.
+
+    A low-latency transport has no airtime to conserve and no half-duplex
+    collisions to avoid, so it checks on the order of seconds. Radios keep
+    the configured interval exactly as before.
+    """
+    # Deliberately NOT _effective_turbo: sync_turbo speeds up LoRa frame
+    # pacing, but the radio still has the same airtime and half-duplex
+    # limits. Letting the global flag opt a radio into a 30-second cycle
+    # would flood a busy mesh -- and turbo nodes are the busy ones. Only a
+    # transport with genuinely no airtime to conserve qualifies.
+    if not getattr(interface, 'is_low_latency', False):
+        return max(1.0, float(configured_minutes) * 60.0)
+    default = 30.0
+    if os.getenv("BBS_LOW_LATENCY_SYNC_INTERVAL_SECONDS") is not None:
+        value = _env_float("BBS_LOW_LATENCY_SYNC_INTERVAL_SECONDS", default)
+    else:
+        value = _config_float("sync", "low_latency_sync_interval_seconds", default)
+    # Never slower than the configured interval -- raising that should slow
+    # every link down, not leave the fast ones running at a hidden default.
+    return max(1.0, min(value, float(configured_minutes) * 60.0))
+
+
 def get_reconcile_max_per_pass(interface=None) -> int:
     """Cap on records pulled (HASHMISS) or pushed per single reconcile pass.
 

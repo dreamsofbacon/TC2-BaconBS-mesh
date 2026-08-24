@@ -1417,7 +1417,13 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
         except Exception as exc:
             logging.warning(f"[{link.name}] Unable to start record resolver request: {exc}")
 
-    sync_due = (link.last_schedule_epoch == 0) or (now >= (link.last_schedule_epoch + (sync_interval_minutes * 60)))
+    # Per-link, not one global wait: an MQTT bridge has no airtime to
+    # conserve, so making it sit out a radio's five-minute interval was
+    # nearly all of its sync latency (everything inside a sync is already
+    # transport-aware -- see utils.get_sync_interval_seconds).
+    from utils import get_sync_interval_seconds
+    link_sync_interval = get_sync_interval_seconds(interface, sync_interval_minutes)
+    sync_due = (link.last_schedule_epoch == 0) or (now >= (link.last_schedule_epoch + link_sync_interval))
 
     if (triggers.get('manual') or sync_due) and not link.pending_sync_nodes:
         link.last_schedule_epoch = now
@@ -1452,7 +1458,7 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
                 send_have_to_bbs_nodes(get_local_node_id(), list(destinations), interface)
                 send_peer_gossip_to_bbs_nodes(get_local_node_id(), list(destinations), interface)
                 logging.info(
-                    f"[{link.name}] Scheduled sync interval reached ({sync_interval_minutes} minutes); "
+                    f"[{link.name}] Scheduled sync interval reached ({link_sync_interval:.0f}s); "
                     f"sent SYNCSTATE to {len(destinations)} peer(s)"
                 )
             else:
@@ -1484,13 +1490,13 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
                         send_have_to_bbs_nodes(get_local_node_id(), _forced, interface)
                         send_peer_gossip_to_bbs_nodes(get_local_node_id(), list(_forced), interface)
                         logging.info(
-                            f"[{link.name}] Scheduled sync interval reached ({sync_interval_minutes} minutes); "
+                            f"[{link.name}] Scheduled sync interval reached ({link_sync_interval:.0f}s); "
                             f"state unchanged but {len(behind_peers)} peer(s) behind — "
                             f"sent SYNCSTATE to {behind_peers}"
                         )
                 else:
                     logging.info(
-                        f"[{link.name}] Scheduled sync interval reached ({sync_interval_minutes} minutes); "
+                        f"[{link.name}] Scheduled sync interval reached ({link_sync_interval:.0f}s); "
                         "local state unchanged, skipping SYNCSTATE broadcast"
                     )
 
@@ -1512,7 +1518,7 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
             system_config['sync_last_trigger_reason'] = 'mismatch'
             logging.info(f"[{link.name}] Peer mismatch detected; requested hash manifests from nodes: {eligible}")
 
-    next_run_epoch = int(link.last_schedule_epoch + (sync_interval_minutes * 60)) if link.last_schedule_epoch else int(now)
+    next_run_epoch = int(link.last_schedule_epoch + link_sync_interval) if link.last_schedule_epoch else int(now)
     system_config.setdefault('sync_next_run_epoch_by_link', {})[link.name] = next_run_epoch
     if link.name == 'primary':
         # Back-compat: existing web_admin.py reads this single top-level key.
