@@ -15,7 +15,11 @@ from app_paths import resolve_app_path
 
 from flask import Flask, flash, jsonify, redirect, render_template, render_template_string, request, send_from_directory, session, url_for
 
-from db_operations import install_connection_log_handler, initialize_database
+from db_operations import (
+    install_connection_log_handler,
+    initialize_database,
+    get_peer_sync_states,
+)
 from utils import get_sync_runtime_settings
 from version_info import get_display_version
 
@@ -187,6 +191,81 @@ def load_storage_settings(config_path: str) -> dict:
   return {
     "max_db_size_mb": config.get("maintenance", "max_db_size_mb", fallback="0").strip() or "0",
   }
+
+
+# Every place a sync peer can be configured. Peers are spread across the
+# primary radio, the optional second radio, and one section per MQTT link,
+# so there has never been a single view of "who does this node sync with" --
+# which is how a decommissioned node stays configured for months.
+_PEER_SECTION_LABELS = {
+  "sync": "Primary radio",
+  "sync2": "Secondary radio",
+}
+
+
+def _peer_section_label(section: str) -> str:
+  if section in _PEER_SECTION_LABELS:
+    return _PEER_SECTION_LABELS[section]
+  match = re.match(r"^sync_mqtt(\d+)$", section)
+  if match:
+    return f"MQTT broker #{match.group(1)}"
+  return section
+
+
+def load_sync_peers(config_path: str) -> list[dict]:
+  """Every configured sync peer, plus peers only the database still knows.
+
+  The second group matters as much as the first: removing a peer from
+  config stops the traffic but leaves its peer_sync_state row behind, so it
+  keeps appearing in Diagnostics as a peer that is permanently behind.
+  Listing both is what makes "clean this up" a single job.
+  """
+  config = read_config_file(config_path)
+  peers: list[dict] = []
+  configured: set = set()
+
+  for section in config.sections():
+    if section != "sync" and section != "sync2" and not re.match(r"^sync_mqtt\d+$", section):
+      continue
+    for node_id in parse_list_input(config.get(section, "bbs_nodes", fallback="")):
+      configured.add(node_id)
+      entry = {
+        "node_id": node_id,
+        "section": section,
+        "section_label": _peer_section_label(section),
+        "configured": True,
+        "problem": "",
+      }
+      # An MQTT peer address embeds the topic it lives on. If that does not
+      # match its own link's prefix the two are on different topics and can
+      # never reach each other -- silently, which is the whole problem.
+      mqtt_match = re.match(r"^sync_mqtt(\d+)$", section)
+      if mqtt_match and node_id.startswith("mqtt:"):
+        link_prefix = config.get(f"mqtt{mqtt_match.group(1)}", "topic_prefix", fallback="").strip()
+        peer_prefix = node_id.split(":", 2)[1] if node_id.count(":") >= 2 else ""
+        if link_prefix and peer_prefix and peer_prefix != link_prefix:
+          entry["problem"] = (
+            f"on topic '{peer_prefix}' but this link uses '{link_prefix}' — unreachable")
+      elif mqtt_match and not node_id.startswith("mqtt:"):
+        entry["problem"] = "not a valid MQTT peer address (expected mqtt:<topic>:<name>)"
+      peers.append(entry)
+
+  try:
+    for row in get_peer_sync_states():
+      node_id = str(row[0])
+      if node_id in configured:
+        continue
+      peers.append({
+        "node_id": node_id,
+        "section": "",
+        "section_label": "Not configured anywhere",
+        "configured": False,
+        "problem": "tracked in the database but no longer a configured peer",
+      })
+  except Exception:
+    pass  # DB unavailable; the configured list is still worth showing.
+
+  return peers
 
 
 def load_subscriber_settings(config_path: str) -> dict:
@@ -3838,6 +3917,57 @@ def create_app(runtime_interface=None) -> Flask:
       flash("Board list saved.", "success")
       return True
 
+    def remove_sync_peers(selected: list) -> None:
+      """Drop chosen peers from config and forget their sync state.
+
+      Both halves matter. Removing the config entry stops us talking to the
+      peer; deleting its peer_sync_state row is what stops it appearing in
+      Diagnostics forever as a peer that is permanently behind. A peer that
+      only exists in the database (already removed from config at some
+      point) is handled by the second half alone.
+      """
+      from db_operations import forget_peer_sync_state
+
+      config = read_config_file(app.config["CONFIG_PATH"])
+      removed_config = 0
+      forgotten = 0
+      touched_sections = set()
+
+      for item in selected:
+        section, _, node_id = str(item).partition("|")
+        node_id = node_id.strip()
+        if not node_id:
+          continue
+        if section and config.has_option(section, "bbs_nodes"):
+          remaining = [
+            existing for existing in parse_list_input(config.get(section, "bbs_nodes", fallback=""))
+            if existing != node_id
+          ]
+          config.set(section, "bbs_nodes", ",".join(remaining))
+          removed_config += 1
+          touched_sections.add(section)
+        try:
+          if forget_peer_sync_state(node_id):
+            forgotten += 1
+        except Exception:
+          logging.debug("could not forget peer state for %s", node_id, exc_info=True)
+
+      if touched_sections:
+        write_config_file(config, app.config["CONFIG_PATH"])
+
+      if not removed_config and not forgotten:
+        flash("Nothing to remove.", "error")
+        return
+      parts = []
+      if removed_config:
+        parts.append(f"removed {removed_config} peer(s) from config")
+      if forgotten:
+        parts.append(f"cleared {forgotten} stored sync state row(s)")
+      note = " and ".join(parts).capitalize()
+      if removed_config:
+        note += ". Restart the mesh-bbs service to stop syncing with them"
+      flash(note + ".", "success")
+
     def update_sync_settings(
       raw_bbs_nodes: str,
       raw_allowed_nodes: str,
@@ -4510,6 +4640,7 @@ def create_app(runtime_interface=None) -> Flask:
       account_settings = load_account_settings(app.config["CONFIG_PATH"])
       mqtt_settings = load_mqtt_settings(app.config["CONFIG_PATH"])
       attach_discovered_mqtt_peers(mqtt_settings)
+      sync_peers = load_sync_peers(app.config["CONFIG_PATH"])
       link_statuses = get_link_status_list()
       return render_template(
         "settings.html",
@@ -4522,6 +4653,7 @@ def create_app(runtime_interface=None) -> Flask:
         devices=device_settings,
         accounts=account_settings,
         mqtt_links=mqtt_settings,
+        sync_peers=sync_peers,
         boards_text=",".join(app.config["BULLETIN_BOARDS"]),
         env_override=bool(os.getenv("BBS_BULLETIN_BOARDS", "").strip()),
         bbs_nodes_text="\n".join(bbs_nodes),
@@ -4691,6 +4823,10 @@ def create_app(runtime_interface=None) -> Flask:
           save_account_settings(request.form)
           flash("Account linking settings saved.", "success")
           return redirect(url_for("settings_page") + "#accounts")
+
+        if section == "remove_peers":
+          remove_sync_peers(request.form.getlist("remove_peer"))
+          return redirect(url_for("settings_page") + "#peers")
 
         if section == "reload_links":
           request_links_reload_trigger()

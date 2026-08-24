@@ -2014,12 +2014,12 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(count, 1)
 
 
-class MqttPeerDiscoveryUiTests(unittest.TestCase):
-    """Pairing over MQTT means typing the other node's address by hand, and
-    every way of mistyping it fails silently. The running BBS already knows
-    who is on the topic (from the retained status messages every node
-    publishes) and reports it in the diagnostics snapshot -- the settings
-    page offers those as one-click peers.
+class _WebAdminHarness(unittest.TestCase):
+    """Minimal app fixture for focused settings tests.
+
+    Deliberately NOT a subclass of WebAdminSettingsTests: inheriting that
+    would re-run its whole suite for every class that only needs the
+    fixture, which quietly multiplies the suite's runtime.
     """
 
     def setUp(self):
@@ -2041,6 +2041,10 @@ class MqttPeerDiscoveryUiTests(unittest.TestCase):
 
     def tearDown(self):
         self.env_patch.stop()
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
         try:
             self.temp_dir.cleanup()
         except PermissionError:
@@ -2049,6 +2053,204 @@ class MqttPeerDiscoveryUiTests(unittest.TestCase):
     def login(self, client):
         with client.session_transaction() as session:
             session["logged_in"] = True
+
+    def post_with_csrf(self, client, path, data=None, follow_redirects=False):
+        token = client.get("/api/csrf-token").get_json()["csrf_token"]
+        form = dict(data or {})
+        form["csrf_token"] = token
+        return client.post(path, data=form, follow_redirects=follow_redirects)
+
+
+class SyncPeerInventoryTests(unittest.TestCase):
+    """Peers are configured in [sync], [sync2] and one [sync_mqttN] per
+    broker, and tracked separately in peer_sync_state -- so there was no one
+    place showing who this node syncs with, which is how a decommissioned
+    node stays configured for months."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.config_path = Path(self.temp_dir.name) / "config.ini"
+
+    def tearDown(self):
+        try:
+            self.temp_dir.cleanup()
+        except PermissionError:
+            pass
+
+    def _write(self, sections):
+        config = configparser.ConfigParser()
+        for name, values in sections.items():
+            config[name] = values
+        with open(self.config_path, "w", encoding="utf-8") as handle:
+            config.write(handle)
+
+    def _peers(self):
+        with mock.patch("web_admin.get_peer_sync_states", return_value=[]):
+            return web_admin.load_sync_peers(str(self.config_path))
+
+    def test_peers_from_every_section_appear_together(self):
+        self._write({
+            "sync": {"bbs_nodes": "!aaa11111"},
+            "sync2": {"bbs_nodes": "!bbb22222"},
+            "mqtt1": {"topic_prefix": "baconbbs"},
+            "sync_mqtt1": {"bbs_nodes": "mqtt:baconbbs:forgecam"},
+        })
+        peers = self._peers()
+        self.assertEqual({p["node_id"] for p in peers},
+                         {"!aaa11111", "!bbb22222", "mqtt:baconbbs:forgecam"})
+        labels = {p["node_id"]: p["section_label"] for p in peers}
+        self.assertEqual(labels["!aaa11111"], "Primary radio")
+        self.assertEqual(labels["!bbb22222"], "Secondary radio")
+        self.assertEqual(labels["mqtt:baconbbs:forgecam"], "MQTT broker #1")
+
+    def test_a_peer_on_the_wrong_topic_is_flagged_unreachable(self):
+        """An MQTT address embeds its topic. If it doesn't match the link's
+        own prefix the two are on different topics and never meet -- which
+        is exactly what was live on forgecam."""
+        self._write({
+            "mqtt1": {"topic_prefix": "baconbbs-2"},
+            "sync_mqtt1": {"bbs_nodes": "mqtt:baconbbs:bbs-main"},
+        })
+        peer = self._peers()[0]
+        self.assertIn("unreachable", peer["problem"])
+        self.assertIn("baconbbs-2", peer["problem"])
+
+    def test_a_matching_topic_is_not_flagged(self):
+        self._write({
+            "mqtt1": {"topic_prefix": "baconbbs"},
+            "sync_mqtt1": {"bbs_nodes": "mqtt:baconbbs:forgecam"},
+        })
+        self.assertEqual(self._peers()[0]["problem"], "")
+
+    def test_a_malformed_mqtt_address_is_flagged(self):
+        self._write({
+            "mqtt1": {"topic_prefix": "baconbbs"},
+            "sync_mqtt1": {"bbs_nodes": "justaname"},
+        })
+        self.assertIn("not a valid MQTT peer address", self._peers()[0]["problem"])
+
+    def test_peers_only_the_database_remembers_are_listed(self):
+        """Removing a peer from config leaves its row behind, and it keeps
+        showing in Diagnostics as permanently behind."""
+        self._write({"sync": {"bbs_nodes": "!aaa11111"}})
+        ghost = ("!ghost0001",) + (0,) * 12 + ("2026-01-01T00:00:00Z",)
+        with mock.patch("web_admin.get_peer_sync_states", return_value=[ghost]):
+            peers = web_admin.load_sync_peers(str(self.config_path))
+        orphan = [p for p in peers if p["node_id"] == "!ghost0001"][0]
+        self.assertFalse(orphan["configured"])
+        self.assertEqual(orphan["section"], "")
+        self.assertIn("no longer a configured peer", orphan["problem"])
+
+    def test_a_configured_peer_is_not_also_listed_as_an_orphan(self):
+        self._write({"sync": {"bbs_nodes": "!aaa11111"}})
+        row = ("!aaa11111",) + (0,) * 12 + ("2026-01-01T00:00:00Z",)
+        with mock.patch("web_admin.get_peer_sync_states", return_value=[row]):
+            peers = web_admin.load_sync_peers(str(self.config_path))
+        self.assertEqual(len([p for p in peers if p["node_id"] == "!aaa11111"]), 1)
+
+
+class SyncPeerRemovalTests(_WebAdminHarness):
+    """Removal has to do both halves: drop the config entry so we stop
+    talking to the peer, and forget its stored state so it stops appearing
+    as a peer that is permanently behind."""
+
+    def _seed(self):
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        config["sync"] = {"bbs_nodes": "!keepme01,!removeme"}
+        config["mqtt1"] = {"topic_prefix": "baconbbs", "host": "b", "local_id": "me"}
+        config["sync_mqtt1"] = {"bbs_nodes": "mqtt:baconbbs:gone"}
+        with open(self.config_path, "w", encoding="utf-8") as handle:
+            config.write(handle)
+
+    def _config(self):
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        return config
+
+    def test_removing_a_peer_leaves_the_others_alone(self):
+        self._seed()
+        app = create_app()
+        client = app.test_client()
+        self.login(client)
+        response = self.post_with_csrf(
+            client, "/settings",
+            data={"settings_section": "remove_peers", "remove_peer": "sync|!removeme"},
+            follow_redirects=True)
+        self.assertEqual(response.status_code, 200)
+        remaining = self._config().get("sync", "bbs_nodes")
+        self.assertIn("!keepme01", remaining)
+        self.assertNotIn("!removeme", remaining)
+
+    def test_an_mqtt_peer_is_removed_from_its_own_section(self):
+        self._seed()
+        app = create_app()
+        client = app.test_client()
+        self.login(client)
+        self.post_with_csrf(
+            client, "/settings",
+            data={"settings_section": "remove_peers", "remove_peer": "sync_mqtt1|mqtt:baconbbs:gone"},
+            follow_redirects=True)
+        self.assertEqual(self._config().get("sync_mqtt1", "bbs_nodes"), "")
+        # The unrelated radio section must not be disturbed.
+        self.assertIn("!keepme01", self._config().get("sync", "bbs_nodes"))
+
+    def test_stored_sync_state_is_forgotten_too(self):
+        """This is what actually stops a dead peer showing in Diagnostics."""
+        self._seed()
+        db_operations.initialize_database()
+        conn = db_operations.get_db_connection()
+        conn.execute(
+            "INSERT INTO peer_sync_state (peer_node_id, reported_at) VALUES (?, ?)",
+            ("!removeme", "2026-01-01T00:00:00Z"))
+        conn.commit()
+        app = create_app()
+        client = app.test_client()
+        self.login(client)
+        self.post_with_csrf(
+            client, "/settings",
+            data={"settings_section": "remove_peers", "remove_peer": "sync|!removeme"},
+            follow_redirects=True)
+        tracked = [row[0] for row in db_operations.get_peer_sync_states()]
+        self.assertNotIn("!removeme", tracked)
+
+    def test_a_database_only_peer_can_be_cleared_with_no_section(self):
+        """Peers already gone from config still need a way out."""
+        self._seed()
+        db_operations.initialize_database()
+        conn = db_operations.get_db_connection()
+        conn.execute(
+            "INSERT INTO peer_sync_state (peer_node_id, reported_at) VALUES (?, ?)",
+            ("!orphan01", "2026-01-01T00:00:00Z"))
+        conn.commit()
+        app = create_app()
+        client = app.test_client()
+        self.login(client)
+        self.post_with_csrf(
+            client, "/settings",
+            data={"settings_section": "remove_peers", "remove_peer": "|!orphan01"},
+            follow_redirects=True)
+        tracked = [row[0] for row in db_operations.get_peer_sync_states()]
+        self.assertNotIn("!orphan01", tracked)
+
+    def test_selecting_nothing_reports_rather_than_silently_succeeding(self):
+        self._seed()
+        app = create_app()
+        client = app.test_client()
+        self.login(client)
+        response = self.post_with_csrf(
+            client, "/settings",
+            data={"settings_section": "remove_peers"}, follow_redirects=True)
+        self.assertIn("Nothing to remove", response.get_data(as_text=True))
+
+
+class MqttPeerDiscoveryUiTests(_WebAdminHarness):
+    """Pairing over MQTT means typing the other node's address by hand, and
+    every way of mistyping it fails silently. The running BBS already knows
+    who is on the topic (from the retained status messages every node
+    publishes) and reports it in the diagnostics snapshot -- the settings
+    page offers those as one-click peers.
+    """
 
     def _write_mqtt_config_and_snapshot(self, bbs_nodes="", peers=None):
         config = configparser.ConfigParser()
