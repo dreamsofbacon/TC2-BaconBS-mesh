@@ -471,7 +471,15 @@ def _split_into_chunks(text, max_len=200):
     return chunks
 
 
-def send_message(message, destination, interface):
+def send_message(message, destination, interface) -> bool:
+    """Send (chunked to the transport's limit). True if every chunk went.
+
+    The return value matters for anything delivered asynchronously: a
+    gateway reply arriving a minute after the question has no other way to
+    learn it never landed, and the user is left staring at silence.
+    Callers that send inline can go on ignoring it.
+    """
+    delivered = True
     for chunk in _split_into_chunks(message, max_len=get_max_text_bytes(interface)):
         try:
             d = interface.sendText(
@@ -484,9 +492,16 @@ def send_message(message, destination, interface):
             log_chunk = chunk.replace('\n', '\\n')
             logging.info(f"Sending message to user '{get_node_short_name(destid, interface)}' ({destid}) with sendID {d.id}: \"{log_chunk}\"")
         except Exception as e:
-            logging.info(f"REPLY SEND ERROR {e}")
+            delivered = False
+            # WARNING, and name the transport: this was a bare INFO line
+            # with no context, so a reply that failed to reach one radio
+            # left nothing in the log saying which radio, or for whom.
+            protocol = getattr(interface, 'protocol_name', 'unknown')
+            logging.warning(
+                f"REPLY SEND ERROR to {destination} over {protocol}: {e}")
 
         time.sleep(2)
+    return delivered
 
 
 def get_node_info(interface, short_name):

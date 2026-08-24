@@ -208,3 +208,143 @@ class AskNomadFollowUpMeshRelayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AskNomadStaleInterfaceTests(unittest.TestCase):
+    """The answer is sent from a worker thread up to the gateway's request
+    timeout after the question. If the radio reconnects in that window,
+    _reconnect_link closes the old interface and puts a NEW object on
+    link.interface -- so anything holding the old one is writing to a
+    closed port, and send_message swallows the failure into a log line.
+    That is silence from the user's side, which is how this presents.
+    """
+
+    def setUp(self):
+        db_operations.thread_local.connection = sqlite3.connect(":memory:")
+        db_operations.initialize_database()
+        command_handlers.update_user_state(111, None)
+
+    def tearDown(self):
+        command_handlers.update_user_state(111, None)
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
+
+    def _submit_and_capture(self, link):
+        captured = {}
+
+        def fake_dispatch(rid, node_id, kind, payload, allowed, reply_fn):
+            captured["reply_fn"] = reply_fn
+
+        fake_server = types.SimpleNamespace(link_for_interface=lambda iface: link)
+        with mock.patch("gateway.is_gateway_enabled", return_value=True), \
+             mock.patch("gateway.handle_apireq", side_effect=fake_dispatch), \
+             mock.patch.dict(sys.modules, {"server": fake_server}):
+            command_handlers._apigw_submit(
+                111, link.interface, "r", "ai\x1fwhat is the answer", "Project Nomad")
+        return captured["reply_fn"]
+
+    def test_reply_goes_to_the_links_current_interface(self):
+        original = _Iface()
+        link = types.SimpleNamespace(interface=original)
+        reply_fn = self._submit_and_capture(link)
+
+        # The radio reconnects before the AI answers.
+        replacement = _Iface()
+        link.interface = replacement
+
+        reply_fn("200", "42")
+        self.assertTrue(any("42" in text for _dest, text in replacement.sent_texts),
+                        "answer was not delivered to the reconnected interface")
+        self.assertFalse(any("42" in text for _dest, text in original.sent_texts),
+                         "answer went to the closed interface")
+
+    def test_falls_back_to_the_captured_interface_when_no_link_is_known(self):
+        """Single-radio setups and tests never register a link; the reply
+        must still go out rather than being dropped."""
+        iface = _Iface()
+        captured = {}
+
+        def fake_dispatch(rid, node_id, kind, payload, allowed, reply_fn):
+            captured["reply_fn"] = reply_fn
+
+        fake_server = types.SimpleNamespace(link_for_interface=lambda i: None)
+        with mock.patch("gateway.is_gateway_enabled", return_value=True), \
+             mock.patch("gateway.handle_apireq", side_effect=fake_dispatch), \
+             mock.patch.dict(sys.modules, {"server": fake_server}):
+            command_handlers._apigw_submit(111, iface, "r", "ai\x1fq", "Project Nomad")
+        captured["reply_fn"]("200", "42")
+        self.assertTrue(any("42" in text for _dest, text in iface.sent_texts))
+
+    def test_undeliverable_reply_is_logged_and_skips_the_follow_up(self):
+        """Prompting for another question after the answer never arrived
+        would tell the user everything worked."""
+        link = types.SimpleNamespace(interface=_Iface())
+        reply_fn = self._submit_and_capture(link)
+
+        with mock.patch.object(command_handlers, "send_message", return_value=False), \
+             self.assertLogs(level="WARNING") as logs:
+            reply_fn("200", "42")
+        joined = " ".join(logs.output)
+        self.assertIn("could not", joined)
+        self.assertIn("Project Nomad", joined)
+
+
+class SendMessageDeliveryReportingTests(unittest.TestCase):
+    """send_message used to swallow every failure into an INFO line with no
+    context, so an async reply that never landed left nothing to go on."""
+
+    class _DeadIface:
+        protocol_name = "Meshtastic"
+        max_text_bytes = 220
+        nodes = {}
+
+        def sendText(self, **kwargs):
+            raise OSError("port is closed")
+
+    class _LiveIface:
+        protocol_name = "Meshtastic"
+        max_text_bytes = 220
+        nodes = {}
+
+        def __init__(self):
+            self.sent = []
+
+        def sendText(self, text, destinationId, wantAck, wantResponse):
+            self.sent.append(text)
+            return types.SimpleNamespace(id=1)
+
+    def test_returns_false_and_warns_when_the_send_fails(self):
+        with mock.patch.object(utils.time, "sleep"), \
+             self.assertLogs(level="WARNING") as logs:
+            ok = utils.send_message("hello", 111, self._DeadIface())
+        self.assertFalse(ok)
+        joined = " ".join(logs.output)
+        self.assertIn("REPLY SEND ERROR", joined)
+        self.assertIn("Meshtastic", joined)  # which radio, not just "it failed"
+
+    def test_returns_true_when_every_chunk_goes(self):
+        iface = self._LiveIface()
+        with mock.patch.object(utils.time, "sleep"):
+            self.assertTrue(utils.send_message("hello", 111, iface))
+        self.assertEqual(iface.sent, ["hello"])
+
+    def test_a_partial_failure_still_reports_false(self):
+        """One dropped chunk means the user did not get the whole answer."""
+        iface = self._LiveIface()
+        calls = {"n": 0}
+
+        def flaky(text, destinationId, wantAck, wantResponse):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("write failed")
+            iface.sent.append(text)
+            return types.SimpleNamespace(id=calls["n"])
+
+        iface.sendText = flaky
+        long_text = ("word " * 200).strip()
+        with mock.patch.object(utils.time, "sleep"), self.assertLogs(level="WARNING"):
+            ok = utils.send_message(long_text, 111, iface)
+        self.assertFalse(ok)
+        self.assertGreater(calls["n"], 1)

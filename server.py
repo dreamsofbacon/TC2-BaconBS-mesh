@@ -93,6 +93,21 @@ _active_links: list = []
 _js8call_client = None
 
 
+def link_for_interface(interface):
+    """The RadioLink currently owning ``interface``, or None.
+
+    Callers that hand a reply back asynchronously (the API gateway answers
+    on a worker thread, up to the request timeout later) should hold the
+    LINK rather than the interface: a reconnect closes the old interface
+    and puts a new object on link.interface, so a captured interface is a
+    handle to a dead radio and every send on it fails.
+    """
+    for link in _active_links:
+        if link.interface is interface:
+            return link
+    return None
+
+
 def signal_reconnect(interface) -> None:
     """Mark the RadioLink that owns ``interface`` as needing reconnect.
 
