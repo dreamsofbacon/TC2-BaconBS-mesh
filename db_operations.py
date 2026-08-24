@@ -2030,6 +2030,27 @@ def merge_relayed_peer_state(peer_node_id: str, counts: dict, age_seconds: float
     return True
 
 
+def forget_peer_sync_state(peer_node_id: str) -> bool:
+    """Drop everything this node remembers about one peer's sync state.
+
+    Removing a peer from config stops us talking to it, but its row here
+    lingers -- so a node decommissioned months ago keeps showing up in
+    Diagnostics and in the peer-gap tables as permanently behind. Phase
+    completions live in the same row, so one delete covers both.
+
+    sync_session_history is deliberately left alone: that is a record of
+    transfers that really happened, and the maintenance sweep already
+    prunes it by age.
+    """
+    if not peer_node_id:
+        return False
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM peer_sync_state WHERE peer_node_id = ?", (str(peer_node_id).strip(),))
+    conn.commit()
+    return c.rowcount > 0
+
+
 def get_peer_sync_states() -> list:
     """Return peer-advertised record counts for diagnostics."""
     conn = get_db_connection()

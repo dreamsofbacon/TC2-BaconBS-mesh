@@ -24,6 +24,10 @@
         <span class="settings-nav-title">Sync Settings</span>
         <span class="settings-nav-hint">Peers, pacing, manual resync</span>
       </a>
+      <a class="settings-nav-link" href="#peers" data-panel-link="peers">
+        <span class="settings-nav-title">Sync Peers</span>
+        <span class="settings-nav-hint">Every peer, across all links</span>
+      </a>
       <a class="settings-nav-link" href="#gateway" data-panel-link="gateway">
         <span class="settings-nav-title">API Gateway</span>
         <span class="settings-nav-hint">HTTP proxy and Project Nomad AI</span>
@@ -743,6 +747,52 @@
     </div>
     <button class="btn" type="submit">Force Full Resync to Peer</button>
   </form>
+</section>
+
+<section class="card settings-panel" id="peers" data-settings-panel="peers" style="max-width:800px">
+  <h2>Sync Peers</h2>
+  <p class="text-muted">
+    Every peer this node syncs with, gathered from the primary radio, the secondary radio and
+    each MQTT broker &mdash; the places they are configured separately. Peers the database still
+    tracks but nothing is configured to talk to are listed too: removing a peer from config
+    stops the traffic, but its stored state keeps it showing up in Diagnostics as permanently
+    behind until it is cleared here.
+  </p>
+  {% if sync_peers %}
+  <form method="post" action="{{ url_for('settings_page') }}#peers">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="remove_peers">
+    <div class="table-scroll-container">
+      <table class="data-table">
+        <thead>
+          <tr><th></th><th>Peer</th><th>Configured under</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          {% for peer in sync_peers %}
+          <tr>
+            <td><input type="checkbox" name="remove_peer" value="{{ peer.section }}|{{ peer.node_id }}"
+                       aria-label="Remove {{ peer.node_id }}"></td>
+            <td class="cell-clip" title="{{ peer.node_id }}"><code>{{ peer.node_id }}</code></td>
+            <td>{{ peer.section_label }}</td>
+            <td>
+              {% if peer.problem %}
+              <span class="badge badge-error">{{ peer.problem }}</span>
+              {% else %}
+              <span class="text-muted">OK</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <button class="btn btn-danger" type="submit"
+            onclick="return confirm('Remove the selected sync peers?');">Remove Selected Peers</button>
+    <p class="text-muted">Config changes take effect when the mesh-bbs service restarts. Clearing stored state applies immediately.</p>
+  </form>
+  {% else %}
+  <p class="text-muted">No sync peers configured, and none tracked in the database.</p>
+  {% endif %}
 </section>
 
 <section class="card settings-panel" id="gateway" data-settings-panel="gateway" style="max-width:800px">
