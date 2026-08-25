@@ -93,6 +93,34 @@ _active_links: list = []
 _js8call_client = None
 
 
+def local_node_identities() -> set:
+    """Every id this node answers to, across all links.
+
+    A node is NOT one identity: it has a radio id plus mqtt:<topic>:<name>
+    for each MQTT bridge. Anything asking "is this me?" has to check all of
+    them. Comparing only one -- the radio id, or the identity of the link a
+    frame happened to arrive on -- lets a peer's gossip about one of our
+    OTHER identities look like news about a stranger, and the node records
+    sync state for itself. It then sees that phantom peer as permanently
+    behind and repairs against it forever, which never converges because
+    the peer is itself.
+    """
+    ids = set()
+    try:
+        from db_operations import get_local_node_id
+        radio_id = get_local_node_id()
+        if radio_id:
+            ids.add(str(radio_id))
+    except Exception:
+        pass
+    for link in _active_links:
+        iface = getattr(link, 'interface', None)
+        own = getattr(iface, 'self_node_id', None)
+        if own:
+            ids.add(str(own))
+    return ids
+
+
 def link_for_interface(interface):
     """The RadioLink currently owning ``interface``, or None.
 
@@ -1638,6 +1666,13 @@ def main():
 
     global _active_links
     _active_links = links
+    # Publish every identity this node answers to, so the "is this me?"
+    # checks do not have to import server (see local_node_identities).
+    try:
+        from db_operations import set_local_link_identities
+        set_local_link_identities(local_node_identities())
+    except Exception:
+        logging.debug("could not publish local link identities", exc_info=True)
 
     trigger_path = get_manual_sync_trigger_path()
     force_check_trigger_path = get_force_check_trigger_path()

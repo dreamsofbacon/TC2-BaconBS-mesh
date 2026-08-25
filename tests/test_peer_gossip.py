@@ -171,6 +171,26 @@ class GossipAboutOurselfIsIgnoredTests(unittest.TestCase):
         self._gossip("!04058ac8", self._MqttIface())
         self.assertNotIn("!04058ac8", self._tracked())
 
+    def test_gossip_about_another_of_our_identities_arriving_on_a_different_link(self):
+        """The case a per-link check misses. This node is bbs-main on the
+        baconbbs bridge and Burlington-NNE on baconbbsvt. A peer relays what
+        it knows about bbs-main OVER baconbbsvt -- so the arriving link's
+        identity does not match, and we recorded ourselves as a peer."""
+        class _OtherLink(_Iface):
+            self_node_id = "mqtt:baconbbsvt:Burlington-NNE"   # NOT bbs-main
+
+        db_operations.set_local_link_identities(
+            [self.SELF_MQTT_ID, "mqtt:baconbbsvt:Burlington-NNE"])
+        self._gossip(self.SELF_MQTT_ID, _OtherLink())
+        self.assertNotIn(self.SELF_MQTT_ID, self._tracked())
+
+    def test_the_identity_registry_includes_every_link_and_the_radio(self):
+        db_operations.set_local_link_identities(["mqtt:a:one", "mqtt:b:two"])
+        ids = db_operations.get_local_link_identities()
+        self.assertIn("mqtt:a:one", ids)
+        self.assertIn("mqtt:b:two", ids)
+        self.assertIn("!04058ac8", ids)   # the radio identity
+
     def test_an_interface_without_a_link_identity_still_works(self):
         """Radios have no self_node_id attribute at all."""
         self._gossip("mqtt:baconbbs:someone-else", _Iface())

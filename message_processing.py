@@ -2268,8 +2268,19 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 # recorded peer state for ITSELF and then listed itself as a
                 # sync peer. Also compare the identity we hold on the link
                 # this arrived on.
-                _self_ids = {get_local_node_id() or '',
-                             str(getattr(interface, 'self_node_id', '') or '')}
+                # Check EVERY identity this node answers to, not just the
+                # link this arrived on. Gossip about our baconbbs identity
+                # reaches us over baconbbsvt, so a per-link check still let
+                # us record sync state for ourselves.
+                # Check EVERY identity this node answers to, not just the
+                # link this arrived on: gossip about our baconbbs identity
+                # reaches us over baconbbsvt, so a per-link check still let
+                # us record sync state for ourselves -- and a node that
+                # tracks itself sees a peer permanently behind and repairs
+                # against it forever, which can never converge.
+                from db_operations import get_local_link_identities
+                _self_ids = get_local_link_identities()
+                _self_ids.add(str(getattr(interface, 'self_node_id', '') or ''))
                 if relayed_peer in _self_ids:
                     return
                 counts = {
