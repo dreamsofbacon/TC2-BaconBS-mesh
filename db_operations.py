@@ -71,6 +71,29 @@ def set_local_node_id(node_id: str) -> None:
     _local_node_id = str(node_id)
 
 
+_local_link_identities: set = set()
+
+
+def set_local_link_identities(identities) -> None:
+    """Record every id this node answers to, one per active link.
+
+    A node is not one identity: a radio id plus mqtt:<topic>:<name> for each
+    MQTT bridge. Anything asking "is this me?" must check all of them.
+    Kept here rather than read from server.py so the check needs no import
+    of the module that owns the radios.
+    """
+    global _local_link_identities
+    _local_link_identities = {str(i) for i in (identities or []) if i}
+
+
+def get_local_link_identities() -> set:
+    """Every id this node answers to, including its radio id."""
+    ids = set(_local_link_identities)
+    if _local_node_id:
+        ids.add(str(_local_node_id))
+    return ids
+
+
 def get_local_node_id() -> Optional[str]:
     """Return this node's ID as set at startup, or None if not yet resolved."""
     return _local_node_id
