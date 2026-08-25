@@ -2426,6 +2426,30 @@ class MqttPeerDiscoveryUiTests(_WebAdminHarness):
         self.login(client)
         return client.get("/settings").get_data(as_text=True)
 
+    def test_the_page_shows_the_address_to_hand_to_a_peer(self):
+        """Pairing needs the other operator to enter THIS node's address.
+        Neither the topic nor the name alone is enough, and there was
+        nowhere that showed the combined string to copy."""
+        self._write_mqtt_config_and_snapshot(peers=[])
+        page = self._settings_html()
+        self.assertIn("Give your peer this address", page)
+        self.assertIn('data-copy="mqtt:baconbbs:bbs-main"', page)
+
+    def test_a_broker_with_no_identity_says_so_instead_of_showing_a_broken_address(self):
+        """A blank topic or name would render as 'mqtt::' and look valid."""
+        import configparser as _cp
+        config = _cp.ConfigParser()
+        config.read(self.config_path)
+        config["mqtt1"] = {"enabled": "true", "host": "b", "port": "1883",
+                           "topic_prefix": "", "local_id": ""}
+        with open(self.config_path, "w", encoding="utf-8") as handle:
+            config.write(handle)
+        with open(self.runtime_diag_path, "w", encoding="utf-8") as handle:
+            json.dump({"radios": []}, handle)
+        page = self._settings_html()
+        self.assertNotIn("mqtt::", page)
+        self.assertIn("set a topic prefix and a name", page)
+
     def test_a_discovered_peer_is_offered_with_its_full_address(self):
         """Offered on the Sync page, where peers are managed, as a real
         form -- the MQTT card's textarea it used to fill is gone."""
