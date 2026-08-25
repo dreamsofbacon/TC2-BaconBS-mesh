@@ -121,3 +121,57 @@ class PeerGossipFrameTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GossipAboutOurselfIsIgnoredTests(unittest.TestCase):
+    """A node has a DIFFERENT identity on every link: a radio id from
+    get_local_node_id(), and mqtt:<topic>:<name> per MQTT bridge.
+
+    The self-check only compared the radio id, so a peer gossiping about us
+    over MQTT was not recognised as us. The node recorded peer sync state
+    for ITSELF, and then listed itself in Settings > Sync as a third sync
+    peer that nothing was configured to talk to.
+    """
+
+    SELF_MQTT_ID = "mqtt:baconbbs:bbs-main"
+
+    class _MqttIface(_Iface):
+        # What MqttInterface exposes for the link a message arrived on.
+        self_node_id = "mqtt:baconbbs:bbs-main"
+
+    def setUp(self):
+        db_operations.thread_local.connection = sqlite3.connect(":memory:")
+        db_operations.initialize_database()
+        db_operations.set_local_node_id("!04058ac8")   # the RADIO identity
+
+    def tearDown(self):
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
+
+    def _gossip(self, about, iface):
+        message_processing.process_message(
+            1, f"PEERGOSSIP|{about}|1|2|3|4|5|6|7|10", iface,
+            is_sync_message=True, sender_node_id="mqtt:baconbbs:node2")
+
+    def _tracked(self):
+        return [row[0] for row in db_operations.get_peer_sync_states()]
+
+    def test_a_peer_gossiping_about_us_does_not_make_us_our_own_peer(self):
+        self._gossip(self.SELF_MQTT_ID, self._MqttIface())
+        self.assertNotIn(self.SELF_MQTT_ID, self._tracked())
+
+    def test_gossip_about_a_real_peer_is_still_recorded(self):
+        """The guard must not swallow legitimate relayed state."""
+        self._gossip("mqtt:baconbbs:someone-else", self._MqttIface())
+        self.assertIn("mqtt:baconbbs:someone-else", self._tracked())
+
+    def test_our_radio_identity_is_still_rejected(self):
+        self._gossip("!04058ac8", self._MqttIface())
+        self.assertNotIn("!04058ac8", self._tracked())
+
+    def test_an_interface_without_a_link_identity_still_works(self):
+        """Radios have no self_node_id attribute at all."""
+        self._gossip("mqtt:baconbbs:someone-else", _Iface())
+        self.assertIn("mqtt:baconbbs:someone-else", self._tracked())

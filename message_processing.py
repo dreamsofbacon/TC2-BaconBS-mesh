@@ -2210,7 +2210,17 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             try:
                 from db_operations import get_local_node_id, merge_relayed_peer_state
                 # Never let a relay overwrite our own authoritative state.
-                if relayed_peer == (get_local_node_id() or ''):
+                #
+                # A node has a DIFFERENT identity on every link -- a radio id
+                # from get_local_node_id(), and mqtt:<topic>:<name> per MQTT
+                # bridge. Checking only the radio id meant a peer gossiping
+                # about us over MQTT was not recognised as us, so the node
+                # recorded peer state for ITSELF and then listed itself as a
+                # sync peer. Also compare the identity we hold on the link
+                # this arrived on.
+                _self_ids = {get_local_node_id() or '',
+                             str(getattr(interface, 'self_node_id', '') or '')}
+                if relayed_peer in _self_ids:
                     return
                 counts = {
                     'bulletins': int(parts[2]), 'mail': int(parts[3]),

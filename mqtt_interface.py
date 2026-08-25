@@ -239,6 +239,10 @@ class MqttInterface:
         self._peers_lock = threading.Lock()
 
         self._self_node_id = _mqtt_node_id(self.topic_prefix, self.local_id)
+        # Public alias: this node's identity ON THIS LINK. A node has one
+        # identity per link, so get_local_node_id()'s single radio id
+        # cannot answer "is this me?" for an MQTT peer.
+        self.self_node_id = self._self_node_id
         self.myInfo = SimpleNamespace(my_node_num=_node_num(self._self_node_id))
         self._num_to_label[self.myInfo.my_node_num] = self.local_id
 
