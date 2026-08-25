@@ -21,7 +21,7 @@ from db_operations import (
     get_peer_sync_states,
 )
 from utils import get_sync_runtime_settings
-from version_info import get_display_version
+from version_info import get_display_version, get_version_resolution_note
 
 
 TABLE_CONFIG = {
@@ -4370,6 +4370,10 @@ def create_app(runtime_interface=None) -> Flask:
       ]
       diagnostics = {
         "app_version": app.config.get("DISPLAY_VERSION", "unknown"),
+        # Empty when the commit resolved. When it did not, this is the only
+        # thing distinguishing one build from the next, so say why rather
+        # than showing the same bare version forever.
+        "version_note": get_version_resolution_note(),
         "interface_attached": "No",
         "interface_type": "Unavailable",
         "runtime_source": "None",
