@@ -195,3 +195,63 @@ class TombstoneRestoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeletePropagationTests(unittest.TestCase):
+    """Reconciliation had suppression but no propagation.
+
+    When this node had deleted a record and the peer had not, we stopped
+    ourselves re-pulling it and left it there. The peer kept offering it and
+    we kept refusing -- both holding their ground, forever. That is the
+    stalemate two live nodes ended up in over channels.
+    """
+
+    NAME = "VT Mesh"
+    URL = "https://meshtastic.org/e/vt"
+
+    def setUp(self):
+        db_operations.thread_local.connection = sqlite3.connect(":memory:")
+        db_operations.initialize_database()
+        self.iface = _Iface()
+
+    def tearDown(self):
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
+
+    def _sent(self, prefix):
+        return [t for _d, t in self.iface.sent if t.startswith(prefix)]
+
+    def test_a_held_tombstone_is_pushed_to_the_peer_that_still_has_it(self):
+        key = db_operations.make_channel_manifest_key(self.NAME, self.URL)
+        message_processing._push_delete_to_peer("channels", key, "!peer", self.iface)
+        sent = self._sent("DELETE_CHANNEL|")
+        self.assertEqual(len(sent), 1)
+        self.assertIn(key, sent[0])
+
+    def test_bulletin_and_mail_deletes_push_too(self):
+        message_processing._push_delete_to_peer("bulletins", "uid-1", "!peer", self.iface)
+        message_processing._push_delete_to_peer("mail", "uid-2", "!peer", self.iface)
+        self.assertEqual(len(self._sent("DELETE_BULLETIN|")), 1)
+        self.assertEqual(len(self._sent("DELETE_MAIL|")), 1)
+
+    def test_a_comment_tombstone_pushes_the_comment_frame_not_the_channel_one(self):
+        message_processing._push_delete_to_peer("channels", "comment:c-1", "!peer", self.iface)
+        self.assertEqual(len(self._sent("DELETE_CHANNELCOMMENT|")), 1)
+        self.assertEqual(self._sent("DELETE_CHANNEL|"), [])
+
+    def test_a_scope_with_no_delete_frame_is_left_alone(self):
+        """Half-handling it would be worse than not handling it."""
+        message_processing._push_delete_to_peer("profiles", "!node", "!peer", self.iface)
+        self.assertEqual(self.iface.sent, [])
+
+    def test_replaying_a_channel_delete_answers_instead_of_going_silent(self):
+        """The responder had branches for bulletins, mail, comments and zork
+        saves, but none for a channel entry -- so the request was answered
+        with nothing."""
+        key = db_operations.make_channel_manifest_key(self.NAME, self.URL)
+        message_processing._send_requested_record(
+            "tombstones", "channels:" + key, "!peer", self.iface)
+        sent = self._sent("DELETE_CHANNEL|")
+        self.assertEqual(len(sent), 1, "channel delete replay produced nothing")
