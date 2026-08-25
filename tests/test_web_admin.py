@@ -2063,6 +2063,64 @@ class _WebAdminHarness(unittest.TestCase):
         return client.post(path, data=form, follow_redirects=follow_redirects)
 
 
+class ContentChangeNudgesSyncTests(_WebAdminHarness):
+    """The web admin is a separate process from mesh-bbs, so
+    get_runtime_interface() is None and every create/edit/delete is written
+    with no peers and no interface -- nothing is pushed. Without a nudge the
+    change waits for the next scheduled reconcile, which is why a post made
+    in the browser lagged one made over the radio by a whole interval.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.trigger_path = Path(self.temp_dir.name) / "manual_sync.trigger"
+        self.extra_env = mock.patch.dict(
+            os.environ, {"BBS_MANUAL_SYNC_TRIGGER_PATH": str(self.trigger_path)}, clear=False)
+        self.extra_env.start()
+        db_operations.initialize_database()
+
+    def tearDown(self):
+        self.extra_env.stop()
+        super().tearDown()
+
+    def _client(self):
+        app = create_app()
+        client = app.test_client()
+        self.login(client)
+        return client
+
+    def test_creating_a_bulletin_asks_the_running_bbs_to_sync(self):
+        client = self._client()
+        self.post_with_csrf(client, "/bulletins/new", data={
+            "board": "General", "sender_short_name": "AAA",
+            "subject": "hello", "content": "world",
+        }, follow_redirects=True)
+        self.assertTrue(self.trigger_path.exists(),
+                        "no sync requested after creating content")
+
+    def test_deleting_a_row_asks_the_running_bbs_to_sync(self):
+        db_operations.add_bulletin("General", "AAA", "2026-01-01", "s", "c", [], None)
+        conn = db_operations.get_db_connection()
+        row_id = conn.execute("SELECT id FROM bulletins").fetchone()[0]
+        client = self._client()
+        self.post_with_csrf(client, f"/bulletins/{row_id}/delete", follow_redirects=True)
+        self.assertTrue(self.trigger_path.exists(),
+                        "no sync requested after deleting content")
+
+    def test_a_failed_nudge_does_not_break_the_request(self):
+        """The change is still saved and still syncs on the normal schedule."""
+        client = self._client()
+        with mock.patch("web_admin.request_manual_sync_trigger", side_effect=OSError("read-only")):
+            response = self.post_with_csrf(client, "/bulletins/new", data={
+                "board": "General", "sender_short_name": "AAA",
+                "subject": "kept", "content": "anyway",
+            }, follow_redirects=True)
+        self.assertEqual(response.status_code, 200)
+        conn = db_operations.get_db_connection()
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM bulletins WHERE subject='kept'").fetchone()[0], 1)
+
+
 class SyncPeerInventoryTests(unittest.TestCase):
     """Peers are configured in [sync], [sync2] and one [sync_mqttN] per
     broker, and tracked separately in peer_sync_state -- so there was no one
