@@ -70,6 +70,7 @@ from utils import (
     send_profile_to_bbs_nodes, send_game_score_to_bbs_nodes, send_zork_save_to_bbs_nodes,
     send_delete_bulletin_to_bbs_nodes, send_delete_mail_to_bbs_nodes,
     send_delete_channel_comment_to_bbs_nodes,
+    send_delete_channel_to_bbs_nodes,
     send_delete_zork_save_to_bbs_nodes,
     send_hash_request_to_bbs_nodes,
     send_sync_state_to_bbs_nodes,
@@ -1077,6 +1078,11 @@ def _do_striped_reconcile(scope: str, peer_manifests: dict, interface) -> None:
             logging.info(f"Requesting tombstone replay from {assigned_peer} for {scope}:{key}")
             _send_one_sync(f"HASHMISS|{_tomb_wire}|{_scope_wire}:{wire_key}", assigned_peer, interface,
                            pause_seconds=get_hash_repair_pause_seconds(interface))
+            # Asking for a replay only stops US re-pulling it. The peer still
+            # HAS the record and has never heard about the delete, so without
+            # this both sides hold their ground forever: we suppress what it
+            # offers, it keeps offering. Tell it directly.
+            _push_delete_to_peer(_tomb_scope, _tomb_key, assigned_peer, interface)
         else:
             logging.info(f"Requesting record from {assigned_peer} scope={scope} key={wire_key} (striped {i % n_peers + 1}/{n_peers})")
             _send_one_sync(f"HASHMISS|{_scope_wire}|{wire_key}", assigned_peer, interface,
@@ -1177,6 +1183,7 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
         if scope in ('bulletins', 'mail', 'zork_saves', 'channels', 'channel_comments') and key not in local and has_sync_tombstone(_tomb_scope, _tomb_key):
             logging.info(f"Requesting tombstone replay from {sender_node_id} for {scope}:{key}")
             _send_one_sync(f"HASHMISS|{_tomb_wire}|{_scope_wire}:{wire_key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds(interface))
+            _push_delete_to_peer(_tomb_scope, _tomb_key, sender_node_id, interface)
         else:
             logging.info(f"Requesting record from {sender_node_id} scope={scope} key={wire_key}")
             _send_one_sync(f"HASHMISS|{_scope_wire}|{wire_key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds(interface))
@@ -1350,6 +1357,13 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
             unique_id = key.split(':', 2)[2]
             logging.info(f"Replaying channel comment delete to {destination_node_id} key={key}")
             send_delete_channel_comment_to_bbs_nodes(unique_id, [destination_node_id], interface)
+        elif key.startswith('channels:'):
+            # Channel ENTRY (the 'comment:' case is handled above). This branch
+            # was missing, so a request to replay a channel delete was answered
+            # with silence.
+            manifest_key = key.split(':', 1)[1]
+            logging.info(f"Replaying channel delete to {destination_node_id} key={key}")
+            send_delete_channel_to_bbs_nodes(manifest_key, [destination_node_id], interface)
         elif key.startswith('zork_saves:'):
             remainder = key.split(':', 1)[1]
             if ':' not in remainder:
@@ -1360,6 +1374,42 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
                 return
             logging.info(f"Replaying zork save delete to {destination_node_id} key={key}")
             send_delete_zork_save_to_bbs_nodes(user_id, game_id, deleted_at, [destination_node_id], interface)
+
+
+def _push_delete_to_peer(tomb_scope: str, tomb_key: str, peer_id: str, interface) -> None:
+    """Tell one peer about a delete we hold a tombstone for.
+
+    Reconciliation had suppression but no propagation: when we had deleted a
+    record and the peer had not, we stopped ourselves re-pulling it and left
+    it at that. The peer kept offering it and we kept refusing, forever --
+    two nodes each holding their ground with no way to converge.
+
+    Only scopes with a delete frame can be pushed. Anything else is left
+    alone rather than half-handled.
+    """
+    try:
+        if tomb_scope == 'bulletins':
+            send_delete_bulletin_to_bbs_nodes(tomb_key, [peer_id], interface)
+        elif tomb_scope == 'mail':
+            send_delete_mail_to_bbs_nodes(tomb_key, [peer_id], interface)
+        elif tomb_scope == 'channels' and str(tomb_key).startswith('comment:'):
+            send_delete_channel_comment_to_bbs_nodes(str(tomb_key)[len('comment:'):], [peer_id], interface)
+        elif tomb_scope == 'channels':
+            send_delete_channel_to_bbs_nodes(tomb_key, [peer_id], interface)
+        elif tomb_scope == 'zork_saves':
+            remainder = str(tomb_key)
+            if ':' not in remainder:
+                return
+            user_id, game_id = remainder.split(':', 1)
+            deleted_at = get_sync_tombstone_deleted_at('zork_saves', remainder)
+            if not deleted_at:
+                return
+            send_delete_zork_save_to_bbs_nodes(user_id, game_id, deleted_at, [peer_id], interface)
+        else:
+            return
+        logging.info(f"Pushed delete for {tomb_scope}:{tomb_key} to {peer_id}")
+    except Exception:
+        logging.debug("could not push delete to peer", exc_info=True)
 
 
 def _auto_update_profile(sender_id, interface):
