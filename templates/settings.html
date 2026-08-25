@@ -638,6 +638,45 @@
   <p class="text-muted">No sync peers configured, and none tracked in the database.</p>
   {% endif %}
 
+  <h3>This node's addresses</h3>
+  <p class="text-muted">
+    Give these to the other node. Each one is what its operator must enter as a sync peer
+    to reach this node over that link &mdash; not the topic on its own, and not this node's
+    name on its own, but the two combined. Sync is mutual, so this has to happen in both
+    directions before anything replicates.
+  </p>
+  {% if mqtt_links %}
+  <div class="table-scroll-container">
+    <table class="data-table">
+      <thead>
+        <tr><th>Link</th><th>Topic</th><th>Give your peer this address</th></tr>
+      </thead>
+      <tbody>
+        {% for link in mqtt_links %}
+        <tr>
+          <td>Broker #{{ link.index }}{% if link.host %} <span class="text-muted">({{ link.host }})</span>{% endif %}</td>
+          <td><code>{{ link.topic_prefix or '—' }}</code></td>
+          <td>
+            {% if link.self_node_id %}
+            <button type="button" class="node-id copy-value" data-copy="{{ link.self_node_id }}"
+                    title="{{ link.self_node_id }} (click to copy)">{{ link.self_node_id }}</button>
+            {% else %}
+            <span class="badge badge-error">set a topic prefix and a name on this broker first</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="text-muted">
+    The other node must use the <strong>same topic</strong> and a <strong>different name</strong>.
+    Two nodes sharing a name treat each other's traffic as their own echo and ignore it.
+  </p>
+  {% else %}
+  <p class="text-muted">No MQTT brokers configured, so this node has no MQTT address to hand out.</p>
+  {% endif %}
+
   <h3>Discovered on MQTT</h3>
   {% set ns = namespace(any=false) %}
   {% for link in mqtt_links %}
