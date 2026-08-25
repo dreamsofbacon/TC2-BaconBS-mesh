@@ -657,6 +657,26 @@ def request_manual_sync_trigger() -> None:
   os.replace(tmp_path, trigger_path)
 
 
+def nudge_sync_after_content_change() -> None:
+  """Ask the running BBS to sync now, after the web admin changes content.
+
+  The web admin is a SEPARATE PROCESS from mesh-bbs, so
+  get_runtime_interface() is None here and every create/edit/delete is
+  written with no peers and no interface -- nothing is pushed. The change
+  then sits until the next scheduled reconcile, which is why a post made
+  in the browser took a full sync interval to appear on a peer while one
+  sent over the radio propagated at once.
+
+  The trigger file the Settings page already uses is read by the main loop
+  every second, so this turns that wait into about a second. Best-effort:
+  if it cannot be written the change still syncs on the normal schedule.
+  """
+  try:
+    request_manual_sync_trigger()
+  except Exception:
+    logging.debug("could not request a sync after a content change", exc_info=True)
+
+
 def get_force_check_trigger_path() -> str:
   return resolve_app_path(os.getenv("BBS_FORCE_CHECK_TRIGGER_PATH"), "force_check.trigger")
 
@@ -6116,6 +6136,7 @@ def create_app(runtime_interface=None) -> Flask:
           current_interface = get_runtime_interface()
           bbs_nodes = list(getattr(current_interface, "bbs_nodes", []) or []) if current_interface else []
           add_bulletin(board, sender_short_name, subject, content, bbs_nodes, current_interface, local_only=bool(local_only))
+          nudge_sync_after_content_change()
           flash("Bulletin post created.", "success")
           return redirect(url_for("table_list", table="bulletins"))
 
@@ -6142,6 +6163,7 @@ def create_app(runtime_interface=None) -> Flask:
           current_interface = get_runtime_interface()
           bbs_nodes = list(getattr(current_interface, "bbs_nodes", []) or []) if current_interface else []
           add_channel(name, url, bbs_nodes, current_interface, local_only=bool(local_only))
+          nudge_sync_after_content_change()
           flash("Channel entry created.", "success")
           return redirect(url_for("table_list", table="channels"))
 
@@ -6290,6 +6312,7 @@ def create_app(runtime_interface=None) -> Flask:
                         (*values, row_id),
                     )
                     conn.commit()
+                    nudge_sync_after_content_change()
                     flash(f"{cfg['title']} row updated.", "success")
                     return redirect(url_for("table_list", table=table))
 
@@ -6356,6 +6379,7 @@ def create_app(runtime_interface=None) -> Flask:
         else:
           execute_write(f"DELETE FROM {table} WHERE id = ?", (row_id,))
 
+        nudge_sync_after_content_change()
         flash(f"{cfg['title']} row deleted.", "success")
         return redirect(url_for("table_list", table=table))
 
