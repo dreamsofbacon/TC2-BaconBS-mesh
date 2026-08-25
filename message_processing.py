@@ -1376,6 +1376,24 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
             send_delete_zork_save_to_bbs_nodes(user_id, game_id, deleted_at, [destination_node_id], interface)
 
 
+def _looks_like_source_node_id(value: str) -> bool:
+    """True if this trailing wire field is a node id, not record content.
+
+    The optional source_node_id was matched on a leading '!' -- a Meshtastic
+    radio id. An MQTT node is mqtt:<topic>:<name> and a MeshCore node is a
+    bare hex key, so a record originating on either was never stripped: the
+    parse shifted by one field and the SOURCE NODE ID was written into
+    unique_id. Two nodes then disagreed about that record's manifest key
+    forever, which is a drift no amount of repair can close.
+
+    MeshCore's bare-hex ids are deliberately NOT matched here: they have no
+    distinguishing prefix, so accepting them would mean treating ordinary
+    content as a node id. Those still fall through, exactly as before.
+    """
+    text = str(value or "")
+    return text.startswith('!') or text.startswith('mqtt:')
+
+
 def _push_delete_to_peer(tomb_scope: str, tomb_key: str, peer_id: str, interface) -> None:
     """Tell one peer about a delete we hold a tombstone for.
 
@@ -1451,7 +1469,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 body = _tmp[0]
                 # Strip optional source_node_id (starts with '!')
                 _tmp2 = body.rsplit("|", 1)
-                if len(_tmp2) == 2 and _tmp2[1].startswith('!'):
+                if len(_tmp2) == 2 and _looks_like_source_node_id(_tmp2[1]):
                     source_node_id = _tmp2[1]
                     body = _tmp2[0]
             # Try to strip optional date from the far right.
@@ -1486,7 +1504,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 source_timestamp = decode_ts_second(_tmp[1])
                 body = _tmp[0]
                 _tmp2 = body.rsplit("|", 1)
-                if len(_tmp2) == 2 and _tmp2[1].startswith('!'):
+                if len(_tmp2) == 2 and _looks_like_source_node_id(_tmp2[1]):
                     source_node_id = _tmp2[1]
                     body = _tmp2[0]
             tail = body.rsplit("|", 2)
@@ -1580,7 +1598,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 source_timestamp = decode_ts_second(_tmp[1])
                 body = _tmp[0]
                 _tmp2 = body.rsplit("|", 1)
-                if len(_tmp2) == 2 and _tmp2[1].startswith('!'):
+                if len(_tmp2) == 2 and _looks_like_source_node_id(_tmp2[1]):
                     source_node_id = _tmp2[1]
                     body = _tmp2[0]
             tail = body.rsplit("|", 1)
