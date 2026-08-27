@@ -1,0 +1,10 @@
+# Everything in the runtime set, plus what the test suite needs.
+# Without this a fresh checkout cannot run the tests at all.
+-r requirements.txt
+
+pytest
+
+# Used by tests/test_requirements.py to evaluate the environment markers in
+# requirements.txt. Ships with pip, but that is an implementation detail
+# rather than a promise.
+packaging

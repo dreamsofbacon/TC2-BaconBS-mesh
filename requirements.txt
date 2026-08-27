@@ -1,5 +1,18 @@
+# Runtime dependencies for the BBS and its web admin.
+#
+# meshcore requires Python 3.10+, so it carries an environment marker: on an
+# older host pip skips it instead of refusing the WHOLE file. Without the
+# marker a Python 3.9 node gets NOTHING installed -- including paho-mqtt --
+# and MQTT then fails with no obvious connection to the Python version.
+# MeshCore support is imported lazily, so a node without it runs fine unless
+# a MeshCore radio is actually configured.
 meshtastic
-meshcore>=2.3.8,<3
+meshcore>=2.3.8,<3; python_version >= "3.10"
 paho-mqtt>=2.1,<3
 pypubsub
 flask
+
+# Imported directly by config_init.py for serial port discovery. meshtastic
+# happens to pull it in today, but relying on another package's dependency
+# for something we import ourselves breaks the day that changes.
+pyserial

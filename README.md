@@ -53,11 +53,14 @@ Bacon BBS uses a custom five-phase distributed sync protocol designed for lossy,
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.10+ (3.9 works for everything except MeshCore, which requires
+  3.10 -- pip skips it automatically on an older host rather than failing
+  the whole install)
 - Either a Meshtastic device (serial or TCP) or a MeshCore companion radio
   (serial, TCP, or BLE)
-- `pip install -r requirements.txt` (installs both radio client libraries,
-  `pypubsub`, and `flask`)
+- `pip install -r requirements.txt` (both radio client libraries, `pyserial`,
+  `paho-mqtt`, `pypubsub`, and `flask`)
+- To run the test suite: `pip install -r requirements-dev.txt`, then `pytest`
 - **dfrotz** (optional, required for games): `sudo apt install frotz`
 
 ---
