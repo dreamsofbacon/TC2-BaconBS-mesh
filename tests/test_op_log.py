@@ -79,6 +79,43 @@ def test_append_local_event_allocates_per_origin_sequences():
         conn.close()
 
 
+def test_append_local_event_repairs_stale_sequence_state():
+    conn = _new_mem_conn()
+    try:
+        cursor = conn.cursor()
+        first = op_log.append_local_event(
+            cursor,
+            origin_node_id='!A',
+            event_type='upsert',
+            scope='bulletins',
+            target_uid='uid-1',
+            payload={'k': 'v'},
+            created_at='2026-05-16T21:00:00Z',
+        )
+        cursor.execute(
+            'UPDATE op_log_state SET next_seq = ? WHERE origin_node_id = ?',
+            (first['origin_seq'], '!A'),
+        )
+
+        second = op_log.append_local_event(
+            cursor,
+            origin_node_id='!A',
+            event_type='delete',
+            scope='bulletins',
+            target_uid='uid-1',
+            payload={},
+            created_at='2026-05-16T21:00:01Z',
+        )
+
+        assert second['origin_seq'] == 2
+        assert cursor.execute(
+            'SELECT next_seq FROM op_log_state WHERE origin_node_id = ?',
+            ('!A',),
+        ).fetchone()[0] == 3
+    finally:
+        conn.close()
+
+
 def test_append_local_event_is_deterministic_for_same_inputs_and_sequence():
     conn1 = _new_mem_conn()
     conn2 = _new_mem_conn()

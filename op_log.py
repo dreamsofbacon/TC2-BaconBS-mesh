@@ -82,23 +82,32 @@ def ensure_op_log_schema(cursor) -> None:
 
 
 def _allocate_next_origin_seq(cursor, origin_node_id: str) -> int:
+    cursor.execute(
+        '''INSERT INTO op_log_state (origin_node_id, next_seq)
+           VALUES (
+               ?,
+               COALESCE((
+                   SELECT MAX(origin_seq) + 2
+                   FROM op_log
+                   WHERE origin_node_id = ?
+               ), 2)
+           )
+           ON CONFLICT(origin_node_id) DO UPDATE SET
+               next_seq = MAX(
+                   op_log_state.next_seq,
+                   COALESCE((
+                       SELECT MAX(origin_seq) + 1
+                       FROM op_log
+                       WHERE origin_node_id = excluded.origin_node_id
+                   ), 1)
+               ) + 1''',
+        (str(origin_node_id), str(origin_node_id)),
+    )
     row = cursor.execute(
         'SELECT next_seq FROM op_log_state WHERE origin_node_id = ?',
         (str(origin_node_id),),
     ).fetchone()
-    if row is None:
-        cursor.execute(
-            'INSERT INTO op_log_state (origin_node_id, next_seq) VALUES (?, ?)',
-            (str(origin_node_id), 2),
-        )
-        return 1
-
-    next_seq = int(row[0])
-    cursor.execute(
-        'UPDATE op_log_state SET next_seq = ? WHERE origin_node_id = ?',
-        (next_seq + 1, str(origin_node_id)),
-    )
-    return next_seq
+    return int(row[0]) - 1
 
 
 def append_local_event(
