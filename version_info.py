@@ -4,7 +4,18 @@ import subprocess
 from pathlib import Path
 
 
-APP_VERSION = "0.1.6"
+# The patch number is the commit count, so every commit is a distinct
+# version with nothing to remember. APP_VERSION sat at "0.1.6" for 171
+# commits because it was a literal nobody edited and no automation touched.
+APP_VERSION_BASE = "0.1"
+
+# Used only when the commit count cannot be determined at all -- no git and
+# no cached stamp, e.g. an install from a zip. Refreshed by the cache write
+# below whenever a real count IS available, so a deployed node keeps a
+# truthful number even if git later becomes unusable.
+_FALLBACK_BUILD = 396
+
+_BUILD_CACHE = "_build_version.py"
 
 # Why the commit could not be resolved, for the Diagnostics page. The commit
 # is the only thing that distinguishes one build from the next -- APP_VERSION
@@ -106,9 +117,8 @@ def get_git_commit_short() -> str:
 
     if _resolution_note:
         logging.info(
-            "Version: running commit unknown (%s). Every build will display "
-            "%s. Set BBS_GIT_COMMIT to label this install.",
-            _resolution_note, f"v{APP_VERSION}",
+            "Version: running commit unknown (%s). Set BBS_GIT_COMMIT to "
+            "label this install.", _resolution_note,
         )
     return ""
 
@@ -118,12 +128,80 @@ def get_version_resolution_note() -> str:
     return _resolution_note
 
 
+def _cached_build_number() -> int:
+    """Last commit count this install successfully resolved.
+
+    Deliberately a generated file rather than a committed one: a committed
+    count would change on every commit, which changes the count. This is
+    written on any run that can read git and read on any run that cannot,
+    so a node keeps a truthful version after being packaged, moved, or run
+    somewhere git no longer works.
+    """
+    try:
+        path = _repo_root() / _BUILD_CACHE
+        if not path.is_file():
+            return 0
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("BUILD ="):
+                return int(line.split("=", 1)[1].strip())
+    except Exception:
+        pass
+    return 0
+
+
+def _write_build_cache(build: int) -> None:
+    try:
+        lines = [
+            "# Generated. The commit count this install last resolved.",
+            f"BUILD = {int(build)}",
+            "",
+        ]
+        (_repo_root() / _BUILD_CACHE).write_text("\n".join(lines), encoding="utf-8")
+    except Exception:
+        pass  # read-only install; the live git value is still used
+
+
+def get_build_number() -> int:
+    """Commit count, which is the patch number."""
+    env_build = str(os.getenv("BBS_BUILD_NUMBER", "")).strip()
+    if env_build.isdigit():
+        return int(env_build)
+
+    try:
+        result = subprocess.run(
+            ["git", "-c", f"safe.directory={_repo_root()}",
+             "rev-list", "--count", "HEAD"],
+            cwd=str(_repo_root()), capture_output=True, text=True,
+            timeout=5, check=False,
+        )
+        count = str(result.stdout or "").strip()
+        if result.returncode == 0 and count.isdigit() and int(count) > 0:
+            build = int(count)
+            if build != _cached_build_number():
+                _write_build_cache(build)
+            return build
+    except Exception:
+        pass
+
+    cached = _cached_build_number()
+    return cached if cached else _FALLBACK_BUILD
+
+
+def get_app_version() -> str:
+    return f"{APP_VERSION_BASE}.{get_build_number()}"
+
+
 def get_display_version() -> str:
     override = str(os.getenv("BBS_VERSION_DISPLAY", "")).strip()
     if override:
         return override
 
+    version = get_app_version()
     commit = get_git_commit_short()
     if commit:
-        return f"v{APP_VERSION} ({commit})"
-    return f"v{APP_VERSION}"
+        return f"v{version} ({commit})"
+    return f"v{version}"
+
+
+# Back-compat: some callers and tests read APP_VERSION directly.
+APP_VERSION = get_app_version()

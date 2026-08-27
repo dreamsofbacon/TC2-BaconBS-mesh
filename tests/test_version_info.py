@@ -1,10 +1,14 @@
 """The running build's version.
 
-APP_VERSION has not changed in a long time, so the commit hash is the only
-thing distinguishing one build from the next. Resolution used to be a single
-`git rev-parse`, and any failure fell through silently -- so an install that
-could not run git showed the same bare version forever with nothing saying
-why. That is what one operator saw: 'v0.1.6' for every release.
+Two separate faults made every release look identical. APP_VERSION was a
+hardcoded literal that nothing ever bumped -- it sat at 0.1.6 across 171
+commits -- so the commit hash was the only thing telling builds apart. And
+the hash came from a single `git rev-parse` whose every failure fell
+through silently, so an install that could not run git showed a bare
+version forever with nothing saying why. One operator saw exactly that.
+
+The patch number is now the commit count, and the hash resolves without
+needing git to run.
 """
 import subprocess
 import sys
@@ -14,6 +18,8 @@ from pathlib import Path
 from unittest import mock
 
 import version_info
+
+REPO = Path(__file__).resolve().parent.parent
 
 
 class CommitFromGitFilesTests(unittest.TestCase):
@@ -109,6 +115,70 @@ class MissingCommitIsExplainedTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"BBS_GIT_COMMIT": "deadbee"}, clear=False):
             self.assertEqual(version_info.get_git_commit_short(), "deadbee")
         self.assertEqual(version_info.get_version_resolution_note(), "")
+
+
+class BuildNumberTests(unittest.TestCase):
+    """The patch number is the commit count.
+
+    APP_VERSION sat at 0.1.6 for 171 commits because it was a literal
+    nobody edited and no automation touched, which left the commit hash
+    doing all the work of telling builds apart -- and that hash is exactly
+    what goes missing on the installs that cannot run git.
+    """
+
+    @staticmethod
+    def _git_returns(count):
+        def run(cmd, **kwargs):
+            return types.SimpleNamespace(returncode=0, stdout=f"{count}\n", stderr="")
+        return run
+
+    def test_the_patch_number_is_the_commit_count(self):
+        with mock.patch.object(subprocess, "run", self._git_returns(177)), \
+             mock.patch.object(version_info, "_write_build_cache", lambda b: None):
+            self.assertEqual(version_info.get_build_number(), 177)
+            self.assertEqual(version_info.get_app_version(),
+                             f"{version_info.APP_VERSION_BASE}.177")
+
+    def test_a_cached_count_is_used_when_git_is_unavailable(self):
+        """A node that was packaged or moved keeps a truthful number."""
+        with mock.patch.object(subprocess, "run", side_effect=FileNotFoundError("git")), \
+             mock.patch.object(version_info, "_cached_build_number", lambda: 177):
+            self.assertEqual(version_info.get_build_number(), 177)
+
+    def test_with_neither_git_nor_cache_it_falls_back(self):
+        with mock.patch.object(subprocess, "run", side_effect=FileNotFoundError("git")), \
+             mock.patch.object(version_info, "_cached_build_number", lambda: 0):
+            self.assertEqual(version_info.get_build_number(),
+                             version_info._FALLBACK_BUILD)
+
+    def test_an_explicit_build_number_wins(self):
+        """The escape hatch for a packaged install with no git at all."""
+        with mock.patch.dict("os.environ", {"BBS_BUILD_NUMBER": "999"}, clear=False):
+            self.assertEqual(version_info.get_build_number(), 999)
+
+    def test_a_resolved_count_is_cached_for_later(self):
+        written = {}
+        with mock.patch.object(subprocess, "run", self._git_returns(177)), \
+             mock.patch.object(version_info, "_cached_build_number", lambda: 0), \
+             mock.patch.object(version_info, "_write_build_cache",
+                               lambda b: written.setdefault("build", b)):
+            version_info.get_build_number()
+        self.assertEqual(written.get("build"), 177)
+
+    def test_the_count_is_not_committed_to_the_repo(self):
+        """A committed count would change on every commit, which changes
+        the count."""
+        ignored = (REPO / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("_build_version.py", ignored)
+
+    def test_the_version_moves_when_the_commit_count_does(self):
+        """The whole point: two different builds must not share a version."""
+        with mock.patch.object(version_info, "_write_build_cache", lambda b: None):
+            with mock.patch.object(subprocess, "run", self._git_returns(400)):
+                first = version_info.get_app_version()
+            with mock.patch.object(subprocess, "run", self._git_returns(401)):
+                second = version_info.get_app_version()
+        self.assertNotEqual(first, second)
 
 
 class DisplayVersionTests(unittest.TestCase):
