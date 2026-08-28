@@ -24,7 +24,8 @@
     one set of bulletins and mail without any of them being a central server.
 
     A radio is optional. Attach a USB companion radio with the Device setting below, point the BBS
-    at a networked Meshtastic node over TCP, or run it MQTT-only to mirror another node's content.
+    at a networked Meshtastic node over TCP, or set the device type to "No radio - MQTT only" to
+    mirror another node's content over a broker with no hardware at all.
     Configuration after first start happens entirely in the web GUI.
 
     First login is admin / change-me unless you set the username and password variables below.
