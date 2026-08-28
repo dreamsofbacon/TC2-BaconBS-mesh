@@ -1705,9 +1705,12 @@ def main():
     publish_mqtt_status(links, write_runtime_diagnostics_snapshot(links, system_config))
     persist_mesh_clients(links)
 
-    if len(links) > 1:
-        link_descriptions = ", ".join(f"{l.name}={l.protocol_name}" for l in links)
-        logging.info(f"Bacon BBS is running on {len(links)} active links (bridge mode): {link_descriptions}...")
+    # A dormant primary (an MQTT-only node's) is not an active link, and
+    # counting it here reported a node as running on more links than it has.
+    active_links = [l for l in links if getattr(l, 'enabled', True)]
+    if len(active_links) > 1:
+        link_descriptions = ", ".join(f"{l.name}={l.protocol_name}" for l in active_links)
+        logging.info(f"Bacon BBS is running on {len(active_links)} active links (bridge mode): {link_descriptions}...")
     else:
         logging.info(f"Bacon BBS is running on {system_config['interface_type']} interface...")
 

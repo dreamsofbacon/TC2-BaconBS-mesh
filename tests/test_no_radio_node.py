@@ -155,5 +155,17 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(chosen.name, "primary")
 
 
+class ReportingTests(unittest.TestCase):
+    def test_a_dormant_link_is_not_counted_as_active(self):
+        """The startup line said "3 active links" on a node that had two,
+        because the dormant primary was still in the list."""
+        import pathlib
+        source = (pathlib.Path(__file__).resolve().parent.parent
+                  / "server.py").read_text(encoding="utf-8")
+        self.assertIn("active_links = [l for l in links if getattr(l, 'enabled', True)]",
+                      source)
+        self.assertNotIn("running on {len(links)} active links", source)
+
+
 if __name__ == "__main__":
     unittest.main()
