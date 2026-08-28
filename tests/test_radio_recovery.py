@@ -116,5 +116,88 @@ class RadioRecoveryTests(unittest.TestCase):
         reset.assert_not_called()  # never DTR/RTS-reset a network device
 
 
+class NoSerialPortsTests(unittest.TestCase):
+    """An empty serial-port list is a missing radio, not a broken config.
+
+    It used to raise straight out of get_interface and kill the process,
+    which is the opposite of what everything around it was built for: the
+    node is supposed to carry on with whatever other radio and MQTT links
+    connected, and retry this one in the background. It also made a fresh
+    container unusable -- no device passed through meant the BBS died on
+    startup, taking down the web admin that is the only way to configure a
+    radio in the first place.
+    """
+
+    def _cfg(self, port=None):
+        return {"interface_type": "serial", "port": port, "hostname": None}
+
+    def _with_ports(self, devices):
+        return patch.object(
+            config_init.serial.tools.list_ports, "comports",
+            lambda: [types.SimpleNamespace(device=d) for d in devices])
+
+    def test_no_ports_gives_up_on_the_interface_rather_than_the_process(self):
+        with self._with_ports([]), \
+             patch.object(config_init, "_reset_serial_radio", return_value=True), \
+             patch("time.sleep"), \
+             patch("os._exit") as exit_mock:
+            iface = config_init.get_interface(self._cfg())
+
+        self.assertIsNone(iface)
+        exit_mock.assert_not_called()
+
+    def test_no_ports_is_retried_the_normal_number_of_times(self):
+        """It flows through the same bounded-retry path as any failed
+        connect, so a radio that appears mid-cycle is picked up."""
+        attempts = {"n": 0}
+        real = config_init._resolve_serial_device
+
+        def counting(cfg):
+            attempts["n"] += 1
+            return real(cfg)
+
+        with self._with_ports([]), \
+             patch.object(config_init, "_resolve_serial_device", counting), \
+             patch.object(config_init, "_reset_serial_radio", return_value=True), \
+             patch("time.sleep"):
+            config_init.get_interface(self._cfg())
+
+        self.assertGreaterEqual(attempts["n"],
+                                config_init._MAX_CONNECT_FAILURES_BEFORE_EXIT)
+
+    def test_a_radio_that_appears_partway_through_is_used(self):
+        """The point of retrying: a board still enumerating on boot, or one
+        plugged in after the container started."""
+        good = MagicMock(name="iface")
+        seen = {"n": 0}
+
+        def appears():
+            seen["n"] += 1
+            return [] if seen["n"] < 3 else [types.SimpleNamespace(device="/dev/ttyUSB0")]
+
+        with patch.object(config_init.serial.tools.list_ports, "comports", appears), \
+             patch.object(config_init.meshtastic.serial_interface,
+                          "SerialInterface", return_value=good, create=True), \
+             patch.object(config_init, "_reset_serial_radio", return_value=True), \
+             patch("time.sleep"):
+            iface = config_init.get_interface(self._cfg())
+
+        self.assertIs(iface, good)
+
+    def test_multiple_ports_is_still_fatal(self):
+        """Retrying cannot choose between two radios; a human has to."""
+        with self._with_ports(["/dev/ttyUSB0", "/dev/ttyUSB1"]), \
+             patch("time.sleep"):
+            with self.assertRaises(ValueError) as caught:
+                config_init.get_interface(self._cfg())
+        self.assertNotIsInstance(caught.exception, config_init.NoSerialPortsDetected)
+        self.assertIn("Multiple serial ports", str(caught.exception))
+
+    def test_it_is_still_a_valueerror(self):
+        """Callers that already catch ValueError for interface problems must
+        keep working."""
+        self.assertTrue(issubclass(config_init.NoSerialPortsDetected, ValueError))
+
+
 if __name__ == "__main__":
     unittest.main()
