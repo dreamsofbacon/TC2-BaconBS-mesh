@@ -11,32 +11,10 @@ import types
 import unittest
 from unittest.mock import patch, MagicMock
 
-class _MeshInterfaceError(Exception):
-    pass
+import radio_stubs
 
-
-def _stub(name):
-    m = types.ModuleType(name)
-    sys.modules[name] = m
-    return m
-
-
-# Build the meshtastic package tree with submodules linked as attributes
-# (config_init uses `import meshtastic.stream_interface` and references it).
-_mesh = _stub("meshtastic")
-_mesh.mesh_interface = _stub("meshtastic.mesh_interface")
-_mesh.stream_interface = _stub("meshtastic.stream_interface")
-_mesh.serial_interface = _stub("meshtastic.serial_interface")
-_mesh.tcp_interface = _stub("meshtastic.tcp_interface")
-_mesh.stream_interface.StreamInterface = object
-_mesh.mesh_interface.MeshInterface = types.SimpleNamespace(MeshInterfaceError=_MeshInterfaceError)
-
-# Stub serial + serial.tools.list_ports.
-_ser = _stub("serial")
-_ser.Serial = MagicMock(name="Serial")
-_ser.tools = _stub("serial.tools")
-_ser.tools.list_ports = _stub("serial.tools.list_ports")
-_ser.tools.list_ports.comports = lambda: []
+radio_stubs.install()
+_MeshInterfaceError = radio_stubs.mesh_interface_error()
 
 import config_init
 

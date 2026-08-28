@@ -1069,6 +1069,11 @@ def _link_for_node(links: list, node_id) -> RadioLink:
     for link in links:
         if link.network_key == target:
             return link
+    # links[0] is the primary, which on an MQTT-only node is deliberately
+    # dormant -- routing an unrecognised peer there would send it nowhere.
+    for link in links:
+        if getattr(link, 'enabled', True):
+            return link
     return links[0]
 
 
@@ -1199,7 +1204,9 @@ def _is_link_still_configured(link: RadioLink, system_config: dict) -> bool:
     Only (1) should ever abandon the reconnect loop.
     """
     if link.name == 'primary':
-        return True  # no disable flag for the primary radio -- always configured
+        # A primary configured as type = none is not a radio that failed;
+        # it is a node that has no radio. Nothing to reconnect to.
+        return str(system_config.get('interface_type', '')).strip().lower() != 'none'
     if link.name == 'secondary':
         return bool(system_config.get('interface2_enabled'))
     # MQTT links: still configured iff still present in mqtt_links by name.
@@ -1291,6 +1298,12 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
         # A dedicated thread (_reconnect_link) is retrying this link's
         # connection with backoff. Skip sync/send work for this link until
         # it finishes — every OTHER link keeps ticking normally.
+        return
+
+    if not getattr(link, 'enabled', True):
+        # Deliberately not attached to anything (an MQTT-only node's primary).
+        # Returning before the liveness check is what keeps it from spawning a
+        # reconnect thread on every single tick for a radio that does not exist.
         return
 
     if not _is_interface_alive(link.interface):
@@ -1586,10 +1599,18 @@ def main():
     # This is what lets a wedged primary radio NOT block the secondary radio
     # (or MQTT links, or the rest of the node) from running.
     primary_iface = get_interface(system_config)
-    links = [RadioLink('primary', primary_iface, reconnect_fn=get_interface)]
+    primary_configured = (
+        str(system_config.get('interface_type', '')).strip().lower() != 'none')
+    links = [RadioLink('primary', primary_iface, reconnect_fn=get_interface,
+                       enabled=primary_configured)]
     if primary_iface is not None:
         _apply_socket_timeout(primary_iface)
         refresh_peer_lists_from_config(config_path, primary_iface, system_config)
+    elif not primary_configured:
+        logging.info(
+            "[primary] No radio configured ([interface] type = none); this node "
+            "syncs over its MQTT links only."
+        )
     else:
         logging.warning(
             "[primary] Failed to connect at startup; continuing without it. "

@@ -439,7 +439,12 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
         config_file = resolve_app_path(os.getenv("BBS_CONFIG_PATH"), "config.ini")
     config.read(config_file)
 
-    interface_type = config['interface']['type'].strip().lower()
+    # A node with no radio is a real deployment, not a misconfiguration:
+    # an MQTT-only mirror of another BBS, or a fresh install whose radio
+    # has not been chosen yet. A missing [interface] section means the
+    # same thing, so it resolves to 'none' rather than a KeyError.
+    interface_type = (
+        config.get('interface', 'type', fallback='none').strip().lower() or 'none')
     _primary = _read_interface_settings(config['interface'])
     hostname = _primary['hostname']
     port = _primary['port']
@@ -563,11 +568,20 @@ def _open_interface(cfg: dict[str, Any]) -> Any:
         server.py's RadioLink / _reconnect_link).
     """
     interface_type = cfg['interface_type']
-    valid_types = ('serial', 'tcp', 'meshcore_serial', 'meshcore_tcp', 'meshcore_ble')
+    # 'none' is a node with no radio of its own -- it syncs over MQTT only.
+    valid_types = ('none', 'serial', 'tcp', 'meshcore_serial', 'meshcore_tcp',
+                   'meshcore_ble')
     if interface_type not in valid_types:
         raise ValueError("Invalid interface type specified in config file")
     if interface_type in ('tcp', 'meshcore_tcp') and not cfg.get('hostname'):
         raise ValueError("Hostname must be specified for TCP interface")
+
+    if interface_type == 'none':
+        # Deliberately no radio. Returning None immediately (rather than
+        # letting it fall into the retry loop) is what stops the node
+        # spending the rest of its life reconnecting to a device that was
+        # never meant to exist.
+        return None
 
     failures = 0
     while True:
