@@ -321,8 +321,15 @@ def load_gateway_settings(config_path: str) -> dict:
   }
 
 
-DEVICE_TYPES = ("serial", "tcp", "meshcore_serial", "meshcore_tcp", "meshcore_ble")
+# "none" first: it is the only option that needs no hardware, and it is what
+# an MQTT-only node -- one that mirrors another BBS's content over a broker
+# with no radio of its own -- is supposed to be set to. Without it the only
+# way to run radio-less was to name a serial port that does not exist and let
+# the node retry it forever.
+DEVICE_TYPES = ("none", "serial", "tcp", "meshcore_serial", "meshcore_tcp",
+                "meshcore_ble")
 DEVICE_TYPE_LABELS = {
+  "none": "No radio — MQTT only",
   "serial": "Meshtastic — Serial (USB)",
   "tcp": "Meshtastic — TCP (WiFi)",
   "meshcore_serial": "MeshCore — Serial (USB)",
@@ -360,7 +367,11 @@ def load_device_settings(config_path: str) -> dict:
     primary["type"] = "serial"
 
   secondary = _load_device_section(config, "interface2")
-  secondary_configured = bool(secondary["type"]) and secondary["type"] in DEVICE_TYPES
+  # "none" is meaningful only for the primary -- it is how a node says it has
+  # no radio. A second radio that is "none" is simply not a second radio.
+  secondary_configured = (
+    bool(secondary["type"]) and secondary["type"] in DEVICE_TYPES
+    and secondary["type"] != "none")
   secondary_enabled = secondary_configured and _parse_bool_setting(
     config.get("interface2", "enabled", fallback="true"), True
   )
@@ -372,6 +383,7 @@ def load_device_settings(config_path: str) -> dict:
 
   return {
     "types": DEVICE_TYPES,
+    "secondary_types": tuple(t for t in DEVICE_TYPES if t != "none"),
     "type_labels": DEVICE_TYPE_LABELS,
     "primary": primary,
     "secondary": secondary,
@@ -3663,7 +3675,7 @@ def create_app(runtime_interface=None) -> Flask:
       secondary_port = form.get("secondary_port", "").strip()
       secondary_hostname = form.get("secondary_hostname", "").strip()
       if secondary_enabled:
-        if secondary_type not in DEVICE_TYPES:
+        if secondary_type not in DEVICE_TYPES or secondary_type == "none":
           errors.append("Secondary radio: choose a valid device type.")
         elif secondary_type in ("tcp", "meshcore_tcp") and not secondary_hostname:
           errors.append("Secondary radio: hostname is required for a TCP connection.")

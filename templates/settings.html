@@ -188,7 +188,10 @@
         <label for="secondary_type">Device type</label>
         <select id="secondary_type" name="secondary_type" class="form-control">
           <option value="">— select —</option>
-          {% for t in devices.types %}
+          {# "No radio" belongs to the primary only: it is how a node declares
+             it has none. A second radio that is "none" is just no second radio,
+             which the enable checkbox above already expresses. #}
+          {% for t in devices.secondary_types %}
           <option value="{{ t }}" {% if devices.secondary.type == t %}selected{% endif %}>{{ devices.type_labels[t] }}</option>
           {% endfor %}
         </select>

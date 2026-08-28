@@ -60,6 +60,14 @@ class RadioLink:
     reconnect_needed: threading.Event = field(default_factory=threading.Event)
     reconnecting: bool = False
 
+    # False for a link that is deliberately not attached to anything, which
+    # today means only the primary with [interface] type = none: an MQTT-only
+    # node. The link still exists so the rest of the loop (and links[0]) can
+    # count on it, but it is never ticked and never reconnected -- otherwise
+    # a node with no radio spends forever retrying a device that will never
+    # appear, and reports a permanently broken link in the GUI.
+    enabled: bool = True
+
     # Five-phase sync progress, mirrors what used to be main()-local sets.
     mail_synced_nodes: set = field(default_factory=set)
     bulletins_synced_nodes: set = field(default_factory=set)
