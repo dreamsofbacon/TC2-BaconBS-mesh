@@ -3,8 +3,18 @@
 The container runs **both** halves of the BBS: `server.py`, which drives the
 radios and the sync protocol, and `web_admin.py`, which serves the admin GUI.
 They are separate processes that signal each other through files in a shared
-directory, so they live in one container together. If either one dies the
-container exits, and the restart policy brings both back.
+directory, so they live in one container together.
+
+The web admin anchors the container. It is the only way to configure a radio,
+a broker, or anything else on the node, so if `server.py` fails it is
+restarted underneath with backoff rather than taking the container down --
+otherwise a bad setting locks you out of the very page you would fix it on.
+If the *web admin* exits, the container exits and the restart policy takes
+over.
+
+That state is not hidden: the health check reports **unhealthy** whenever
+`server.py` is not running, so "up but doing nothing" is visible in
+`docker ps` and on the Unraid dashboard. The reason is in `docker logs`.
 
 Everything that has to survive an update lives on the `/config` volume: the
 config file, the bulletins database, uploaded MQTT certificates, downloaded
@@ -141,13 +151,25 @@ bare-metal install.
 
 ---
 
+## No radio attached
+
+A BBS with no serial port present no longer treats that as fatal. It logs the
+failed attempts, carries on without the radio, and keeps retrying in the
+background, so a container started with no device passed through comes up
+healthy and lands you in the web GUI to configure one. Plug a radio in later,
+or point the node at a TCP or MQTT link, and the reconnect loop picks it up
+with no restart.
+
+---
+
 ## Notes
 
 - **Zork** needs `dfrotz`, which the image installs. Story files download to
   `/config/data` on first play and persist there.
-- **The health check** requests `/login`, the one route that answers without a
-  session, so it reports on Flask actually serving rather than merely on the
-  process existing.
+- **The health check** requires two things: that the web admin answers on
+  `/login` (the one route that works without a session) and that a `server.py`
+  process exists. Checking only the first would report a node moving no mail
+  at all as perfectly healthy.
 - **Logs** go to stdout: `docker logs -f baconbs`, or the Unraid log button.
 - **No dashboard icon yet.** Add a square PNG at `static/img/icon.png` and
   restore the `<Icon>` element in `baconbs-unraid.xml`.

@@ -105,13 +105,68 @@ class BothProcessesRunTests(unittest.TestCase):
             self.assertRegex(ENTRYPOINT_CODE,
                              rf"run\s+{re.escape(process)}[^\n]*&")
 
-    def test_the_container_stops_when_either_process_dies(self):
-        """Otherwise the container lives on as whichever half survived, and a
-        dead radio loop is indistinguishable from a healthy BBS."""
+    def test_the_supervisor_watches_for_a_child_exiting(self):
         self.assertRegex(ENTRYPOINT_CODE, r"(?m)^\s*wait -n\s*$")
 
     def test_signals_reach_the_children(self):
         self.assertRegex(ENTRYPOINT_CODE, r"trap\s+\w+\s+TERM")
+
+
+class ControlPlaneSurvivesTests(unittest.TestCase):
+    """The web admin is the only way to configure this node, so a BBS that
+    cannot start must not take it down with it.
+
+    Tearing the container down on any server.py exit was tried first, and it
+    locks the operator out: the container restarts, the web admin lives for
+    the fraction of a second before the BBS fails again, and the GUI is
+    unreachable in practice -- with the fix for the problem only available
+    through that GUI.
+    """
+
+    def test_the_bbs_is_restarted_rather_than_ending_the_container(self):
+        self.assertRegex(ENTRYPOINT_CODE, r"start_bbs\b[\s\S]*start_bbs\b")
+        self.assertIn("restarting in", ENTRYPOINT_CODE)
+
+    def test_the_restart_backs_off(self):
+        """A BBS failing instantly would otherwise spin the log."""
+        self.assertRegex(ENTRYPOINT_CODE, r"delay=\$\(\(\s*delay \* 2\s*\)\)")
+
+    def test_the_container_still_exits_if_the_web_admin_dies(self):
+        """Nothing left to manage, so let the restart policy take it."""
+        self.assertRegex(
+            ENTRYPOINT_CODE,
+            r"kill -0 \"\$WEB_PID\"[\s\S]{0,400}?exit 1")
+
+    def test_a_stop_during_a_backoff_is_not_delayed(self):
+        """bash runs a trap between commands, never during one, so a single
+        long sleep would stall docker stop until it was SIGKILLed."""
+        self.assertIn("interruptible_sleep", ENTRYPOINT_CODE)
+        self.assertRegex(ENTRYPOINT_CODE, r"(?m)^\s*sleep 1\s*$")
+
+
+class HealthReflectsBothHalvesTests(unittest.TestCase):
+    """With the web admin kept alive through a BBS crash, checking only the
+    GUI would report a node that moves no mail at all as healthy."""
+
+    def setUp(self):
+        self.healthcheck = (REPO / "docker" / "healthcheck.py").read_text(encoding="utf-8")
+
+    def test_the_image_uses_the_healthcheck_script(self):
+        self.assertIn("baconbs-healthcheck", DOCKERFILE)
+        self.assertIn("COPY docker/healthcheck.py", DOCKERFILE)
+
+    def test_it_checks_the_web_admin(self):
+        self.assertIn("/login", self.healthcheck)
+
+    def test_it_checks_that_the_bbs_is_running(self):
+        self.assertIn("server.py", self.healthcheck)
+        self.assertIn("/proc", self.healthcheck)
+
+    def test_it_needs_no_packages_the_image_does_not_have(self):
+        """Reading /proc rather than shelling out to pgrep keeps procps out
+        of the image."""
+        self.assertNotIn("pgrep", self.healthcheck)
+        self.assertNotIn("subprocess", self.healthcheck)
 
 
 class NetworkReachabilityTests(unittest.TestCase):
@@ -286,8 +341,17 @@ class UnraidTemplateTests(unittest.TestCase):
         self.assertEqual(by_target.get("PGID"), "100")
 
     def test_the_ownership_variables_are_honoured(self):
-        self.assertIn("PUID", ENTRYPOINT)
-        self.assertIn("PGID", ENTRYPOINT)
+        self.assertIn("PUID", ENTRYPOINT_CODE)
+        self.assertIn("PGID", ENTRYPOINT_CODE)
+
+    def test_files_created_at_startup_are_reowned_too(self):
+        """config.ini and the session secret are written during startup. A
+        chown that runs before them leaves both owned by root, and a config
+        the BBS cannot write means every save from Settings fails."""
+        chown_at = ENTRYPOINT_CODE.index("chown -R")
+        for created in ("example_config.ini", "secrets.token_hex"):
+            self.assertLess(ENTRYPOINT_CODE.index(created), chown_at,
+                            f"{created} is created after the chown")
 
     def test_a_usb_radio_can_be_attached(self):
         self.assertTrue(any(c.get("Type") == "Device" for c in self.configs))

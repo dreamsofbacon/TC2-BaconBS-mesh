@@ -37,17 +37,13 @@ if [ "$(id -u)" = "0" ]; then
         usermod -o -u "$PUID" mesh
     fi
 
-    mkdir -p "$CONFIG_DIR" "$CONFIG_DIR/data" "${BBS_MQTT_CERT_DIR:-$CONFIG_DIR/mqtt-certs}"
-    # Only the config tree is reowned on every start. /app is image content
-    # already owned correctly, and walking it each boot buys nothing.
-    chown -R mesh "$CONFIG_DIR" 2>/dev/null || true
-    chgrp -R "$(id -g mesh)" "$CONFIG_DIR" 2>/dev/null || true
     log "running as uid $(id -u mesh) gid $(id -g mesh) (PUID=$PUID PGID=$PGID)"
 else
     RUN_AS=""
-    mkdir -p "$CONFIG_DIR" "$CONFIG_DIR/data" "${BBS_MQTT_CERT_DIR:-$CONFIG_DIR/mqtt-certs}"
     log "running as uid $(id -u) gid $(id -g); PUID/PGID ignored (not root)"
 fi
+
+mkdir -p "$CONFIG_DIR" "$CONFIG_DIR/data" "${BBS_MQTT_CERT_DIR:-$CONFIG_DIR/mqtt-certs}"
 
 # ---------------------------------------------------------------------------
 # First run. example_config.ini is the documented starting point; the web
@@ -55,6 +51,9 @@ fi
 # ---------------------------------------------------------------------------
 if [ ! -f "${BBS_CONFIG_PATH:-/config/config.ini}" ]; then
     cp "$APP_DIR/example_config.ini" "${BBS_CONFIG_PATH:-/config/config.ini}"
+    # The build context arrives mode 755 from a Windows checkout, and a
+    # config file has no business being executable.
+    chmod 644 "${BBS_CONFIG_PATH:-/config/config.ini}"
     log "seeded ${BBS_CONFIG_PATH:-/config/config.ini} from example_config.ini"
     log "web admin login is admin / change-me -- change it under Settings, or"
     log "set BBS_WEBGUI_USER and BBS_WEBGUI_PASSWORD on the container."
@@ -72,6 +71,17 @@ if [ -z "${BBS_WEBGUI_SECRET:-}" ]; then
     fi
     BBS_WEBGUI_SECRET="$(cat "$secret_file")"
     export BBS_WEBGUI_SECRET
+fi
+
+# Reown AFTER everything above has been created, not before. Chowning first
+# left config.ini and the session secret owned by root, because they are
+# written during this same startup -- and a config file the BBS cannot write
+# means every save from the Settings page fails.
+#
+# Only the config tree is reowned. /app is image content already owned
+# correctly, and walking it every boot buys nothing.
+if [ "$(id -u)" = "0" ]; then
+    chown -R "$(id -u mesh):$(id -g mesh)" "$CONFIG_DIR" 2>/dev/null || true
 fi
 
 # A radio passed through with --device that the runtime user cannot open fails
@@ -95,8 +105,21 @@ else
     log "  reports a fallback version. Build with docker/build.sh to stamp it."
 fi
 
+
 # ---------------------------------------------------------------------------
-# Both processes, one lifetime.
+# Supervision.
+#
+# The web admin is the control plane: it is the only way to configure a radio,
+# an MQTT broker, or anything else on this node. So it anchors the container's
+# lifetime -- if it exits, the container exits -- and server.py is restarted
+# under it with backoff instead of taking the whole container down.
+#
+# The alternative was tried and is worse. A BBS that cannot start leaves the
+# operator with nothing to fix it WITH: the container restarts, the web admin
+# is up for the fraction of a second before server.py fails again, and the
+# GUI is effectively unreachable. The health check reports the crash loop
+# (see healthcheck.py), which is the honest way to say "running, but not
+# doing its job" without also removing the means of repair.
 # ---------------------------------------------------------------------------
 run() {
     if [ -n "$RUN_AS" ]; then
@@ -109,30 +132,53 @@ cd "$APP_DIR"
 
 run web_admin.py &
 WEB_PID=$!
-run server.py "$@" &
-BBS_PID=$!
+
+start_bbs() {
+    run server.py "$@" &
+    BBS_PID=$!
+    BBS_STARTED_AT=$SECONDS
+}
+start_bbs "$@"
 
 shutdown() {
     log "stopping"
-    kill -TERM "$WEB_PID" "$BBS_PID" 2>/dev/null || true
-    wait "$WEB_PID" "$BBS_PID" 2>/dev/null || true
+    kill -TERM "$WEB_PID" "${BBS_PID:-}" 2>/dev/null || true
+    wait 2>/dev/null || true
     exit 0
 }
 trap shutdown TERM INT
 
-# Exit as soon as EITHER child does, so the restart policy sees the failure.
-# Without this the container survives on whichever process is left, and a dead
-# radio loop looks identical to a healthy BBS from the outside.
-# Bare `wait -n` rather than `wait -n PID...`: these are the only children,
-# and passing pids to -n needs a newer bash than some base images carry.
+# Sleep in one-second steps so a `docker stop` during a restart backoff is
+# acted on immediately: bash runs a trap between commands, not during one.
+interruptible_sleep() {
+    local remaining="$1"
+    while [ "$remaining" -gt 0 ]; do
+        sleep 1
+        remaining=$((remaining - 1))
+    done
+}
+
 set +e
-wait -n
-status=$?
-if ! kill -0 "$BBS_PID" 2>/dev/null; then
-    log "server.py exited ($status); stopping the container"
-else
-    log "web_admin.py exited ($status); stopping the container"
-fi
-kill -TERM "$WEB_PID" "$BBS_PID" 2>/dev/null
-wait 2>/dev/null
-exit "$status"
+delay=5
+while :; do
+    wait -n
+    if ! kill -0 "$WEB_PID" 2>/dev/null; then
+        log "web_admin.py exited; stopping the container"
+        kill -TERM "$BBS_PID" 2>/dev/null
+        wait 2>/dev/null
+        exit 1
+    fi
+    if ! kill -0 "$BBS_PID" 2>/dev/null; then
+        # A BBS that ran for a while and then died is a fresh fault, not part
+        # of the same failing loop, so it starts over at the short delay.
+        if [ $((SECONDS - BBS_STARTED_AT)) -ge 60 ]; then
+            delay=5
+        fi
+        log "WARNING: server.py exited; restarting in ${delay}s."
+        log "  The web admin is still up -- check its log above for the cause."
+        interruptible_sleep "$delay"
+        start_bbs "$@"
+        delay=$((delay * 2))
+        [ "$delay" -gt 30 ] && delay=30
+    fi
+done

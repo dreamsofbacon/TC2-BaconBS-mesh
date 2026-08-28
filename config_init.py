@@ -97,6 +97,23 @@ def _print_serial_device_diagnostic(device: Optional[str]) -> None:
         pass
 
 
+class NoSerialPortsDetected(ValueError):
+    """Auto-detection found no serial ports at all.
+
+    A ValueError subclass, so anything that already treats interface
+    configuration problems as fatal keeps behaving the same. It is separated
+    out because this is the one serial-resolution failure that retrying CAN
+    fix: an unplugged radio, a board that has not finished enumerating, or an
+    install that simply has not been given a radio yet.
+
+    Treated as a config error it killed the entire node -- second radio, MQTT
+    links, everything -- for precisely the condition the background reconnect
+    loop exists to ride out. A container with no device passed through never
+    got past this, so its web admin, the only way to configure a radio in the
+    first place, was never reachable long enough to use.
+    """
+
+
 def _resolve_serial_device(system_config: dict) -> str:
     """Return the concrete serial device path, auto-detecting when not set."""
     if system_config.get('port'):
@@ -105,9 +122,10 @@ def _resolve_serial_device(system_config: dict) -> str:
     if len(ports) == 1:
         return ports[0].device
     if len(ports) > 1:
+        # Genuinely fatal: retrying cannot pick one, a human has to.
         port_list = ', '.join(p.device for p in ports)
         raise ValueError(f"Multiple serial ports detected: {port_list}. Specify one with the 'port' argument.")
-    raise ValueError("No serial ports detected.")
+    raise NoSerialPortsDetected("No serial ports detected.")
 
 
 def init_cli_parser() -> argparse.Namespace:
@@ -531,8 +549,12 @@ def _open_interface(cfg: dict[str, Any]) -> Any:
         ValueError: Exception raised in the following cases:
                 - Type of interface not provided
                 - Multiple serial ports present in the system, and no port specified in the configuration
-                - Serial port interface requested, but no ports found in the system
                 - Hostname not provided for TCP interface
+
+        A serial interface with NO ports present is deliberately not in that
+        list: it is retried like any other failed connect, because an
+        unplugged or not-yet-enumerated radio is exactly what the reconnect
+        loop is for. See NoSerialPortsDetected.
 
     Returns:
         A connected radio interface, or None if it never connected after
@@ -552,7 +574,11 @@ def _open_interface(cfg: dict[str, Any]) -> Any:
         device = None
         try:
             if interface_type == 'serial':
-                device = _resolve_serial_device(cfg)  # ValueError here is fatal (config), not retried
+                # "Multiple ports, pick one" is fatal -- retrying cannot
+                # choose. "No ports at all" is not: it is an unplugged or
+                # not-yet-enumerated radio, and falls through to the retry
+                # path below like any other failed connect.
+                device = _resolve_serial_device(cfg)
                 iface = meshtastic.serial_interface.SerialInterface(device)
             elif interface_type == 'tcp':
                 iface = meshtastic.tcp_interface.TCPInterface(hostname=cfg['hostname'])
@@ -576,7 +602,8 @@ def _open_interface(cfg: dict[str, Any]) -> Any:
             if failures:
                 print(f"Radio connection recovered after {failures} failed attempt(s).")
             return iface
-        except (PermissionError, meshtastic.mesh_interface.MeshInterface.MeshInterfaceError,
+        except (NoSerialPortsDetected, PermissionError,
+                meshtastic.mesh_interface.MeshInterface.MeshInterfaceError,
                 ConnectionResetError, ConnectionRefusedError, OSError) as e:
             failures += 1
             print(f"Radio connect attempt {failures} failed: {type(e).__name__}: {e}")

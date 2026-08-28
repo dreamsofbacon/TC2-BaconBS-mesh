@@ -49,6 +49,7 @@ COPY templates/ ./templates/
 COPY static/ ./static/
 COPY fortunes.txt example_config.ini ./
 COPY docker/entrypoint.sh /usr/local/bin/baconbs-entrypoint
+COPY docker/healthcheck.py /usr/local/bin/baconbs-healthcheck
 RUN chmod 755 /usr/local/bin/baconbs-entrypoint
 
 # Everything that must survive an image rebuild lives on the volume: the
@@ -91,10 +92,12 @@ RUN useradd --create-home --uid 1000 --shell /usr/sbin/nologin mesh \
 VOLUME /config
 EXPOSE 8081
 
-# /login is the one route that answers without a session, so this checks that
-# Flask is actually serving rather than merely that the process exists.
+# Checks that the web admin is serving AND that server.py is running. The
+# entrypoint keeps the web admin alive when the BBS crashes -- it is the only
+# way to fix the cause -- so without that second check a node moving no mail
+# at all would report itself perfectly healthy. /login is used because it is
+# the one route that answers without a session.
 HEALTHCHECK --interval=60s --timeout=10s --start-period=90s --retries=3 \
-  CMD python3 -c "import os,sys,urllib.request; \
-sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:' + os.getenv('BBS_WEBGUI_PORT','8081') + '/login', timeout=5).status == 200 else 1)"
+  CMD ["python3", "/usr/local/bin/baconbs-healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/baconbs-entrypoint"]
