@@ -99,10 +99,14 @@ inside the radio library and reads like a hardware fault.
 
 ### Running without a radio
 
-A radio is optional. The BBS runs fine with a networked Meshtastic node over
-TCP, or with no radio at all as an MQTT-only node that mirrors another BBS's
-content. Configure the link in the web GUI after first start and leave the
-device mapping off.
+A radio is optional. Leave the device mapping off, then in the web GUI set
+*Settings → Radio → Device type* to **No radio — MQTT only** (`type = none` in
+`config.ini`) and add an MQTT broker. The node then mirrors another BBS's
+bulletins, mail and channels over the broker with no hardware of its own.
+
+Say it explicitly rather than pointing at a serial port that is not there: a
+named-but-absent device is retried forever and shows as a permanently broken
+link.
 
 ---
 

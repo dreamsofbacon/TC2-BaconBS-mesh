@@ -126,6 +126,17 @@ type = serial
 # hostname = 192.168.1.x
 ```
 
+No radio at all — an MQTT-only node that mirrors another BBS's bulletins, mail
+and channels over a shared broker:
+
+```ini
+[interface]
+type = none
+```
+
+Say that rather than naming a serial port that will never appear: an absent
+device is retried forever and shows as a permanently broken link.
+
 MeshCore companion serial:
 
 ```ini
