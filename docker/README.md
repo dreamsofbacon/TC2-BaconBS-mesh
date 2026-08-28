@@ -51,9 +51,14 @@ has to be published first. Pushing to `main` runs
 `.github/workflows/docker-publish.yml`, which builds for amd64 and arm64 and
 pushes to `ghcr.io/dreamsofbacon/tc2-baconbs-mesh`.
 
-**One-time:** GitHub publishes new packages as private. Open the package page
-under the repository's *Packages*, then *Package settings → Change visibility →
-Public*, or the Unraid box gets a 401 on pull.
+The package is public, so no login is needed to pull it:
+
+```sh
+docker pull ghcr.io/dreamsofbacon/tc2-baconbs-mesh:latest
+```
+
+Each build is tagged `latest` and with its version (`0.1.398`), so a bad
+update can be rolled back by pinning the previous number.
 
 ### Installing the template
 
