@@ -1,0 +1,77 @@
+<?xml version="1.0"?>
+<!--
+  Unraid template for Bacon BBS.
+
+  Add it under Docker -> Add Container -> Template repositories by pointing at
+  this repository, or download this file to /boot/config/plugins/dockerMan/templates-user/
+  on the Unraid box and it will appear in the "User templates" list.
+-->
+<Container version="2">
+  <Name>BaconBS</Name>
+  <Repository>ghcr.io/dreamsofbacon/tc2-baconbs-mesh:latest</Repository>
+  <Registry>https://github.com/dreamsofbacon/TC2-BaconBS-mesh/pkgs/container/tc2-baconbs-mesh</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/dreamsofbacon/TC2-BaconBS-mesh/issues</Support>
+  <Project>https://github.com/dreamsofbacon/TC2-BaconBS-mesh</Project>
+  <Overview>
+    A bulletin board system for Meshtastic and MeshCore mesh radio networks: bulletins, mail,
+    channel directories, JS8Call gateway, Zork, and an admin web GUI.
+
+    Nodes replicate to each other over the radio itself or over MQTT, so several boards can share
+    one set of bulletins and mail without any of them being a central server.
+
+    A radio is optional. Attach a USB companion radio with the Device setting below, point the BBS
+    at a networked Meshtastic node over TCP, or run it MQTT-only to mirror another node's content.
+    Configuration after first start happens entirely in the web GUI.
+
+    First login is admin / change-me unless you set the username and password variables below.
+    Change it before exposing the port beyond your LAN.
+  </Overview>
+  <Category>Network:Messenger Network:Other Tools:Utilities</Category>
+  <WebUI>http://[IP]:[PORT:8081]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/dreamsofbacon/TC2-BaconBS-mesh/main/docker/baconbs-unraid.xml</TemplateURL>
+  <!-- No dashboard icon yet. Add a square PNG at static/img/icon.png and
+       point an <Icon> element here at its raw.githubusercontent.com URL. -->
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+
+  <Config Name="Web GUI Port" Target="8081" Default="8081" Mode="tcp"
+          Description="Port for the admin web GUI."
+          Type="Port" Display="always" Required="true" Mask="false">8081</Config>
+
+  <Config Name="Config and Data" Target="/config" Default="/mnt/user/appdata/baconbs" Mode="rw"
+          Description="Holds config.ini, the bulletins database, MQTT certificates and downloaded Zork story files. Everything that must survive an update lives here."
+          Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/baconbs</Config>
+
+  <Config Name="PUID" Target="PUID" Default="99"
+          Description="User id the BBS runs as. Unraid's default is 99 (nobody)."
+          Type="Variable" Display="advanced" Required="true" Mask="false">99</Config>
+
+  <Config Name="PGID" Target="PGID" Default="100"
+          Description="Group id the BBS runs as. Unraid's default is 100 (users)."
+          Type="Variable" Display="advanced" Required="true" Mask="false">100</Config>
+
+  <Config Name="TZ" Target="TZ" Default="America/New_York"
+          Description="Timezone, so timestamps on bulletins and mail read correctly."
+          Type="Variable" Display="always" Required="false" Mask="false"/>
+
+  <Config Name="Admin Username" Target="BBS_WEBGUI_USER" Default=""
+          Description="Web GUI username. Leave blank to use whatever is in config.ini (admin by default)."
+          Type="Variable" Display="always" Required="false" Mask="false"/>
+
+  <Config Name="Admin Password" Target="BBS_WEBGUI_PASSWORD" Default=""
+          Description="Web GUI password. Leave blank to use whatever is in config.ini (change-me by default). Set this before the port leaves your LAN."
+          Type="Variable" Display="always" Required="false" Mask="true"/>
+
+  <Config Name="USB Radio" Target="/dev/ttyUSB0" Default="/dev/ttyUSB0" Mode=""
+          Description="A USB-attached Meshtastic or MeshCore companion radio. Delete this entry if the radio is on the network over TCP, or if this node syncs over MQTT only. Unraid usually needs the /dev/serial/by-id/... path instead, since ttyUSB numbering changes on replug."
+          Type="Device" Display="always" Required="false" Mask="false"/>
+</Container>

@@ -88,6 +88,23 @@ copy example_config.ini config.ini
 
 The setup scripts create a Python virtual environment and install all dependencies automatically.
 
+### Docker / Unraid
+
+```sh
+git clone https://github.com/dreamsofbacon/TC2-BaconBS-mesh.git
+cd TC2-BaconBS-mesh
+docker/build.sh
+cd docker && docker compose up -d
+```
+
+The web admin is then on port 8081, and `/config` holds everything that has to
+survive an update. Use `docker/build.sh` rather than a bare `docker build`: the
+image has no `.git`, so the version has to be stamped in at build time.
+
+Unraid has a ready-made template at `docker/baconbs-unraid.xml`. See
+[docker/README.md](docker/README.md) for that, for attaching a USB radio, and
+for running with no radio at all as an MQTT-only node.
+
 ---
 
 ## Configuration

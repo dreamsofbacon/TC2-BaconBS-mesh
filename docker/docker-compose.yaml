@@ -1,12 +1,42 @@
+# Bacon BBS. Build with docker/build.sh (it stamps the version) or plain
+# `docker compose up -d --build` if you do not mind the fallback version.
 services:
-  tc2-bbs-mesh:
+  baconbs:
+    container_name: baconbs
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    restart: always
+      args:
+        # Empty here on purpose: build.sh passes the real values. A hardcoded
+        # number would go stale the moment anyone commits.
+        BBS_BUILD_NUMBER: "${BBS_BUILD_NUMBER:-}"
+        BBS_GIT_COMMIT: "${BBS_GIT_COMMIT:-}"
+    image: baconbs:local
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
     volumes:
-      - ./config:/home/mesh/bbs/config
-    container_name: tc2-bbs-mesh
-    # For a USB companion radio, uncomment and replace the host device path:
+      # Config, database, TLS material and Zork downloads all live here. On
+      # Unraid this is /mnt/user/appdata/baconbs.
+      - ./config:/config
+    environment:
+      # Unraid's defaults are 99/100. 1000/1000 suits a normal Linux host.
+      PUID: "1000"
+      PGID: "1000"
+      TZ: "UTC"
+      # Set these to override the config file's admin credentials. Left unset,
+      # the first run seeds admin / change-me and says so in the log.
+      # BBS_WEBGUI_USER: "admin"
+      # BBS_WEBGUI_PASSWORD: "put-a-real-password-here"
+
+    # A USB companion radio. Prefer the stable /dev/serial/by-id/ path:
+    # ttyUSB numbering changes when devices are replugged or the host reboots.
+    # `--group-add` is needed when the host's dialout gid is not 20.
     # devices:
-    #   - /dev/ttyACM0:/dev/ttyACM0
+    #   - /dev/serial/by-id/usb-1a86_USB_Single_Serial_XXXXXX-if00:/dev/ttyUSB0
+    # group_add:
+    #   - "20"
+
+    # A network radio (Meshtastic over TCP) or an MQTT-only node needs no
+    # device at all -- configure the link in the web admin and leave the
+    # devices block commented out.
