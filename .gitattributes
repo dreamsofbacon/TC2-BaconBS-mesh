@@ -1,0 +1,16 @@
+# Shell scripts must check out with LF even on Windows. A CRLF entrypoint.sh
+# copied into the container makes the kernel read the shebang as
+# "/bin/bash\r", and the container dies with "no such file or directory" --
+# naming bash, not the carriage return, which is a genuinely hard error to
+# read. The same applies to setup.sh and the run_*.sh launchers on a checkout
+# that is edited on Windows and run over a share on Linux.
+* text=auto
+
+*.sh text eol=lf
+Dockerfile text eol=lf
+docker/entrypoint.sh text eol=lf
+*.rules text eol=lf
+*.service text eol=lf
+
+*.ps1 text eol=crlf
+*.bat text eol=crlf

@@ -1,11 +1,43 @@
+# The build context. Keep secrets and per-node runtime state out of it: an
+# image is shared, and anything copied in travels to whoever pulls it.
+
 .git
+.github
 .venv
 venv
+.vs
+.pytest_cache
 __pycache__
 *.pyc
+
+# One node's live state. The database, the trigger files and the diagnostics
+# snapshot are per-install; baking them in would ship one node's content to
+# every container built from this image.
 *.db
 *.db-shm
 *.db-wal
+*.trigger
+runtime_diagnostics.json
 config.ini
+_build_version.py
+*.log
+
+# Uploaded MQTT TLS material, which may include private keys.
+data/
+
+# Not needed at runtime.
+tests
 docker/config
 test-results
+meshtastic-web/
+meshtastic-web-dist/
+examples
+pico_node
+hardware
+scripts
+LICENSE
+README.md
+*.sln
+*.vcxproj*
+diff_output.txt
+feature requests.txt

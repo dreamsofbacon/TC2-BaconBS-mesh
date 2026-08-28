@@ -1,0 +1,59 @@
+# Publishes the container image so it can be pulled rather than built --
+# Unraid installs from a registry, it does not build from source.
+#
+# The version is stamped in as build args because the image has no .git and no
+# git binary: version_info cannot work it out at runtime the way it does on a
+# normal install, and an unstamped image reports the same fallback version
+# forever.
+name: Publish container image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The version IS the commit count, so a shallow clone would produce
+          # the wrong number.
+          fetch-depth: 0
+
+      - name: Resolve the version
+        id: version
+        run: |
+          echo "build=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          # amd64 for Unraid, arm64 for the Raspberry Pi nodes.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/tc2-baconbs-mesh:latest
+            ghcr.io/${{ github.repository_owner }}/tc2-baconbs-mesh:0.1.${{ steps.version.outputs.build }}
+          build-args: |
+            BBS_BUILD_NUMBER=${{ steps.version.outputs.build }}
+            BBS_GIT_COMMIT=${{ steps.version.outputs.commit }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
