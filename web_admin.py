@@ -8,6 +8,7 @@ import time
 import uuid
 import secrets
 import configparser
+import tempfile
 from datetime import datetime, timezone as dt_timezone
 from functools import wraps
 from typing import Optional
@@ -128,8 +129,27 @@ def read_config_file(config_path: str) -> configparser.ConfigParser:
 
 
 def write_config_file(config: configparser.ConfigParser, config_path: str) -> None:
-  with open(config_path, "w", encoding="utf-8") as config_file:
-    config.write(config_file)
+  config_dir = os.path.dirname(config_path) or "."
+  existing_mode = None
+  try:
+    existing_mode = os.stat(config_path).st_mode & 0o777
+  except OSError:
+    pass
+
+  fd, temp_path = tempfile.mkstemp(dir=config_dir, prefix=".config.", suffix=".tmp")
+  try:
+    with os.fdopen(fd, "w", encoding="utf-8") as config_file:
+      config.write(config_file)
+      config_file.flush()
+      os.fsync(config_file.fileno())
+    os.chmod(temp_path, existing_mode if existing_mode is not None else 0o644)
+    os.replace(temp_path, config_path)
+  except Exception:
+    try:
+      os.unlink(temp_path)
+    except OSError:
+      pass
+    raise
 
 
 def parse_list_input(raw_value: str) -> list[str]:

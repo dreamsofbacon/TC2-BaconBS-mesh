@@ -214,6 +214,36 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(login_response.status_code, 302)
         self.assertTrue(login_response.headers["Location"].endswith("/bulletins"))
 
+    def test_board_settings_save_replaces_read_only_config_when_dir_is_writable(self):
+        """A staged deploy can leave config.ini owned by root while the
+        config directory itself is writable by the running container user.
+        Saving should rewrite the file atomically instead of failing in place."""
+        os.chmod(self.config_path, 0o444)
+        os.chmod(self.root, 0o777)
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        response = self.post_with_csrf(
+            client,
+            "/settings",
+            data={
+                "settings_section": "boards",
+                "bulletin_boards": "General,Field Ops,News",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("/settings#boards"))
+
+        saved = configparser.ConfigParser()
+        saved.read(self.config_path)
+        self.assertEqual(
+            saved.get("boards", "bulletin_boards"),
+            "General,Field Ops,News",
+        )
+
     def test_sync_settings_update_config_and_runtime_interface(self):
         runtime_interface = FakeInterface()
         app = create_app(runtime_interface=runtime_interface)
