@@ -13,6 +13,7 @@ Forked from [TC²-BBS-mesh](https://github.com/TheCommsChannel/TC2-BBS-mesh) wit
 - **Channel Directory** — Named discussion channels with threaded comments
 - **User Profiles** — Short name, bio, activity statistics, and an explicit account-wide offline mail relay setting
 - **Interactive Games** — Zork I–III, Hitchhiker's Guide to the Galaxy, Enchanter, Planetfall, Starcross (via dfrotz); per-user save states synced across the mesh
+- **Jeopardy** — a single-player clue door contributed by [materva](https://github.com/materva/TC2-BaconBS-mesh), scored to the shared scoreboard. Needs a clue archive at `data/jeopardy.db` (override with `BBS_JEOPARDY_DB`); without one the game reports that it is unavailable rather than starting
 - **JS8Call Bridge** — Optional integration with JS8Call for group, direct, and urgent radio messages
 - **Node Statistics** — View node counts, hardware types, and roles on the mesh
 - **Wall of Shame** — Devices with low battery levels
@@ -757,6 +758,7 @@ options:
 - [Meshtastic](https://github.com/meshtastic) and [pdxlocations](https://github.com/pdxlocations) — Python library and examples
 - [MeshCore](https://github.com/meshcore-dev/MeshCore) and [meshcore_py](https://github.com/meshcore-dev/meshcore_py) — companion protocol, firmware, and Python library
 - [Jordan Sherer](https://bitbucket.org/widefido/js8call) — JS8Call and the TCP API example
+- [materva](https://github.com/materva/TC2-BaconBS-mesh) — the Jeopardy door, and the door-session input handling that keeps a game's keys from being taken by the main menu
 
 ---
 

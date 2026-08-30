@@ -1,4 +1,12 @@
-"""Single-player Jeopardy door backed by the captured clue archive."""
+"""Single-player Jeopardy door backed by the captured clue archive.
+
+Contributed by materva (https://github.com/materva/TC2-BaconBS-mesh).
+
+The archive itself is data rather than code and is not shipped with the
+BBS, so a node without one is expected: the door reports that it is
+unavailable instead of starting. Point BBS_JEOPARDY_DB elsewhere to use
+an archive outside data/jeopardy.db.
+"""
 import os, random, sqlite3, re
 
 GAME_ID = "jeopardy"
