@@ -19,7 +19,7 @@ from command_handlers import (
     handle_read_mail_command, handle_check_mail_command, handle_delete_mail_confirmation, handle_post_bulletin_command,
     handle_check_bulletin_command, handle_read_bulletin_command, handle_read_channel_command,
     handle_post_channel_command, handle_list_channels_command, handle_quick_help_command,
-    handle_zork_command, handle_zork_steps,
+    handle_zork_command, handle_zork_steps, handle_jeopardy_steps,
     handle_games_command, handle_games_steps,
     handle_scoreboard_command, handle_scoreboard_steps,
     handle_profile_command, handle_profile_steps,
@@ -106,6 +106,7 @@ main_menu_handlers = {
     "u": lambda sender_id, interface: handle_help_command(sender_id, interface, 'utilities'),
     "p": handle_profile_command,
     "n": handle_ask_nomad_command,
+    "g": handle_games_command,
     "a": handle_apigw_command,
     "s": handle_settings_command,
     "x": handle_help_command
@@ -2436,12 +2437,18 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             else:
                 handlers = {}
 
-            if handlers and message_lower == 'x':
+            # Active door sessions own their input, including shortcuts that
+            # collide with top-level commands (Jeopardy uses N for next clue;
+            # the main menu uses N for Ask Nomad).
+            door_session = state and state.get('command') in ('ZORK', 'JEOPARDY')
+            # `handlers` guard is ours: an empty handler map means no menu is
+            # active, and X should not then bounce the user to the main menu.
+            if handlers and message_lower == 'x' and not door_session:
                 # Reset to main menu state
                 handle_help_command(sender_id, interface)
                 return
 
-            if message_lower in handlers:
+            if message_lower in handlers and not door_session:
                 if state and state['command'] in ['BULLETIN_ACTION', 'BULLETIN_READ', 'BULLETIN_POST', 'BULLETIN_POST_CONTENT']:
                     handlers[message_lower](sender_id, interface, state)
                 else:
@@ -2486,6 +2493,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     handle_games_steps(sender_id, message, interface)
                 elif command == 'ZORK':
                     handle_zork_steps(sender_id, message, interface)
+                elif command == 'JEOPARDY':
+                    handle_jeopardy_steps(sender_id, message, interface)
                 elif command == 'SCOREBOARD':
                     handle_scoreboard_steps(sender_id, message, interface)
                 elif command == 'PROFILE':
