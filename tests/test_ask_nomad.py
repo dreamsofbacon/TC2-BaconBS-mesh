@@ -70,14 +70,43 @@ class AskNomadShortcutTests(unittest.TestCase):
         self.assertTrue(any("not on the allow-list" in m for m in _sent(sm)))
         hh.assert_called_once_with(111, self.interface)  # no menu_name -> main menu
 
-    def test_main_menu_letter_n_routes_to_ask_nomad(self):
+    def test_prefixed_n_routes_to_ask_nomad(self):
+        """'!N' is the global form, and reaches Nomad from anywhere."""
+        with mock.patch.object(command_handlers, "_apigw_authorized", return_value=True), \
+             mock.patch.object(command_handlers, "send_message") as sm:
+            message_processing.process_message(
+                111, "!n", self.interface, is_sync_message=False, sender_node_id="!aaa11111",
+            )
+        self.assertIn("Type your question for Project Nomad:", _sent(sm))
+        self.assertEqual(command_handlers.get_user_state(111), {"command": "ASK_NOMAD", "step": 1})
+
+    def test_bare_n_opens_the_menu_rather_than_dispatching(self):
+        """Bare letters stay local on purpose. Jeopardy uses N for the next
+        clue, and the main menu must not take it out from under the game.
+        With no menu open, N shows one instead of acting."""
         with mock.patch.object(command_handlers, "_apigw_authorized", return_value=True), \
              mock.patch.object(command_handlers, "send_message") as sm:
             message_processing.process_message(
                 111, "n", self.interface, is_sync_message=False, sender_node_id="!aaa11111",
             )
+        self.assertNotIn("Type your question for Project Nomad:", _sent(sm))
+        self.assertEqual(command_handlers.get_user_state(111),
+                         {"command": "MAIN_MENU", "step": 1})
+
+    def test_n_again_with_the_menu_open_does_reach_nomad(self):
+        """So the shortcut is not lost, only scoped: the menu N opens is the
+        one that then accepts N."""
+        with mock.patch.object(command_handlers, "_apigw_authorized", return_value=True), \
+             mock.patch.object(command_handlers, "send_message") as sm:
+            message_processing.process_message(
+                111, "n", self.interface, is_sync_message=False, sender_node_id="!aaa11111",
+            )
+            message_processing.process_message(
+                111, "n", self.interface, is_sync_message=False, sender_node_id="!aaa11111",
+            )
         self.assertIn("Type your question for Project Nomad:", _sent(sm))
-        self.assertEqual(command_handlers.get_user_state(111), {"command": "ASK_NOMAD", "step": 1})
+        self.assertEqual(command_handlers.get_user_state(111),
+                         {"command": "ASK_NOMAD", "step": 1})
 
     def test_exit_choices_return_to_main_menu_not_utilities(self):
         command_handlers.update_user_state(111, {"command": "ASK_NOMAD", "step": 1})
