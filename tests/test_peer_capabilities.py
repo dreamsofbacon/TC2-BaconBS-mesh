@@ -73,6 +73,20 @@ class SyncStateFramingTests(unittest.TestCase):
         self.assertEqual(len(parts), 15)
         self.assertEqual(parts[14], utils.local_capabilities_token())
 
+    def test_relay_preference_only_sends_to_capable_peers(self):
+        captured = []
+
+        with patch.object(db_operations, "peer_supports", side_effect=lambda peer, cap: peer == "!new" and cap == "mrp"), \
+                patch.object(utils, "_send_one_sync", side_effect=lambda message, node_id, interface: captured.append((message, node_id))):
+            sent = utils.send_mail_relay_preference_to_bbs_nodes(
+                "!recipient", True, "2026-08-30T12:00:00+00:00", ["!old", "!new"], None
+            )
+
+        self.assertEqual(sent, 1)
+        self.assertEqual(captured, [
+            ("RELAYPREF|!recipient|1|2026-08-30T12:00:00+00:00", "!new")
+        ])
+
 
 class PeerCapsPersistenceTests(unittest.TestCase):
     def setUp(self):

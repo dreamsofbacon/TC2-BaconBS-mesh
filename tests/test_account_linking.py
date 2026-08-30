@@ -200,6 +200,21 @@ class AccountMenuTests(unittest.TestCase):
         self.assertIn("Linked Devices", _sent(sm)[0])
         self.assertEqual(command_handlers.get_user_state(1), {"command": "ACCOUNT", "step": 1})
 
+    def test_profile_relay_opt_in_bootstraps_account(self):
+        command_handlers.update_user_state(1, {"command": "PROFILE", "step": 1})
+        with mock.patch.object(command_handlers, "send_message"):
+            command_handlers.handle_profile_steps(
+                1, "3", self.interface, sender_node_id="!aaa11111"
+            )
+            state = command_handlers.get_user_state(1)
+            self.assertEqual(state["step"], 3)
+            command_handlers.handle_profile_steps(
+                1, "Y", self.interface, sender_node_id="!aaa11111"
+            )
+
+        self.assertIsNotNone(db_operations.get_account_id_for_node("!aaa11111"))
+        self.assertTrue(db_operations.get_mail_relay_preference("!aaa11111"))
+
 
 class AccountRoutingIntegrationTests(unittest.TestCase):
     """Confirms message_processing.py's routing genuinely threads

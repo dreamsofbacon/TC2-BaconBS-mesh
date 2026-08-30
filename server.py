@@ -40,6 +40,7 @@ from db_operations import (
     sync_bulletins_to_nodes,
     sync_channels_to_nodes,
     sync_profiles_to_nodes,
+    sync_mail_relay_preferences_to_nodes,
     sync_game_data_to_nodes,
     get_sync_progress,
     get_mismatched_peer_nodes,
@@ -961,8 +962,10 @@ def deliver_due_mail_dms(links, active_window_seconds: int = 900, retry_base_sec
         return 0
     try:
         from db_operations import (
+            cancel_mail_dm_delivery,
             defer_mail_dm_delivery,
             get_due_mail_dm_deliveries,
+            get_mail_relay_preference,
             get_mesh_clients,
             mark_mail_dm_delivered,
             retry_mail_dm_delivery,
@@ -986,6 +989,9 @@ def deliver_due_mail_dms(links, active_window_seconds: int = 900, retry_base_sec
     links_by_name = {str(link.name): link for link in links}
     for entry in due:
         node_id = str(entry['target_node_id'])
+        if not get_mail_relay_preference(node_id):
+            cancel_mail_dm_delivery(entry['id'], "recipient disabled mail relay")
+            continue
         client = active_by_node.get(node_id)
         if client is None:
             defer_mail_dm_delivery(entry['id'], 30)
@@ -1208,6 +1214,7 @@ def _run_sync_for_link(link: RadioLink, node) -> None:
     # P4 — profiles
     if 'profiles' not in peer_scopes_mismatched:
         logging.info(f"[{link.name}] P4 profiles skipped for {node}: SYNCSTATE counts/hash match")
+        sync_mail_relay_preferences_to_nodes([node], interface)
         link.profiles_synced_nodes.add(node)
         mark_peer_phase_synced(node, 'profiles')
     else:

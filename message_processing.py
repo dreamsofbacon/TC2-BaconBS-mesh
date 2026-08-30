@@ -44,6 +44,7 @@ from db_operations import (
     auto_upsert_user_profile, log_connection_event, upsert_peer_sync_state,
     log_sync_transmission,
     upsert_synced_user_profile, upsert_synced_game_score,
+    apply_synced_mail_relay_preference,
     upsert_synced_zork_save,
     apply_synced_zork_save_delete,
     get_mismatched_peer_scopes,
@@ -1452,8 +1453,9 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
 
     bbs_nodes = interface.bbs_nodes
 
-    # Handle repeated characters for single character commands using a prefix
-    if len(message_lower) == 2 and message_lower[1] == 'x':
+    # Preserve the legacy trailing-X shorthand (for example NX -> N) for
+    # local replies, but never rewrite explicit global commands such as !X.
+    if not message_lower.startswith('!') and len(message_lower) == 2 and message_lower[1] == 'x':
         message_lower = message_lower[0]
 
     if is_sync_message:
@@ -2012,6 +2014,12 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             upsert_synced_user_profile(parts[1], short_name, long_name,
                                        decode_ts_second(parts[4]), decode_ts_second(parts[5]),
                                        messages_sent, bio)
+        elif message.startswith("RELAYPREF|"):
+            parts = message.split("|", 3)
+            if len(parts) != 4 or parts[2] not in ('0', '1') or not parts[1] or not parts[3]:
+                logging.warning(f"Malformed RELAYPREF ignored: {message}")
+                return
+            apply_synced_mail_relay_preference(parts[1], parts[2] == '1', parts[3])
         elif message.startswith("SCORESYNC|"):
             parts = message.split("|", 7)
             if len(parts) != 8:
@@ -2364,20 +2372,39 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             except Exception as exc:
                 logging.warning(f"EVENT handler failed: {exc}")
     else:
-        if message_lower.startswith("sm,,"):
-            handle_send_mail_command(sender_id, message_strip, interface, bbs_nodes)
-        elif message_lower == "au":
-            handle_active_users_command(sender_id, interface)
-        elif message_lower.startswith("cm"):
-            handle_check_mail_command(sender_id, interface)
-        elif message_lower.startswith("pb,,"):
-            handle_post_bulletin_command(sender_id, message_strip, interface, bbs_nodes)
-        elif message_lower.startswith("cb,,"):
-            handle_check_bulletin_command(sender_id, message_strip, interface)
-        elif message_lower.startswith("chp,,"):
-            handle_post_channel_command(sender_id, message_strip, interface)
-        elif message_lower.startswith("chl"):
-            handle_list_channels_command(sender_id, interface)
+        if state and state.get('command') in ('GAMES_MENU', 'ZORK'):
+            if state['command'] == 'GAMES_MENU':
+                handle_games_steps(sender_id, message, interface)
+            else:
+                handle_zork_steps(sender_id, message, interface)
+            return
+        if state and state.get('command') == 'MAIL':
+            handle_mail_steps(sender_id, message, state['step'], state, interface, bbs_nodes)
+            return
+
+        if message_lower.startswith('!'):
+            global_lower = message_lower[1:]
+            global_message = message_strip[1:]
+            if global_lower.startswith("sm,,"):
+                handle_send_mail_command(sender_id, global_message, interface, bbs_nodes)
+            elif global_lower == "au":
+                handle_active_users_command(sender_id, interface)
+            elif global_lower == "cm":
+                handle_check_mail_command(sender_id, interface)
+            elif global_lower.startswith("pb,,"):
+                handle_post_bulletin_command(sender_id, global_message, interface, bbs_nodes)
+            elif global_lower.startswith("cb,,"):
+                handle_check_bulletin_command(sender_id, global_message, interface)
+            elif global_lower.startswith("chp,,"):
+                handle_post_channel_command(sender_id, global_message, interface)
+            elif global_lower == "chl":
+                handle_list_channels_command(sender_id, interface)
+            elif global_lower in main_menu_handlers:
+                main_menu_handlers[global_lower](sender_id, interface)
+            else:
+                handle_help_command(sender_id, interface)
+            return
+
         else:
             if state and state['command'] in ('MENU', 'MAIN_MENU'):
                 menu_name = state.get('menu', 'main')
@@ -2407,9 +2434,9 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 handle_group_message_selection(sender_id, message, state['step'], state, interface)
                 return
             else:
-                handlers = main_menu_handlers
+                handlers = {}
 
-            if message_lower == 'x' and not (state and state.get('command') == 'ZORK'):
+            if handlers and message_lower == 'x':
                 # Reset to main menu state
                 handle_help_command(sender_id, interface)
                 return
@@ -2462,7 +2489,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 elif command == 'SCOREBOARD':
                     handle_scoreboard_steps(sender_id, message, interface)
                 elif command == 'PROFILE':
-                    handle_profile_steps(sender_id, message, interface)
+                    handle_profile_steps(sender_id, message, interface, sender_node_id)
                 elif command == 'ACCOUNT':
                     handle_account_steps(sender_id, message, interface, sender_node_id)
                 elif command == 'SETTINGS':
@@ -2496,7 +2523,7 @@ def on_receive(packet, interface):
                                   ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|", "DELETE_ZORKSAVE|",
                                    "CHANNEL|", "DELETE_CHANNEL|", "CHANNELCOMMENT|", "CHANNELCOMMENTCONT|", "CHANNELCOMMENTMETA|", "DELETE_CHANNELCOMMENT|",
                                    "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
-                                   "PROFILESYNC|", "SCORESYNC|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
+                                   "PROFILESYNC|", "RELAYPREF|", "SCORESYNC|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|", "HASHZGAP|",
                                    "HAVE|", "WANT|", "EVENT|", "PEERGOSSIP|",
                                    "APIREQ|", "APIRESP|", "APIRESPCONT|", "APIRESPMETA|",

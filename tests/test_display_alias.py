@@ -137,6 +137,9 @@ class BulletinAndMailAliasIntegrationTests(unittest.TestCase):
             "hw_model": "", "role": "CLIENT", "battery_level": None,
             "last_heard_epoch": None,
         }])
+        db_operations.apply_synced_mail_relay_preference(
+            "!bbb22222", True, "2099-08-30T12:00:00+00:00"
+        )
         account_id = db_operations.create_account()
         db_operations.link_node_to_account("!aaa11111", account_id, "meshtastic")
         db_operations.set_account_alias(account_id, "BaconFan")
