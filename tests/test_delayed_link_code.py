@@ -106,6 +106,7 @@ class DeliveryTests(unittest.TestCase):
         account_id = db_operations.create_account()
         for nid in node_ids:
             db_operations.link_node_to_account(nid, account_id, "meshtastic")
+        db_operations.set_account_mail_relay(account_id, True)
         return account_id
 
     def _active_client(self, node_id, link_name="primary", protocol="Meshtastic"):
@@ -223,6 +224,26 @@ class DeliveryTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual((state, attempts), ("pending", 1))
         self.assertIn("false", error)
+
+    def test_mail_dm_cancels_stale_queue_after_consent_is_revoked(self):
+        account_id = self._account_with("!alpha")
+        self._active_client("!alpha")
+        unique_id = self._due_mail()
+        db_operations.get_db_connection().execute(
+            "UPDATE accounts SET mail_relay_enabled = 0 WHERE account_id = ?", (account_id,)
+        )
+        db_operations.get_db_connection().commit()
+        sent = []
+
+        with patch("utils.send_message", lambda *args: sent.append(args) or True):
+            count = self.server.deliver_due_mail_dms([self.RadioLink("primary", object())])
+
+        self.assertEqual(count, 0)
+        self.assertEqual(sent, [])
+        state = db_operations.get_db_connection().execute(
+            "SELECT state FROM mail_dm_deliveries WHERE mail_unique_id = ?", (unique_id,)
+        ).fetchone()[0]
+        self.assertEqual(state, "cancelled")
 
 
 if __name__ == "__main__":

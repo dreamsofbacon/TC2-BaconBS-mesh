@@ -57,7 +57,78 @@ class MailRelayDatabaseTests(unittest.TestCase):
         db_operations.set_account_alias(account_id, "Relay User")
         db_operations.link_node_to_account("!aaa11111", account_id, "meshtastic")
         db_operations.link_node_to_account("bbbb2222", account_id, "meshcore")
+        db_operations.set_account_mail_relay(account_id, True)
         return account_id
+
+    def test_mail_relay_defaults_off(self):
+        account_id = db_operations.create_account()
+        db_operations.link_node_to_account("!recipient", account_id, "meshtastic")
+
+        unique_id = db_operations.add_mail(
+            "!sender", "Sender", "!recipient", "Stored", "Body", [], None
+        )
+
+        self.assertTrue(db_operations.get_mail("!recipient"))
+        self.assertFalse(db_operations.get_mail_relay_preference("!recipient"))
+        queued = db_operations.get_db_connection().execute(
+            "SELECT COUNT(*) FROM mail_dm_deliveries WHERE mail_unique_id = ?", (unique_id,)
+        ).fetchone()[0]
+        self.assertEqual(queued, 0)
+
+    def test_synced_preference_uses_newest_timestamp_for_linked_account(self):
+        account_id = self._linked_account()
+
+        changed = db_operations.apply_synced_mail_relay_preference(
+            "!aaa11111", False, "2099-08-30T13:00:00+00:00"
+        )
+        stale = db_operations.apply_synced_mail_relay_preference(
+            "bbbb2222", True, "2099-08-30T12:00:00+00:00"
+        )
+
+        self.assertTrue(changed)
+        self.assertFalse(stale)
+        self.assertFalse(db_operations.get_mail_relay_preference("!aaa11111"))
+        self.assertFalse(db_operations.get_mail_relay_preference("bbbb2222"))
+
+    def test_offline_opted_in_node_resolves_by_exact_id(self):
+        db_operations.apply_synced_mail_relay_preference(
+            "!offline", True, "2099-08-30T12:00:00+00:00"
+        )
+
+        recipient = command_handlers._resolve_mail_relay_recipient("!offline")
+
+        self.assertIsNotNone(recipient)
+        self.assertEqual(recipient["recipient_node_id"], "!offline")
+
+    def test_relay_preference_frame_updates_local_consent(self):
+        import message_processing
+
+        message_processing.process_message(
+            999,
+            "RELAYPREF|!remote|1|2099-08-30T12:00:00+00:00",
+            self.interface,
+            is_sync_message=True,
+            sender_node_id="!peer",
+        )
+
+        self.assertTrue(db_operations.get_mail_relay_preference("!remote"))
+
+    def test_synced_preference_compares_timezone_offsets(self):
+        self.assertTrue(db_operations.apply_synced_mail_relay_preference(
+            "!remote", True, "2099-08-30T12:30:00+01:00"
+        ))
+        self.assertTrue(db_operations.apply_synced_mail_relay_preference(
+            "!remote", False, "2099-08-30T12:00:00Z"
+        ))
+        self.assertFalse(db_operations.get_mail_relay_preference("!remote"))
+
+    def test_malformed_synced_preference_timestamp_is_rejected(self):
+        changed = db_operations.apply_synced_mail_relay_preference(
+            "!remote", True, "not-a-timestamp"
+        )
+
+        self.assertFalse(changed)
+        self.assertFalse(db_operations.get_mail_relay_preference("!remote"))
 
     def test_linked_nodes_share_mailbox_without_exposing_it_to_other_nodes(self):
         self._linked_account()
@@ -78,6 +149,9 @@ class MailRelayDatabaseTests(unittest.TestCase):
             self._client("bbbb2222", "MeshCore", "CORE", "secondary"),
             self._client("mqtt:home:guest", "MQTT", "GST", "mqtt1"),
         ])
+        db_operations.apply_synced_mail_relay_preference(
+            "mqtt:home:guest", True, "2099-08-30T12:00:00+00:00"
+        )
 
         directory = db_operations.get_active_mail_directory(900)
 
@@ -139,6 +213,9 @@ class MailRelayDatabaseTests(unittest.TestCase):
         db_operations.upsert_mesh_clients([
             self._client("!recipient", "Meshtastic", "RCPT")
         ])
+        db_operations.apply_synced_mail_relay_preference(
+            "!recipient", True, "2099-08-30T12:00:00+00:00"
+        )
 
         with mock.patch.object(command_handlers, "send_message"):
             command_handlers.handle_mail_command(111, self.interface)
@@ -158,6 +235,7 @@ class MailRelayDatabaseTests(unittest.TestCase):
         db_operations.set_account_alias(account_id, "Cross Radio")
         db_operations.link_node_to_account("!recipient", account_id, "meshtastic")
         db_operations.link_node_to_account("core-recipient", account_id, "meshcore")
+        db_operations.set_account_mail_relay(account_id, True)
         db_operations.upsert_mesh_clients([
             self._client("core-recipient", "MeshCore", "CORE", "secondary")
         ])

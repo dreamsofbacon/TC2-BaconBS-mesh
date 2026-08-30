@@ -848,6 +848,10 @@ def _ensure_accounts_tables(cursor) -> None:
         for _acct_id, _alias in cursor.fetchall():
             cursor.execute("UPDATE accounts SET alias_normalized = ? WHERE account_id = ?",
                            (normalize_alias(_alias), _acct_id))
+    if 'mail_relay_enabled' not in _account_cols:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN mail_relay_enabled INTEGER NOT NULL DEFAULT 0")
+    if 'mail_relay_updated_at' not in _account_cols:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN mail_relay_updated_at TEXT NOT NULL DEFAULT ''")
     _dedupe_account_aliases(cursor)
     # Partial index so the '' default (every account starts with no alias)
     # is exempt -- SQLite treats '' as a real value, unlike NULL, so a plain
@@ -863,6 +867,11 @@ def _ensure_accounts_tables(cursor) -> None:
                 );''')
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_linked_nodes_account
                     ON linked_nodes (account_id);''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS mail_relay_preferences (
+                    node_id TEXT PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                );''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS link_codes (
                     code TEXT PRIMARY KEY,
                     account_id TEXT NOT NULL,
@@ -3430,11 +3439,19 @@ def enqueue_mail_dm_deliveries(unique_id: str, settle_seconds: int = 10) -> int:
     account_row = c.fetchone()
     account_id = str(account_row[0]) if account_row else None
     if account_id:
+        c.execute("SELECT mail_relay_enabled FROM accounts WHERE account_id = ?", (account_id,))
+        consent_row = c.fetchone()
+        if not consent_row or not bool(consent_row[0]):
+            return 0
         c.execute("SELECT node_id FROM linked_nodes WHERE account_id = ? ORDER BY node_id", (account_id,))
         targets = [str(row[0]) for row in c.fetchall()]
     else:
-        c.execute("SELECT 1 FROM mesh_clients WHERE node_id = ? LIMIT 1", (recipient_id,))
-        targets = [recipient_id] if c.fetchone() else []
+        c.execute(
+            "SELECT enabled FROM mail_relay_preferences WHERE node_id = ?",
+            (recipient_id,),
+        )
+        consent_row = c.fetchone()
+        targets = [recipient_id] if consent_row and bool(consent_row[0]) else []
     if not targets:
         return 0
     now = datetime.now(timezone.utc)
@@ -3479,6 +3496,17 @@ def mark_mail_dm_delivered(delivery_id: int) -> None:
            SET state = 'delivered', delivered_at = ?, last_error = ''
            WHERE id = ? AND state = 'pending'""",
         (datetime.now(timezone.utc).isoformat(), int(delivery_id)),
+    )
+    conn.commit()
+
+
+def cancel_mail_dm_delivery(delivery_id: int, reason: str) -> None:
+    conn = get_db_connection()
+    conn.execute(
+        """UPDATE mail_dm_deliveries
+           SET state = 'cancelled', last_error = ?
+           WHERE id = ? AND state = 'pending'""",
+        (str(reason or '')[:500], int(delivery_id)),
     )
     conn.commit()
 
@@ -3888,59 +3916,83 @@ def get_mesh_clients(
     return [dict(zip(keys, row)) for row in c.fetchall()]
 
 
-def get_active_mail_directory(seen_within_seconds: int = 900) -> list[dict]:
-    """Return one active recipient entry per account or unlinked node."""
-    clients = get_mesh_clients(seen_within_seconds=seen_within_seconds)
+def get_mail_relay_directory(exclude_node_id: Optional[str] = None) -> list[dict]:
+    """Return one offline-capable entry per opted-in account or node."""
+    clients = get_mesh_clients()
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        """SELECT ln.node_id, ln.account_id, a.alias
+        """SELECT ln.node_id, ln.account_id, a.alias, a.mail_relay_enabled
            FROM linked_nodes ln
            JOIN accounts a ON a.account_id = ln.account_id"""
     )
     linked = {
-        str(node_id): (str(account_id), str(alias or ''))
-        for node_id, account_id, alias in c.fetchall()
+        str(node_id): (str(account_id), str(alias or ''), bool(enabled))
+        for node_id, account_id, alias, enabled in c.fetchall()
     }
-    entries: dict[str, dict] = {}
-    seen_nodes: set[str] = set()
+    excluded_account_id = None
+    if exclude_node_id and str(exclude_node_id) in linked:
+        excluded_account_id = linked[str(exclude_node_id)][0]
+    c.execute("SELECT node_id FROM mail_relay_preferences WHERE enabled = 1 ORDER BY node_id")
+    eligible_node_ids = [str(row[0]) for row in c.fetchall()]
+    clients_by_node = {}
     for client in clients:
         node_id = str(client.get('node_id') or '')
-        if not node_id or node_id in seen_nodes:
-            continue
-        seen_nodes.add(node_id)
+        if node_id and node_id not in clients_by_node:
+            clients_by_node[node_id] = client
+    entries: dict[str, dict] = {}
+    for node_id in eligible_node_ids:
         account = linked.get(node_id)
+        if account and not account[2]:
+            continue
+        if node_id == str(exclude_node_id or '') or (account and account[0] == excluded_account_id):
+            continue
+        client = clients_by_node.get(node_id, {})
         key = f"account:{account[0]}" if account else f"node:{node_id}"
         protocol = str(client.get('protocol') or '').strip() or 'Unknown'
         display_name = (
             (account[1] if account else '')
             or str(client.get('long_name') or '').strip()
             or str(client.get('short_name') or '').strip()
-            or 'Unnamed user'
+            or node_id
         )
         entry = entries.get(key)
         if entry is None:
             entries[key] = {
                 'entry_key': key,
                 'account_id': account[0] if account else None,
+                'alias': account[1] if account else '',
                 'display_name': display_name,
                 'protocols': [protocol],
                 'recipient_node_id': node_id,
+                'node_ids': [node_id],
                 'short_name': str(client.get('short_name') or '').strip(),
                 'short_names': [str(client.get('short_name') or '').strip()],
+                'last_seen': str(client.get('last_seen') or ''),
             }
         else:
             if protocol not in entry['protocols']:
                 entry['protocols'].append(protocol)
+            if node_id not in entry['node_ids']:
+                entry['node_ids'].append(node_id)
             short_name = str(client.get('short_name') or '').strip()
             if short_name and short_name not in entry['short_names']:
                 entry['short_names'].append(short_name)
+            last_seen = str(client.get('last_seen') or '')
+            if last_seen > entry['last_seen']:
+                entry['last_seen'] = last_seen
     result = list(entries.values())
     for entry in result:
         entry['protocols'].sort(key=str.casefold)
+        entry['node_ids'].sort(key=str.casefold)
         entry['short_names'] = [name for name in entry['short_names'] if name]
     result.sort(key=lambda entry: (entry['display_name'].casefold(), entry['entry_key']))
     return result
+
+
+def get_active_mail_directory(seen_within_seconds: int = 900) -> list[dict]:
+    """Compatibility wrapper for callers migrating to the relay directory."""
+    return get_mail_relay_directory()
 
 
 def queue_delayed_link_code(account_id: str, code: str, requested_by_node_id: str,
@@ -4038,6 +4090,137 @@ def get_account_id_for_node(node_id: str) -> Optional[str]:
     return row[0] if row else None
 
 
+def get_mail_relay_preference(node_id: str) -> bool:
+    conn = get_db_connection()
+    c = conn.cursor()
+    normalized_id = str(node_id or '').strip()
+    if not normalized_id:
+        return False
+    c.execute(
+        """SELECT a.mail_relay_enabled
+           FROM linked_nodes ln
+           JOIN accounts a ON a.account_id = ln.account_id
+           WHERE ln.node_id = ?""",
+        (normalized_id,),
+    )
+    row = c.fetchone()
+    if row is not None:
+        return bool(row[0])
+    c.execute("SELECT enabled FROM mail_relay_preferences WHERE node_id = ?", (normalized_id,))
+    row = c.fetchone()
+    return bool(row[0]) if row else False
+
+
+def _parse_mail_relay_timestamp(value: str) -> Optional[datetime]:
+    token = str(value or '').strip()
+    if not token:
+        return None
+    try:
+        parsed = datetime.fromisoformat(token.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def set_account_mail_relay(account_id: str, enabled: bool, updated_at: Optional[str] = None) -> list[str]:
+    conn = get_db_connection()
+    c = conn.cursor()
+    parsed_timestamp = _parse_mail_relay_timestamp(updated_at) if updated_at else datetime.now(timezone.utc)
+    timestamp = (parsed_timestamp or datetime.now(timezone.utc)).isoformat(timespec='microseconds')
+    enabled_value = 1 if enabled else 0
+    c.execute(
+        "UPDATE accounts SET mail_relay_enabled = ?, mail_relay_updated_at = ? WHERE account_id = ?",
+        (enabled_value, timestamp, str(account_id)),
+    )
+    c.execute("SELECT node_id FROM linked_nodes WHERE account_id = ? ORDER BY node_id", (str(account_id),))
+    node_ids = [str(row[0]) for row in c.fetchall()]
+    for node_id in node_ids:
+        c.execute(
+            """INSERT INTO mail_relay_preferences (node_id, enabled, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(node_id) DO UPDATE SET
+                 enabled = excluded.enabled,
+                 updated_at = excluded.updated_at""",
+            (node_id, enabled_value, timestamp),
+        )
+    if not enabled:
+        for node_id in node_ids:
+            c.execute(
+                """UPDATE mail_dm_deliveries
+                   SET state = 'cancelled', last_error = 'recipient disabled mail relay'
+                   WHERE target_node_id = ? AND state = 'pending'""",
+                (node_id,),
+            )
+    conn.commit()
+    return node_ids
+
+
+def set_mail_relay_for_node(node_id: str, enabled: bool, network: str) -> list[tuple[str, bool, str]]:
+    normalized_id = str(node_id or '').strip()
+    if not normalized_id:
+        return []
+    account_id = get_account_id_for_node(normalized_id)
+    if account_id is None:
+        account_id = create_account()
+        link_node_to_account(normalized_id, account_id, network)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    node_ids = set_account_mail_relay(account_id, enabled, timestamp)
+    return [(linked_id, bool(enabled), timestamp) for linked_id in node_ids]
+
+
+def apply_synced_mail_relay_preference(node_id: str, enabled: bool, updated_at: str) -> bool:
+    conn = get_db_connection()
+    c = conn.cursor()
+    normalized_id = str(node_id or '').strip()
+    incoming_timestamp = _parse_mail_relay_timestamp(updated_at)
+    if not normalized_id or incoming_timestamp is None:
+        return False
+    timestamp = incoming_timestamp.isoformat(timespec='microseconds')
+    c.execute("SELECT account_id FROM linked_nodes WHERE node_id = ?", (normalized_id,))
+    account_row = c.fetchone()
+    if account_row:
+        account_id = str(account_row[0])
+        c.execute("SELECT mail_relay_updated_at FROM accounts WHERE account_id = ?", (account_id,))
+        current = c.fetchone()
+        current_timestamp = _parse_mail_relay_timestamp(current[0]) if current else None
+        if current_timestamp and current_timestamp >= incoming_timestamp:
+            return False
+        set_account_mail_relay(account_id, enabled, timestamp)
+        return True
+    c.execute("SELECT updated_at FROM mail_relay_preferences WHERE node_id = ?", (normalized_id,))
+    current = c.fetchone()
+    current_timestamp = _parse_mail_relay_timestamp(current[0]) if current else None
+    if current_timestamp and current_timestamp >= incoming_timestamp:
+        return False
+    c.execute(
+        """INSERT INTO mail_relay_preferences (node_id, enabled, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(node_id) DO UPDATE SET
+             enabled = excluded.enabled,
+             updated_at = excluded.updated_at""",
+        (normalized_id, 1 if enabled else 0, timestamp),
+    )
+    if not enabled:
+        c.execute(
+            """UPDATE mail_dm_deliveries
+               SET state = 'cancelled', last_error = 'recipient disabled mail relay'
+               WHERE target_node_id = ? AND state = 'pending'""",
+            (normalized_id,),
+        )
+    conn.commit()
+    return True
+
+
+def get_mail_relay_preferences() -> list[tuple[str, bool, str]]:
+    conn = get_db_connection()
+    rows = conn.execute(
+        "SELECT node_id, enabled, updated_at FROM mail_relay_preferences ORDER BY node_id"
+    ).fetchall()
+    return [(str(node_id), bool(enabled), str(updated_at)) for node_id, enabled, updated_at in rows]
+
+
 def get_linked_node_ids(account_id: str) -> list:
     conn = get_db_connection()
     c = conn.cursor()
@@ -4080,6 +4263,20 @@ def link_node_to_account(node_id: str, account_id: str, network: str, now: Optio
              linked_at = excluded.linked_at''',
         (str(node_id), account_id, network, now)
     )
+    c.execute(
+        "SELECT mail_relay_enabled, mail_relay_updated_at FROM accounts WHERE account_id = ?",
+        (account_id,),
+    )
+    preference = c.fetchone()
+    if preference:
+        c.execute(
+            """INSERT INTO mail_relay_preferences (node_id, enabled, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(node_id) DO UPDATE SET
+                 enabled = excluded.enabled,
+                 updated_at = excluded.updated_at""",
+            (str(node_id), int(bool(preference[0])), str(preference[1] or now)),
+        )
     conn.commit()
 
 
@@ -4760,6 +4957,18 @@ def sync_channels_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] =
         raise
 
 
+def sync_mail_relay_preferences_to_nodes(bbs_nodes: list, interface) -> int:
+    if not bbs_nodes or not interface:
+        return 0
+    from utils import send_mail_relay_preference_to_bbs_nodes
+    sent = 0
+    for node_id, enabled, updated_at in get_mail_relay_preferences():
+        sent += send_mail_relay_preference_to_bbs_nodes(
+            node_id, enabled, updated_at, bbs_nodes, interface
+        )
+    return sent
+
+
 def sync_profiles_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] = None) -> dict:
     """P4 — user profile records."""
     if not bbs_nodes or not interface:
@@ -4790,12 +4999,17 @@ def sync_profiles_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] =
                                   remaining_items=max(total_items - profiles_synced, 0),
                                   current_phase='syncing_profiles',
                                   last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        relay_preferences_synced = sync_mail_relay_preferences_to_nodes(bbs_nodes, interface)
         logging.info(f"P4 profile sync: sent {profiles_synced} profiles to {len(bbs_nodes)} peer(s)")
         _update_sync_progress(in_progress=False, progress_percent=100, completed_items=total_items,
                               total_items=total_items, remaining_items=0, current_phase='profiles_complete',
                               last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                               last_result=f"P4 profiles done: {profiles_synced} sent")
-        return {'profiles_synced': profiles_synced, 'total_messages': profiles_synced}
+        return {
+            'profiles_synced': profiles_synced,
+            'relay_preferences_synced': relay_preferences_synced,
+            'total_messages': profiles_synced + relay_preferences_synced,
+        }
     except Exception as e:
         logging.error(f"Error during profile sync: {e}")
         _update_sync_progress(in_progress=False, current_phase='error',

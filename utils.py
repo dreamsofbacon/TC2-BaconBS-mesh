@@ -43,7 +43,7 @@ def get_max_text_bytes(interface=None) -> int:
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state)
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences
 
 # Single-char scope codes used by the 'scc' wire capability.  Senders gate
 # encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
@@ -1523,6 +1523,20 @@ def send_profile_to_bbs_nodes(user_id, short_name, long_name, first_seen, last_s
     )
     for node_id in bbs_nodes:
         _send_one_sync(message, node_id, interface)
+
+
+def send_mail_relay_preference_to_bbs_nodes(node_id, enabled, updated_at, bbs_nodes, interface):
+    try:
+        from db_operations import peer_supports
+    except Exception:
+        return 0
+    message = f"RELAYPREF|{str(node_id)}|{1 if enabled else 0}|{str(updated_at)}"
+    sent = 0
+    for peer_id in bbs_nodes or []:
+        if peer_supports(peer_id, 'mrp'):
+            _send_one_sync(message, peer_id, interface)
+            sent += 1
+    return sent
 
 
 def send_game_score_to_bbs_nodes(user_id, game_id, short_name, score, max_score, moves, achieved_at, bbs_nodes, interface):

@@ -9,6 +9,7 @@ import sqlite3
 import sys
 import types
 import unittest
+from unittest import mock
 
 if "meshtastic" not in sys.modules:
     sys.modules["meshtastic"] = types.SimpleNamespace(BROADCAST_NUM=0)
@@ -155,6 +156,159 @@ class MenuNumberAliasTests(unittest.TestCase):
             digits = [label.split("]")[0].lstrip("[") for label in number_map.values()]
             with self.subTest(menu=name):
                 self.assertEqual(len(digits), len(set(digits)))
+
+
+class GameInputRoutingTests(unittest.TestCase):
+    def setUp(self):
+        import utils
+        utils.user_states.clear()
+        self.iface = types.SimpleNamespace(bbs_nodes=[], nodes={})
+
+    def tearDown(self):
+        import utils
+        utils.user_states.clear()
+
+    def test_zork_receives_inputs_that_overlap_global_quick_keys(self):
+        import message_processing as mp
+
+        for command in ('n', 's', 'x', 'sm,,someone,,hello'):
+            with self.subTest(command=command), \
+                    mock.patch.object(mp, 'handle_zork_steps') as handle_zork:
+                ch.update_user_state(1234, {'command': 'ZORK', 'step': 1, 'game_id': 'zork1'})
+                mp.process_message(1234, command, self.iface)
+                handle_zork.assert_called_once_with(1234, command, self.iface)
+
+    def test_zork_treats_prefixed_commands_as_game_input(self):
+        import message_processing as mp
+
+        ch.update_user_state(1234, {'command': 'ZORK', 'step': 1, 'game_id': 'zork1'})
+        with mock.patch.object(mp, 'handle_zork_steps') as handle_zork, \
+                mock.patch.object(mp, 'handle_check_mail_command') as check_mail:
+            mp.process_message(1234, '!CM', self.iface)
+        handle_zork.assert_called_once_with(1234, '!CM', self.iface)
+        check_mail.assert_not_called()
+
+    def test_games_menu_receives_shortcut_letters_before_main_menu(self):
+        import message_processing as mp
+
+        ch.update_user_state(1234, {'command': 'GAMES_MENU', 'step': 1})
+        with mock.patch.object(mp, 'handle_games_steps') as handle_games:
+            mp.process_message(1234, 's', self.iface)
+            handle_games.assert_called_once_with(1234, 's', self.iface)
+
+    def test_mail_receives_inputs_that_overlap_global_quick_keys(self):
+        import message_processing as mp
+
+        state = {'command': 'MAIL', 'step': 7, 'content': ''}
+        ch.update_user_state(1234, state)
+        with mock.patch.object(mp, 'handle_mail_steps') as handle_mail:
+            mp.process_message(1234, 'n', self.iface)
+            handle_mail.assert_called_once_with(1234, 'n', 7, state, self.iface, [])
+
+    def test_mail_treats_prefixed_commands_as_mail_input(self):
+        import message_processing as mp
+
+        state = {'command': 'MAIL', 'step': 7, 'content': ''}
+        ch.update_user_state(1234, state)
+        with mock.patch.object(mp, 'handle_mail_steps') as handle_mail, \
+                mock.patch.object(mp, 'handle_check_mail_command') as check_mail:
+            mp.process_message(1234, '!CM', self.iface)
+        handle_mail.assert_called_once_with(1234, '!CM', 7, state, self.iface, [])
+        check_mail.assert_not_called()
+
+
+class GlobalCommandPrefixTests(unittest.TestCase):
+    def setUp(self):
+        import utils
+        utils.user_states.clear()
+        self.iface = types.SimpleNamespace(bbs_nodes=[], nodes={})
+
+    def tearDown(self):
+        import utils
+        utils.user_states.clear()
+
+    def test_prefixed_main_menu_action_dispatches_globally(self):
+        import message_processing as mp
+
+        with mock.patch.object(mp, 'handle_settings_command') as settings:
+            with mock.patch.dict(mp.main_menu_handlers, {'s': settings}, clear=False):
+                mp.process_message(1234, '!S', self.iface)
+        settings.assert_called_once_with(1234, self.iface)
+
+    def test_prefixed_action_interrupts_unprotected_workflow(self):
+        import message_processing as mp
+
+        state = {'command': 'PROFILE', 'step': 3, 'relay_enabled': True}
+        ch.update_user_state(1234, state)
+        nomad = mock.Mock()
+        with mock.patch.dict(mp.main_menu_handlers, {'n': nomad}, clear=False), \
+                mock.patch.object(mp, 'handle_profile_steps') as profile:
+            mp.process_message(1234, '!N', self.iface, sender_node_id='!user')
+        nomad.assert_called_once_with(1234, self.iface)
+        profile.assert_not_called()
+
+    def test_unprefixed_main_letter_stays_in_active_workflow(self):
+        import message_processing as mp
+
+        state = {'command': 'PROFILE', 'step': 3, 'relay_enabled': True}
+        ch.update_user_state(1234, state)
+        with mock.patch.object(mp, 'handle_profile_steps') as profile, \
+                mock.patch.object(mp, 'handle_ask_nomad_command') as nomad:
+            mp.process_message(1234, 'n', self.iface, sender_node_id='!user')
+        profile.assert_called_once_with(1234, 'n', self.iface, '!user')
+        nomad.assert_not_called()
+
+    def test_prefixed_quick_command_dispatches(self):
+        import message_processing as mp
+
+        with mock.patch.object(mp, 'handle_check_mail_command') as check_mail:
+            mp.process_message(1234, '!CM', self.iface)
+        check_mail.assert_called_once_with(1234, self.iface)
+
+    def test_structured_global_command_strips_prefix_for_handler(self):
+        import message_processing as mp
+
+        with mock.patch.object(mp, 'handle_send_mail_command') as send_mail:
+            mp.process_message(1234, '!SM,,DEST,,Subject,,Body', self.iface)
+        send_mail.assert_called_once_with(
+            1234, 'SM,,DEST,,Subject,,Body', self.iface, []
+        )
+
+    def test_unprefixed_legacy_quick_command_does_not_dispatch(self):
+        import message_processing as mp
+
+        with mock.patch.object(mp, 'handle_check_mail_command') as check_mail, \
+                mock.patch.object(mp, 'handle_help_command') as help_menu:
+            mp.process_message(1234, 'CM', self.iface)
+        check_mail.assert_not_called()
+        help_menu.assert_called_once_with(1234, self.iface)
+
+    def test_prefixed_exit_is_not_rewritten_by_double_letter_shorthand(self):
+        import message_processing as mp
+
+        exit_handler = mock.Mock()
+        with mock.patch.dict(mp.main_menu_handlers, {'x': exit_handler}, clear=False):
+            mp.process_message(1234, '!X', self.iface)
+        exit_handler.assert_called_once_with(1234, self.iface)
+
+    def test_local_trailing_x_shorthand_is_preserved(self):
+        import message_processing as mp
+
+        nomad = mock.Mock()
+        with mock.patch.dict(mp.main_menu_handlers, {'n': nomad}, clear=False):
+            ch.update_user_state(1234, {'command': 'MAIN_MENU', 'step': 1})
+            mp.process_message(1234, 'NX', self.iface)
+        nomad.assert_called_once_with(1234, self.iface)
+
+    def test_main_menu_letters_and_numbers_remain_local(self):
+        import message_processing as mp
+
+        settings = mock.Mock()
+        with mock.patch.dict(mp.main_menu_handlers, {'s': settings}, clear=False):
+            for value in ('s', '7'):
+                ch.update_user_state(1234, {'command': 'MAIN_MENU', 'step': 1})
+                mp.process_message(1234, value, self.iface)
+        self.assertEqual(settings.call_count, 2)
 
 
 if __name__ == "__main__":

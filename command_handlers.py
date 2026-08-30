@@ -22,14 +22,14 @@ from db_operations import (
     get_account_alias, set_account_alias, create_link_code, redeem_link_code,
     record_link_attempt, link_rate_limit_ok, account_authorized,
     queue_delayed_link_code,
-    get_active_mail_directory,
+    get_mail_relay_directory, get_mail_relay_preference, set_mail_relay_for_node,
 )
 from utils import (
     get_node_id_from_num, get_node_info,
     get_node_short_name, resolve_display_name, get_user_state, get_zork_save_sync_notice, send_message,
     update_user_state,
     select_gateway_peer, send_api_request, register_api_request,
-    home_network, _config_int,
+    home_network, _config_int, send_mail_relay_preference_to_bbs_nodes,
 )
 from zork_port import (
     GAMES,
@@ -238,7 +238,7 @@ def get_node_name(node_id, interface):
 
 
 def handle_mail_command(sender_id, interface):
-    response = "✉️Mail Menu✉️\nWhat would you like to do with mail?\n[1]Read [2]Send [3]Active Users [0]Exit"
+    response = "✉️Mail Menu✉️\nWhat would you like to do with mail?\n[1]Read [2]Send [3]Relay Directory [0]Exit"
     send_message(response, sender_id, interface)
     update_user_state(sender_id, {'command': 'MAIL', 'step': 1})
 
@@ -246,16 +246,12 @@ def handle_mail_command(sender_id, interface):
 _MAIL_DIRECTORY_PAGE_SIZE = 6
 
 
-def _mail_active_window_seconds() -> int:
-    return max(60, _config_int('mail', 'active_window_seconds', 900))
-
-
 def _mail_directory_page(entries: list[dict], page: int, selecting: bool) -> str:
     page_count = max(1, (len(entries) + _MAIL_DIRECTORY_PAGE_SIZE - 1) // _MAIL_DIRECTORY_PAGE_SIZE)
     page = max(0, min(page, page_count - 1))
     start = page * _MAIL_DIRECTORY_PAGE_SIZE
     visible = entries[start:start + _MAIL_DIRECTORY_PAGE_SIZE]
-    heading = "Select an active user:" if selecting else "Active Users"
+    heading = "Select a relay user:" if selecting else "Relay Directory"
     lines = [f"{heading} (page {page + 1}/{page_count})"]
     for index, entry in enumerate(visible, start=1):
         protocols = "/".join(entry['protocols'])
@@ -265,26 +261,29 @@ def _mail_directory_page(entries: list[dict], page: int, selecting: bool) -> str
         controls.append("[P]revious")
     if page + 1 < page_count:
         controls.append("[N]ext")
+    if selecting:
+        controls.append("[A]ddress")
     controls.append("E[X]IT")
     lines.append(" ".join(controls))
     return "\n".join(lines)
 
 
 def handle_active_users_command(sender_id, interface):
-    entries = get_active_mail_directory(_mail_active_window_seconds())
+    entries = get_mail_relay_directory(get_node_id_from_num(sender_id, interface))
     if not entries:
-        send_message("No active users have been heard recently.", sender_id, interface)
+        send_message("No users have opted into offline mail relay.", sender_id, interface)
         return
-    page_count = (len(entries) + _MAIL_DIRECTORY_PAGE_SIZE - 1) // _MAIL_DIRECTORY_PAGE_SIZE
-    for page in range(page_count):
-        send_message(_mail_directory_page(entries, page, selecting=False), sender_id, interface)
+    send_message(_mail_directory_page(entries, 0, selecting=False), sender_id, interface)
+    update_user_state(sender_id, {
+        'command': 'MAIL', 'step': 10, 'directory': entries, 'directory_page': 0,
+    })
 
 
 def _start_mail_recipient_selection(sender_id, interface) -> None:
-    entries = get_active_mail_directory(_mail_active_window_seconds())
+    entries = get_mail_relay_directory(get_node_id_from_num(sender_id, interface))
     if not entries:
-        send_message("No active users are available for mail right now.", sender_id, interface)
-        update_user_state(sender_id, None)
+        send_message("No relay users are listed. Reply A to enter an opted-in alias, short name, or node ID.", sender_id, interface)
+        update_user_state(sender_id, {'command': 'MAIL', 'step': 9, 'directory': [], 'directory_page': 0})
         return
     send_message(_mail_directory_page(entries, 0, selecting=True), sender_id, interface)
     update_user_state(sender_id, {
@@ -292,12 +291,18 @@ def _start_mail_recipient_selection(sender_id, interface) -> None:
     })
 
 
-def _resolve_active_mail_recipient(recipient: str):
+def _resolve_mail_relay_recipient(recipient: str, sender_node_id=None):
     query = str(recipient or '').strip().casefold()
-    entries = get_active_mail_directory(_mail_active_window_seconds())
+    entries = get_mail_relay_directory(sender_node_id)
+    node_matches = [
+        entry for entry in entries
+        if query in {node_id.casefold() for node_id in entry.get('node_ids', [])}
+    ]
+    if len(node_matches) == 1:
+        return node_matches[0]
     alias_matches = [
         entry for entry in entries
-        if entry.get('account_id') and entry['display_name'].casefold() == query
+        if entry.get('alias') and entry['alias'].casefold() == query
     ]
     if len(alias_matches) == 1:
         return alias_matches[0]
@@ -733,18 +738,40 @@ def handle_profile_command(sender_id, interface):
         lines.append("Scores: " + " ".join(parts))
     if bio:
         lines.append(f"Bio: {bio}")
-    lines.append("[1]Edit Bio [2]Linked Devices [0]Back")
+    node_id = get_node_id_from_num(sender_id, interface)
+    relay_status = "On" if get_mail_relay_preference(node_id) else "Off"
+    lines.append(f"[1]Edit Bio [2]Linked Devices [3]Offline Relay:{relay_status} [0]Back")
     send_message("\n".join(lines), sender_id, interface)
     update_user_state(sender_id, {'command': 'PROFILE', 'step': 1})
 
 
-def handle_profile_steps(sender_id, message, interface):
+def handle_profile_steps(sender_id, message, interface, sender_node_id=None):
     state = get_user_state(sender_id) or {}
     choice = message.strip()
     if state.get('step') == 2:
         bio = choice[:100]
         update_user_bio(sender_id, bio)
         send_message("Bio updated!", sender_id, interface)
+        handle_profile_command(sender_id, interface)
+        return
+    if state.get('step') == 3:
+        if choice.lower() not in ('y', 'yes'):
+            send_message("Relay setting unchanged.", sender_id, interface)
+            handle_profile_command(sender_id, interface)
+            return
+        if not sender_node_id:
+            send_message("Couldn't verify your device identity.", sender_id, interface)
+            handle_profile_command(sender_id, interface)
+            return
+        records = set_mail_relay_for_node(
+            sender_node_id, bool(state.get('relay_enabled')), home_network(sender_node_id)
+        )
+        for node_id, enabled, updated_at in records:
+            send_mail_relay_preference_to_bbs_nodes(
+                node_id, enabled, updated_at, interface.bbs_nodes, interface
+            )
+        status = "enabled" if state.get('relay_enabled') else "disabled"
+        send_message(f"Offline mail relay {status} for all linked devices.", sender_id, interface)
         handle_profile_command(sender_id, interface)
         return
     if choice.lower() in ('0', 'x', 'back', 'exit'):
@@ -756,6 +783,15 @@ def handle_profile_steps(sender_id, message, interface):
         return
     if choice.lower() in ('d', '2'):
         handle_account_command(sender_id, interface)
+        return
+    if choice == '3':
+        if not sender_node_id:
+            send_message("Couldn't verify your device identity.", sender_id, interface)
+            return
+        enabled = not get_mail_relay_preference(sender_node_id)
+        action = "Enable" if enabled else "Disable"
+        send_message(f"{action} offline mail relay for all linked devices? [Y/N]", sender_id, interface)
+        update_user_state(sender_id, {'command': 'PROFILE', 'step': 3, 'relay_enabled': enabled})
         return
     handle_profile_command(sender_id, interface)
 
@@ -1247,7 +1283,6 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             _start_mail_recipient_selection(sender_id, interface)
         elif choice == 'a':
             handle_active_users_command(sender_id, interface)
-            handle_mail_command(sender_id, interface)
         elif choice == 'x':
             handle_help_command(sender_id, interface)
 
@@ -1270,21 +1305,17 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             update_user_state(sender_id, None)
 
     elif step == 3:
-        short_name = message.lower()
-        nodes = get_node_info(interface, short_name)
-        if not nodes:
-            send_message("I'm unable to find that node in my database.", sender_id, interface)
+        recipient = _resolve_mail_relay_recipient(message, get_node_id_from_num(sender_id, interface))
+        if recipient is None:
+            send_message("That relay user was not found, is ambiguous, or has not opted in.", sender_id, interface)
             handle_mail_command(sender_id, interface)
-        elif len(nodes) == 1:
-            recipient_id = nodes[0]['num']
-            recipient_name = get_node_name(recipient_id, interface)
-            send_message(f"What is the subject of your message to {recipient_name}?\nKeep it short.", sender_id, interface)
-            update_user_state(sender_id, {'command': 'MAIL', 'step': 5, 'recipient_id': recipient_id})
         else:
-            send_message("There are multiple nodes with that short name. Which one would you like to leave a message for?", sender_id, interface)
-            for i, node in enumerate(nodes):
-                send_message(f"[{i}] {node['longName']}", sender_id, interface)
-            update_user_state(sender_id, {'command': 'MAIL', 'step': 6, 'nodes': nodes})
+            send_message(f"What is the subject of your message to {recipient['display_name']}?\nKeep it short.", sender_id, interface)
+            update_user_state(sender_id, {
+                'command': 'MAIL', 'step': 5,
+                'recipient_id': recipient['recipient_node_id'],
+                'recipient_name': recipient['display_name'],
+            })
 
     elif step == 4:
         _mail_step4_alias = {'2': 'd', '3': 'r', '1': 'k'}
@@ -1334,6 +1365,10 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
                 recipient_id = get_sender_id_by_mail_id(state['reply_to_mail_id'])  # Get the sender ID from the mail ID
             else:
                 recipient_id = state.get('recipient_id')
+            if not get_mail_relay_preference(recipient_id):
+                send_message("That user is not accepting relayed mail.", sender_id, interface)
+                handle_mail_command(sender_id, interface)
+                return
             subject = state['subject']
             content = state['content']
             recipient_name = state.get('recipient_name') or get_node_name(recipient_id, interface)
@@ -1363,6 +1398,10 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
         if choice == 'x':
             handle_mail_command(sender_id, interface)
             return
+        if choice == 'a':
+            send_message("Enter an opted-in account alias, short name, or exact node ID:", sender_id, interface)
+            update_user_state(sender_id, {'command': 'MAIL', 'step': 3})
+            return
         if choice in ('n', 'p'):
             page += 1 if choice == 'n' else -1
             page = max(0, min(page, page_count - 1))
@@ -1386,6 +1425,22 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             'recipient_id': selected['recipient_node_id'],
             'recipient_name': selected['display_name'],
         })
+
+    elif step == 10:
+        entries = state.get('directory', [])
+        page_count = max(1, (len(entries) + _MAIL_DIRECTORY_PAGE_SIZE - 1) // _MAIL_DIRECTORY_PAGE_SIZE)
+        page = max(0, min(int(state.get('directory_page', 0)), page_count - 1))
+        choice = message.lower()
+        if choice == 'x':
+            handle_mail_command(sender_id, interface)
+            return
+        if choice in ('n', 'p'):
+            page = max(0, min(page + (1 if choice == 'n' else -1), page_count - 1))
+            state['directory_page'] = page
+            update_user_state(sender_id, state)
+            send_message(_mail_directory_page(entries, page, selecting=False), sender_id, interface)
+            return
+        send_message("Reply N, P, or X.", sender_id, interface)
 
 
 def handle_wall_of_shame_command(sender_id, interface):
@@ -1553,14 +1608,16 @@ def handle_send_mail_command(sender_id, message, interface, bbs_nodes):
     try:
         parts = message.split(",,", 3)
         if len(parts) != 4:
-            send_message("Send Mail Quick Command format:\nSM,,{short_name},,{subject},,{message}", sender_id, interface)
+            send_message("Send Mail Quick Command format:\n!SM,,{recipient},,{subject},,{message}", sender_id, interface)
             return
 
         _, recipient_query, subject, content = parts
-        recipient = _resolve_active_mail_recipient(recipient_query)
+        recipient = _resolve_mail_relay_recipient(
+            recipient_query, get_node_id_from_num(sender_id, interface)
+        )
         if recipient is None:
             send_message(
-                f"Active user '{recipient_query}' was not found or is ambiguous. Send AU to view available users.",
+                f"Relay user '{recipient_query}' was not found, is ambiguous, or has not opted in. Send !AU to browse.",
                 sender_id, interface,
             )
             return
@@ -1655,7 +1712,7 @@ def handle_post_bulletin_command(sender_id, message, interface, bbs_nodes):
     try:
         parts = message.split(",,", 3)
         if len(parts) != 4:
-            send_message("Post Bulletin Quick Command format:\nPB,,{board_name},,{subject},,{content}", sender_id, interface)
+            send_message("Post Bulletin Quick Command format:\n!PB,,{board_name},,{subject},,{content}", sender_id, interface)
             return
 
         _, board_name, subject, content = parts
@@ -1675,7 +1732,7 @@ def handle_check_bulletin_command(sender_id, message, interface):
         # Split the message only once
         parts = message.split(",,", 1)
         if len(parts) != 2 or not parts[1].strip():
-            send_message("Check Bulletins Quick Command format:\nCB,,board_name", sender_id, interface)
+            send_message("Check Bulletins Quick Command format:\n!CB,,board_name", sender_id, interface)
             return
 
         boards = get_bulletin_boards()
@@ -1730,7 +1787,7 @@ def handle_post_channel_command(sender_id, message, interface):
     try:
         parts = message.split(",,", 2)
         if len(parts) != 3:
-            send_message("Post Channel Quick Command format:\nCHP,,{channel_name},,{channel_url}", sender_id, interface)
+            send_message("Post Channel Quick Command format:\n!CHP,,{channel_name},,{channel_url}", sender_id, interface)
             return
 
         _, channel_name, channel_url = parts
@@ -1806,6 +1863,11 @@ def handle_list_channels_command(sender_id, interface):
 
 
 def handle_quick_help_command(sender_id, interface):
-    response = ("✈️QUICK COMMANDS✈️\nSend command below for usage info:\nSM,, - Send "
-                "Mail\nCM - Check Mail\nAU - Active Users\nPB,, - Post Bulletin\nCB,, - Check Bulletins\n")
+    response = (
+        "✈️QUICK COMMANDS✈️\n"
+        "!SM,, - Send Mail\n!CM - Check Mail\n!AU - Relay Directory\n"
+        "!PB,, - Post Bulletin\n!CB,, - Check Bulletins\n"
+        "!CHP,, - Post Channel\n!CHL - List Channels\n"
+        "Global menus: !Q !B !U !P !N !A !S !X"
+    )
     send_message(response, sender_id, interface)
