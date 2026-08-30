@@ -13,6 +13,14 @@ The following are ideas and are ment to be implimented later on or not at all(pl
     add trivia game.
     docker container updated (it is still the original version currently)
     add more themes
+    status icon does not appear when only 1 node is configured.
+    games currently continue to try and play even if interpreter is not installed.
+    game tructaction is not correct
+    when in game, typing s brings you to settings
+        redo quick keys
+    combine linux services into 1 service
+    
+    
     
 
 The following are Features that should be added to the program(active)
@@ -83,3 +91,10 @@ The following are features that have all ready been added to the program. (close
     [ ] GUI-configurable database size cap with mesh-wide oldest-content pruning
     [ ] Automatic database maintenance (WAL checkpointing, log table pruning)
     [ ] Remote node update tooling (PowerShell/SSH deploy to Linux nodes)
+
+
+
+    advanced features
+
+    advance meshcore support
+        allow the user to add rooms to there user accounts, and act as a relay between text in each room.
