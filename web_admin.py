@@ -2692,7 +2692,12 @@ TRANSMISSION_DASHBOARD_CONTENT = """
         var peerVal  = parseInt((peer.counts || {})[scope] || 0);
         var delta = localVal - peerVal;
         var statusHtml, rowBg;
-        if (delta > 0) {
+        if (scope === 'zork_saves' && peer.skips_zork_saves) {
+          // The peer said so explicitly. Showing a delta here reads as a
+          // backlog that never clears, when nothing is meant to be sent.
+          statusHtml = '<span style="color:var(--text-muted);">&mdash; Peer does not sync saves</span>';
+          rowBg = '';
+        } else if (delta > 0) {
           statusHtml = '<span style="color:#b45309;">&darr; Peer missing ' + delta + '</span>';
           rowBg = 'rgba(251,191,36,0.06)';
         } else if (delta < 0) {

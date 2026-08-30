@@ -1853,6 +1853,29 @@ def get_recent_sync_tombstones(scope_prefix: str = '', limit: int = 20) -> list:
     return c.fetchall()
 
 
+def zork_saves_disabled_hash() -> str:
+    """The zork_saves hash a node advertises when it does not sync saves.
+
+    A sentinel rather than a real digest, so a peer can say "I do not
+    participate in this scope" instead of merely looking empty. Both sides
+    have to honour it: a node that only checks its OWN setting sees the
+    peer's count of 0 against its own non-zero count and reports a gap that
+    can never close, because the peer refuses those frames on arrival.
+    """
+    return _compact_row_hash(("zork_saves_disabled",))
+
+
+def peer_opts_out_of_zork_saves(peer_zork_hash) -> bool:
+    """True when a peer has explicitly advertised that it does not sync saves.
+
+    Distinct from an empty hash, which only means the peer said nothing --
+    and from a real hash over zero rows, which means the peer does sync
+    saves and simply has none yet. That last case must keep reporting a gap:
+    it is the one where sending ours across actually works.
+    """
+    return bool(peer_zork_hash) and str(peer_zork_hash) == zork_saves_disabled_hash()
+
+
 def get_local_record_counts() -> dict:
     """Return local record counts and compact hashes used by SYNCSTATE comparisons."""
     conn = get_db_connection()
@@ -1927,7 +1950,7 @@ def get_local_record_counts() -> dict:
             "SELECT user_id, game_id, save_data, updated_at FROM zork_saves ORDER BY user_id, game_id"
         )
     else:
-        zork_saves_hash = _compact_row_hash(("zork_saves_disabled",))
+        zork_saves_hash = zork_saves_disabled_hash()
     profiles_hash = _hash_rows(
         "SELECT user_id, short_name, long_name, bio FROM user_profiles ORDER BY user_id"
     )
@@ -2176,6 +2199,10 @@ def get_sync_progress_data(lookback_seconds: int = 1800) -> dict:
     for row in get_peer_sync_states():
         peer_id = str(row[0])
         reported_at = str(row[13]) if len(row) > 13 else ''
+        # Reported so the page can say the peer opted out, rather than
+        # showing a gap of every save we hold against a peer that will
+        # never accept one.
+        peer_skips_zork = peer_opts_out_of_zork_saves(row[10] if len(row) > 10 else '')
         peer_counts = {
             'bulletins':    int(row[1] or 0),
             'mail':         int(row[2] or 0),
@@ -2186,6 +2213,8 @@ def get_sync_progress_data(lookback_seconds: int = 1800) -> dict:
         }
         gaps = []
         for scope in _SCOPE_ORDER:
+            if scope == 'zork_saves' and peer_skips_zork:
+                continue
             local_val = int(local_counts.get(scope, 0))
             peer_val = int(peer_counts.get(scope, 0))
             if local_val != peer_val:
@@ -2199,6 +2228,7 @@ def get_sync_progress_data(lookback_seconds: int = 1800) -> dict:
             'peer_node_id': peer_id,
             'reported_at': reported_at,
             'counts': peer_counts,
+            'skips_zork_saves': peer_skips_zork,
             'gaps': gaps,
         })
 
@@ -2354,17 +2384,21 @@ def get_mismatched_peer_nodes(expected_peer_nodes=None) -> set:
             str(row[7] or ''), str(row[8] or ''), str(row[9] or ''),
             str(row[10] or ''), str(row[11] or ''), str(row[12] or ''),
         )
+        # A peer that has told us it does not sync saves is not behind on
+        # them; it has opted out. Comparing anyway reports a gap that can
+        # never close, since the peer drops those frames on arrival.
+        compare_zork = zork_save_sync_enabled and not peer_opts_out_of_zork_saves(phz)
         if (
             pb != int(local.get('bulletins', 0))
             or pm != int(local.get('mail', 0))
             or pc != int(local.get('channels', 0))
-            or (zork_save_sync_enabled and pz != int(local.get('zork_saves', 0)))
+            or (compare_zork and pz != int(local.get('zork_saves', 0)))
             or pp != int(local.get('profiles', 0))
             or ps != int(local.get('game_scores', 0))
             or (phb and phb != str(local.get('bulletins_hash', '')))
             or (phm and phm != str(local.get('mail_hash', '')))
             or (phc and phc != str(local.get('channels_hash', '')))
-            or (zork_save_sync_enabled and phz and phz != str(local.get('zork_saves_hash', '')))
+            or (compare_zork and phz and phz != str(local.get('zork_saves_hash', '')))
             or (php and php != str(local.get('profiles_hash', '')))
             or (phs and phs != str(local.get('game_scores_hash', '')))
         ):
@@ -2399,7 +2433,9 @@ def get_mismatched_peer_scopes(expected_peer_nodes=None) -> dict:
             scopes.append('mail')
         if pc != int(local.get('channels', 0)) or (phc and phc != str(local.get('channels_hash', ''))):
             scopes.append('channels')
-        if zork_save_sync_enabled and (pz != int(local.get('zork_saves', 0)) or (phz and phz != str(local.get('zork_saves_hash', '')))):
+        if (zork_save_sync_enabled and not peer_opts_out_of_zork_saves(phz)
+                and (pz != int(local.get('zork_saves', 0))
+                     or (phz and phz != str(local.get('zork_saves_hash', ''))))):
             scopes.append('zork_saves')
         if pp != int(local.get('profiles', 0)) or (php and php != str(local.get('profiles_hash', ''))):
             scopes.append('profiles')
