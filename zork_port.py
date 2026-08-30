@@ -19,6 +19,10 @@ from db_operations import get_zork_save, upsert_zork_save
 # Game registry – every Infocom title we support
 # ---------------------------------------------------------------------------
 GAMES: dict[str, dict] = {
+    'jeopardy': {
+        'name': 'Jeopardy!',
+        'door': True,
+    },
     'zork1': {
         'name': 'Zork I',
         'story_path': os.path.join('data', 'zork1.z3'),
