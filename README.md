@@ -8,7 +8,7 @@ Forked from [TC²-BBS-mesh](https://github.com/TheCommsChannel/TC2-BBS-mesh) wit
 
 ## Features
 
-- **Private Mail** — Send and receive direct messages between mesh nodes
+- **Cross-Protocol Private Mail** — Browse recently active users, send through the BBS across Meshtastic, MeshCore, and MQTT, and share one mailbox across linked account devices
 - **Bulletin Boards** — Post and browse community bulletins across configurable boards
 - **Channel Directory** — Named discussion channels with threaded comments
 - **User Profiles** — Short name, bio, and activity statistics per node
@@ -19,6 +19,7 @@ Forked from [TC²-BBS-mesh](https://github.com/TheCommsChannel/TC2-BBS-mesh) wit
 - **Mesh Client Roster** — Every device seen on any active radio/MQTT link, persisted to the database (not just held in memory) so it survives a restart; browsable from Web Admin → Clients
 - **Unique Account Aliases** — An account's alias is the byline on everything it posts, so it's claimed exclusively on this BBS: no two accounts can hold the same one, compared ignoring case and extra whitespace. Aliases are local to this node (accounts don't sync), and clearing yours frees it for someone else
 - **Delayed Link Codes** — Request an account link code that's held for a couple of minutes and then sent to your already-linked devices, so a dual-boot node has time to reboot into its other protocol first
+- **Durable Mail Relay** — Full incoming mail is delivered by DM to every linked device; unavailable devices remain queued until they are heard again or the mail is deleted
 - **Per-Link Reconnect** — Drop and re-establish any single radio or MQTT link from Web Admin → Settings → Links & Services, without restarting the service or disturbing the other links
 - **Fortune Teller** — Random fortunes from a configurable text file
 - **Web Admin Dashboard** — Full moderation interface at `localhost:8081` with real-time sync monitoring, peer hash visualizations, transmission logs, and manual sync controls
@@ -110,6 +111,26 @@ for running with no radio at all as an MQTT-only node.
 ## Configuration
 
 Edit `config.ini` before running. Key sections:
+
+### Mail Relay
+
+```ini
+[mail]
+active_window_seconds = 900
+retry_base_seconds = 30
+```
+
+`AU` lists clients heard within the active window. Linked devices are grouped
+under their local account alias and share one BBS mailbox. When complete mail
+arrives, each device linked at that time receives the sender, subject, and full
+body by DM over its own protocol. An unavailable device remains queued until it
+is heard again; linking a new device does not replay older mail.
+
+Presence is inferred from the persisted client roster rather than guaranteed.
+Accounts are local to each BBS, and full message bodies cross the same radio or
+MQTT transports as normal DMs. Multiple synchronized BBS nodes may each relay a
+recognizable copy of the same mail; the short mail ID in the DM identifies such
+duplicates.
 
 ### Interface
 

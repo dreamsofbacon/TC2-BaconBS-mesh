@@ -464,6 +464,19 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
         sync_interval_minutes = 5
     sync_interval_minutes = max(1, sync_interval_minutes)
 
+    try:
+        mail_active_window_seconds = config.getint(
+            'mail', 'active_window_seconds', fallback=900)
+    except ValueError:
+        mail_active_window_seconds = 900
+    mail_active_window_seconds = max(60, mail_active_window_seconds)
+    try:
+        mail_retry_base_seconds = config.getint(
+            'mail', 'retry_base_seconds', fallback=30)
+    except ValueError:
+        mail_retry_base_seconds = 30
+    mail_retry_base_seconds = max(5, mail_retry_base_seconds)
+
     print(f"Configured to sync with the following BBS nodes: {bbs_nodes}")
 
     allowed_nodes = _read_node_list(config, 'allow_list', 'allowed_nodes')
@@ -517,6 +530,8 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
         'bbs_nodes': bbs_nodes,
         'subscriber_nodes': subscriber_nodes,
         'sync_interval_minutes': sync_interval_minutes,
+        'mail_active_window_seconds': mail_active_window_seconds,
+        'mail_retry_base_seconds': mail_retry_base_seconds,
         'allowed_nodes': allowed_nodes,
         'mqtt_topic': 'meshtastic.receive',
         'interface2_enabled': interface2_enabled,

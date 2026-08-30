@@ -22,6 +22,7 @@ from db_operations import (
     get_account_alias, set_account_alias, create_link_code, redeem_link_code,
     record_link_attempt, link_rate_limit_ok, account_authorized,
     queue_delayed_link_code,
+    get_active_mail_directory,
 )
 from utils import (
     get_node_id_from_num, get_node_info,
@@ -237,9 +238,76 @@ def get_node_name(node_id, interface):
 
 
 def handle_mail_command(sender_id, interface):
-    response = "✉️Mail Menu✉️\nWhat would you like to do with mail?\n[1]Read [2]Send [0]Exit"
+    response = "✉️Mail Menu✉️\nWhat would you like to do with mail?\n[1]Read [2]Send [3]Active Users [0]Exit"
     send_message(response, sender_id, interface)
     update_user_state(sender_id, {'command': 'MAIL', 'step': 1})
+
+
+_MAIL_DIRECTORY_PAGE_SIZE = 6
+
+
+def _mail_active_window_seconds() -> int:
+    return max(60, _config_int('mail', 'active_window_seconds', 900))
+
+
+def _mail_directory_page(entries: list[dict], page: int, selecting: bool) -> str:
+    page_count = max(1, (len(entries) + _MAIL_DIRECTORY_PAGE_SIZE - 1) // _MAIL_DIRECTORY_PAGE_SIZE)
+    page = max(0, min(page, page_count - 1))
+    start = page * _MAIL_DIRECTORY_PAGE_SIZE
+    visible = entries[start:start + _MAIL_DIRECTORY_PAGE_SIZE]
+    heading = "Select an active user:" if selecting else "Active Users"
+    lines = [f"{heading} (page {page + 1}/{page_count})"]
+    for index, entry in enumerate(visible, start=1):
+        protocols = "/".join(entry['protocols'])
+        lines.append(f"[{index}] {entry['display_name']} ({protocols})")
+    controls = []
+    if page > 0:
+        controls.append("[P]revious")
+    if page + 1 < page_count:
+        controls.append("[N]ext")
+    controls.append("E[X]IT")
+    lines.append(" ".join(controls))
+    return "\n".join(lines)
+
+
+def handle_active_users_command(sender_id, interface):
+    entries = get_active_mail_directory(_mail_active_window_seconds())
+    if not entries:
+        send_message("No active users have been heard recently.", sender_id, interface)
+        return
+    page_count = (len(entries) + _MAIL_DIRECTORY_PAGE_SIZE - 1) // _MAIL_DIRECTORY_PAGE_SIZE
+    for page in range(page_count):
+        send_message(_mail_directory_page(entries, page, selecting=False), sender_id, interface)
+
+
+def _start_mail_recipient_selection(sender_id, interface) -> None:
+    entries = get_active_mail_directory(_mail_active_window_seconds())
+    if not entries:
+        send_message("No active users are available for mail right now.", sender_id, interface)
+        update_user_state(sender_id, None)
+        return
+    send_message(_mail_directory_page(entries, 0, selecting=True), sender_id, interface)
+    update_user_state(sender_id, {
+        'command': 'MAIL', 'step': 9, 'directory': entries, 'directory_page': 0,
+    })
+
+
+def _resolve_active_mail_recipient(recipient: str):
+    query = str(recipient or '').strip().casefold()
+    entries = get_active_mail_directory(_mail_active_window_seconds())
+    alias_matches = [
+        entry for entry in entries
+        if entry.get('account_id') and entry['display_name'].casefold() == query
+    ]
+    if len(alias_matches) == 1:
+        return alias_matches[0]
+    short_matches = [
+        entry for entry in entries
+        if query in {name.casefold() for name in entry.get('short_names', [])}
+    ]
+    if len(short_matches) == 1:
+        return short_matches[0]
+    return None
 
 
 
@@ -1162,7 +1230,7 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
 
     if step == 1:
         choice = message.lower()
-        _mail_step1_alias = {'1': 'r', '2': 's', '0': 'x'}
+        _mail_step1_alias = {'1': 'r', '2': 's', '3': 'a', '0': 'x'}
         choice = _mail_step1_alias.get(choice, choice)
         if choice == 'r':
             sender_node_id = get_node_id_from_num(sender_id, interface)
@@ -1176,8 +1244,10 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
                 send_message("There are no messages in your mailbox.📭", sender_id, interface)
                 update_user_state(sender_id, None)
         elif choice == 's':
-            send_message("What is the Short Name of the node you want to leave a message for?", sender_id, interface)
-            update_user_state(sender_id, {'command': 'MAIL', 'step': 3})
+            _start_mail_recipient_selection(sender_id, interface)
+        elif choice == 'a':
+            handle_active_users_command(sender_id, interface)
+            handle_mail_command(sender_id, interface)
         elif choice == 'x':
             handle_help_command(sender_id, interface)
 
@@ -1236,7 +1306,12 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
     elif step == 5:
         subject = message
         send_message("Send your message. You can send it in multiple messages if it's too long for one.\nSend a single message with END when you're done", sender_id, interface)
-        update_user_state(sender_id, {'command': 'MAIL', 'step': 7, 'recipient_id': state['recipient_id'], 'subject': subject, 'content': ''})
+        update_user_state(sender_id, {
+            'command': 'MAIL', 'step': 7,
+            'recipient_id': state['recipient_id'],
+            'recipient_name': state.get('recipient_name'),
+            'subject': subject, 'content': '',
+        })
 
     elif step == 6:
         try:
@@ -1261,14 +1336,11 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
                 recipient_id = state.get('recipient_id')
             subject = state['subject']
             content = state['content']
-            recipient_name = get_node_name(recipient_id, interface)
+            recipient_name = state.get('recipient_name') or get_node_name(recipient_id, interface)
 
             sender_short_name = resolve_display_name(get_node_id_from_num(sender_id, interface), interface)
             unique_id = add_mail(get_node_id_from_num(sender_id, interface), sender_short_name, recipient_id, subject, content, bbs_nodes, interface)
             send_message(f"Mail has been posted to the mailbox of {recipient_name}.\n(╯°□°)╯📨📬", sender_id, interface)
-
-            notification_message = f"You have a new mail message from {sender_short_name}. Check your mailbox by responding to this message with CM."
-            send_message(notification_message, recipient_id, interface)
 
             update_user_state(sender_id, None)
             update_user_state(sender_id, {'command': 'MAIL', 'step': 8})
@@ -1282,6 +1354,38 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
         else:
             send_message("Okay, feel free to send another command.", sender_id, interface)
             update_user_state(sender_id, None)
+
+    elif step == 9:
+        entries = state.get('directory', [])
+        page_count = max(1, (len(entries) + _MAIL_DIRECTORY_PAGE_SIZE - 1) // _MAIL_DIRECTORY_PAGE_SIZE)
+        page = max(0, min(int(state.get('directory_page', 0)), page_count - 1))
+        choice = message.lower()
+        if choice == 'x':
+            handle_mail_command(sender_id, interface)
+            return
+        if choice in ('n', 'p'):
+            page += 1 if choice == 'n' else -1
+            page = max(0, min(page, page_count - 1))
+            state['directory_page'] = page
+            update_user_state(sender_id, state)
+            send_message(_mail_directory_page(entries, page, selecting=True), sender_id, interface)
+            return
+        try:
+            selected_index = int(message) - 1
+        except ValueError:
+            send_message("Invalid selection. Reply with a listed number, N, P, or X.", sender_id, interface)
+            return
+        visible = entries[page * _MAIL_DIRECTORY_PAGE_SIZE:(page + 1) * _MAIL_DIRECTORY_PAGE_SIZE]
+        if selected_index < 0 or selected_index >= len(visible):
+            send_message("Invalid selection. Please choose a listed user.", sender_id, interface)
+            return
+        selected = visible[selected_index]
+        send_message(f"What is the subject of your message to {selected['display_name']}?\nKeep it short.", sender_id, interface)
+        update_user_state(sender_id, {
+            'command': 'MAIL', 'step': 5,
+            'recipient_id': selected['recipient_node_id'],
+            'recipient_name': selected['display_name'],
+        })
 
 
 def handle_wall_of_shame_command(sender_id, interface):
@@ -1452,26 +1556,22 @@ def handle_send_mail_command(sender_id, message, interface, bbs_nodes):
             send_message("Send Mail Quick Command format:\nSM,,{short_name},,{subject},,{message}", sender_id, interface)
             return
 
-        _, short_name, subject, content = parts
-        nodes = get_node_info(interface, short_name.lower())
-        if not nodes:
-            send_message(f"Node with short name '{short_name}' not found.", sender_id, interface)
-            return
-        if len(nodes) > 1:
-            send_message(f"Multiple nodes with short name '{short_name}' found. Please be more specific.", sender_id,
-                         interface)
+        _, recipient_query, subject, content = parts
+        recipient = _resolve_active_mail_recipient(recipient_query)
+        if recipient is None:
+            send_message(
+                f"Active user '{recipient_query}' was not found or is ambiguous. Send AU to view available users.",
+                sender_id, interface,
+            )
             return
 
-        recipient_id = nodes[0]['num']
-        recipient_name = get_node_name(recipient_id, interface)
+        recipient_id = recipient['recipient_node_id']
+        recipient_name = recipient['display_name']
         sender_short_name = resolve_display_name(get_node_id_from_num(sender_id, interface), interface)
 
         unique_id = add_mail(get_node_id_from_num(sender_id, interface), sender_short_name, recipient_id, subject,
                              content, bbs_nodes, interface)
         send_message(f"Mail has been sent to {recipient_name}.", sender_id, interface)
-
-        notification_message = f"You have a new mail message from {sender_short_name}. Check your mailbox by responding to this message with CM."
-        send_message(notification_message, recipient_id, interface)
 
     except Exception as e:
         logging.error(f"Error processing send mail command: {e}")
@@ -1707,5 +1807,5 @@ def handle_list_channels_command(sender_id, interface):
 
 def handle_quick_help_command(sender_id, interface):
     response = ("✈️QUICK COMMANDS✈️\nSend command below for usage info:\nSM,, - Send "
-                "Mail\nCM - Check Mail\nPB,, - Post Bulletin\nCB,, - Check Bulletins\n")
+                "Mail\nCM - Check Mail\nAU - Active Users\nPB,, - Post Bulletin\nCB,, - Check Bulletins\n")
     send_message(response, sender_id, interface)

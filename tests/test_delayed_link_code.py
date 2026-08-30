@@ -108,6 +108,31 @@ class DeliveryTests(unittest.TestCase):
             db_operations.link_node_to_account(nid, account_id, "meshtastic")
         return account_id
 
+    def _active_client(self, node_id, link_name="primary", protocol="Meshtastic"):
+        db_operations.upsert_mesh_clients([{
+            "link_name": link_name,
+            "node_id": node_id,
+            "node_num": node_id,
+            "protocol": protocol,
+            "short_name": "RCPT",
+            "long_name": "Relay Recipient",
+            "hw_model": "",
+            "role": "CLIENT",
+            "battery_level": None,
+            "last_heard_epoch": None,
+        }])
+
+    def _due_mail(self, recipient="!alpha"):
+        unique_id = db_operations.add_mail(
+            "!sender", "Sender", recipient, "Relay subject", "Relay body", [], None
+        )
+        db_operations.get_db_connection().execute(
+            "UPDATE mail_dm_deliveries SET not_before_epoch = 0 WHERE mail_unique_id = ?",
+            (unique_id,),
+        )
+        db_operations.get_db_connection().commit()
+        return unique_id
+
     def test_due_code_is_sent_to_every_linked_device(self):
         account_id = self._account_with("!alpha", "!beta")
         db_operations.queue_delayed_link_code(account_id, "654321", "!alpha", 0, 12)
@@ -146,6 +171,58 @@ class DeliveryTests(unittest.TestCase):
 
         self.assertEqual(delivered, ["!good"])
         self.assertEqual(count, 1)
+
+    def test_mail_dm_uses_observed_link_and_marks_delivery(self):
+        self._account_with("!alpha")
+        self._active_client("!alpha", link_name="secondary")
+        unique_id = self._due_mail()
+        primary = self.RadioLink("primary", object())
+        secondary_interface = object()
+        secondary = self.RadioLink("secondary", secondary_interface)
+        sent = []
+
+        with patch("utils.send_message", lambda text, node, iface: sent.append((text, node, iface)) or True):
+            count = self.server.deliver_due_mail_dms([primary, secondary])
+
+        self.assertEqual(count, 1)
+        self.assertEqual(sent[0][1:], ("!alpha", secondary_interface))
+        self.assertIn("Relay subject", sent[0][0])
+        self.assertIn("Relay body", sent[0][0])
+        state = db_operations.get_db_connection().execute(
+            "SELECT state FROM mail_dm_deliveries WHERE mail_unique_id = ?", (unique_id,)
+        ).fetchone()[0]
+        self.assertEqual(state, "delivered")
+
+    def test_mail_dm_waits_without_attempt_when_target_is_offline(self):
+        self._account_with("!alpha")
+        unique_id = self._due_mail()
+        sent = []
+
+        with patch("utils.send_message", lambda *args: sent.append(args) or True):
+            count = self.server.deliver_due_mail_dms([self.RadioLink("primary", object())])
+
+        self.assertEqual(count, 0)
+        self.assertEqual(sent, [])
+        state, attempts = db_operations.get_db_connection().execute(
+            "SELECT state, attempts FROM mail_dm_deliveries WHERE mail_unique_id = ?", (unique_id,)
+        ).fetchone()
+        self.assertEqual((state, attempts), ("pending", 0))
+
+    def test_mail_dm_failed_send_remains_pending_with_attempt(self):
+        self._account_with("!alpha")
+        self._active_client("!alpha")
+        unique_id = self._due_mail()
+
+        with patch("utils.send_message", return_value=False):
+            count = self.server.deliver_due_mail_dms([self.RadioLink("primary", object())])
+
+        self.assertEqual(count, 0)
+        state, attempts, error = db_operations.get_db_connection().execute(
+            "SELECT state, attempts, last_error FROM mail_dm_deliveries WHERE mail_unique_id = ?",
+            (unique_id,),
+        ).fetchone()
+        self.assertEqual((state, attempts), ("pending", 1))
+        self.assertIn("false", error)
 
 
 if __name__ == "__main__":
