@@ -81,8 +81,8 @@ class AskNomadShortcutTests(unittest.TestCase):
         self.assertEqual(command_handlers.get_user_state(111), {"command": "ASK_NOMAD", "step": 1})
 
     def test_bare_n_opens_the_menu_rather_than_dispatching(self):
-        """Bare letters stay local on purpose. Jeopardy uses N for the next
-        clue, and the main menu must not take it out from under the game.
+        """Bare letters stay local on purpose. Trivia King uses N for the next
+        question, and the main menu must not take it out from under the game.
         With no menu open, N shows one instead of acting."""
         with mock.patch.object(command_handlers, "_apigw_authorized", return_value=True), \
              mock.patch.object(command_handlers, "send_message") as sm:

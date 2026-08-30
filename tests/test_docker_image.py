@@ -225,6 +225,21 @@ class StateSurvivesAnUpdateTests(unittest.TestCase):
         working directory, with no env var to point elsewhere."""
         self.assertRegex(DOCKERFILE, r"ln -s /config/data\s+/app/data")
 
+    def test_the_question_set_ships_and_is_seeded(self):
+        """data/ is excluded from the build context and /app/data is a
+        symlink to the volume, so the questions need an explicit route in
+        and an explicit copy out -- the same shape as config.ini."""
+        self.assertIn("!data/trivia.db", DOCKERIGNORE)
+        self.assertIn("COPY data/trivia.db", DOCKERFILE)
+        self.assertIn("trivia-seed.db", ENTRYPOINT_CODE)
+
+    def test_seeding_never_overwrites_a_local_question_set(self):
+        """An operator who topped the set up with fetch_trivia_questions.py
+        must not lose it to the smaller one baked into the image."""
+        self.assertRegex(
+            ENTRYPOINT_CODE,
+            r"\[ ! -f \"\$CONFIG_DIR/data/trivia\.db\" \]")
+
     def test_the_volume_is_declared(self):
         self.assertIn("VOLUME /config", DOCKERFILE)
         self.assertIn(":/config", COMPOSE)

@@ -41,7 +41,7 @@ from zork_port import (
     start_zork_session,
     stop_zork_session,
 )
-import jeopardy_port
+import trivia_port
 
 # Ordered list of playable games (matches GAMES keys in zork_port)
 GAME_LIST = list(GAMES.items())  # [(game_id, {name, ...}), ...]
@@ -395,9 +395,9 @@ def handle_games_steps(sender_id, message, interface):
 
 
 def _launch_game(sender_id, interface, game_id, game_name):
-    if game_id == jeopardy_port.GAME_ID:
-        send_message(jeopardy_port.start(sender_id), sender_id, interface)
-        update_user_state(sender_id, {'command': 'JEOPARDY', 'step': 1, 'game_id': game_id})
+    if game_id == trivia_port.GAME_ID:
+        send_message(trivia_port.start(sender_id), sender_id, interface)
+        update_user_state(sender_id, {'command': 'TRIVIA', 'step': 1, 'game_id': game_id})
         return
     sync_notice = get_zork_save_sync_notice()
     if has_zork_session(sender_id, game_id):
@@ -1110,20 +1110,20 @@ def handle_zork_steps(sender_id, message, interface):
     update_user_state(sender_id, {'command': 'ZORK', 'step': 1, 'game_id': game_id})
 
 
-def handle_jeopardy_steps(sender_id, message, interface):
-    """Route input to the active Jeopardy door and persist its final score."""
+def handle_trivia_steps(sender_id, message, interface):
+    """Route input to the active Trivia King door and persist its score."""
     state = get_user_state(sender_id) or {}
-    game_id = state.get('game_id', jeopardy_port.GAME_ID)
-    response = jeopardy_port.command(sender_id, message)
+    game_id = state.get('game_id', trivia_port.GAME_ID)
+    response = trivia_port.command(sender_id, message)
     send_message(response, sender_id, interface)
-    if not jeopardy_port.active(sender_id):
-        score, moves = jeopardy_port.finish_score(sender_id)
+    if not trivia_port.active(sender_id):
+        score, moves = trivia_port.finish_score(sender_id)
         node_id = get_node_id_from_num(sender_id, interface)
         short_name = get_node_short_name(node_id, interface) or str(sender_id)
         upsert_game_score(sender_id, game_id, short_name, score, 0, moves)
         handle_games_command(sender_id, interface)
     else:
-        update_user_state(sender_id, {'command': 'JEOPARDY', 'step': 1, 'game_id': game_id})
+        update_user_state(sender_id, {'command': 'TRIVIA', 'step': 1, 'game_id': game_id})
 
 
 def handle_stats_steps(sender_id, message, step, interface):

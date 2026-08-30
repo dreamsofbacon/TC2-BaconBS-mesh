@@ -24,6 +24,10 @@ _build_version.py
 
 # Uploaded MQTT TLS material, which may include private keys.
 data/
+# ...except the shipped Trivia King question set, which is content the
+# image is supposed to carry. Seeded onto the volume by the entrypoint,
+# because /app/data is a symlink to /config/data.
+!data/trivia.db
 
 # Not needed at runtime.
 tests

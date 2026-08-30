@@ -48,6 +48,9 @@ COPY *.py ./
 COPY templates/ ./templates/
 COPY static/ ./static/
 COPY fortunes.txt example_config.ini ./
+# Not copied to data/, which is a symlink to the volume and does not
+# exist yet at build time. The entrypoint seeds it on first run.
+COPY data/trivia.db /app/trivia-seed.db
 COPY docker/entrypoint.sh /usr/local/bin/baconbs-entrypoint
 COPY docker/healthcheck.py /usr/local/bin/baconbs-healthcheck
 RUN chmod 755 /usr/local/bin/baconbs-entrypoint

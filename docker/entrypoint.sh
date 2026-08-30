@@ -59,6 +59,15 @@ if [ ! -f "${BBS_CONFIG_PATH:-/config/config.ini}" ]; then
     log "set BBS_WEBGUI_USER and BBS_WEBGUI_PASSWORD on the container."
 fi
 
+# Trivia King's questions ship with the image but have to live on the volume,
+# so an operator can top the set up with fetch_trivia_questions.py and keep it
+# across updates. Only seeded when absent: a larger local set is never
+# overwritten by the one baked into the image.
+if [ -f "$APP_DIR/trivia-seed.db" ] && [ ! -f "$CONFIG_DIR/data/trivia.db" ]; then
+    cp "$APP_DIR/trivia-seed.db" "$CONFIG_DIR/data/trivia.db"
+    log "seeded the Trivia King question set into $CONFIG_DIR/data"
+fi
+
 # Flask signs session cookies with this. Left at its built-in default, every
 # install shares one key and anyone can forge a login cookie for any of them.
 # Generated once and kept on the volume so sessions survive a restart.
