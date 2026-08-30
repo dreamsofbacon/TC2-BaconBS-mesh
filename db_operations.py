@@ -2128,7 +2128,10 @@ def merge_relayed_peer_state(peer_node_id: str, counts: dict, age_seconds: float
 
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT reported_at FROM peer_sync_state WHERE peer_node_id = ?", (peer_node_id,))
+    c.execute(
+        "SELECT reported_at, bulletins_hash, mail_hash, channels_hash, "
+        "zork_saves_hash, profiles_hash, game_scores_hash "
+        "FROM peer_sync_state WHERE peer_node_id = ?", (peer_node_id,))
     row = c.fetchone()
     if row and row[0]:
         try:
@@ -2138,13 +2141,21 @@ def merge_relayed_peer_state(peer_node_id: str, counts: dict, age_seconds: float
         except ValueError:
             pass  # unparseable existing timestamp → treat relay as fresher
 
+    # A relay carries counts and nothing else, so the hashes we already hold
+    # are kept rather than blanked. Writing '' over them looks like new
+    # information and is not: it destroys whatever first-hand SYNCSTATE
+    # established, including a peer's zork_saves opt-out sentinel, which then
+    # reappears as a permanent gap until the next direct frame restores it.
+    kept = [str(value or '') for value in (row[1:7] if row else ())]
+    kept += [''] * (6 - len(kept))
+
     upsert_peer_sync_state(
         peer_node_id,
         int(counts.get('bulletins', 0)), int(counts.get('mail', 0)),
         int(counts.get('channels', 0)), int(counts.get('zork_saves', 0)),
         int(counts.get('profiles', 0)), int(counts.get('game_scores', 0)),
-        bulletins_hash='', mail_hash='', channels_hash='',
-        zork_saves_hash='', profiles_hash='', game_scores_hash='',
+        bulletins_hash=kept[0], mail_hash=kept[1], channels_hash=kept[2],
+        zork_saves_hash=kept[3], profiles_hash=kept[4], game_scores_hash=kept[5],
         tombstones=int(counts.get('tombstones', -1)),
         proto_v=0, caps='',
     )

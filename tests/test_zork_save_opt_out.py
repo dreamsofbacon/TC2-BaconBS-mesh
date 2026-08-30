@@ -129,6 +129,77 @@ class ZorkSaveOptOutTests(unittest.TestCase):
         self.assertFalse(db_operations.peer_opts_out_of_zork_saves(None))
 
 
+class RelayPreservesHashesTests(unittest.TestCase):
+    """A gossiped relay must not blank what first-hand SYNCSTATE established.
+
+    PEERGOSSIP carries counts and nothing else. It was writing empty strings
+    over every stored hash, which looks like new information and is not --
+    so a peer's opt-out sentinel survived only until the next relay about it,
+    and the phantom gap reappeared on a loop.
+    """
+
+    def setUp(self):
+        db_operations.thread_local.connection = sqlite3.connect(":memory:")
+        db_operations.initialize_database()
+        db_operations._ensure_zork_saves_table()
+
+    def tearDown(self):
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
+
+    def _stored_hashes(self):
+        row = db_operations.thread_local.connection.execute(
+            "SELECT bulletins_hash, zork_saves_hash FROM peer_sync_state "
+            "WHERE peer_node_id = ?", (PEER,)).fetchone()
+        return row
+
+    def _first_hand(self):
+        db_operations.upsert_peer_sync_state(
+            PEER, 9, 0, 13, 0, 13, 0,
+            bulletins_hash="realBulletinH",
+            zork_saves_hash=db_operations.zork_saves_disabled_hash())
+        # Backdate it so the relay below counts as strictly fresher.
+        db_operations.thread_local.connection.execute(
+            "UPDATE peer_sync_state SET reported_at = '2020-01-01 00:00:00' "
+            "WHERE peer_node_id = ?", (PEER,))
+        db_operations.thread_local.connection.commit()
+
+    def test_a_relay_keeps_the_opt_out_sentinel(self):
+        self._first_hand()
+        self.assertTrue(db_operations.merge_relayed_peer_state(
+            PEER, {"bulletins": 9, "mail": 0, "channels": 13, "zork_saves": 0,
+                   "profiles": 13, "game_scores": 0}, age_seconds=5))
+        self.assertEqual(self._stored_hashes()[1],
+                         db_operations.zork_saves_disabled_hash())
+
+    def test_a_relay_keeps_the_other_hashes_too(self):
+        self._first_hand()
+        db_operations.merge_relayed_peer_state(
+            PEER, {"bulletins": 9, "mail": 0, "channels": 13, "zork_saves": 0,
+                   "profiles": 13, "game_scores": 0}, age_seconds=5)
+        self.assertEqual(self._stored_hashes()[0], "realBulletinH")
+
+    def test_a_relay_still_updates_the_counts(self):
+        """Preserving hashes must not turn the relay into a no-op."""
+        self._first_hand()
+        db_operations.merge_relayed_peer_state(
+            PEER, {"bulletins": 11, "mail": 0, "channels": 13, "zork_saves": 0,
+                   "profiles": 13, "game_scores": 0}, age_seconds=5)
+        row = db_operations.thread_local.connection.execute(
+            "SELECT bulletins FROM peer_sync_state WHERE peer_node_id = ?",
+            (PEER,)).fetchone()
+        self.assertEqual(row[0], 11)
+
+    def test_a_relay_about_an_unknown_peer_still_works(self):
+        """No stored row to preserve anything from."""
+        self.assertTrue(db_operations.merge_relayed_peer_state(
+            "mqtt:x:brand-new", {"bulletins": 3, "mail": 0, "channels": 0,
+                                 "zork_saves": 0, "profiles": 0,
+                                 "game_scores": 0}, age_seconds=5))
+
+
 class DashboardTests(unittest.TestCase):
     """The page showed "we are behind by 4" against a peer that will never
     accept one of them."""
