@@ -42,7 +42,11 @@ class AccountsSchemaTests(unittest.TestCase):
     def test_tables_exist_with_expected_columns(self):
         conn = db_operations.get_db_connection()
         cols = {row[1] for row in conn.execute("PRAGMA table_info(accounts)")}
-        self.assertEqual(cols, {"account_id", "alias", "alias_normalized", "created_at"})
+        # mail_relay_* were added when the mail DM relay became opt-in: the
+        # account holds the choice, and the timestamp resolves which of two
+        # nodes' updates wins when the preference syncs.
+        self.assertEqual(cols, {"account_id", "alias", "alias_normalized", "created_at",
+                                "mail_relay_enabled", "mail_relay_updated_at"})
         cols = {row[1] for row in conn.execute("PRAGMA table_info(linked_nodes)")}
         self.assertEqual(cols, {"node_id", "account_id", "network", "linked_at"})
 
