@@ -955,6 +955,68 @@ def deliver_due_link_codes(links) -> int:
     return sent
 
 
+def deliver_due_mail_dms(links, active_window_seconds: int = 900, retry_base_seconds: int = 30) -> int:
+    """Deliver complete queued mail to targets recently seen on this BBS."""
+    if not links:
+        return 0
+    try:
+        from db_operations import (
+            defer_mail_dm_delivery,
+            get_due_mail_dm_deliveries,
+            get_mesh_clients,
+            mark_mail_dm_delivered,
+            retry_mail_dm_delivery,
+        )
+        due = get_due_mail_dm_deliveries(limit=20)
+        active_clients = get_mesh_clients(seen_within_seconds=max(1, int(active_window_seconds)))
+    except Exception:
+        logging.debug("mail DM relay: lookup failed", exc_info=True)
+        return 0
+    if not due:
+        return 0
+
+    active_by_node = {}
+    for client in active_clients:
+        node_id = str(client.get('node_id') or '')
+        if node_id and node_id not in active_by_node:
+            active_by_node[node_id] = client
+
+    from utils import send_message as _send
+    delivered = 0
+    links_by_name = {str(link.name): link for link in links}
+    for entry in due:
+        node_id = str(entry['target_node_id'])
+        client = active_by_node.get(node_id)
+        if client is None:
+            defer_mail_dm_delivery(entry['id'], 30)
+            continue
+        link = links_by_name.get(str(client.get('link_name') or '')) or _link_for_node(links, node_id)
+        message = (
+            f"MAIL {str(entry['mail_unique_id'])[:8]}\n"
+            f"From: {entry['sender_short_name']}\n"
+            f"Subject: {entry['subject']}\n\n"
+            f"{entry['content']}"
+        )
+        try:
+            if _send(message, node_id, link.interface):
+                mark_mail_dm_delivered(entry['id'])
+                delivered += 1
+                logging.info(
+                    "Mail DM %s delivered to %s via %s.",
+                    str(entry['mail_unique_id'])[:8], node_id, link.name,
+                )
+            else:
+                attempts = int(entry.get('attempts') or 0)
+                delay = min(3600, max(5, int(retry_base_seconds)) * (2 ** min(attempts, 7)))
+                retry_mail_dm_delivery(entry['id'], "send returned false", delay)
+        except Exception as exc:
+            attempts = int(entry.get('attempts') or 0)
+            delay = min(3600, max(5, int(retry_base_seconds)) * (2 ** min(attempts, 7)))
+            retry_mail_dm_delivery(entry['id'], str(exc), delay)
+            logging.warning("Mail DM delivery to %s failed: %s", node_id, exc)
+    return delivered
+
+
 def persist_mesh_clients(links) -> None:
     """Durably record each active link's live node roster (interface.nodes)
     to the mesh_clients table -- see the schema comment in
@@ -1802,6 +1864,11 @@ def main():
                 publish_mqtt_status(links, write_runtime_diagnostics_snapshot(links, system_config))
                 persist_mesh_clients(links)
                 deliver_due_link_codes(links)
+                deliver_due_mail_dms(
+                    links,
+                    active_window_seconds=system_config.get('mail_active_window_seconds', 900),
+                    retry_base_seconds=system_config.get('mail_retry_base_seconds', 30),
+                )
                 sync_progress = get_sync_progress()
                 next_diagnostics_write = now + (5 if sync_progress.get('in_progress') else 30)
 

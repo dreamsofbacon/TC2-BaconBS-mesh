@@ -630,6 +630,11 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(payload["entries"][0]["importance"], "important")
         self.assertIn("uid-1", payload["entries"][0]["preview"])
 
+        repo_root = Path(web_admin.__file__).resolve().parent
+        transmissions_template = (repo_root / "templates" / "transmissions.html").read_text(encoding="utf-8")
+        self.assertIn("escapeHtml(e.frame_text)", transmissions_template)
+        self.assertNotIn("escapeHtml(e.frame_preview)", transmissions_template)
+
     def test_system_transmissions_reset_clears_history(self):
         conn = sqlite3.connect(self.db_path)
         conn.execute(

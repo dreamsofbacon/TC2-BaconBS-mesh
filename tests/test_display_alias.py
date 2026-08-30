@@ -131,6 +131,12 @@ class BulletinAndMailAliasIntegrationTests(unittest.TestCase):
 
     def test_quick_send_mail_uses_alias_when_linked(self):
         self.interface.nodes["!bbb22222"] = {"num": 222, "user": {"shortName": "DEST", "longName": "Destination"}}
+        db_operations.upsert_mesh_clients([{
+            "link_name": "primary", "node_id": "!bbb22222", "node_num": 222,
+            "protocol": "Meshtastic", "short_name": "DEST", "long_name": "Destination",
+            "hw_model": "", "role": "CLIENT", "battery_level": None,
+            "last_heard_epoch": None,
+        }])
         account_id = db_operations.create_account()
         db_operations.link_node_to_account("!aaa11111", account_id, "meshtastic")
         db_operations.set_account_alias(account_id, "BaconFan")

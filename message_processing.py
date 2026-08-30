@@ -27,6 +27,7 @@ from command_handlers import (
     handle_ask_nomad_command, handle_ask_nomad_steps,
     handle_account_steps,
     handle_settings_command, handle_settings_steps,
+    handle_active_users_command,
     deliver_ask_nomad_reply,
     number_alias, MAIN_NUMBER_MAP, BBS_NUMBER_MAP, UTILITIES_NUMBER_MAP,
 )
@@ -2365,6 +2366,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
     else:
         if message_lower.startswith("sm,,"):
             handle_send_mail_command(sender_id, message_strip, interface, bbs_nodes)
+        elif message_lower == "au":
+            handle_active_users_command(sender_id, interface)
         elif message_lower.startswith("cm"):
             handle_check_mail_command(sender_id, interface)
         elif message_lower.startswith("pb,,"):

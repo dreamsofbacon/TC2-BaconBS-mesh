@@ -759,6 +759,7 @@ def initialize_database():
     _ensure_channel_comment_sync_columns(c)
     _ensure_local_only_columns(c)
     _ensure_accounts_tables(c)
+    _ensure_mail_dm_delivery_table(c)
     _dedupe_channels_and_create_unique_index(c)
     _dedupe_messages_and_create_unique_indexes(c)
     conn.commit()
@@ -882,6 +883,25 @@ def _ensure_accounts_tables(cursor) -> None:
                 );''')
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_link_attempts_node_time
                     ON link_attempts (node_id, attempted_at);''')
+
+
+def _ensure_mail_dm_delivery_table(cursor) -> None:
+    cursor.execute('''CREATE TABLE IF NOT EXISTS mail_dm_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mail_unique_id TEXT NOT NULL,
+                    recipient_account_id TEXT,
+                    target_node_id TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'pending',
+                    not_before_epoch INTEGER NOT NULL DEFAULT 0,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_attempt_at TEXT,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    delivered_at TEXT,
+                    UNIQUE(mail_unique_id, target_node_id)
+                );''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_mail_dm_deliveries_due
+                    ON mail_dm_deliveries (state, not_before_epoch);''')
 
 
 def _ensure_content_status_columns(cursor) -> None:
@@ -3344,6 +3364,7 @@ def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_n
                 conn.commit()
             _flush_pending_expected_content_length('mail', unique_id, _pending_mail_expected_lengths, 'mail')
             clear_sync_tombstone('mail', str(unique_id))
+            enqueue_mail_dm_deliveries(unique_id)
             return unique_id
     c.execute(
         "INSERT INTO mail (sender, sender_short_name, recipient, date, subject, content, unique_id, expected_content_length, content_complete, source_node_id, source_timestamp, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -3375,25 +3396,144 @@ def add_mail(sender_id, sender_short_name, recipient_id, subject, content, bbs_n
         conn.commit()
     _flush_pending_expected_content_length('mail', unique_id, _pending_mail_expected_lengths, 'mail')
     clear_sync_tombstone('mail', str(unique_id))
+    enqueue_mail_dm_deliveries(unique_id)
     if bbs_nodes and interface:
         send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, content, unique_id, bbs_nodes, interface, date=original_date, source_node_id=source_node_id, source_timestamp=source_timestamp)
     return unique_id
 
+def _mail_recipient_scope(cursor, recipient_id) -> list[str]:
+    normalized_id = str(recipient_id or '').strip()
+    if not normalized_id:
+        return []
+    cursor.execute("SELECT account_id FROM linked_nodes WHERE node_id = ?", (normalized_id,))
+    account_row = cursor.fetchone()
+    if not account_row:
+        return [normalized_id]
+    cursor.execute(
+        "SELECT node_id FROM linked_nodes WHERE account_id = ? ORDER BY node_id",
+        (account_row[0],),
+    )
+    linked_ids = [str(row[0]) for row in cursor.fetchall() if row[0]]
+    return linked_ids or [normalized_id]
+
+
+def enqueue_mail_dm_deliveries(unique_id: str, settle_seconds: int = 10) -> int:
+    """Snapshot relay targets for one mail without backfilling future links."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT recipient FROM mail WHERE unique_id = ?", (str(unique_id),))
+    mail_row = c.fetchone()
+    if not mail_row:
+        return 0
+    recipient_id = str(mail_row[0])
+    c.execute("SELECT account_id FROM linked_nodes WHERE node_id = ?", (recipient_id,))
+    account_row = c.fetchone()
+    account_id = str(account_row[0]) if account_row else None
+    if account_id:
+        c.execute("SELECT node_id FROM linked_nodes WHERE account_id = ? ORDER BY node_id", (account_id,))
+        targets = [str(row[0]) for row in c.fetchall()]
+    else:
+        c.execute("SELECT 1 FROM mesh_clients WHERE node_id = ? LIMIT 1", (recipient_id,))
+        targets = [recipient_id] if c.fetchone() else []
+    if not targets:
+        return 0
+    now = datetime.now(timezone.utc)
+    not_before = int(now.timestamp()) + max(0, int(settle_seconds))
+    created_at = now.isoformat()
+    inserted = 0
+    for target_node_id in targets:
+        c.execute(
+            """INSERT OR IGNORE INTO mail_dm_deliveries
+               (mail_unique_id, recipient_account_id, target_node_id, not_before_epoch, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (str(unique_id), account_id, target_node_id, not_before, created_at),
+        )
+        inserted += max(0, c.rowcount)
+    conn.commit()
+    return inserted
+
+
+def get_due_mail_dm_deliveries(now_epoch: Optional[int] = None, limit: int = 20) -> list[dict]:
+    conn = get_db_connection()
+    c = conn.cursor()
+    due_epoch = int(time.time()) if now_epoch is None else int(now_epoch)
+    c.execute(
+        """SELECT d.id, d.mail_unique_id, d.target_node_id, d.attempts,
+                  m.sender_short_name, m.subject, m.content
+           FROM mail_dm_deliveries d
+           JOIN mail m ON m.unique_id = d.mail_unique_id
+           WHERE d.state = 'pending' AND d.not_before_epoch <= ?
+             AND COALESCE(m.content_complete, 1) = 1
+           ORDER BY d.id
+           LIMIT ?""",
+        (due_epoch, max(1, min(100, int(limit)))),
+    )
+    keys = ['id', 'mail_unique_id', 'target_node_id', 'attempts', 'sender_short_name', 'subject', 'content']
+    return [dict(zip(keys, row)) for row in c.fetchall()]
+
+
+def mark_mail_dm_delivered(delivery_id: int) -> None:
+    conn = get_db_connection()
+    conn.execute(
+        """UPDATE mail_dm_deliveries
+           SET state = 'delivered', delivered_at = ?, last_error = ''
+           WHERE id = ? AND state = 'pending'""",
+        (datetime.now(timezone.utc).isoformat(), int(delivery_id)),
+    )
+    conn.commit()
+
+
+def defer_mail_dm_delivery(delivery_id: int, delay_seconds: int = 30) -> None:
+    conn = get_db_connection()
+    conn.execute(
+        """UPDATE mail_dm_deliveries
+           SET not_before_epoch = ?
+           WHERE id = ? AND state = 'pending'""",
+        (int(time.time()) + max(1, int(delay_seconds)), int(delivery_id)),
+    )
+    conn.commit()
+
+
+def retry_mail_dm_delivery(delivery_id: int, error: str, delay_seconds: int) -> None:
+    conn = get_db_connection()
+    conn.execute(
+        """UPDATE mail_dm_deliveries
+           SET attempts = attempts + 1, last_attempt_at = ?, last_error = ?,
+               not_before_epoch = ?
+           WHERE id = ? AND state = 'pending'""",
+        (
+            datetime.now(timezone.utc).isoformat(),
+            str(error or '')[:500],
+            int(time.time()) + max(1, int(delay_seconds)),
+            int(delivery_id),
+        ),
+    )
+    conn.commit()
+
+
 def get_mail(recipient_id):
     conn = get_db_connection()
     c = conn.cursor()
+    recipient_ids = _mail_recipient_scope(c, recipient_id)
+    if not recipient_ids:
+        return []
+    placeholders = ','.join('?' for _ in recipient_ids)
     c.execute(
-        "SELECT id, sender_short_name, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject || ' [incomplete]' ELSE subject END, date, unique_id FROM mail WHERE recipient = ?",
-        (recipient_id,),
+        f"SELECT id, sender_short_name, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject || ' [incomplete]' ELSE subject END, date, unique_id FROM mail WHERE recipient IN ({placeholders}) ORDER BY id",
+        recipient_ids,
     )
     return c.fetchall()
 
 def get_mail_content(mail_id, recipient_id):
     conn = get_db_connection()
     c = conn.cursor()
+    recipient_ids = _mail_recipient_scope(c, recipient_id)
+    if not recipient_ids:
+        return None
+    placeholders = ','.join('?' for _ in recipient_ids)
     c.execute(
-        "SELECT sender_short_name, date, subject, content, unique_id, COALESCE(content_complete, 1), COALESCE(expected_content_length, LENGTH(content)) FROM mail WHERE id = ? and recipient = ?",
-        (mail_id, recipient_id,),
+        f"SELECT sender_short_name, date, subject, content, unique_id, COALESCE(content_complete, 1), COALESCE(expected_content_length, LENGTH(content)) FROM mail WHERE id = ? AND recipient IN ({placeholders})",
+        [mail_id, *recipient_ids],
     )
     return c.fetchone()
 
@@ -3404,7 +3544,19 @@ def delete_mail(unique_id, recipient_id, bbs_nodes, interface):
         if recipient_id is None:
             c.execute("DELETE FROM mail WHERE unique_id = ?", (unique_id,))
         else:
-            c.execute("DELETE FROM mail WHERE unique_id = ? and recipient = ?", (unique_id, recipient_id,))
+            recipient_ids = _mail_recipient_scope(c, recipient_id)
+            if not recipient_ids:
+                return
+            placeholders = ','.join('?' for _ in recipient_ids)
+            c.execute(
+                f"DELETE FROM mail WHERE unique_id = ? AND recipient IN ({placeholders})",
+                [unique_id, *recipient_ids],
+            )
+        deleted_count = c.rowcount
+        if deleted_count == 0:
+            logging.info(f"Delete mail noop for unique_id: {unique_id} (already missing or unauthorized).")
+            return
+        c.execute("DELETE FROM mail_dm_deliveries WHERE mail_unique_id = ?", (str(unique_id),))
         conn.commit()
         _local_nid = get_local_node_id()
         if _local_nid:
@@ -3416,10 +3568,7 @@ def delete_mail(unique_id, recipient_id, bbs_nodes, interface):
         record_sync_tombstone('mail', str(unique_id))
         if bbs_nodes and interface:
             send_delete_mail_to_bbs_nodes(unique_id, bbs_nodes, interface)
-        if c.rowcount == 0:
-            logging.info(f"Delete mail noop for unique_id: {unique_id} (already missing).")
-        else:
-            logging.info(f"Mail with unique_id: {unique_id} deleted.")
+        logging.info(f"Mail with unique_id: {unique_id} deleted.")
     except Exception as e:
         logging.error(f"Error deleting mail with unique_id {unique_id}: {e}")
         raise
@@ -3737,6 +3886,61 @@ def get_mesh_clients(
         'hw_model', 'role', 'battery_level', 'last_heard_epoch', 'first_seen', 'last_seen',
     ]
     return [dict(zip(keys, row)) for row in c.fetchall()]
+
+
+def get_active_mail_directory(seen_within_seconds: int = 900) -> list[dict]:
+    """Return one active recipient entry per account or unlinked node."""
+    clients = get_mesh_clients(seen_within_seconds=seen_within_seconds)
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """SELECT ln.node_id, ln.account_id, a.alias
+           FROM linked_nodes ln
+           JOIN accounts a ON a.account_id = ln.account_id"""
+    )
+    linked = {
+        str(node_id): (str(account_id), str(alias or ''))
+        for node_id, account_id, alias in c.fetchall()
+    }
+    entries: dict[str, dict] = {}
+    seen_nodes: set[str] = set()
+    for client in clients:
+        node_id = str(client.get('node_id') or '')
+        if not node_id or node_id in seen_nodes:
+            continue
+        seen_nodes.add(node_id)
+        account = linked.get(node_id)
+        key = f"account:{account[0]}" if account else f"node:{node_id}"
+        protocol = str(client.get('protocol') or '').strip() or 'Unknown'
+        display_name = (
+            (account[1] if account else '')
+            or str(client.get('long_name') or '').strip()
+            or str(client.get('short_name') or '').strip()
+            or 'Unnamed user'
+        )
+        entry = entries.get(key)
+        if entry is None:
+            entries[key] = {
+                'entry_key': key,
+                'account_id': account[0] if account else None,
+                'display_name': display_name,
+                'protocols': [protocol],
+                'recipient_node_id': node_id,
+                'short_name': str(client.get('short_name') or '').strip(),
+                'short_names': [str(client.get('short_name') or '').strip()],
+            }
+        else:
+            if protocol not in entry['protocols']:
+                entry['protocols'].append(protocol)
+            short_name = str(client.get('short_name') or '').strip()
+            if short_name and short_name not in entry['short_names']:
+                entry['short_names'].append(short_name)
+    result = list(entries.values())
+    for entry in result:
+        entry['protocols'].sort(key=str.casefold)
+        entry['short_names'] = [name for name in entry['short_names'] if name]
+    result.sort(key=lambda entry: (entry['display_name'].casefold(), entry['entry_key']))
+    return result
 
 
 def queue_delayed_link_code(account_id: str, code: str, requested_by_node_id: str,

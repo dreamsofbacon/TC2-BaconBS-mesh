@@ -538,7 +538,7 @@
           + '<span class="log-peer">' + escapeHtml(e.peer_node_id) + '</span> '
           + '<span class="log-size">' + escapeHtml(e.frame_size_bytes) + ' B</span>'
           + badges
-          + '<div class="log-preview">' + escapeHtml(e.frame_preview) + '</div>'
+            + '<div class="log-preview">' + escapeHtml(e.frame_text) + '</div>'
           + '</div>';
       }).join('');
       target.scrollTop = target.scrollHeight;
