@@ -2616,7 +2616,8 @@ def on_receive(packet, interface):
         if 'decoded' in packet and packet['decoded']['portnum'] == 'TEXT_MESSAGE_APP':
             message_bytes = packet['decoded']['payload']
             message_string = message_bytes.decode('utf-8')
-            if packet.get('to') in (0, 255):
+            from public_chatter import BROADCAST_ADDRESSES
+            if packet.get('to') in BROADCAST_ADDRESSES:
                 try:
                     from public_chatter import capture_broadcast
                     capture_packet = dict(packet)
