@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block extra_head %}
+<style>
+  .chatter-shell { max-width: 980px; margin: 0 auto; padding: 24px 0 48px; }
+  .chatter-header { display:flex; justify-content:space-between; gap:16px; align-items:end; margin-bottom:20px; }
+  .chatter-header h1 { margin:0; font-size:28px; }
+  .chatter-controls { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:12px; margin-bottom:18px; }
+  .chatter-controls .form-group { margin:0; }
+  .chatter-feed { display:grid; gap:10px; }
+  .chatter-entry { border-left:3px solid var(--accent-color, #d6a84b); padding:12px 14px; background:var(--surface-raised, #17191d); }
+  .chatter-meta { display:flex; flex-wrap:wrap; gap:8px 14px; font-size:13px; color:var(--text-muted, #9ca3af); margin-bottom:7px; }
+  .chatter-message { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.45; }
+  .chatter-presets { display:flex; flex-wrap:wrap; gap:6px; }
+  .chatter-state { padding:32px; text-align:center; color:var(--text-muted, #9ca3af); }
+  @media (max-width:720px) {
+    .chatter-shell { padding-top:14px; }
+    .chatter-header { align-items:start; flex-direction:column; }
+    .chatter-controls { grid-template-columns:1fr 1fr; }
+  }
+  @media (max-width:430px) { .chatter-controls { grid-template-columns:1fr; } }
+</style>
+{% endblock %}
+{% block content %}
+<div class="chatter-shell">
+  <header class="chatter-header">
+    <div>
+      <h1>Public Chatter</h1>
+      <p class="text-muted">Meshtastic and MeshCore public channels heard by participating Bacon BBS nodes.</p>
+    </div>
+    <a class="btn btn-sm" href="{{ url_for('login') }}">Admin sign in</a>
+  </header>
+
+  <section class="chatter-controls" aria-label="Chatter filters">
+    <div class="form-group">
+      <label for="chatter-hours">History (hours)</label>
+      <input class="form-control" id="chatter-hours" type="number" min="1" max="168" value="24">
+      <div class="chatter-presets" aria-label="History presets">
+        {% for value, label in [(1,'1h'),(6,'6h'),(24,'24h'),(72,'3d'),(168,'7d')] %}
+        <button class="btn btn-sm" type="button" data-hours="{{ value }}">{{ label }}</button>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="chatter-network">Network</label>
+      <select class="form-control" id="chatter-network">
+        <option value="">All networks</option>
+        {% for network in filters.networks %}<option value="{{ network }}">{{ network|title }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="chatter-channel">Channel</label>
+      <select class="form-control" id="chatter-channel">
+        <option value="">All channels</option>
+        {% for channel in filters.channels %}
+        <option value="{{ channel.channel_index }}" data-network="{{ channel.network }}">
+          {{ channel.channel_name or ('Channel ' ~ channel.channel_index) }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="chatter-search">Search</label>
+      <input class="form-control" id="chatter-search" type="search" placeholder="Message or sender">
+    </div>
+  </section>
+
+  <div id="chatter-state" class="chatter-state" role="status">Loading messages...</div>
+  <div id="chatter-feed" class="chatter-feed" aria-live="polite"></div>
+  <button id="chatter-more" class="btn" type="button" hidden style="margin-top:16px">Load more</button>
+</div>
+<script src="{{ url_for('static', filename='js/public-chatter.js', v=asset_version) }}" defer></script>
+{% endblock %}

@@ -23,6 +23,7 @@ from db_operations import (
     record_link_attempt, link_rate_limit_ok, account_authorized,
     queue_delayed_link_code,
     get_mail_relay_directory, get_mail_relay_preference, set_mail_relay_for_node,
+    get_public_chatter_history,
 )
 from utils import (
     get_node_id_from_num, get_node_info,
@@ -94,6 +95,11 @@ if 'G' not in utilities_menu_items and 'Z' not in utilities_menu_items:
 # Treat legacy Z config entry as G
 if 'Z' in utilities_menu_items and 'G' not in utilities_menu_items:
     utilities_menu_items[utilities_menu_items.index('Z')] = 'G'
+if 'H' not in utilities_menu_items:
+    if 'X' in utilities_menu_items:
+        utilities_menu_items.insert(utilities_menu_items.index('X'), 'H')
+    else:
+        utilities_menu_items.append('H')
 
 
 def get_bulletin_boards() -> list[str]:
@@ -125,6 +131,7 @@ UTILITIES_NUMBER_MAP = {
     'F': "[2] Fortune",
     'W': "[3] Wall of Shame",
     'G': "[4] Games",
+    'H': "[6] Public Chatter",
     'X': "[0] Exit",
 }
 
@@ -178,6 +185,11 @@ def build_menu(items, menu_name):
                 menu_items.insert(menu_items.index('X'), 'G')
             else:
                 menu_items.append('G')
+        if 'H' not in menu_items:
+            if 'X' in menu_items:
+                menu_items.insert(menu_items.index('X'), 'H')
+            else:
+                menu_items.append('H')
 
         number_map = UTILITIES_NUMBER_MAP
         menu_str = f"{menu_name}\n"
@@ -278,6 +290,98 @@ def handle_active_users_command(sender_id, interface):
     update_user_state(sender_id, {
         'command': 'MAIL', 'step': 10, 'directory': entries, 'directory_page': 0,
     })
+
+
+def handle_public_chatter_command(sender_id, interface):
+    send_message(
+        "Public Chatter\nEnter history hours (1-168).\n[0] Exit",
+        sender_id,
+        interface,
+    )
+    update_user_state(sender_id, {'command': 'PUBLIC_CHATTER', 'step': 1})
+
+
+def _public_chatter_entry_text(entry: dict, hours: int, has_more: bool) -> str:
+    network = str(entry.get('network') or 'Unknown').title()
+    channel = str(entry.get('channel_name') or f"Channel {entry.get('channel_index', 0)}")
+    sender = str(entry.get('sender_name') or entry.get('sender_node_id') or 'Unknown sender')
+    timestamp = str(entry.get('message_timestamp') or '').replace('T', ' ')[:16]
+    lines = [
+        f"Public Chatter ({hours}h)",
+        f"{network} / {channel}",
+        f"{timestamp} {sender}",
+        str(entry.get('content') or ''),
+    ]
+    controls = []
+    if has_more:
+        controls.append('[N]ext older')
+    controls.extend(['[T]ime', '[0] Exit'])
+    lines.append(' '.join(controls))
+    return LINE_BREAK.join(lines)
+
+
+def _send_public_chatter_entry(sender_id, interface, state: dict, *, older: bool) -> None:
+    result = get_public_chatter_history(
+        hours=int(state['hours']),
+        limit=1,
+        before_time=state.get('before_time', '') if older else '',
+        before_id=int(state.get('before_id', 0)) if older else 0,
+    )
+    entries = result.get('entries', [])
+    if not entries:
+        message = (
+            "No older public chatter in this time window.\n[T]ime [0] Exit"
+            if older
+            else "No public chatter in this time window.\n[T]ime [0] Exit"
+        )
+        send_message(message, sender_id, interface)
+        state['step'] = 2
+        state['has_more'] = False
+        update_user_state(sender_id, state)
+        return
+    entry = entries[0]
+    state.update({
+        'step': 2,
+        'before_time': entry['message_timestamp'],
+        'before_id': entry['id'],
+        'has_more': bool(result.get('has_more')),
+    })
+    send_message(
+        _public_chatter_entry_text(entry, int(state['hours']), state['has_more']),
+        sender_id,
+        interface,
+    )
+    update_user_state(sender_id, state)
+
+
+def handle_public_chatter_steps(sender_id, message, interface, state):
+    choice = str(message or '').strip().lower()
+    if choice in ('0', 'x', 'exit'):
+        handle_help_command(sender_id, interface, 'utilities')
+        return
+    if choice in ('t', 'time'):
+        handle_public_chatter_command(sender_id, interface)
+        return
+    if int(state.get('step', 1)) == 1:
+        try:
+            hours = int(choice)
+        except ValueError:
+            hours = 0
+        if not 1 <= hours <= 168:
+            send_message("Enter a whole number from 1 to 168, or 0 to exit.", sender_id, interface)
+            return
+        state = {'command': 'PUBLIC_CHATTER', 'step': 2, 'hours': hours}
+        _send_public_chatter_entry(sender_id, interface, state, older=False)
+        return
+    if choice in ('n', 'next') and state.get('has_more'):
+        _send_public_chatter_entry(sender_id, interface, state, older=True)
+        return
+    guidance = (
+        "Reply N for next older, T to change time, or 0 to exit."
+        if state.get('has_more')
+        else "Reply T to change time, or 0 to exit."
+    )
+    send_message(guidance, sender_id, interface)
 
 
 def _start_mail_recipient_selection(sender_id, interface) -> None:

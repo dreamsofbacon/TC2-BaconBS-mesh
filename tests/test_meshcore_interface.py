@@ -185,6 +185,45 @@ class MeshCoreInterfaceTests(unittest.TestCase):
             packet["decoded"]["payload"], b"SYNCSTATE|1|2"
         )
 
+    def test_channel_receive_event_is_published_for_chatter_capture(self):
+        received = []
+        ready = threading.Event()
+        topic = "test.meshcore.channel.receive"
+        self.interface.receive_topic = topic
+
+        def listener(packet, interface):
+            received.append((packet, interface))
+            ready.set()
+
+        pub.subscribe(listener, topic)
+        try:
+            event = types.SimpleNamespace(payload={
+                "channel_idx": 0,
+                "txt_type": 0,
+                "sender_timestamp": 1788091200,
+                "text": "Hello Public",
+                "txt_hash": 1234,
+            })
+            future = asyncio.run_coroutine_threadsafe(
+                self.interface._on_channel_message(event), self.interface._loop
+            )
+            future.result(timeout=2)
+            self.assertTrue(ready.wait(2))
+        finally:
+            pub.unsubscribe(listener, topic)
+
+        packet, iface = received[0]
+        self.assertIs(iface, self.interface)
+        self.assertEqual(packet["to"], 0)
+        self.assertEqual(packet["channel_index"], 0)
+        self.assertEqual(packet["channel_name"], "Public")
+        self.assertTrue(packet["public_chatter_only"])
+        self.assertNotIn("fromId", packet)
+
+    def test_subscribes_to_channel_messages(self):
+        core = _FakeMeshCoreFactory.last_core
+        self.assertIn(meshcore_interface.EventType.CHANNEL_MSG_RECV, core.subscriptions)
+
     def test_receive_fetching_starts_only_when_server_is_ready(self):
         core = _FakeMeshCoreFactory.last_core
         self.assertFalse(core.receive_started)

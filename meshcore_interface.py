@@ -193,6 +193,7 @@ class MeshCoreInterface:
         self._meshcore = meshcore
         self._send_lock = asyncio.Lock()
         meshcore.subscribe(EventType.CONTACT_MSG_RECV, self._on_contact_message)
+        meshcore.subscribe(EventType.CHANNEL_MSG_RECV, self._on_channel_message)
         meshcore.subscribe(EventType.NEW_CONTACT, self._on_contact_update)
         await meshcore.ensure_contacts()
         self._refresh_nodes()
@@ -314,6 +315,26 @@ class MeshCoreInterface:
             "from": sender_num,
             "fromId": sender_id,
             "to": self.myInfo.my_node_num,
+        }
+        self._incoming.put(packet)
+
+    async def _on_channel_message(self, event) -> None:
+        payload = event.payload or {}
+        if int(payload.get("txt_type", 0)) != 0:
+            return
+        channel_index = int(payload.get("channel_idx", 0))
+        text = str(payload.get("text", ""))
+        packet = {
+            "decoded": {
+                "portnum": "TEXT_MESSAGE_APP",
+                "payload": text.encode("utf-8"),
+            },
+            "to": 0,
+            "channel_index": channel_index,
+            "channel_name": "Public" if channel_index == 0 else f"Channel {channel_index}",
+            "sender_timestamp": payload.get("sender_timestamp"),
+            "message_hash": payload.get("txt_hash"),
+            "public_chatter_only": True,
         }
         self._incoming.put(packet)
 

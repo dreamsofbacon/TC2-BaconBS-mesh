@@ -18,6 +18,8 @@ from flask import Flask, flash, jsonify, redirect, render_template, render_templ
 from db_operations import (
     install_connection_log_handler,
     initialize_database,
+  get_public_chatter_filters,
+  get_public_chatter_history,
     get_peer_sync_states,
 )
 from utils import get_sync_runtime_settings
@@ -190,6 +192,15 @@ def load_storage_settings(config_path: str) -> dict:
   config = read_config_file(config_path)
   return {
     "max_db_size_mb": config.get("maintenance", "max_db_size_mb", fallback="0").strip() or "0",
+  }
+
+
+def load_public_chatter_settings(config_path: str) -> dict:
+  config = read_config_file(config_path)
+  return {
+    "enabled": config.getboolean("public_chatter", "enabled", fallback=False),
+    "primary_channels": config.get("public_chatter", "primary_channels", fallback="").strip(),
+    "secondary_channels": config.get("public_chatter", "secondary_channels", fallback="").strip(),
   }
 
 
@@ -3564,6 +3575,7 @@ def create_app(runtime_interface=None) -> Flask:
     def wipe_database_contents() -> None:
       tables = [
         "channel_comments",
+        "public_chatter",
         "bulletins",
         "mail",
         "channels",
@@ -3619,6 +3631,39 @@ def create_app(runtime_interface=None) -> Flask:
         val = 0
       config.set("maintenance", "max_db_size_mb", str(val))
       write_config_file(config, app.config["CONFIG_PATH"])
+
+    def save_public_chatter_settings(form) -> list[str]:
+      errors = []
+      parsed = {}
+      for key in ("primary_channels", "secondary_channels"):
+        values = []
+        for token in form.get(key, "").replace("\n", ",").split(","):
+          token = token.strip()
+          if not token:
+            continue
+          try:
+            value = int(token)
+          except ValueError:
+            errors.append(f"{key.replace('_', ' ').title()} contains '{token}', which is not a number.")
+            continue
+          if not 0 <= value <= 255:
+            errors.append(f"Channel index {value} must be between 0 and 255.")
+          elif value not in values:
+            values.append(value)
+        parsed[key] = values
+      if errors:
+        return errors
+      config = read_config_file(app.config["CONFIG_PATH"])
+      if not config.has_section("public_chatter"):
+        config.add_section("public_chatter")
+      config.set(
+        "public_chatter", "enabled",
+        "true" if _parse_bool_setting(form.get("enabled", ""), False) else "false",
+      )
+      for key, values in parsed.items():
+        config.set("public_chatter", key, ",".join(str(value) for value in values))
+      write_config_file(config, app.config["CONFIG_PATH"])
+      return []
 
     def save_gateway_settings(form) -> None:
       """Persist the [gateway] section from the web-admin form. Hot-reloads:
@@ -4760,6 +4805,7 @@ def create_app(runtime_interface=None) -> Flask:
       diagnostics = build_settings_diagnostics()
       gateway_settings = load_gateway_settings(app.config["CONFIG_PATH"])
       storage_settings = load_storage_settings(app.config["CONFIG_PATH"])
+      public_chatter_settings = load_public_chatter_settings(app.config["CONFIG_PATH"])
       subscriber_settings = load_subscriber_settings(app.config["CONFIG_PATH"])
       device_settings = load_device_settings(app.config["CONFIG_PATH"])
       account_settings = load_account_settings(app.config["CONFIG_PATH"])
@@ -4775,6 +4821,7 @@ def create_app(runtime_interface=None) -> Flask:
         show_nav=True,
         gateway=gateway_settings,
         storage=storage_settings,
+        public_chatter=public_chatter_settings,
         subscribers=subscriber_settings,
         devices=device_settings,
         accounts=account_settings,
@@ -4830,6 +4877,42 @@ def create_app(runtime_interface=None) -> Flask:
         if session.get("logged_in"):
             return redirect(url_for("table_list", table="bulletins"))
         return redirect(url_for("login"))
+
+    def _bounded_int_arg(name: str, default: int, minimum: int, maximum: int) -> int:
+      try:
+        value = int(request.args.get(name, str(default)))
+      except (TypeError, ValueError):
+        value = default
+      return max(minimum, min(maximum, value))
+
+    @app.get("/chatter")
+    def public_chatter_page():
+      return render_template(
+        "public_chatter.html",
+        title="Public Chatter",
+        title_suffix="Bacon BBS",
+        show_nav=False,
+        filters=get_public_chatter_filters(),
+      )
+
+    @app.get("/api/public/chatter")
+    def public_chatter_api():
+      channel_index = request.args.get("channel", "").strip()
+      try:
+        parsed_channel = int(channel_index) if channel_index else None
+      except ValueError:
+        return jsonify({"ok": False, "error": "channel must be a numeric index"}), 400
+      result = get_public_chatter_history(
+        hours=_bounded_int_arg("hours", 24, 1, 168),
+        limit=_bounded_int_arg("limit", 50, 1, 200),
+        network=request.args.get("network", ""),
+        channel_index=parsed_channel,
+        capture_node_id=request.args.get("capture_node", ""),
+        search_query=request.args.get("q", ""),
+        before_time=request.args.get("before_time", ""),
+        before_id=_bounded_int_arg("before_id", 0, 0, 2147483647),
+      )
+      return jsonify({"ok": True, **result})
 
     @app.route("/mesh-ui/")
     @app.route("/mesh-ui/<path:filename>")
@@ -5063,6 +5146,14 @@ def create_app(runtime_interface=None) -> Flask:
           save_storage_settings(request.form)
           flash("Storage cap saved. 0 disables it; otherwise the oldest content is pruned mesh-wide to stay under the cap.", "success")
           return redirect(url_for("settings_page") + "#storage")
+
+        if section == "public_chatter":
+          errors = save_public_chatter_settings(request.form)
+          for error in errors:
+            flash(error, "error")
+          if not errors:
+            flash("Public chatter monitoring settings saved and will hot-reload shortly.", "success")
+          return redirect(url_for("settings_page") + "#public-chatter")
 
         if section == "admin":
           changed = update_admin_settings(

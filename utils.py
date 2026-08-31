@@ -1,6 +1,7 @@
 import logging
 import base64
 import hashlib
+import json
 import os
 import random
 import re
@@ -43,7 +44,7 @@ def get_max_text_bytes(interface=None) -> int:
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history
 
 # Single-char scope codes used by the 'scc' wire capability.  Senders gate
 # encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
@@ -54,6 +55,7 @@ SCOPE_TO_CODE: dict = {
     'mail': 'm',
     'channels': 'c',
     'channel_comments': 'C',  # capital C distinguishes from 'channels'
+    'public_chatter': 'h',
     'profiles': 'p',
     'zork_saves': 'z',
     'game_scores': 'g',
@@ -1009,6 +1011,32 @@ def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_da
             bbs_nodes=legacy_peers, interface=interface,
             pause_seconds=get_sync_pause_seconds(interface),
         )
+
+
+def send_public_chatter_to_bbs_nodes(row, bbs_nodes, interface):
+    """Send one immutable chatter observation only to capable peers."""
+    try:
+        from db_operations import peer_supports
+    except Exception:
+        return
+    capable_peers = [node_id for node_id in bbs_nodes if peer_supports(node_id, 'pchat')]
+    if not capable_peers or not row:
+        return
+    fields = {
+        'n': row[1], 'c': row[2], 'l': row[3], 's': row[4], 'a': row[5],
+        'm': row[6], 't': row[7], 'r': row[8], 'o': row[9], 'e': row[10],
+    }
+    payload = base64.urlsafe_b64encode(
+        json.dumps(fields, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    ).decode('ascii')
+    unique_id = str(row[0])
+    _send_sync_with_cont(
+        f'PCHAT|{unique_id}|{len(payload)}|', '', payload, unique_id,
+        cont_prefix=f'PCHATCONT|{unique_id}|',
+        bbs_nodes=capable_peers,
+        interface=interface,
+        pause_seconds=get_sync_pause_seconds(interface),
+    )
 
 
 def send_delete_channel_to_bbs_nodes(manifest_key, bbs_nodes, interface):

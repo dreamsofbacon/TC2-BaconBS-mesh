@@ -37,6 +37,8 @@ from utils import (
 
 
 thread_local = threading.local()
+DB_TIMEOUT_SECONDS = 30
+DB_BUSY_TIMEOUT_MS = DB_TIMEOUT_SECONDS * 1000
 _sync_progress_lock = threading.Lock()
 _sync_progress = {
     'in_progress': False,
@@ -379,9 +381,9 @@ def _write_connection_event_direct(
     message_type: str,
     event_text: str,
 ) -> None:
-    conn = sqlite3.connect(db_path, timeout=5)
+    conn = sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS)
     try:
-        conn.execute("PRAGMA busy_timeout=5000;")
+        _configure_db_connection(conn)
         conn.execute(
             '''CREATE TABLE IF NOT EXISTS connection_events (
                    id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -512,10 +514,30 @@ def _ensure_connection_events_table() -> None:
                 );''')
     conn.commit()
 
+
+def _configure_db_connection(conn) -> None:
+    conn.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS};")
+    conn.execute("PRAGMA synchronous=FULL;")
+
+
 def get_db_connection():
     if not hasattr(thread_local, 'connection'):
-        thread_local.connection = sqlite3.connect(get_database_path())
+        thread_local.connection = sqlite3.connect(
+            get_database_path(),
+            timeout=DB_TIMEOUT_SECONDS,
+        )
+        _configure_db_connection(thread_local.connection)
     return thread_local.connection
+
+
+def rollback_db_connection() -> bool:
+    """Release a failed operation's transaction on the current thread."""
+    conn = getattr(thread_local, 'connection', None)
+    if conn is None or not conn.in_transaction:
+        return False
+    conn.rollback()
+    return True
+
 
 def initialize_database():
     with _pending_continuation_lock:
@@ -526,6 +548,13 @@ def initialize_database():
         _pending_mail_expected_lengths.clear()
         _pending_channel_comment_expected_lengths.clear()
     conn = get_db_connection()
+    try:
+        journal_mode = str(conn.execute("PRAGMA journal_mode=WAL;").fetchone()[0]).lower()
+        if journal_mode not in ('wal', 'memory'):
+            logging.warning(f"SQLite WAL mode unavailable; active journal mode is {journal_mode}")
+    except sqlite3.Error as exc:
+        rollback_db_connection()
+        logging.warning(f"Unable to enable SQLite WAL mode: {exc}")
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS bulletins (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -577,6 +606,30 @@ def initialize_database():
                     received_at TEXT,
                     FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
                 );''')
+    c.execute('''CREATE TABLE IF NOT EXISTS public_chatter (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    unique_id TEXT NOT NULL,
+                    network TEXT NOT NULL,
+                    channel_index INTEGER NOT NULL,
+                    channel_name TEXT NOT NULL DEFAULT '',
+                    sender_node_id TEXT,
+                    sender_name TEXT NOT NULL DEFAULT '',
+                    content TEXT NOT NULL,
+                    message_timestamp TEXT NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    capture_node_id TEXT NOT NULL DEFAULT '',
+                    expires_at TEXT NOT NULL,
+                    expected_content_length INTEGER,
+                    content_complete INTEGER NOT NULL DEFAULT 1
+                );''')
+    c.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_public_chatter_unique_id
+                    ON public_chatter (unique_id);''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_public_chatter_time
+                    ON public_chatter (message_timestamp DESC, id DESC);''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_public_chatter_channel_time
+                    ON public_chatter (network, channel_index, message_timestamp DESC);''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_public_chatter_expiry
+                    ON public_chatter (expires_at);''')
     c.execute('''CREATE TABLE IF NOT EXISTS zork_saves (
                     user_id TEXT NOT NULL,
                     game_id TEXT NOT NULL DEFAULT 'zork1',
@@ -764,6 +817,180 @@ def initialize_database():
     _dedupe_messages_and_create_unique_indexes(c)
     conn.commit()
     print(f"Database schema initialized at {get_database_path()}.")
+
+
+def add_public_chatter(
+    unique_id: str,
+    network: str,
+    channel_index: int,
+    channel_name: str,
+    sender_node_id: Optional[str],
+    sender_name: str,
+    content: str,
+    message_timestamp: str,
+    captured_at: str,
+    capture_node_id: str,
+    expires_at: str,
+    sync_received: bool = False,
+) -> bool:
+    """Store one immutable public RF observation.
+
+    Returns true only for the first observation. Duplicate receptions may fill
+    missing display metadata, but never extend the record's lifetime.
+    """
+    conn = get_db_connection()
+    cursor = conn.execute(
+        '''INSERT OR IGNORE INTO public_chatter
+               (unique_id, network, channel_index, channel_name, sender_node_id,
+                sender_name, content, message_timestamp, captured_at,
+                capture_node_id, expires_at, expected_content_length,
+                content_complete)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)''',
+        (
+            str(unique_id), str(network), int(channel_index), str(channel_name or ''),
+            str(sender_node_id) if sender_node_id else None, str(sender_name or ''),
+            str(content), str(message_timestamp), str(captured_at),
+            str(capture_node_id or ''), str(expires_at), len(str(content).encode('utf-8')),
+        ),
+    )
+    inserted = cursor.rowcount == 1
+    if not inserted:
+        conn.execute(
+            '''UPDATE public_chatter SET
+                   channel_name = CASE WHEN channel_name = '' THEN ? ELSE channel_name END,
+                   sender_node_id = COALESCE(sender_node_id, ?),
+                   sender_name = CASE WHEN sender_name = '' THEN ? ELSE sender_name END,
+                   captured_at = MIN(captured_at, ?),
+                   expires_at = MIN(expires_at, ?)
+               WHERE unique_id = ?''',
+            (
+                str(channel_name or ''),
+                str(sender_node_id) if sender_node_id else None,
+                str(sender_name or ''), str(captured_at), str(expires_at),
+                str(unique_id),
+            ),
+        )
+    elif not sync_received and _local_node_id:
+        try_dual_write(
+            conn.cursor(), origin_node_id=_local_node_id, event_type='upsert',
+            scope='public_chatter', target_uid=str(unique_id),
+            payload={'network': str(network), 'channel': int(channel_index)},
+        )
+    conn.commit()
+    return inserted
+
+
+def get_public_chatter_by_unique_id(unique_id: str):
+    now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    return get_db_connection().execute(
+        '''SELECT unique_id, network, channel_index, channel_name, sender_node_id,
+                  sender_name, content, message_timestamp, captured_at,
+                  capture_node_id, expires_at, expected_content_length,
+                  content_complete
+              FROM public_chatter WHERE unique_id = ? AND expires_at > ?''',
+          (str(unique_id), now),
+    ).fetchone()
+
+
+def get_public_chatter_history(
+    hours: int = 24,
+    limit: int = 50,
+    *,
+    network: str = '',
+    channel_index: Optional[int] = None,
+    capture_node_id: str = '',
+    search_query: str = '',
+    before_time: str = '',
+    before_id: int = 0,
+) -> dict:
+    """Return a bounded newest-first page from the retained chatter window."""
+    normalized_hours = max(1, min(168, int(hours)))
+    normalized_limit = max(1, min(200, int(limit)))
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(hours=normalized_hours)).isoformat().replace('+00:00', 'Z')
+    clauses = ['message_timestamp >= ?', 'expires_at > ?']
+    params = [cutoff, now.isoformat().replace('+00:00', 'Z')]
+
+    normalized_network = str(network or '').strip().casefold()
+    if normalized_network:
+        clauses.append('network = ?')
+        params.append(normalized_network)
+    if channel_index is not None:
+        clauses.append('channel_index = ?')
+        params.append(int(channel_index))
+    normalized_capture = str(capture_node_id or '').strip()
+    if normalized_capture:
+        clauses.append('capture_node_id = ?')
+        params.append(normalized_capture)
+    normalized_search = str(search_query or '').strip()
+    if normalized_search:
+        clauses.append(
+            "(content LIKE ? OR sender_name LIKE ? OR COALESCE(sender_node_id, '') LIKE ?)"
+        )
+        like_value = f'%{normalized_search}%'
+        params.extend([like_value, like_value, like_value])
+    if before_time and before_id > 0:
+        clauses.append('(message_timestamp < ? OR (message_timestamp = ? AND id < ?))')
+        params.extend([str(before_time), str(before_time), int(before_id)])
+
+    params.append(normalized_limit + 1)
+    rows = get_db_connection().execute(
+        f'''SELECT id, unique_id, network, channel_index, channel_name,
+                   sender_node_id, sender_name, content, message_timestamp,
+                   captured_at, capture_node_id
+            FROM public_chatter
+            WHERE {' AND '.join(clauses)}
+            ORDER BY message_timestamp DESC, id DESC
+            LIMIT ?''',
+        tuple(params),
+    ).fetchall()
+    has_more = len(rows) > normalized_limit
+    rows = rows[:normalized_limit]
+    columns = (
+        'id', 'unique_id', 'network', 'channel_index', 'channel_name',
+        'sender_node_id', 'sender_name', 'content', 'message_timestamp',
+        'captured_at', 'capture_node_id',
+    )
+    entries = [dict(zip(columns, row)) for row in rows]
+    next_cursor = None
+    if has_more and entries:
+        next_cursor = {
+            'before_time': entries[-1]['message_timestamp'],
+            'before_id': entries[-1]['id'],
+        }
+    return {
+        'entries': entries,
+        'has_more': has_more,
+        'next_cursor': next_cursor,
+        'hours': normalized_hours,
+        'limit': normalized_limit,
+    }
+
+
+def get_public_chatter_filters(hours: int = 168) -> dict:
+    normalized_hours = max(1, min(168, int(hours)))
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=normalized_hours)).isoformat().replace('+00:00', 'Z')
+    conn = get_db_connection()
+    networks = [row[0] for row in conn.execute(
+        'SELECT DISTINCT network FROM public_chatter WHERE message_timestamp >= ? ORDER BY network',
+        (cutoff,),
+    )]
+    channels = [
+        {'network': row[0], 'channel_index': row[1], 'channel_name': row[2]}
+        for row in conn.execute(
+            '''SELECT DISTINCT network, channel_index, channel_name
+               FROM public_chatter WHERE message_timestamp >= ?
+               ORDER BY network, channel_index''',
+            (cutoff,),
+        )
+    ]
+    capture_nodes = [row[0] for row in conn.execute(
+        '''SELECT DISTINCT capture_node_id FROM public_chatter
+           WHERE message_timestamp >= ? AND capture_node_id != ''
+           ORDER BY capture_node_id''',
+        (cutoff,),
+    )]
+    return {'networks': networks, 'channels': channels, 'capture_nodes': capture_nodes}
 
 
 def normalize_alias(alias: str) -> str:
@@ -1059,6 +1286,7 @@ def log_sync_transmission(
         )
         conn.commit()
     except Exception as e:
+        rollback_db_connection()
         logging.debug(f"Failed to log sync transmission: {e}")
 
 
@@ -1201,6 +1429,7 @@ def prune_old_sync_transmissions(max_rows: int = 10000) -> None:
         )
         conn.commit()
     except Exception as e:
+        rollback_db_connection()
         logging.debug(f"Failed to prune sync transmissions: {e}")
 
 
@@ -1228,6 +1457,7 @@ def prune_op_log(max_rows: int = 20000) -> int:
         conn.commit()
         return total - max_rows
     except Exception as e:
+        rollback_db_connection()
         logging.debug(f"Failed to prune op_log: {e}")
         return 0
 
@@ -1246,6 +1476,7 @@ def prune_sync_session_history(max_rows: int = 2000) -> int:
         conn.commit()
         return deleted
     except Exception as e:
+        rollback_db_connection()
         logging.debug(f"Failed to prune sync_session_history: {e}")
         return 0
 
@@ -1268,18 +1499,55 @@ def prune_expired_tombstones(max_age_days: int = 30) -> int:
         conn.commit()
         return deleted
     except Exception as e:
+        rollback_db_connection()
         logging.debug(f"Failed to prune tombstones: {e}")
         return 0
 
 
-def checkpoint_wal() -> None:
-    """Truncate the WAL file so it can't grow unbounded between checkpoints."""
+def prune_expired_public_chatter() -> int:
+    """Delete chatter at its fixed expiry without creating sync tombstones."""
+    try:
+        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        conn = get_db_connection()
+        c = conn.cursor()
+        expired_ids = [row[0] for row in c.execute(
+            'SELECT unique_id FROM public_chatter WHERE expires_at <= ?', (now,)
+        )]
+        c.execute('DELETE FROM public_chatter WHERE expires_at <= ?', (now,))
+        deleted = c.rowcount if c.rowcount and c.rowcount > 0 else 0
+        if expired_ids:
+            placeholders = ','.join('?' for _ in expired_ids)
+            c.execute(
+                f"DELETE FROM op_log WHERE scope = 'public_chatter' AND target_uid IN ({placeholders})",
+                tuple(expired_ids),
+            )
+        conn.commit()
+        return deleted
+    except Exception as e:
+        rollback_db_connection()
+        logging.debug(f"Failed to prune public chatter: {e}")
+        return 0
+
+
+def checkpoint_wal(truncate: bool = False):
+    """Checkpoint WAL pages without blocking routine database traffic."""
     try:
         conn = get_db_connection()
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-        conn.commit()
+        if conn.in_transaction:
+            logging.debug("Skipping WAL checkpoint while the current connection has an open transaction")
+            return None
+        journal_mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        if journal_mode != 'wal':
+            return None
+        mode = "TRUNCATE" if truncate else "PASSIVE"
+        result = conn.execute(f"PRAGMA wal_checkpoint({mode});").fetchone()
+        if result and (result[0] or result[1] > result[2]):
+            logging.debug(f"WAL {mode.lower()} checkpoint incomplete: {result}")
+        return result
     except Exception as e:
+        rollback_db_connection()
         logging.debug(f"WAL checkpoint failed: {e}")
+        return None
 
 
 def vacuum_database() -> None:
@@ -1290,6 +1558,7 @@ def vacuum_database() -> None:
         conn.execute("VACUUM;")
         conn.commit()
     except Exception as e:
+        rollback_db_connection()
         logging.debug(f"VACUUM failed: {e}")
 
 
@@ -1308,6 +1577,7 @@ def enqueue_api_response(rid: str, requester_node_id: str, status, body) -> int:
         conn.commit()
         return int(c.lastrowid or 0)
     except Exception as e:
+        rollback_db_connection()
         logging.debug(f"Failed to enqueue api_mailbox entry: {e}")
         return 0
 
@@ -1345,6 +1615,7 @@ def mark_api_responses_delivered(ids) -> int:
         conn.commit()
         return c.rowcount if c.rowcount and c.rowcount > 0 else len(ids)
     except Exception as e:
+        rollback_db_connection()
         logging.debug(f"Failed to mark api_mailbox delivered: {e}")
         return 0
 
@@ -1372,6 +1643,7 @@ def prune_api_mailbox(max_age_days: int = 7, max_rows: int = 5000) -> int:
             deleted += c.rowcount if c.rowcount and c.rowcount > 0 else 0
         conn.commit()
     except Exception as e:
+        rollback_db_connection()
         logging.debug(f"Failed to prune api_mailbox: {e}")
     return deleted
 
@@ -1410,6 +1682,7 @@ def run_db_maintenance(do_vacuum: bool = False) -> dict:
         'sync_session_history_deleted': 0,
         'tombstones_deleted': 0,
         'api_mailbox_deleted': 0,
+        'public_chatter_deleted': 0,
         'vacuumed': False,
     }
     before = None
@@ -1430,6 +1703,7 @@ def run_db_maintenance(do_vacuum: bool = False) -> dict:
     summary['tombstones_deleted'] = prune_expired_tombstones(cfg['tombstone_max_age_days'])
     summary['api_mailbox_deleted'] = prune_api_mailbox(
         cfg.get('api_mailbox_max_age_days', 7), cfg.get('api_mailbox_max_rows', 5000))
+    summary['public_chatter_deleted'] = prune_expired_public_chatter()
     checkpoint_wal()
     if do_vacuum:
         vacuum_database()
@@ -1478,7 +1752,7 @@ def enforce_db_size_cap(bbs_nodes, interface, max_mb=None, keep_floor=20, max_de
         return summary
     target = int(max_mb) * 1024 * 1024
     try:
-        checkpoint_wal()
+        checkpoint_wal(truncate=True)
     except Exception:
         pass
     size = _db_total_bytes()
@@ -1526,15 +1800,17 @@ def enforce_db_size_cap(bbs_nodes, interface, max_mb=None, keep_floor=20, max_de
                     delete_channel_comment(uid, bbs_nodes, interface)
                 summary['deleted'] += 1
             except Exception as e:
+                rollback_db_connection()
                 logging.debug(f"size-cap delete failed for {scope}/{uid}: {e}")
         if summary['deleted']:
             try:
                 vacuum_database()
-                checkpoint_wal()
+                checkpoint_wal(truncate=True)
             except Exception:
                 pass
             summary['size_bytes'] = _db_total_bytes()
     except Exception as exc:
+        rollback_db_connection()
         logging.warning(f"enforce_db_size_cap failed: {exc}")
     return summary
 
@@ -4609,7 +4885,7 @@ def _compact_row_hash(values: tuple) -> str:
 def get_record_hash_manifest(scope: str) -> dict:
     """Return a per-record hash map for selective mismatch repair.
 
-    Supported scopes: bulletins, mail, channels, profiles, game_scores, zork_saves, tombstones.
+    Supported scopes: bulletins, mail, channels, public_chatter, profiles, game_scores, zork_saves, tombstones.
     """
     conn = get_db_connection()
     c = conn.cursor()
@@ -4644,6 +4920,16 @@ def get_record_hash_manifest(scope: str) -> dict:
             "FROM channel_comments cc JOIN channels ch ON ch.id = cc.channel_id WHERE ch.local_only = 0"
         ):
             manifest[str(row[5])] = _compact_row_hash(row)
+    elif scope == 'public_chatter':
+        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        for row in c.execute(
+            '''SELECT unique_id, network, channel_index, channel_name,
+                      sender_node_id, sender_name, content, message_timestamp,
+                      captured_at, capture_node_id, expires_at
+               FROM public_chatter WHERE expires_at > ?''',
+            (now,),
+        ):
+            manifest[str(row[0])] = _compact_row_hash(row)
     elif scope == 'profiles':
         for row in c.execute(
             "SELECT user_id, short_name, long_name, bio FROM user_profiles"

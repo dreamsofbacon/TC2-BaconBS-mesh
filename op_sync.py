@@ -31,13 +31,14 @@ import op_log
 
 # Scopes tracked by HAVE/WANT/EVENT.  Must match the op_log dual-write scopes
 # added in Phase 1 and the materialized table names used in handle_event.
-_SUPPORTED_SCOPES = ('bulletins', 'mail', 'channel_comments')
+_SUPPORTED_SCOPES = ('bulletins', 'mail', 'channel_comments', 'public_chatter')
 
 # Map op-log scope name → materialized SQLite table name.
 _SCOPE_TO_TABLE = {
     'bulletins': 'bulletins',
     'mail': 'mail',
     'channel_comments': 'channel_comments',
+    'public_chatter': 'public_chatter',
 }
 
 # ── HAVE ──────────────────────────────────────────────────────────────────────

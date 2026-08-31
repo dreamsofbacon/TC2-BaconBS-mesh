@@ -9,6 +9,7 @@ import time
 import zlib
 import uuid
 import threading
+from datetime import datetime, timezone
 
 from meshtastic import BROADCAST_NUM
 
@@ -28,6 +29,7 @@ from command_handlers import (
     handle_account_steps,
     handle_settings_command, handle_settings_steps,
     handle_active_users_command,
+    handle_public_chatter_command, handle_public_chatter_steps,
     deliver_ask_nomad_reply,
     number_alias, MAIN_NUMBER_MAP, BBS_NUMBER_MAP, UTILITIES_NUMBER_MAP,
 )
@@ -56,6 +58,8 @@ from db_operations import (
     get_mail_by_unique_id,
     get_channel_by_manifest_key,
     get_channel_comment_by_unique_id,
+    get_public_chatter_by_unique_id,
+    add_public_chatter,
     make_channel_manifest_key,
     get_profile_by_user_id,
     get_game_score_by_user_and_game,
@@ -63,12 +67,14 @@ from db_operations import (
     get_sync_tombstone_deleted_at,
     get_recent_sync_tombstones,
     has_sync_tombstone,
+    rollback_db_connection,
 )
 from js8call_integration import handle_js8call_command, handle_js8call_steps, handle_group_message_selection
 from utils import (
     get_user_state, update_user_state, get_node_short_name, resolve_display_name, get_node_id_from_num, send_message,
     send_bulletin_to_bbs_nodes, send_mail_to_bbs_nodes, send_channel_to_bbs_nodes,
     send_channel_comment_to_bbs_nodes,
+    send_public_chatter_to_bbs_nodes,
     send_profile_to_bbs_nodes, send_game_score_to_bbs_nodes, send_zork_save_to_bbs_nodes,
     send_delete_bulletin_to_bbs_nodes, send_delete_mail_to_bbs_nodes,
     send_delete_channel_comment_to_bbs_nodes,
@@ -126,6 +132,7 @@ utilities_menu_handlers = {
     "f": handle_fortune_command,
     "w": handle_wall_of_shame_command,
     "g": handle_games_command,
+    "h": handle_public_chatter_command,
     "z": handle_games_command,  # legacy alias
     "a": handle_apigw_command,
     "x": handle_help_command
@@ -174,7 +181,9 @@ _stripe_lock = threading.Lock()
 #   {'chunks': [b64_str, ...], 'total': int, 'created_at': float}
 _outgoing_hash_manifest_cache = {}
 _hash_buffer_lock = threading.RLock()
-_SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "channel_comments", "profiles", "game_scores", "zork_saves", "tombstones"]
+_SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "channel_comments", "public_chatter", "profiles", "game_scores", "zork_saves", "tombstones"]
+_pending_public_chatter = {}
+_pending_public_chatter_lock = threading.Lock()
 _HASH_BUFFER_MAX_AGE_SECONDS = 600
 # After this many seconds with no new chunk for a HASHZ manifest, drop the
 # partial buffer and re-issue HASHREQ. Without this, a single dropped chunk
@@ -1313,6 +1322,10 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
             )
         else:
             logging.warning(f"Requested channel comment missing locally for resend key={key}")
+    elif scope == 'public_chatter':
+        row = get_public_chatter_by_unique_id(str(key))
+        if row:
+            send_public_chatter_to_bbs_nodes(row, [destination_node_id], interface)
     elif scope == 'profiles':
         row = get_profile_by_user_id(key)
         if row:
@@ -1444,6 +1457,66 @@ def _auto_update_profile(sender_id, interface):
     except Exception:
         pass
 
+
+def _store_public_chatter_payload(unique_id: str, encoded_payload: str) -> None:
+    try:
+        raw = base64.urlsafe_b64decode(encoded_payload.encode('ascii'))
+        fields = json.loads(raw.decode('utf-8'))
+        required = {'n', 'c', 'm', 't', 'r', 'o', 'e'}
+        if not isinstance(fields, dict) or not required.issubset(fields):
+            raise ValueError('missing required fields')
+        expires = datetime.fromisoformat(str(fields['e']).replace('Z', '+00:00'))
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires <= datetime.now(timezone.utc):
+            return
+        add_public_chatter(
+            unique_id=str(unique_id),
+            network=str(fields['n']),
+            channel_index=int(fields['c']),
+            channel_name=str(fields.get('l') or ''),
+            sender_node_id=str(fields['s']) if fields.get('s') else None,
+            sender_name=str(fields.get('a') or ''),
+            content=str(fields['m']),
+            message_timestamp=str(fields['t']),
+            captured_at=str(fields['r']),
+            capture_node_id=str(fields['o']),
+            expires_at=str(fields['e']),
+            sync_received=True,
+        )
+    except Exception:
+        rollback_db_connection()
+        logging.warning("Malformed PCHAT payload ignored for %s", unique_id)
+
+
+def _add_public_chatter_chunk(
+    unique_id: str, offset: int, chunk: str, expected_length=None
+) -> None:
+    complete_payload = None
+    with _pending_public_chatter_lock:
+        entry = _pending_public_chatter.setdefault(
+            str(unique_id), {'expected': None, 'parts': {}}
+        )
+        if expected_length is not None:
+            entry['expected'] = int(expected_length)
+        entry['parts'].setdefault(int(offset), str(chunk))
+        expected = entry.get('expected')
+        if expected is None or expected < 1:
+            return
+        cursor = 0
+        assembled = []
+        for part_offset, part in sorted(entry['parts'].items()):
+            if part_offset != cursor:
+                return
+            assembled.append(part)
+            cursor += len(part)
+        if cursor < expected:
+            return
+        complete_payload = ''.join(assembled)[:expected]
+        _pending_public_chatter.pop(str(unique_id), None)
+    if complete_payload is not None:
+        _store_public_chatter_payload(str(unique_id), complete_payload)
+
 def process_message(sender_id, message, interface, is_sync_message=False, sender_node_id=None):
     state = get_user_state(sender_id)
     message_lower = message.lower().strip()
@@ -1460,7 +1533,29 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
         message_lower = message_lower[0]
 
     if is_sync_message:
-        if message.startswith("BULLETIN|"):
+        if message.startswith("PCHAT|"):
+            parts = message.split("|", 3)
+            if len(parts) != 4 or not parts[1]:
+                logging.warning(f"Malformed PCHAT sync message ignored: {message}")
+                return
+            try:
+                expected_length = int(parts[2])
+            except ValueError:
+                logging.warning(f"Malformed PCHAT length ignored: {message}")
+                return
+            _add_public_chatter_chunk(parts[1], 0, parts[3], expected_length)
+        elif message.startswith("PCHATCONT|"):
+            parts = message.split("|", 3)
+            if len(parts) != 4 or not parts[1]:
+                logging.warning(f"Malformed PCHATCONT sync message ignored: {message}")
+                return
+            try:
+                offset = int(parts[2])
+            except ValueError:
+                logging.warning(f"Malformed PCHATCONT offset ignored: {message}")
+                return
+            _add_public_chatter_chunk(parts[1], offset, parts[3])
+        elif message.startswith("BULLETIN|"):
             # Use rsplit from the right so content with embedded '|' is handled correctly.
             # Wire format: BULLETIN|board|sender|subject|content|unique_id[|date[|source_node_id|source_timestamp]]
             body = message[len("BULLETIN|"):]
@@ -2373,6 +2468,9 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             except Exception as exc:
                 logging.warning(f"EVENT handler failed: {exc}")
     else:
+        if state and state.get('command') == 'PUBLIC_CHATTER':
+            handle_public_chatter_steps(sender_id, message, interface, state)
+            return
         if state and state.get('command') in ('GAMES_MENU', 'ZORK'):
             if state['command'] == 'GAMES_MENU':
                 handle_games_steps(sender_id, message, interface)
@@ -2518,6 +2616,20 @@ def on_receive(packet, interface):
         if 'decoded' in packet and packet['decoded']['portnum'] == 'TEXT_MESSAGE_APP':
             message_bytes = packet['decoded']['payload']
             message_string = message_bytes.decode('utf-8')
+            if packet.get('to') in (0, 255):
+                try:
+                    from public_chatter import capture_broadcast
+                    capture_packet = dict(packet)
+                    sender_node_id = packet.get('fromId')
+                    if sender_node_id:
+                        capture_packet['sender_name'] = resolve_display_name(
+                            sender_node_id, interface)
+                    capture_broadcast(capture_packet, interface)
+                except Exception:
+                    rollback_db_connection()
+                    logging.exception("Unable to capture public channel message")
+            if packet.get('public_chatter_only'):
+                return
             sender_id = packet['from']
             to_id = packet.get('to')
             sender_node_id = packet['fromId']
@@ -2529,7 +2641,7 @@ def on_receive(packet, interface):
 
             bbs_nodes = interface.bbs_nodes
             is_sync_message = any(message_string.startswith(prefix) for prefix in
-                                  ["BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|", "DELETE_ZORKSAVE|",
+                                  ["PCHAT|", "PCHATCONT|", "BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|", "DELETE_ZORKSAVE|",
                                    "CHANNEL|", "DELETE_CHANNEL|", "CHANNELCOMMENT|", "CHANNELCOMMENTCONT|", "CHANNELCOMMENTMETA|", "DELETE_CHANNELCOMMENT|",
                                    "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
                                    "PROFILESYNC|", "RELAYPREF|", "SCORESYNC|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
@@ -2560,6 +2672,7 @@ def on_receive(packet, interface):
                             direction='rx',
                         )
                     except Exception as exc:
+                        rollback_db_connection()
                         logging.debug(f"Failed to record received sync transmission: {exc}")
                     log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "sync", f"Accepted sync message ({sync_frame})")
                     process_message(sender_id, message_string, interface, is_sync_message=True, sender_node_id=sender_node_id)
@@ -2582,4 +2695,8 @@ def on_receive(packet, interface):
                 log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "drop", "Ignored group/unknown message")
                 logging.info("Ignoring message sent to group chat or from unknown node")
     except KeyError as e:
+        rollback_db_connection()
         logging.error(f"Error processing packet: {e}")
+    except Exception:
+        rollback_db_connection()
+        raise

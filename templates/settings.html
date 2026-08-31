@@ -36,6 +36,10 @@
         <span class="settings-nav-title">Storage</span>
         <span class="settings-nav-hint">Database size cap</span>
       </a>
+      <a class="settings-nav-link" href="#public-chatter" data-panel-link="public-chatter">
+        <span class="settings-nav-title">Public Chatter</span>
+        <span class="settings-nav-hint">Monitored radio channels</span>
+      </a>
       <a class="settings-nav-link" href="#admin" data-panel-link="admin">
         <span class="settings-nav-title">Admin Credentials</span>
         <span class="settings-nav-hint">Web admin login</span>
@@ -1051,6 +1055,28 @@
         pass) to avoid a burst of delete traffic.</p>
     </div>
     <button class="btn" type="submit">Save storage cap</button>
+  </form>
+</section>
+
+<section class="card settings-panel" id="public-chatter" data-settings-panel="public-chatter" style="max-width:600px">
+  <h2>Public Chatter Monitoring</h2>
+  <p class="text-muted">Record ordinary broadcast text from selected radio channel indexes for seven days. Direct messages, telemetry, and BaconBS control frames are excluded.</p>
+  <form method="post" action="{{ url_for('settings_page') }}#public-chatter">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="public_chatter">
+    <div class="form-group">
+      <label><input type="checkbox" name="enabled" value="true" {% if public_chatter.enabled %}checked{% endif %}> Enable public chatter monitoring</label>
+    </div>
+    <div class="form-group">
+      <label for="primary_channels">Primary radio channel indexes</label>
+      <input class="form-control" id="primary_channels" name="primary_channels" value="{{ public_chatter.primary_channels }}" placeholder="0">
+      <p class="text-muted">Comma-separated indexes. Meshtastic index 0 is normally LongFast; MeshCore index 0 is normally Public.</p>
+    </div>
+    <div class="form-group">
+      <label for="secondary_channels">Secondary radio channel indexes</label>
+      <input class="form-control" id="secondary_channels" name="secondary_channels" value="{{ public_chatter.secondary_channels }}" placeholder="0">
+    </div>
+    <button class="btn" type="submit">Save chatter settings</button>
   </form>
 </section>
 
