@@ -202,6 +202,16 @@ class TestBulletinDualWrite(_TestDB):
         event_types = {r[2] for r in rows}
         assert 'delete' in event_types
 
+    def test_synced_delete_bulletin_does_not_write_local_delete_event(self):
+        uid = db_operations.add_bulletin(
+            'General', 'Tester', 'Hello', 'World body',
+            bbs_nodes=[], interface=None,
+        )
+        before = len(self.op_log_rows('bulletins'))
+        db_operations.delete_bulletin(
+            uid, bbs_nodes=[], interface=None, sync_received=True)
+        assert len(self.op_log_rows('bulletins')) == before
+
     def test_dual_write_disabled_by_env_produces_no_op_log_rows(self):
         os.environ['BBS_OP_LOG_ENABLED'] = '0'
         db_operations.add_bulletin(
@@ -238,6 +248,18 @@ class TestMailDualWrite(_TestDB):
         event_types = {r[2] for r in rows}
         assert 'delete' in event_types
 
+    def test_synced_delete_mail_does_not_write_local_delete_event(self):
+        uid = db_operations.add_mail(
+            '!abc', 'Alice', '!def', 'Subj', 'Body',
+            bbs_nodes=[], interface=None,
+        )
+        before = len(self.op_log_rows('mail'))
+        db_operations.delete_mail(
+            uid, recipient_id=None, bbs_nodes=[], interface=None,
+            sync_received=True,
+        )
+        assert len(self.op_log_rows('mail')) == before
+
 
 class TestChannelCommentDualWrite(_TestDB):
     def setup_method(self):
@@ -263,4 +285,13 @@ class TestChannelCommentDualWrite(_TestDB):
         rows = self.op_log_rows('channel_comments')
         event_types = {r[2] for r in rows}
         assert 'delete' in event_types
+
+    def test_synced_delete_channel_comment_does_not_write_local_delete_event(self):
+        db_operations.add_channel('TestChan', 'meshtastic://test', bbs_nodes=[], interface=None)
+        channel_id = db_operations.get_channel_id_by_name_url('TestChan', 'meshtastic://test')
+        uid = db_operations.add_channel_comment(channel_id, 'Tester', 'A comment')
+        before = len(self.op_log_rows('channel_comments'))
+        db_operations.delete_channel_comment(
+            uid, bbs_nodes=[], interface=None, sync_received=True)
+        assert len(self.op_log_rows('channel_comments')) == before
 

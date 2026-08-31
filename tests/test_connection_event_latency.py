@@ -14,7 +14,8 @@ class ConnectionEventLatencyTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.db_path = Path(self.temp_dir.name) / "events.db"
-        with sqlite3.connect(self.db_path) as conn:
+        conn = sqlite3.connect(self.db_path)
+        try:
             conn.execute(
                 """CREATE TABLE connection_events (
                        id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,6 +28,9 @@ class ConnectionEventLatencyTests(unittest.TestCase):
                        event_text TEXT NOT NULL
                    )"""
             )
+            conn.commit()
+        finally:
+            conn.close()
 
     def test_connection_event_does_not_wait_for_busy_database(self):
         blocker = sqlite3.connect(self.db_path)

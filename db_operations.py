@@ -3291,7 +3291,7 @@ def get_channel_comment_by_unique_id(unique_id: str):
     return c.fetchone()
 
 
-def delete_channel(name: str, url: str, bbs_nodes=None, interface=None) -> bool:
+def delete_channel(name: str, url: str, bbs_nodes=None, interface=None, sync_received: bool = False) -> bool:
     """Delete a channel directory entry, tombstone it, and tell peers.
 
     The web admin used to delete channels with a bare DELETE, which left no
@@ -3325,7 +3325,7 @@ def delete_channel(name: str, url: str, bbs_nodes=None, interface=None) -> bool:
     record_sync_tombstone('channels', key, payload=snapshot)
 
     _local_nid = get_local_node_id()
-    if _local_nid:
+    if _local_nid and not sync_received:
         try:
             try_dual_write(
                 c, origin_node_id=_local_nid,
@@ -3385,13 +3385,13 @@ def restore_sync_tombstone(tombstone_key: str) -> bool:
     return True
 
 
-def delete_channel_comment(unique_id, bbs_nodes, interface):
+def delete_channel_comment(unique_id, bbs_nodes, interface, sync_received: bool = False):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("DELETE FROM channel_comments WHERE unique_id = ?", (str(unique_id),))
     conn.commit()
     _local_nid = get_local_node_id()
-    if _local_nid:
+    if _local_nid and not sync_received:
         try_dual_write(
             c, origin_node_id=_local_nid,
             event_type='delete', scope='channel_comments', target_uid=str(unique_id), payload={},
@@ -3579,13 +3579,13 @@ def get_bulletin_content(bulletin_id):
     return c.fetchone()
 
 
-def delete_bulletin(unique_id, bbs_nodes, interface):
+def delete_bulletin(unique_id, bbs_nodes, interface, sync_received: bool = False):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("DELETE FROM bulletins WHERE unique_id = ?", (unique_id,))
     conn.commit()
     _local_nid = get_local_node_id()
-    if _local_nid:
+    if _local_nid and not sync_received:
         try_dual_write(
             c, origin_node_id=_local_nid,
             event_type='delete', scope='bulletins', target_uid=str(unique_id), payload={},
@@ -3843,7 +3843,7 @@ def get_mail_content(mail_id, recipient_id):
     )
     return c.fetchone()
 
-def delete_mail(unique_id, recipient_id, bbs_nodes, interface):
+def delete_mail(unique_id, recipient_id, bbs_nodes, interface, sync_received: bool = False):
     conn = get_db_connection()
     c = conn.cursor()
     try:
@@ -3865,7 +3865,7 @@ def delete_mail(unique_id, recipient_id, bbs_nodes, interface):
         c.execute("DELETE FROM mail_dm_deliveries WHERE mail_unique_id = ?", (str(unique_id),))
         conn.commit()
         _local_nid = get_local_node_id()
-        if _local_nid:
+        if _local_nid and not sync_received:
             try_dual_write(
                 c, origin_node_id=_local_nid,
                 event_type='delete', scope='mail', target_uid=str(unique_id), payload={},
@@ -4961,7 +4961,7 @@ def get_record_hash_manifest(scope: str) -> dict:
             if not is_zork_save_sync_enabled() and str(row[0]).startswith('zork_saves:'):
                 continue
             key = str(row[0])
-            manifest[key] = _compact_row_hash(row)
+            manifest[key] = _compact_row_hash((key,))
 
     return manifest
 

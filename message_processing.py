@@ -1628,7 +1628,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed DELETE_BULLETIN sync message ignored: {message}")
                 return
             unique_id = parts[1]
-            delete_bulletin(unique_id, [], interface)
+            delete_bulletin(unique_id, [], interface, sync_received=True)
         elif message.startswith("DELETE_MAIL|"):
             parts = message.split("|", 1)
             if len(parts) != 2 or not parts[1]:
@@ -1636,7 +1636,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 return
             unique_id = parts[1]
             logging.info(f"Processing delete mail with unique_id: {unique_id}")
-            delete_mail(unique_id, None, [], interface)
+            delete_mail(unique_id, None, [], interface, sync_received=True)
         elif message.startswith("DELETE_CHANNEL|"):
             parts = message.split("|", 1)
             if len(parts) != 2 or not parts[1]:
@@ -1648,13 +1648,13 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 return
             # No bbs_nodes/interface: applying a peer's delete must not
             # re-broadcast it, or two nodes bounce the same delete forever.
-            delete_channel(decoded[0], decoded[1], [], None)
+            delete_channel(decoded[0], decoded[1], [], None, sync_received=True)
         elif message.startswith("DELETE_CHANNELCOMMENT|"):
             parts = message.split("|", 1)
             if len(parts) != 2 or not parts[1]:
                 logging.warning(f"Malformed DELETE_CHANNELCOMMENT sync message ignored: {message}")
                 return
-            delete_channel_comment(parts[1], [], interface)
+            delete_channel_comment(parts[1], [], interface, sync_received=True)
         elif message.startswith("DELETE_ZORKSAVE|"):
             if not is_zork_save_sync_enabled():
                 logging.info("Ignoring DELETE_ZORKSAVE because zork save sync is disabled locally")
