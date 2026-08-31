@@ -7,6 +7,20 @@ from typing import Any, Optional
 
 RETENTION_HOURS = 168
 
+# Destinations that mean "everyone", across the transports this BBS speaks.
+# Meshtastic broadcasts to 0xFFFFFFFF (meshtastic.BROADCAST_NUM); MeshCore
+# and the MQTT bridge synthesise packets addressed to 0.
+#
+# Accepting only (0, 255) is what made public chatter look MeshCore-only: it
+# matched the synthesised convention and never the value a real Meshtastic
+# radio actually sends, so every LongFast message was dropped here.
+#
+# Deliberately a literal rather than importing meshtastic's constant. The
+# test suite stubs that module with BROADCAST_NUM = 0, so importing it would
+# make the tests agree with a number the radios never send -- which is how
+# this got through in the first place.
+BROADCAST_ADDRESSES = (0, 255, 0xFFFFFFFF)
+
 CONTROL_PREFIXES = (
     'BULLETIN|', 'MAIL|', 'DELETE_', 'CHANNEL|', 'CHANNELCOMMENT|',
     'CHANNELCOMMENTCONT|', 'CHANNELCOMMENTMETA|', 'BULLETINCONT|',
@@ -70,7 +84,7 @@ def normalize_broadcast(
     decoded = packet.get('decoded') or {}
     if decoded.get('portnum') != 'TEXT_MESSAGE_APP':
         return None
-    if packet.get('to') not in (0, 255):
+    if packet.get('to') not in BROADCAST_ADDRESSES:
         return None
 
     allowed = {int(value) for value in getattr(interface, 'public_chatter_channels', [])}

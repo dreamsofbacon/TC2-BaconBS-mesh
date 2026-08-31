@@ -156,3 +156,77 @@ class PublicChatterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class MeshtasticBroadcastAddressTests(unittest.TestCase):
+    """A real Meshtastic broadcast goes to 0xFFFFFFFF, not 0.
+
+    The capture guard accepted only (0, 255), which is the value MeshCore and
+    the MQTT bridge synthesise -- never the one a Meshtastic radio sends. So
+    public chatter looked MeshCore-only: every LongFast message on the air was
+    dropped at the door, on a node whose primary radio is Meshtastic.
+    """
+
+    # Written out rather than imported from meshtastic. This module's own test
+    # stub sets BROADCAST_NUM = 0, so importing the constant would assert
+    # against a number no radio sends -- which is how the bug survived.
+    MESHTASTIC_BROADCAST = 0xFFFFFFFF
+
+    def setUp(self):
+        self.interface = SimpleNamespace(
+            protocol_name="Meshtastic",
+            public_chatter_channels=[0],
+            public_chatter_capture_node_id="!capture-a",
+        )
+        self.now = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+
+    def _packet(self, to):
+        return {
+            "decoded": {"portnum": "TEXT_MESSAGE_APP", "payload": b"Hello mesh"},
+            "fromId": "!sender",
+            "to": to,
+            "channel": 0,
+            "id": 12345,
+            "rxTime": int(self.now.timestamp()),
+        }
+
+    def test_a_real_meshtastic_broadcast_is_captured(self):
+        observation = normalize_broadcast(
+            self._packet(self.MESHTASTIC_BROADCAST), self.interface,
+            captured_at=self.now)
+        self.assertIsNotNone(
+            observation, "a LongFast broadcast was dropped by the capture guard")
+        self.assertEqual(observation["content"], "Hello mesh")
+
+    def test_it_is_labelled_longfast_on_channel_zero(self):
+        observation = normalize_broadcast(
+            self._packet(self.MESHTASTIC_BROADCAST), self.interface,
+            captured_at=self.now)
+        self.assertEqual(observation["network"], "meshtastic")
+        self.assertEqual(observation["channel_name"], "LongFast")
+
+    def test_the_synthesised_conventions_still_work(self):
+        """MeshCore and the MQTT bridge address broadcasts to 0."""
+        for to in (0, 255):
+            self.assertIsNotNone(
+                normalize_broadcast(self._packet(to), self.interface,
+                                    captured_at=self.now),
+                f"broadcast to {to} was dropped")
+
+    def test_a_direct_message_is_still_not_captured(self):
+        """Public chatter is public. A DM to this node is not chatter."""
+        self.assertIsNone(
+            normalize_broadcast(self._packet(42), self.interface,
+                                captured_at=self.now))
+
+    def test_the_broadcast_list_names_the_meshtastic_address(self):
+        import public_chatter
+        self.assertIn(self.MESHTASTIC_BROADCAST, public_chatter.BROADCAST_ADDRESSES)
+
+    def test_the_receive_path_uses_the_same_list(self):
+        """The guard exists twice -- in on_receive and in the normalizer. Both
+        have to agree, or one silently filters what the other accepts."""
+        import pathlib
+        source = (pathlib.Path(__file__).resolve().parent.parent
+                  / "message_processing.py").read_text(encoding="utf-8")
+        self.assertIn("BROADCAST_ADDRESSES", source)
+        self.assertNotIn("packet.get('to') in (0, 255)", source)
