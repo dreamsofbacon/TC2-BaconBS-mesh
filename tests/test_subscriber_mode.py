@@ -34,11 +34,13 @@ class SubscriberRoutingTests(unittest.TestCase):
     def setUp(self):
         self._orig = {k: getattr(mp, k) for k in (
             "get_node_short_name", "get_node_id_from_num", "log_connection_event",
-            "log_sync_transmission", "process_message")}
+            "log_sync_transmission", "process_message", "rollback_db_connection")}
         mp.get_node_short_name = lambda *a, **k: "x"
         mp.get_node_id_from_num = lambda *a, **k: "x"
         mp.log_connection_event = lambda *a, **k: None
         mp.log_sync_transmission = lambda *a, **k: None
+        self.rollbacks = []
+        mp.rollback_db_connection = lambda: self.rollbacks.append(True)
         self.calls = []
         mp.process_message = lambda sender_id, msg, iface, is_sync_message=False, sender_node_id=None: \
             self.calls.append((is_sync_message, sender_node_id, msg))
@@ -70,6 +72,24 @@ class SubscriberRoutingTests(unittest.TestCase):
         # An actual bbs_node is unaffected — its sync frames are processed as sync.
         mp.on_receive(_packet("WANT|bulletins|!gw|1", "!peer"), _Iface())
         self.assertEqual(self.calls, [(True, "!peer", "WANT|bulletins|!gw|1")])
+
+    def test_unexpected_receive_failure_rolls_back_and_propagates(self):
+        mp.process_message = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("failed"))
+        with self.assertRaisesRegex(RuntimeError, "failed"):
+            mp.on_receive(_packet("hello", "!stranger"), _Iface())
+        self.assertEqual(self.rollbacks, [True])
+
+    def test_sync_log_failure_rolls_back_before_processing_continues(self):
+        mp.log_sync_transmission = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("failed"))
+        mp.on_receive(_packet("WANT|bulletins|!gw|1", "!peer"), _Iface())
+        self.assertEqual(self.rollbacks, [True])
+        self.assertEqual(self.calls, [(True, "!peer", "WANT|bulletins|!gw|1")])
+
+    def test_malformed_packet_rolls_back(self):
+        packet = _packet("hello", "!stranger")
+        del packet["fromId"]
+        mp.on_receive(packet, _Iface())
+        self.assertEqual(self.rollbacks, [True])
 
 
 if __name__ == "__main__":

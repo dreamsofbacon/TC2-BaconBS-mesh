@@ -505,9 +505,47 @@ def refresh_peer_lists_from_config(
     interface.bbs_nodes = bbs_nodes
     interface.allowed_nodes = allowed_nodes
     interface.subscriber_nodes = subscriber_nodes
+    chatter_enabled = cfg.getboolean('public_chatter', 'enabled', fallback=False)
+    chatter_key = (
+        'secondary_channels' if allowed_nodes_key == 'allowed_nodes2'
+        else 'primary_channels'
+    )
+    chatter_channels = []
+    if chatter_enabled and str(getattr(interface, 'protocol_name', '')).casefold() != 'mqtt':
+        for token in cfg.get('public_chatter', chatter_key, fallback='').split(','):
+            try:
+                value = int(token.strip())
+            except ValueError:
+                continue
+            if 0 <= value <= 255 and value not in chatter_channels:
+                chatter_channels.append(value)
+    interface.public_chatter_channels = chatter_channels
     system_config[bbs_nodes_key] = bbs_nodes
     system_config[allowed_nodes_key] = allowed_nodes
     system_config[subscriber_nodes_key] = subscriber_nodes
+
+
+def configure_public_chatter_interface(interface, system_config: dict, link_name: str) -> None:
+    """Attach capture policy and identity to one native radio interface."""
+    if interface is None:
+        return
+    if str(getattr(interface, 'protocol_name', '')).casefold() == 'mqtt':
+        interface.public_chatter_channels = []
+        return
+    if not hasattr(interface, 'public_chatter_channels'):
+        key = (
+            'public_chatter_secondary_channels'
+            if link_name == 'secondary'
+            else 'public_chatter_primary_channels'
+        )
+        interface.public_chatter_channels = list(system_config.get(key, []) or [])
+    try:
+        info = interface.getMyNodeInfo() or {}
+        user = info.get('user') or {}
+        interface.public_chatter_capture_node_id = str(
+            user.get('publicKey') or user.get('id') or info.get('num') or '')
+    except Exception:
+        interface.public_chatter_capture_node_id = ''
 
 
 def _describe_radio(interface, system_config: dict, *, bbs_nodes_key='bbs_nodes', allowed_nodes_key='allowed_nodes') -> dict:
@@ -1334,6 +1372,7 @@ def _reconnect_link(link: RadioLink, system_config: dict, config_path: str) -> N
                 bbs_nodes_key=link.bbs_nodes_key, allowed_nodes_key=link.allowed_nodes_key,
                 subscriber_nodes_key=link.subscriber_nodes_key,
             )
+            configure_public_chatter_interface(new_iface, system_config, link.name)
             start_receive = getattr(new_iface, 'start_receive', None)
             if callable(start_receive):
                 start_receive()
@@ -1467,6 +1506,7 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
         bbs_nodes_key=link.bbs_nodes_key, allowed_nodes_key=link.allowed_nodes_key,
         subscriber_nodes_key=link.subscriber_nodes_key,
     )
+    configure_public_chatter_interface(interface, system_config, link.name)
     sync_interval_minutes = read_sync_interval_minutes(config_path, default_minutes=5)
     system_config['sync_interval_minutes_runtime'] = sync_interval_minutes
     current_bbs_nodes = set(link.bbs_nodes)
@@ -1675,6 +1715,7 @@ def main():
     if primary_iface is not None:
         _apply_socket_timeout(primary_iface)
         refresh_peer_lists_from_config(config_path, primary_iface, system_config)
+        configure_public_chatter_interface(primary_iface, system_config, 'primary')
     elif not primary_configured:
         logging.info(
             "[primary] No radio configured ([interface] type = none); this node "
@@ -1712,6 +1753,7 @@ def main():
                 bbs_nodes_key='bbs_nodes2', allowed_nodes_key='allowed_nodes2',
                 subscriber_nodes_key='subscriber_nodes2',
             )
+            configure_public_chatter_interface(secondary_iface, system_config, 'secondary')
         else:
             logging.warning(
                 "[secondary] Failed to connect at startup; continuing without it. "
@@ -1890,7 +1932,8 @@ def main():
                         logging.info(
                             f"DB maintenance: sync_tx-{_m['sync_transmissions_deleted']} "
                             f"op_log-{_m['op_log_deleted']} sessions-{_m['sync_session_history_deleted']} "
-                            f"tombstones-{_m['tombstones_deleted']} vacuum={_m['vacuumed']}"
+                            f"tombstones-{_m['tombstones_deleted']} "
+                            f"chatter-{_m['public_chatter_deleted']} vacuum={_m['vacuumed']}"
                         )
                 except Exception as exc:
                     logging.warning(f"DB maintenance pass failed: {exc}")

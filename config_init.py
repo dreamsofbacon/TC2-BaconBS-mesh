@@ -273,6 +273,24 @@ def _read_node_list(config: configparser.ConfigParser, section: str, key: str) -
     return [node.strip() for node in raw if node.strip()]
 
 
+def _read_channel_indexes(config: configparser.ConfigParser, key: str) -> list[int]:
+    indexes = []
+    for token in config.get('public_chatter', key, fallback='').split(','):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            value = int(token)
+        except ValueError:
+            print(f"Ignoring invalid public chatter channel index '{token}' in {key}")
+            continue
+        if 0 <= value <= 255 and value not in indexes:
+            indexes.append(value)
+        else:
+            print(f"Ignoring out-of-range public chatter channel index '{token}' in {key}")
+    return indexes
+
+
 def _read_mqtt_settings(section) -> dict[str, Any]:
     """Read connection settings for one [mqttN] section.
 
@@ -481,6 +499,13 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
 
     allowed_nodes = _read_node_list(config, 'allow_list', 'allowed_nodes')
 
+    public_chatter_enabled = config.getboolean(
+        'public_chatter', 'enabled', fallback=False)
+    public_chatter_primary_channels = _read_channel_indexes(
+        config, 'primary_channels') if public_chatter_enabled else []
+    public_chatter_secondary_channels = _read_channel_indexes(
+        config, 'secondary_channels') if public_chatter_enabled else []
+
     print(f"Nodes with Urgent board permissions: {allowed_nodes}")
 
     # --- Optional secondary radio (dual-radio bridge mode) -----------------
@@ -546,6 +571,9 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
         'bbs_nodes2': bbs_nodes2,
         'subscriber_nodes2': subscriber_nodes2,
         'allowed_nodes2': allowed_nodes2,
+        'public_chatter_enabled': public_chatter_enabled,
+        'public_chatter_primary_channels': public_chatter_primary_channels,
+        'public_chatter_secondary_channels': public_chatter_secondary_channels,
         'mqtt_links': mqtt_links,
     }
 

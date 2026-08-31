@@ -54,6 +54,7 @@ class MainMenuContentsTests(unittest.TestCase):
             ["S", "F", "W", "G", "A", "X"], "\U0001F6E0\uFE0FUtilities Menu\U0001F6E0\uFE0F")
         self.assertNotIn("API Gateway", rendered)
         self.assertIn("[1] Stats", rendered)
+        self.assertIn("[6] Public Chatter", rendered)
 
 
 class SettingsNavigationTests(unittest.TestCase):
@@ -109,6 +110,7 @@ class MenuHandlerWiringTests(unittest.TestCase):
         """No longer listed there, but an existing habit shouldn't break."""
         import message_processing as mp
         self.assertIn("a", mp.utilities_menu_handlers)
+        self.assertIn("h", mp.utilities_menu_handlers)
 
 
 class MenuNumberAliasTests(unittest.TestCase):
@@ -150,6 +152,10 @@ class MenuNumberAliasTests(unittest.TestCase):
         """It moved to the main menu, but 5 meant that here for a long time."""
         import message_processing as mp
         self.assertEqual(mp._UTILITIES_NUMBER_ALIAS["5"], "a")
+
+    def test_utilities_6_opens_public_chatter(self):
+        import message_processing as mp
+        self.assertEqual(mp._UTILITIES_NUMBER_ALIAS["6"], "h")
 
     def test_no_digit_is_claimed_twice(self):
         for name, number_map, _alias, _handlers in self._menus():

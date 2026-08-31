@@ -5,10 +5,13 @@ expired tombstones while NEVER touching content tables, and that op_log pruning
 keeps the newest events (hash-repair remains the reconciliation safety net).
 """
 
+import os
 import sqlite3
 import sys
+import tempfile
 import types
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta
 
 if "meshtastic" not in sys.modules:
@@ -112,6 +115,76 @@ class DbMaintenanceTests(unittest.TestCase):
         self.assertGreaterEqual(summary['sync_transmissions_deleted'], 70)
         self.assertIn('op_log_deleted', summary)
         self.assertFalse(summary['vacuumed'])
+
+    def test_file_connection_uses_wal_and_busy_timeout(self):
+        self.tearDown()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = os.path.join(temp_dir, "maintenance.db")
+            with mock.patch.dict(os.environ, {"BBS_DB_PATH": db_path}, clear=False):
+                db_operations.initialize_database()
+                conn = db_operations.get_db_connection()
+                self.assertEqual(conn.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+                self.assertEqual(
+                    conn.execute("PRAGMA busy_timeout").fetchone()[0],
+                    db_operations.DB_BUSY_TIMEOUT_MS,
+                )
+                self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 2)
+                conn.close()
+                del db_operations.thread_local.connection
+
+    def test_rollback_db_connection_releases_open_transaction(self):
+        conn = db_operations.get_db_connection()
+        conn.execute("INSERT INTO sync_transmissions "
+                     "(transmission_time, frame_type, direction) VALUES (?, ?, ?)",
+                     ("2026-01-01 00:00:00", "TEST", "rx"))
+        self.assertTrue(conn.in_transaction)
+        self.assertTrue(db_operations.rollback_db_connection())
+        self.assertFalse(conn.in_transaction)
+        self.assertFalse(db_operations.rollback_db_connection())
+        self.assertEqual(self._count("sync_transmissions"), 0)
+
+    def test_checkpoint_skips_current_open_transaction(self):
+        conn = db_operations.get_db_connection()
+        conn.execute("INSERT INTO sync_transmissions "
+                     "(transmission_time, frame_type, direction) VALUES (?, ?, ?)",
+                     ("2026-01-01 00:00:00", "TEST", "rx"))
+        self.assertIsNone(db_operations.checkpoint_wal())
+        self.assertTrue(conn.in_transaction)
+        conn.rollback()
+
+    def test_passive_checkpoint_coexists_with_file_writer(self):
+        self.tearDown()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = os.path.join(temp_dir, "checkpoint.db")
+            with mock.patch.dict(os.environ, {"BBS_DB_PATH": db_path}, clear=False):
+                db_operations.initialize_database()
+                maintenance_conn = db_operations.get_db_connection()
+                writer_conn = sqlite3.connect(db_path, timeout=1)
+                try:
+                    writer_conn.execute(
+                        "INSERT INTO sync_transmissions "
+                        "(transmission_time, frame_type, direction) VALUES (?, ?, ?)",
+                        ("2026-01-01 00:00:00", "TEST", "rx"),
+                    )
+                    result = db_operations.checkpoint_wal()
+                    self.assertIsNotNone(result)
+                    self.assertEqual(len(result), 3)
+                finally:
+                    writer_conn.rollback()
+                    writer_conn.close()
+                    maintenance_conn.close()
+                    del db_operations.thread_local.connection
+
+    def test_sync_transmission_failure_rolls_back(self):
+        failing_cursor = mock.Mock()
+        failing_cursor.execute.side_effect = sqlite3.OperationalError("database is locked")
+        failing_conn = mock.Mock()
+        failing_conn.cursor.return_value = failing_cursor
+        with mock.patch.object(db_operations, "_ensure_sync_transmissions_table"), \
+                mock.patch.object(db_operations, "get_db_connection", return_value=failing_conn), \
+                mock.patch.object(db_operations, "rollback_db_connection") as rollback:
+            db_operations.log_sync_transmission("SYNCSTATE|1", "!peer", 11, direction="rx")
+        rollback.assert_called_once_with()
 
 
 if __name__ == "__main__":
