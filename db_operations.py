@@ -39,6 +39,8 @@ from utils import (
 thread_local = threading.local()
 DB_TIMEOUT_SECONDS = 30
 DB_BUSY_TIMEOUT_MS = DB_TIMEOUT_SECONDS * 1000
+CONNECTION_EVENT_TIMEOUT_SECONDS = 0.0
+CONNECTION_EVENT_BUSY_TIMEOUT_MS = int(CONNECTION_EVENT_TIMEOUT_SECONDS * 1000)
 _sync_progress_lock = threading.Lock()
 _sync_progress = {
     'in_progress': False,
@@ -381,9 +383,9 @@ def _write_connection_event_direct(
     message_type: str,
     event_text: str,
 ) -> None:
-    conn = sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS)
+    conn = sqlite3.connect(db_path, timeout=CONNECTION_EVENT_TIMEOUT_SECONDS)
     try:
-        _configure_db_connection(conn)
+        _configure_db_connection(conn, busy_timeout_ms=CONNECTION_EVENT_BUSY_TIMEOUT_MS)
         conn.execute(
             '''CREATE TABLE IF NOT EXISTS connection_events (
                    id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -515,8 +517,8 @@ def _ensure_connection_events_table() -> None:
     conn.commit()
 
 
-def _configure_db_connection(conn) -> None:
-    conn.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS};")
+def _configure_db_connection(conn, busy_timeout_ms: int = DB_BUSY_TIMEOUT_MS) -> None:
+    conn.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)};")
     conn.execute("PRAGMA synchronous=FULL;")
 
 
@@ -5047,26 +5049,20 @@ def log_connection_event(
     message_type: str,
     event_text: str,
 ) -> None:
-    _ensure_connection_events_table()
-    conn = get_db_connection()
-    c = conn.cursor()
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    c.execute(
-        '''INSERT INTO connection_events
-           (event_time, sender_num, sender_node_id, sender_short_name, to_id, message_type, event_text)
-           VALUES (?, ?, ?, ?, ?, ?, ?)''',
-        (
-            now,
-            str(sender_num) if sender_num is not None else None,
-            sender_node_id,
-            sender_short_name or '',
-            str(to_id) if to_id is not None else None,
-            message_type,
-            event_text,
-        ),
-    )
-    _prune_connection_events(conn, _get_max_connection_log_rows())
-    conn.commit()
+    try:
+        _write_connection_event_direct(
+            db_path=get_database_path(),
+            sender_num=sender_num,
+            sender_node_id=sender_node_id,
+            sender_short_name=sender_short_name,
+            to_id=to_id,
+            message_type=message_type,
+            event_text=event_text,
+        )
+    except sqlite3.Error:
+        # Connection history is diagnostic only. A busy database must never
+        # delay or abort delivery of the packet being recorded.
+        return
 
 
 def get_connection_events_since(last_id: int = 0, limit: int = 100) -> list:
