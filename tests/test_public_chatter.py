@@ -99,6 +99,25 @@ class PublicChatterTests(unittest.TestCase):
         self.assertEqual(len(result["entries"]), 1)
         self.assertEqual(result["entries"][0]["content"], "Hello mesh")
 
+    def test_history_can_return_complete_window_without_page_limit(self):
+        now = datetime.now(timezone.utc)
+        timestamp = now.isoformat().replace("+00:00", "Z")
+        expires_at = (now + timedelta(days=7)).isoformat().replace("+00:00", "Z")
+        db_operations.get_db_connection().executemany(
+            '''INSERT INTO public_chatter
+                   (unique_id, network, channel_index, content, message_timestamp,
+                    captured_at, expires_at)
+               VALUES (?, 'meshtastic', 0, 'message', ?, ?, ?)''',
+            [(f"pch:{index}", timestamp, timestamp, expires_at) for index in range(201)],
+        )
+
+        result = db_operations.get_public_chatter_history(hours=24, limit=None)
+
+        self.assertEqual(len(result["entries"]), 201)
+        self.assertIsNone(result["limit"])
+        self.assertFalse(result["has_more"])
+        self.assertIsNone(result["next_cursor"])
+
     def test_expiry_prunes_record_and_discovery_event_without_tombstone(self):
         db_operations.set_local_node_id("!capture-a")
         expired = self.now - timedelta(minutes=1)

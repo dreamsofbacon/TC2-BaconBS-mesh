@@ -27,7 +27,6 @@
       <h1>Public Chatter</h1>
       <p class="text-muted">Meshtastic and MeshCore public channels heard by participating Bacon BBS nodes.</p>
     </div>
-    <a class="btn btn-sm" href="{{ url_for('login') }}">Admin sign in</a>
   </header>
 
   <section class="chatter-controls" aria-label="Chatter filters">
@@ -66,7 +65,6 @@
 
   <div id="chatter-state" class="chatter-state" role="status">Loading messages...</div>
   <div id="chatter-feed" class="chatter-feed" aria-live="polite"></div>
-  <button id="chatter-more" class="btn" type="button" hidden style="margin-top:16px">Load more</button>
 </div>
 <script src="{{ url_for('static', filename='js/public-chatter.js', v=asset_version) }}" defer></script>
 {% endblock %}

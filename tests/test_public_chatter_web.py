@@ -46,11 +46,23 @@ class PublicChatterWebTests(unittest.TestCase):
             sync_received=True,
         )
 
-    def test_page_and_api_are_public_and_window_is_clamped(self):
+    def login(self):
+        with self.client.session_transaction() as session:
+            session["logged_in"] = True
+
+    def test_page_and_api_require_login(self):
+        for path in ("/chatter", "/api/public/chatter"):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 302)
+            self.assertIn("/login", response.headers["Location"])
+
+    def test_page_and_api_are_authenticated_and_window_is_clamped(self):
         self.add_message()
+        self.login()
         page = self.client.get("/chatter")
         self.assertEqual(page.status_code, 200)
         self.assertIn(b"Public Chatter", page.data)
+        self.assertNotIn(b"Load more", page.data)
         response = self.client.get("/api/public/chatter?hours=999&network=meshtastic")
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
@@ -59,8 +71,19 @@ class PublicChatterWebTests(unittest.TestCase):
         self.assertEqual(data["entries"][0]["content"], "<img src=x onerror=alert(1)>")
 
     def test_invalid_channel_filter_is_rejected(self):
+        self.login()
         response = self.client.get("/api/public/chatter?channel=LongFast")
         self.assertEqual(response.status_code, 400)
+
+    def test_api_requests_complete_filtered_window(self):
+        self.login()
+        with mock.patch.object(web_admin, "get_public_chatter_history", return_value={
+            "entries": [], "has_more": False, "next_cursor": None,
+            "hours": 24, "limit": None,
+        }) as history:
+            response = self.client.get("/api/public/chatter?hours=24")
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(history.call_args.kwargs["limit"])
 
     def test_browser_renderer_uses_text_content(self):
         script_path = os.path.join(os.path.dirname(web_admin.__file__), "static", "js", "public-chatter.js")
@@ -68,6 +91,8 @@ class PublicChatterWebTests(unittest.TestCase):
             script = script_file.read()
         self.assertIn("element.textContent = text", script)
         self.assertNotIn("innerHTML", script)
+        self.assertNotIn("chatter-more", script)
+        self.assertNotIn("next_cursor", script)
 
 
 if __name__ == "__main__":
