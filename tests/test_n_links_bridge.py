@@ -91,6 +91,50 @@ class _FakeInterface:
         self.sent.append((text, destinationId))
 
 
+class MqttPublicChatterCaptureTests(_FreshServerCase):
+    def test_mqtt_link_never_inherits_radio_chatter_channels(self):
+        interface = _FakeInterface(protocol_name="MQTT:mqtt1")
+        interface.public_chatter_channels = [0]
+
+        self.server.configure_public_chatter_interface(
+            interface,
+            {"public_chatter_primary_channels": [0]},
+            "mqtt1",
+        )
+
+        self.assertEqual(interface.public_chatter_channels, [])
+
+    def test_config_refresh_keeps_mqtt_chatter_capture_disabled(self):
+        import os
+        import tempfile
+
+        interface = _FakeInterface(protocol_name="MQTT:mqtt1")
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".ini", delete=False, encoding="utf-8"
+        ) as config_file:
+            config_file.write(
+                "[public_chatter]\nenabled = true\nprimary_channels = 0\n\n"
+                "[sync_mqtt1]\nbbs_nodes =\n\n"
+                "[allow_list_mqtt1]\nallowed_nodes =\n"
+            )
+            config_path = config_file.name
+        try:
+            self.server.refresh_peer_lists_from_config(
+                config_path,
+                interface,
+                {},
+                sync_section="sync_mqtt1",
+                allow_section="allow_list_mqtt1",
+                bbs_nodes_key="bbs_nodes_mqtt1",
+                allowed_nodes_key="allowed_nodes_mqtt1",
+                subscriber_nodes_key="subscriber_nodes_mqtt1",
+            )
+        finally:
+            os.unlink(config_path)
+
+        self.assertEqual(interface.public_chatter_channels, [])
+
+
 class ThreeLinkRecordPropagationTests(unittest.TestCase):
     """Extends test_dual_interface_bridge.py's core "no relay layer" property
     from 2 links to 3: a record synced in via one link is picked up by BOTH

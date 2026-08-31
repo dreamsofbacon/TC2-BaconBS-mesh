@@ -87,6 +87,23 @@ class PublicChatterTests(unittest.TestCase):
         self.assertIn("idx_public_chatter_time", indexes)
         self.assertIn("idx_public_chatter_expiry", indexes)
 
+    def test_database_initialization_removes_mqtt_misclassified_chatter(self):
+        now = datetime.now(timezone.utc)
+        timestamp = now.isoformat().replace("+00:00", "Z")
+        db_operations.add_public_chatter(
+            "pch:mqtt-misclassified", "mqtt:mqtt1", 0, "LongFast",
+            "mqtt:bridge:peer", "peer", "sync topic text", timestamp, timestamp,
+            "mqtt:bridge:local",
+            (now + timedelta(days=7)).isoformat().replace("+00:00", "Z"),
+            sync_received=True,
+        )
+
+        db_operations.initialize_database()
+
+        self.assertIsNone(
+            db_operations.get_public_chatter_by_unique_id("pch:mqtt-misclassified")
+        )
+
     def test_history_clamps_window_and_filters_network(self):
         observation = normalize_broadcast(self.packet(), self.interface)
         self.assertIsNotNone(observation)

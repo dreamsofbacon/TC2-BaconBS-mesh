@@ -632,6 +632,7 @@ def initialize_database():
                     ON public_chatter (network, channel_index, message_timestamp DESC);''')
     c.execute('''CREATE INDEX IF NOT EXISTS idx_public_chatter_expiry
                     ON public_chatter (expires_at);''')
+    c.execute("DELETE FROM public_chatter WHERE LOWER(network) LIKE 'mqtt%'")
     c.execute('''CREATE TABLE IF NOT EXISTS zork_saves (
                     user_id TEXT NOT NULL,
                     game_id TEXT NOT NULL DEFAULT 'zork1',
