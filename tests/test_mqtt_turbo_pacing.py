@@ -91,6 +91,24 @@ class PacingGetterOverrideTests(unittest.TestCase):
             self.assertEqual(utils.get_hash_chunk_pause_seconds(_FakeNormalInterface()), 0.3)
             self.assertEqual(utils.get_hash_chunk_pause_seconds(_FakeLowLatencyInterface()), 0.3)
 
+    def test_radio_config_values_do_not_throttle_low_latency_interface(self):
+        cfg = _radio_paced_config()
+        with patch.object(utils, "_load_runtime_config", return_value=cfg):
+            radio = _FakeNormalInterface()
+            mqtt = _FakeLowLatencyInterface()
+            self.assertEqual(utils.get_sync_pause_seconds(radio), 0.75)
+            self.assertEqual(utils.get_sync_pause_seconds(mqtt), 0.02)
+            self.assertEqual(utils.get_hash_repair_pause_seconds(radio), 1.0)
+            self.assertEqual(utils.get_hash_repair_pause_seconds(mqtt), 0.0)
+            self.assertEqual(utils.get_hash_chunk_pause_seconds(radio), 3.0)
+            self.assertEqual(utils.get_hash_chunk_pause_seconds(mqtt), 0.0)
+            self.assertEqual(utils.get_full_sync_delay_ms(radio), 100)
+            self.assertEqual(utils.get_full_sync_delay_ms(mqtt), 0)
+            self.assertEqual(utils.get_repair_cycle_seconds(radio), 120)
+            self.assertEqual(utils.get_repair_cycle_seconds(mqtt), 15)
+            self.assertEqual(utils.get_reconcile_max_per_pass(radio), 20)
+            self.assertEqual(utils.get_reconcile_max_per_pass(mqtt), 100)
+
     def test_global_sync_turbo_true_does_not_downgrade_a_normal_interface(self):
         """A global sync_turbo=true (e.g. left on from a prior small-mesh
         tuning pass) still applies to a plain interface with no
@@ -110,6 +128,19 @@ class PacingGetterOverrideTests(unittest.TestCase):
 def _empty_config():
     import configparser
     cfg = configparser.ConfigParser()
+    return cfg
+
+
+def _radio_paced_config():
+    cfg = _empty_config()
+    cfg["sync"] = {
+        "sync_pause_seconds": "0.75",
+        "hash_repair_pause_seconds": "1.0",
+        "hash_chunk_pause_seconds": "3.0",
+        "full_sync_delay_ms": "100",
+        "repair_cycle_seconds": "120",
+        "reconcile_max_per_pass": "20",
+    }
     return cfg
 
 
