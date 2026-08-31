@@ -524,6 +524,34 @@ class MqttPublishSelectionTests(unittest.TestCase):
         self.assertIn("baconbs/city-a-b/node-a/clients", topics)
         self.assertIn("baconbs/city-a-b/node-a/clients/primary/!abc", topics)
 
+    def test_peer_client_summary_is_merged(self):
+        node_a = self._make(
+            local_id="node-a", publish_kinds={"clients": True},
+            publish_clients_max_age_hours=0,
+        )
+        node_b = self._make(local_id="node-b", publish_kinds={"clients": True})
+        client = {
+            "node_id": "!abc", "link_name": "primary", "short_name": "AAA",
+            "first_seen": "2026-08-30 10:00:00", "last_seen": "2026-08-30 11:00:00",
+        }
+        with patch("db_operations.upsert_synced_mesh_clients") as merge:
+            node_a.publish_clients([client])
+            node_b._incoming.join()
+        merge.assert_called_once_with("mqtt1", "node-a", [client])
+
+    def test_remote_client_rows_are_not_republished(self):
+        iface = self._make(publish_kinds={"clients": True})
+        iface._client.published.clear()
+        iface.publish_clients([
+            {"node_id": "!local", "link_name": "primary"},
+            {"node_id": "!remote", "link_name": "remote:mqtt1:node-b:primary"},
+        ])
+        summary = next(
+            json.loads(payload) for topic, payload, _retain in iface._client.published
+            if topic == "baconbs/city-a-b/node-a/clients"
+        )
+        self.assertEqual([row["node_id"] for row in summary["clients"]], ["!local"])
+
     def test_node_id_containing_a_slash_cannot_fan_out_topic_levels(self):
         iface = self._make(publish_kinds={"clients": True})
         iface._client.published.clear()

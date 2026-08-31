@@ -128,6 +128,30 @@ class MeshClientsDbTests(unittest.TestCase):
         self.assertIsNone(c["battery_level"])
         self.assertIsNone(c["last_heard_epoch"])
 
+    def test_synced_clients_are_namespaced_and_preserve_remote_times(self):
+        row = self._row(
+            first_seen="2026-08-30 10:00:00",
+            last_seen="2026-08-30 11:00:00",
+        )
+        db_operations.upsert_synced_mesh_clients("mqtt1", "forge", [row])
+
+        client = db_operations.get_mesh_clients()[0]
+        self.assertEqual(client["link_name"], "remote:mqtt1:forge:primary")
+        self.assertEqual(client["first_seen"], "2026-08-30 10:00:00")
+        self.assertEqual(client["last_seen"], "2026-08-30 11:00:00")
+
+    def test_older_synced_snapshot_does_not_overwrite_newer_one(self):
+        newer = self._row(short_name="NEW", first_seen="2026-08-30 10:00:00",
+                          last_seen="2026-08-30 12:00:00")
+        older = self._row(short_name="OLD", first_seen="2026-08-30 09:00:00",
+                          last_seen="2026-08-30 11:00:00")
+        db_operations.upsert_synced_mesh_clients("mqtt1", "forge", [newer])
+        db_operations.upsert_synced_mesh_clients("mqtt1", "forge", [older])
+
+        client = db_operations.get_mesh_clients()[0]
+        self.assertEqual(client["short_name"], "NEW")
+        self.assertEqual(client["last_seen"], "2026-08-30 12:00:00")
+
 
 _CACHE_KEYS = ("config_init", "server", "radio_link")
 

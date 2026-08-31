@@ -6,14 +6,15 @@ cities) by relaying the same sync traffic over an internet-connected MQTT
 broker instead. It participates in the existing five-phase sync protocol
 completely unchanged -- this module only has to look like a radio interface.
 
-Topic design: each configured link publishes/subscribes on exactly one
-topic, ``{topic_prefix}/bbs``. Every subscriber on that topic sees every
-message and filters locally by the packet's ``to`` field, exactly like a
-real LoRa mesh (an inherently broadcast RF medium) -- so no new receive-side
-filtering logic is needed anywhere else in the BBS. A ``topic_prefix``
-scopes one bridge *relationship*; bridging three sites off one shared broker
-means three separate ``[mqttN]`` links (three prefixes), not one link with
-everyone crosstalking on a single topic.
+Sync frames use ``{topic_prefix}/bbs``. Every subscriber on that topic sees
+every message and filters locally by the packet's ``to`` field, exactly like
+a real LoRa mesh (an inherently broadcast RF medium). Retained peer status
+and client-roster summaries use sibling topics under
+``{topic_prefix}/{local_id}``; each bridge subscribes to those summaries for
+peer discovery and known-client sharing. A ``topic_prefix`` scopes one bridge
+*relationship*; bridging three sites off one shared broker means three
+separate ``[mqttN]`` links (three prefixes), not one link with everyone
+crosstalking on a single topic.
 
 Status telemetry (separate from the sync topic above, see publish_status):
 server.py's main loop periodically publishes this node's whole link-status
@@ -249,8 +250,8 @@ class MqttInterface:
         # What this broker gets beyond sync traffic, and where published
         # data lives. publish_prefix intentionally does NOT affect the sync
         # topic below -- topic_prefix identifies the bridge relationship and
-        # both ends must agree on it, whereas published data is one-way
-        # telemetry that an operator may want slotted elsewhere.
+        # both ends must agree on it, whereas published data may be slotted
+        # elsewhere. Client summaries are also consumed by peer BBS nodes.
         self.publish_kinds = dict(publish_kinds or {'status': True})
         self.publish_clients_max_age_hours = int(publish_clients_max_age_hours or 0)
         # Per-node client topics published last cycle. Retained messages
@@ -371,11 +372,19 @@ class MqttInterface:
             topics.append(f"{self.publish_prefix}/+/status")
         return topics
 
+    def _client_discovery_topics(self) -> list[str]:
+        topics = [f"{self.topic_prefix}/+/clients"]
+        if self.publish_prefix and self.publish_prefix != self.topic_prefix:
+            topics.append(f"{self.publish_prefix}/+/clients")
+        return topics
+
     def _on_connect(self, client, userdata, flags, reason_code, properties=None) -> None:
         del userdata, flags, properties
         if reason_code == 0:
             client.subscribe(self._topic, qos=1)
             for topic in self._status_discovery_topics():
+                client.subscribe(topic, qos=0)
+            for topic in self._client_discovery_topics():
                 client.subscribe(topic, qos=0)
             self._connect_error = None
         else:
@@ -419,6 +428,23 @@ class MqttInterface:
         peers.sort(key=lambda entry: str(entry.get("last_seen") or ""), reverse=True)
         return peers
 
+    def _record_peer_clients(self, topic: str, data: Any) -> None:
+        parts = str(topic).split("/")
+        if len(parts) < 2 or parts[-1] != "clients":
+            return
+        source_node = _clean_label(parts[-2])
+        if not source_node or source_node == self.local_id or not isinstance(data, dict):
+            return
+        clients = data.get("clients")
+        if not isinstance(clients, list):
+            return
+        self._incoming.put({
+            "_mqtt_client_roster": {
+                "source_node": source_node,
+                "clients": clients,
+            }
+        })
+
     def _on_message(self, client, userdata, msg) -> None:
         del client, userdata
         try:
@@ -433,7 +459,10 @@ class MqttInterface:
         # depending on that would make the sync path quietly sensitive to
         # anything else we ever subscribe to.
         if msg.topic != self._topic:
-            self._record_peer_status(msg.topic, data)
+            if str(msg.topic).endswith("/clients"):
+                self._record_peer_clients(msg.topic, data)
+            else:
+                self._record_peer_status(msg.topic, data)
             return
         from_label = _clean_label(data.get("from"))
         if not from_label or from_label == self.local_id:
@@ -491,6 +520,15 @@ class MqttInterface:
             try:
                 if packet is None:
                     return
+                roster = packet.get("_mqtt_client_roster")
+                if isinstance(roster, dict):
+                    from db_operations import upsert_synced_mesh_clients
+                    upsert_synced_mesh_clients(
+                        self.link_name,
+                        roster.get("source_node", ""),
+                        roster.get("clients", []),
+                    )
+                    continue
                 pub.sendMessage(self.receive_topic, packet=packet, interface=self)
             except Exception:
                 logging.exception("MQTT[%s] receive dispatch failed", self.link_name)
@@ -658,6 +696,10 @@ class MqttInterface:
         """
         if not self.publishes("clients"):
             return
+        clients = [
+            client for client in clients
+            if not str(client.get("link_name", "")).startswith("remote:")
+        ]
         clients = self._filter_recent(clients)
         base = f"{self._publish_base}/clients"
         self._publish_json(base, {"count": len(clients), "clients": clients})
