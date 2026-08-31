@@ -511,7 +511,9 @@ def refresh_peer_lists_from_config(
         else 'primary_channels'
     )
     chatter_channels = []
-    if chatter_enabled and str(getattr(interface, 'protocol_name', '')).casefold() != 'mqtt':
+    if chatter_enabled and not str(
+        getattr(interface, 'protocol_name', '')
+    ).casefold().startswith('mqtt'):
         for token in cfg.get('public_chatter', chatter_key, fallback='').split(','):
             try:
                 value = int(token.strip())
@@ -529,7 +531,7 @@ def configure_public_chatter_interface(interface, system_config: dict, link_name
     """Attach capture policy and identity to one native radio interface."""
     if interface is None:
         return
-    if str(getattr(interface, 'protocol_name', '')).casefold() == 'mqtt':
+    if str(getattr(interface, 'protocol_name', '')).casefold().startswith('mqtt'):
         interface.public_chatter_channels = []
         return
     if not hasattr(interface, 'public_chatter_channels'):
