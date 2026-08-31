@@ -4,16 +4,41 @@ import subprocess
 from pathlib import Path
 
 
-# The patch number is the commit count, so every commit is a distinct
-# version with nothing to remember. APP_VERSION sat at "0.1.6" for 171
-# commits because it was a literal nobody edited and no automation touched.
+# The patch number is the length of the mainline, so every commit is a
+# distinct version with nothing to remember. APP_VERSION sat at "0.1.6" for
+# 171 commits because it was a literal nobody edited and no automation
+# touched.
 APP_VERSION_BASE = "0.1"
 
-# Used only when the commit count cannot be determined at all -- no git and
-# no cached stamp, e.g. an install from a zip. Refreshed by the cache write
+# Counted with --first-parent, which is what makes the number mean the same
+# thing in two different clones.
+#
+# Counting every reachable commit instead (plain `rev-list --count HEAD`)
+# counts whatever each clone happens to have merged in, so a fork with its
+# own commits reports a different number for byte-identical files. That is
+# not hypothetical: it is what someone running this from a fork actually
+# saw. This repository's own two counts disagree by 81, because 49 merge
+# commits brought side branches along with them.
+#
+# The commit hash remains the real identity. The number is an ordinal for
+# telling at a glance which of two builds is newer.
+_FIRST_PARENT_ONLY = True
+
+# Added to the mainline count. Only reason it exists: the previous scheme
+# counted every ancestor and had already reached 415, while the mainline was
+# 334 -- so switching would have made every deployed node appear to go
+# backwards by 81. This lands the changeover on 0.1.500 and keeps the
+# sequence monotonic.
+#
+# Never change this again. Changing it renumbers every past and future
+# release, which is the exact confusion it was added to end.
+_BUILD_OFFSET = 166
+
+# Used only when the count cannot be determined at all -- no git and no
+# cached stamp, e.g. an install from a zip. Refreshed by the cache write
 # below whenever a real count IS available, so a deployed node keeps a
 # truthful number even if git later becomes unusable.
-_FALLBACK_BUILD = 396
+_FALLBACK_BUILD = 500
 
 _BUILD_CACHE = "_build_version.py"
 
@@ -161,22 +186,30 @@ def _write_build_cache(build: int) -> None:
         pass  # read-only install; the live git value is still used
 
 
+def _count_command() -> list:
+    command = ["git", "-c", f"safe.directory={_repo_root()}",
+               "rev-list", "--count"]
+    if _FIRST_PARENT_ONLY:
+        command.append("--first-parent")
+    command.append("HEAD")
+    return command
+
+
 def get_build_number() -> int:
-    """Commit count, which is the patch number."""
+    """Mainline commit count plus the offset: the patch number."""
     env_build = str(os.getenv("BBS_BUILD_NUMBER", "")).strip()
     if env_build.isdigit():
         return int(env_build)
 
     try:
         result = subprocess.run(
-            ["git", "-c", f"safe.directory={_repo_root()}",
-             "rev-list", "--count", "HEAD"],
+            _count_command(),
             cwd=str(_repo_root()), capture_output=True, text=True,
             timeout=5, check=False,
         )
         count = str(result.stdout or "").strip()
         if result.returncode == 0 and count.isdigit() and int(count) > 0:
-            build = int(count)
+            build = int(count) + _BUILD_OFFSET
             if build != _cached_build_number():
                 _write_build_cache(build)
             return build
@@ -205,3 +238,18 @@ def get_display_version() -> str:
 
 # Back-compat: some callers and tests read APP_VERSION directly.
 APP_VERSION = get_app_version()
+
+
+if __name__ == "__main__":
+    # So docker/build.sh and the publish workflow ask THIS module for the
+    # number instead of each re-implementing the git command. Three
+    # implementations is how an image ends up numbered differently from the
+    # source it was built from.
+    import sys
+
+    if "--build-number" in sys.argv:
+        print(get_build_number())
+    elif "--commit" in sys.argv:
+        print(get_git_commit_short())
+    else:
+        print(get_display_version())
