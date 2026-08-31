@@ -4148,6 +4148,64 @@ def upsert_mesh_clients(rows: list[dict]) -> None:
     conn.commit()
 
 
+def upsert_synced_mesh_clients(source_link: str, source_node: str, rows: list[dict]) -> None:
+    """Merge a remote BBS client roster without colliding with local links."""
+    if not rows:
+        return
+    normalized_source_link = _flatten_client_text(source_link) or 'mqtt'
+    normalized_source_node = _flatten_client_text(source_node) or 'unknown'
+    values = []
+    for row in rows[:5000]:
+        if not isinstance(row, dict):
+            continue
+        node_id = _flatten_client_text(row.get('node_id'))
+        remote_link = _flatten_client_text(row.get('link_name'))
+        if not node_id or not remote_link or remote_link.startswith('remote:'):
+            continue
+        first_seen = _flatten_client_text(row.get('first_seen'))
+        last_seen = _flatten_client_text(row.get('last_seen'))
+        if not first_seen or not last_seen:
+            continue
+        values.append({
+            'link_name': f'remote:{normalized_source_link}:{normalized_source_node}:{remote_link}',
+            'node_id': node_id,
+            'node_num': str(row['node_num']) if row.get('node_num') is not None else None,
+            'protocol': row.get('protocol') or '',
+            'short_name': _flatten_client_text(row.get('short_name')),
+            'long_name': _flatten_client_text(row.get('long_name')),
+            'hw_model': row.get('hw_model') or '',
+            'role': row.get('role') or '',
+            'battery_level': row.get('battery_level'),
+            'last_heard_epoch': row.get('last_heard_epoch'),
+            'first_seen': first_seen,
+            'last_seen': last_seen,
+        })
+    if not values:
+        return
+    conn = get_db_connection()
+    conn.executemany(
+        '''INSERT INTO mesh_clients
+           (link_name, node_id, node_num, protocol, short_name, long_name, hw_model, role,
+            battery_level, last_heard_epoch, first_seen, last_seen)
+           VALUES (:link_name, :node_id, :node_num, :protocol, :short_name, :long_name,
+                   :hw_model, :role, :battery_level, :last_heard_epoch, :first_seen, :last_seen)
+           ON CONFLICT(link_name, node_id) DO UPDATE SET
+             node_num = excluded.node_num,
+             protocol = excluded.protocol,
+             short_name = excluded.short_name,
+             long_name = excluded.long_name,
+             hw_model = excluded.hw_model,
+             role = excluded.role,
+             battery_level = excluded.battery_level,
+             last_heard_epoch = excluded.last_heard_epoch,
+             first_seen = MIN(mesh_clients.first_seen, excluded.first_seen),
+             last_seen = excluded.last_seen
+           WHERE excluded.last_seen >= mesh_clients.last_seen''',
+        values,
+    )
+    conn.commit()
+
+
 def get_mesh_clients(
     link_name: Optional[str] = None,
     seen_within_seconds: Optional[int] = None,

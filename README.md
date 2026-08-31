@@ -439,6 +439,11 @@ it as current. Activity is polled on the diagnostics cadence (5–30s) rather
 than hooked into the write path, so it costs the sync engine nothing; the
 tradeoff is up to one cycle of latency.
 
+When `publish_clients` is enabled on a source node, other Bacon BBS nodes on
+the same MQTT telemetry prefix automatically merge its retained roster into
+Web Admin → Clients. Imported link names include the MQTT link and source BBS
+so they cannot overwrite local radio observations or be republished in a loop.
+
 `publish_prefix` moves telemetry only — **never** the sync topic, which
 identifies the bridge relationship and must stay identical on both ends.
 
