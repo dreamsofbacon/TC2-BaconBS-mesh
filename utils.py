@@ -266,6 +266,8 @@ def get_sync_pause_seconds(interface=None) -> float:
     default = 0.02 if turbo else 0.75
     if os.getenv("BBS_SYNC_PAUSE_SECONDS") is not None:
         return _env_float("BBS_SYNC_PAUSE_SECONDS", default)
+    if getattr(interface, 'is_low_latency', False):
+        return default
     return _config_float("sync", "sync_pause_seconds", default)
 
 
@@ -274,6 +276,8 @@ def get_hash_repair_pause_seconds(interface=None) -> float:
     default = 0.0 if turbo else 0.1
     if os.getenv("BBS_HASH_REPAIR_PAUSE_SECONDS") is not None:
         return _env_float("BBS_HASH_REPAIR_PAUSE_SECONDS", default)
+    if getattr(interface, 'is_low_latency', False):
+        return default
     return _config_float("sync", "hash_repair_pause_seconds", default)
 
 
@@ -293,6 +297,8 @@ def get_hash_chunk_pause_seconds(interface=None) -> float:
     default = 0.0 if turbo else 1.5
     if os.getenv("BBS_HASH_CHUNK_PAUSE_SECONDS") is not None:
         return _env_float("BBS_HASH_CHUNK_PAUSE_SECONDS", default)
+    if getattr(interface, 'is_low_latency', False):
+        return default
     return _config_float("sync", "hash_chunk_pause_seconds", default)
 
 
@@ -301,6 +307,8 @@ def get_full_sync_delay_ms(interface=None) -> int:
     default = 0 if turbo else 500
     if os.getenv("BBS_FULL_SYNC_DELAY_MS") is not None:
         return _env_int("BBS_FULL_SYNC_DELAY_MS", default)
+    if getattr(interface, 'is_low_latency', False):
+        return default
     return _config_int("sync", "full_sync_delay_ms", default)
 
 
@@ -314,6 +322,8 @@ def get_repair_cycle_seconds(interface=None) -> int:
     default = 15 if turbo else 90
     if os.getenv("BBS_REPAIR_CYCLE_SECONDS") is not None:
         return _env_int("BBS_REPAIR_CYCLE_SECONDS", default)
+    if getattr(interface, 'is_low_latency', False):
+        return default
     return _config_int("sync", "repair_cycle_seconds", default)
 
 
@@ -359,6 +369,8 @@ def get_reconcile_max_per_pass(interface=None) -> int:
     default = 100 if turbo else 20
     if os.getenv("BBS_RECONCILE_MAX_PER_PASS") is not None:
         return _env_int("BBS_RECONCILE_MAX_PER_PASS", default)
+    if getattr(interface, 'is_low_latency', False):
+        return default
     return _config_int("sync", "reconcile_max_per_pass", default)
 
 
