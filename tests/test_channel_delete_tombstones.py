@@ -97,6 +97,19 @@ class ChannelDeleteTests(unittest.TestCase):
         echoed = [t for _d, t in self.iface.sent if t.startswith("DELETE_CHANNEL|")]
         self.assertEqual(echoed, [])
 
+    def test_tombstone_hash_ignores_node_local_receipt_time(self):
+        db_operations.record_sync_tombstone_at(
+            "channels", self._key(), "2026-01-01 00:00:00")
+        first_hash = db_operations.get_record_hash_manifest("tombstones")[
+            "channels:" + self._key()
+        ]
+        db_operations.record_sync_tombstone_at(
+            "channels", self._key(), "2026-08-30 23:00:00")
+        second_hash = db_operations.get_record_hash_manifest("tombstones")[
+            "channels:" + self._key()
+        ]
+        self.assertEqual(first_hash, second_hash)
+
     def test_a_deliberate_local_re_add_clears_the_tombstone(self):
         """Otherwise the next sync pass would honour it and delete it again."""
         db_operations.add_channel(self.NAME, self.URL)
