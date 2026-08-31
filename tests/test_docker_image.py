@@ -266,12 +266,20 @@ class VersionIsStampedTests(unittest.TestCase):
         self.assertIn("BBS_GIT_COMMIT", version_info)
 
     def test_the_build_helper_supplies_real_values(self):
-        self.assertIn("rev-list --count HEAD", BUILD_SH)
+        self.assertIn("version_info.py --build-number", BUILD_SH)
         self.assertIn("rev-parse --short HEAD", BUILD_SH)
 
     def test_the_workflow_supplies_real_values(self):
-        self.assertIn("rev-list --count HEAD", WORKFLOW)
+        self.assertIn("version_info.py --build-number", WORKFLOW)
         self.assertIn("BBS_BUILD_NUMBER=", WORKFLOW)
+
+    def test_nothing_reimplements_the_numbering_rule(self):
+        """The number is a mainline count plus an offset. A second copy of
+        that rule is how an image gets numbered differently from its
+        source."""
+        for name, text in (("build.sh", BUILD_SH), ("workflow", WORKFLOW)):
+            self.assertNotIn("rev-list --count", text,
+                             f"{name} recomputes the build number itself")
 
     def test_the_workflow_clones_deeply_enough_to_count(self):
         """A shallow clone counts its own truncated history, so the published

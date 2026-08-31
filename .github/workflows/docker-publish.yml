@@ -29,7 +29,9 @@ jobs:
       - name: Resolve the version
         id: version
         run: |
-          echo "build=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+          # version_info.py owns the rule (mainline count + offset); asking
+          # it here keeps the published tag equal to what the code reports.
+          echo "build=$(python3 version_info.py --build-number)" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3

@@ -11,7 +11,11 @@ cd "$(dirname "$0")/.."
 
 IMAGE="${1:-baconbs:local}"
 
-BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo '')"
+# Asked of version_info.py rather than recomputed here. The number is a
+# mainline count plus an offset, and a second implementation of that rule is
+# how an image ends up numbered differently from the source it was built
+# from.
+BUILD_NUMBER="$(python3 version_info.py --build-number 2>/dev/null || echo '')"
 GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo '')"
 
 if [ -z "$BUILD_NUMBER" ]; then

@@ -118,7 +118,7 @@ class MissingCommitIsExplainedTests(unittest.TestCase):
 
 
 class BuildNumberTests(unittest.TestCase):
-    """The patch number is the commit count.
+    """The patch number is the mainline length plus a fixed offset.
 
     APP_VERSION sat at 0.1.6 for 171 commits because it was a literal
     nobody edited and no automation touched, which left the commit hash
@@ -127,17 +127,44 @@ class BuildNumberTests(unittest.TestCase):
     """
 
     @staticmethod
+    def _expected(count):
+        return count + version_info._BUILD_OFFSET
+
+    @staticmethod
     def _git_returns(count):
         def run(cmd, **kwargs):
             return types.SimpleNamespace(returncode=0, stdout=f"{count}\n", stderr="")
         return run
 
-    def test_the_patch_number_is_the_commit_count(self):
+    def test_the_patch_number_is_the_mainline_count_plus_the_offset(self):
         with mock.patch.object(subprocess, "run", self._git_returns(177)), \
              mock.patch.object(version_info, "_write_build_cache", lambda b: None):
-            self.assertEqual(version_info.get_build_number(), 177)
-            self.assertEqual(version_info.get_app_version(),
-                             f"{version_info.APP_VERSION_BASE}.177")
+            self.assertEqual(version_info.get_build_number(), self._expected(177))
+            self.assertEqual(
+                version_info.get_app_version(),
+                f"{version_info.APP_VERSION_BASE}.{self._expected(177)}")
+
+    def test_only_the_mainline_is_counted(self):
+        """Counting every reachable commit counts whatever each clone
+        happened to merge in, so a fork reports a different number for
+        byte-identical files. That is what someone running this from a fork
+        actually saw."""
+        captured = {}
+
+        def run(cmd, **kwargs):
+            captured["cmd"] = list(cmd)
+            return types.SimpleNamespace(returncode=0, stdout="177\n", stderr="")
+
+        with mock.patch.object(subprocess, "run", run), \
+             mock.patch.object(version_info, "_write_build_cache", lambda b: None):
+            version_info.get_build_number()
+        self.assertIn("--first-parent", captured["cmd"])
+
+    def test_the_number_never_went_backwards_at_the_changeover(self):
+        """Switching from counting every ancestor to counting the mainline
+        subtracted 81 from this repository. The offset exists so no deployed
+        node appeared to downgrade, and must stay large enough to cover it."""
+        self.assertGreaterEqual(version_info._BUILD_OFFSET, 81)
 
     def test_a_cached_count_is_used_when_git_is_unavailable(self):
         """A node that was packaged or moved keeps a truthful number."""
@@ -163,7 +190,7 @@ class BuildNumberTests(unittest.TestCase):
              mock.patch.object(version_info, "_write_build_cache",
                                lambda b: written.setdefault("build", b)):
             version_info.get_build_number()
-        self.assertEqual(written.get("build"), 177)
+        self.assertEqual(written.get("build"), self._expected(177))
 
     def test_the_count_is_not_committed_to_the_repo(self):
         """A committed count would change on every commit, which changes
