@@ -4886,16 +4886,18 @@ def create_app(runtime_interface=None) -> Flask:
       return max(minimum, min(maximum, value))
 
     @app.get("/chatter")
+    @login_required
     def public_chatter_page():
       return render_template(
         "public_chatter.html",
         title="Public Chatter",
         title_suffix="Bacon BBS",
-        show_nav=False,
+        show_nav=True,
         filters=get_public_chatter_filters(),
       )
 
     @app.get("/api/public/chatter")
+    @login_required
     def public_chatter_api():
       channel_index = request.args.get("channel", "").strip()
       try:
@@ -4904,13 +4906,11 @@ def create_app(runtime_interface=None) -> Flask:
         return jsonify({"ok": False, "error": "channel must be a numeric index"}), 400
       result = get_public_chatter_history(
         hours=_bounded_int_arg("hours", 24, 1, 168),
-        limit=_bounded_int_arg("limit", 50, 1, 200),
+        limit=None,
         network=request.args.get("network", ""),
         channel_index=parsed_channel,
         capture_node_id=request.args.get("capture_node", ""),
         search_query=request.args.get("q", ""),
-        before_time=request.args.get("before_time", ""),
-        before_id=_bounded_int_arg("before_id", 0, 0, 2147483647),
       )
       return jsonify({"ok": True, **result})
 

@@ -896,7 +896,7 @@ def get_public_chatter_by_unique_id(unique_id: str):
 
 def get_public_chatter_history(
     hours: int = 24,
-    limit: int = 50,
+    limit: Optional[int] = 50,
     *,
     network: str = '',
     channel_index: Optional[int] = None,
@@ -905,9 +905,9 @@ def get_public_chatter_history(
     before_time: str = '',
     before_id: int = 0,
 ) -> dict:
-    """Return a bounded newest-first page from the retained chatter window."""
+    """Return newest-first retained chatter, optionally bounded to one page."""
     normalized_hours = max(1, min(168, int(hours)))
-    normalized_limit = max(1, min(200, int(limit)))
+    normalized_limit = None if limit is None else max(1, min(200, int(limit)))
     now = datetime.now(timezone.utc)
     cutoff = (now - timedelta(hours=normalized_hours)).isoformat().replace('+00:00', 'Z')
     clauses = ['message_timestamp >= ?', 'expires_at > ?']
@@ -935,7 +935,10 @@ def get_public_chatter_history(
         clauses.append('(message_timestamp < ? OR (message_timestamp = ? AND id < ?))')
         params.extend([str(before_time), str(before_time), int(before_id)])
 
-    params.append(normalized_limit + 1)
+    limit_clause = ''
+    if normalized_limit is not None:
+        limit_clause = 'LIMIT ?'
+        params.append(normalized_limit + 1)
     rows = get_db_connection().execute(
         f'''SELECT id, unique_id, network, channel_index, channel_name,
                    sender_node_id, sender_name, content, message_timestamp,
@@ -943,11 +946,12 @@ def get_public_chatter_history(
             FROM public_chatter
             WHERE {' AND '.join(clauses)}
             ORDER BY message_timestamp DESC, id DESC
-            LIMIT ?''',
+            {limit_clause}''',
         tuple(params),
     ).fetchall()
-    has_more = len(rows) > normalized_limit
-    rows = rows[:normalized_limit]
+    has_more = normalized_limit is not None and len(rows) > normalized_limit
+    if normalized_limit is not None:
+        rows = rows[:normalized_limit]
     columns = (
         'id', 'unique_id', 'network', 'channel_index', 'channel_name',
         'sender_node_id', 'sender_name', 'content', 'message_timestamp',

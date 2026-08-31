@@ -3,12 +3,10 @@
 
   var feed = document.getElementById("chatter-feed");
   var state = document.getElementById("chatter-state");
-  var more = document.getElementById("chatter-more");
   var hours = document.getElementById("chatter-hours");
   var network = document.getElementById("chatter-network");
   var channel = document.getElementById("chatter-channel");
   var search = document.getElementById("chatter-search");
-  var cursor = null;
   var searchTimer = null;
 
   function appendText(parent, tag, text, className) {
@@ -32,35 +30,27 @@
     feed.appendChild(article);
   }
 
-  function params(loadMore) {
+  function params() {
     var result = new URLSearchParams({
-      hours: String(Math.max(1, Math.min(168, Number(hours.value) || 24))),
-      limit: "50"
+      hours: String(Math.max(1, Math.min(168, Number(hours.value) || 24)))
     });
     if (network.value) result.set("network", network.value);
     if (channel.value) result.set("channel", channel.value);
     if (search.value.trim()) result.set("q", search.value.trim());
-    if (loadMore && cursor) {
-      result.set("before_time", cursor.before_time);
-      result.set("before_id", cursor.before_id);
-    }
     return result;
   }
 
-  async function load(loadMore) {
+  async function load() {
     state.hidden = false;
     state.textContent = "Loading messages...";
-    more.hidden = true;
     try {
-      var response = await fetch("/api/public/chatter?" + params(loadMore));
+      var response = await fetch("/api/public/chatter?" + params());
       if (!response.ok) throw new Error("Request failed");
       var data = await response.json();
-      if (!loadMore) feed.replaceChildren();
+      feed.replaceChildren();
       data.entries.forEach(renderEntry);
-      cursor = data.next_cursor;
       state.hidden = feed.children.length > 0;
       state.textContent = "No public messages in this time window.";
-      more.hidden = !data.has_more;
     } catch (error) {
       state.hidden = false;
       state.textContent = "Public chatter is temporarily unavailable.";
@@ -70,17 +60,16 @@
   document.querySelectorAll("[data-hours]").forEach(function (button) {
     button.addEventListener("click", function () {
       hours.value = button.dataset.hours;
-      load(false);
+      load();
     });
   });
   [hours, network, channel].forEach(function (control) {
-    control.addEventListener("change", function () { load(false); });
+    control.addEventListener("change", function () { load(); });
   });
   search.addEventListener("input", function () {
     window.clearTimeout(searchTimer);
-    searchTimer = window.setTimeout(function () { load(false); }, 300);
+    searchTimer = window.setTimeout(function () { load(); }, 300);
   });
-  more.addEventListener("click", function () { load(true); });
-  load(false);
-  window.setInterval(function () { load(false); }, 30000);
+  load();
+  window.setInterval(function () { load(); }, 30000);
 }());
