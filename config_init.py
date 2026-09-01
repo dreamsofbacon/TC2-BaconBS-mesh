@@ -428,56 +428,21 @@ def reload_mqtt_links(system_config: dict[str, Any]) -> list:
 
 
 def _read_fleet_settings(config) -> dict:
-    """Read [fleet], and refuse to arm anything that is misconfigured.
-
-    Two states look like they are working and are not, so both are surfaced
-    loudly rather than left to be discovered when an update silently fails to
-    arrive:
-
-      * updates enabled with no trusted key -- the node ignores every
-        instruction, which is indistinguishable from "no updates were issued";
-      * a PRIVATE key sitting on a node -- the one mistake that undoes the
-        whole model, because the point of the design is that no node can
-        issue an instruction to any other.
-    """
-    group = config.get('fleet', 'group', fallback='').strip()
-    raw_keys = config.get('fleet', 'trusted_keys', fallback='').strip()
-    mode = config.get('fleet', 'updates', fallback='off').strip().lower()
-    pin = config.get('fleet', 'pin_commit', fallback='').strip().lower()
-
-    if mode not in ('auto', 'notify', 'off'):
-        print(f"[fleet] updates = {mode!r} is not one of auto/notify/off; "
-              "treating as off")
-        mode = 'off'
-
-    if 'PRIVATE KEY' in raw_keys.upper():
-        print("[fleet] REFUSING to arm updates: trusted_keys contains a "
-              "PRIVATE key. Only the public half belongs on a node -- a "
-              "private key here lets anyone who reads this file command the "
-              "whole fleet. Replace it with the fk...:... entry from "
-              "`fleet_sign.py --show-pubkey`.")
-        return {'group': group, 'trusted_keys': '', 'updates': 'off',
-                'pin_commit': pin, 'error': 'private key in trusted_keys'}
-
+    """Delegates to fleet_update so there is one reader. Prints the warnings
+    it raises, since this runs at startup where stdout is the log."""
     try:
-        from fleet_update import parse_trusted_keys
-        key_count = len(parse_trusted_keys(raw_keys))
+        from fleet_update import read_fleet_settings
     except Exception:
-        key_count = 0
-
-    if mode != 'off' and key_count == 0:
-        print(f"[fleet] updates = {mode} but no usable trusted key is "
-              "configured, so every instruction will be ignored. Paste the "
-              "block from `fleet_sign.py --show-pubkey`.")
-    if mode != 'off' and not group:
-        print("[fleet] updates are enabled but no group is set; instructions "
-              "are scoped to a group and none will match.")
-    if pin:
-        print(f"[fleet] pinned to {pin[:12]}; fleet instructions will be "
-              "recorded but not applied.")
-
-    return {'group': group, 'trusted_keys': raw_keys, 'updates': mode,
-            'pin_commit': pin, 'key_count': key_count, 'error': ''}
+        # No crypto library: updates cannot be verified, so they are off.
+        return {'group': '', 'trusted_keys': '', 'updates': 'off',
+                'pin_commit': '', 'key_count': 0,
+                'error': 'fleet update support unavailable', 'notes': []}
+    settings = read_fleet_settings(config)
+    if settings.get('error'):
+        print(f"[fleet] REFUSING to arm updates: {settings['error']}")
+    for note in settings.get('notes', []):
+        print(f"[fleet] {note}")
+    return settings
 
 
 def initialize_config(config_file: str = None) -> dict[str, Any]:

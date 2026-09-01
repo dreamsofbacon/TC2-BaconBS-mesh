@@ -43,6 +43,9 @@
       <a href="{{ url_for('clients_summary') }}"
          class="nav-link{% if request.endpoint == 'clients_summary' or request.endpoint == 'client_profile' %} active{% endif %}"
          role="listitem">Clients</a>
+      <a href="{{ url_for('fleet_page') }}"
+         class="nav-link{% if request.endpoint == 'fleet_page' %} active{% endif %}"
+         role="listitem">Fleet</a>
       <a href="{{ url_for('accounts_list') }}"
          class="nav-link{% if request.endpoint == 'accounts_list' or request.endpoint == 'account_detail' %} active{% endif %}"
          role="listitem">Accounts</a>
