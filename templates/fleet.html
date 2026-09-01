@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <h1>Fleet</h1>
+  <p class="text-muted">
+    What every node is running, and what they have been told to run.
+  </p>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    {% for category, message in messages %}
+      <div class="alert alert-{{ 'danger' if category == 'error' else category }}">{{ message }}</div>
+    {% endfor %}
+  {% endif %}
+{% endwith %}
+
+<div class="card">
+  <div class="card-header"><h2>This node</h2></div>
+  <div class="card-body">
+    <div class="table-scroll-container">
+    <table class="table">
+      <tbody>
+        <tr><th>Version</th><td><code>{{ fleet.local_version }}</code></td></tr>
+        <tr><th>Commit</th><td><code>{{ fleet.local_commit or 'unknown' }}</code></td></tr>
+        <tr><th>Group</th>
+            <td>{% if fleet.group %}<code>{{ fleet.group }}</code>{% else %}
+                <span class="text-muted">not set</span>{% endif %}</td></tr>
+        <tr><th>Updates</th>
+            <td>
+              <code>{{ fleet.mode }}</code>
+              {% if fleet.mode == 'off' %}
+                <span class="text-muted">&mdash; instructions are ignored</span>
+              {% elif fleet.key_count == 0 %}
+                <span class="text-danger">&mdash; no trusted key, so every instruction
+                  is ignored</span>
+              {% elif fleet.pin_commit %}
+                <span class="text-muted">&mdash; pinned to
+                  <code>{{ fleet.pin_commit[:12] }}</code>, targets are recorded but not
+                  applied</span>
+              {% endif %}
+            </td></tr>
+        <tr><th>Trusted keys</th>
+            <td>
+              {% if fleet.key_ids %}
+                {% for kid in fleet.key_ids %}<code>{{ kid }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+              {% else %}<span class="text-muted">none</span>{% endif %}
+            </td></tr>
+      </tbody>
+    </table>
+    </div>
+    {% if fleet.config_error %}
+      <div class="alert alert-danger">{{ fleet.config_error }}</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><h2>Fleet target</h2></div>
+  <div class="card-body">
+    {% if fleet.target %}
+      <div class="table-scroll-container">
+      <table class="table">
+        <tbody>
+          <tr><th>Version</th><td><code>{{ fleet.target.version }}</code></td></tr>
+          <tr><th>Commit</th><td><code>{{ fleet.target.commit }}</code></td></tr>
+          <tr><th>Signed by</th><td><code>{{ fleet.target.signer_key_id }}</code></td></tr>
+          <tr><th>Issued</th><td>{{ fleet.target.issued_at }}</td></tr>
+          <tr><th>Applied</th>
+              <td>{{ fleet.target.applied_at or 'not yet' }}</td></tr>
+        </tbody>
+      </table>
+      </div>
+      {% if fleet.on_target %}
+        <p class="text-success">This node is on the target commit.</p>
+      {% else %}
+        <p class="text-warning">This node is <strong>not</strong> on the target commit.</p>
+      {% endif %}
+    {% else %}
+      <p class="text-muted">No target has been set for this group.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><h2>Apply a signed instruction</h2></div>
+  <div class="card-body">
+    <p class="text-muted">
+      Produced on the admin machine with
+      <code>scripts/fleet_sign.py sign &lt;ref&gt;</code>. The blob is not secret:
+      it authorises one commit for one group and cannot be edited without
+      breaking its signature. It is verified here before anything is stored,
+      and rejected if it was not signed by a key this node trusts.
+    </p>
+    <form method="post" action="{{ url_for('fleet_apply') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-group">
+        <label for="instruction">Signed instruction</label>
+        <textarea class="form-control" id="instruction" name="instruction" rows="4"
+                  placeholder="eyJjIjoi....(payload).(signature)"></textarea>
+      </div>
+      <button type="submit" class="btn btn-primary">Verify and apply</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><h2>Nodes seen</h2></div>
+  <div class="card-body">
+    <p class="text-muted">
+      Versions peers report about themselves. Advisory only &mdash; this is
+      unsigned and is never used to decide what to run.
+    </p>
+    {% if fleet.peers %}
+    <div class="table-scroll-container">
+      <table class="table data-table">
+        <thead>
+          <tr><th>Node</th><th>Version</th><th>Commit</th><th>Reported</th><th>State</th></tr>
+        </thead>
+        <tbody>
+          {% for peer in fleet.peers %}
+          <tr>
+            <td><code>{{ peer.node_id | middle_ellipsis(28) }}</code></td>
+            <td><code>{{ peer.app_version or '?' }}</code></td>
+            <td><code>{{ peer.commit_hash[:12] or '?' }}</code></td>
+            <td>{{ peer.reported_at | relative_age }}</td>
+            <td>
+              {% if not fleet.target %}<span class="text-muted">&mdash;</span>
+              {% elif peer.commit_hash and peer.commit_hash.startswith(fleet.target.commit[:12]) %}
+                <span class="text-success">on target</span>
+              {% else %}
+                <span class="text-warning">drifted</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      <p class="text-muted">No peer has reported a version yet.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

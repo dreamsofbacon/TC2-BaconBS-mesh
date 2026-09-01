@@ -195,6 +195,80 @@ def load_storage_settings(config_path: str) -> dict:
   }
 
 
+def load_fleet_settings(config_path: str) -> dict:
+  """Read [fleet] the same way the server does, so the page cannot disagree
+  with the process about whether updates are armed."""
+  config = read_config_file(config_path)
+  try:
+    # fleet_update, NOT config_init: importing config_init here pulls in
+    # meshtastic and pyserial, and where that fails the fallback below reads
+    # as "updates are off" when they are actually armed.
+    from fleet_update import read_fleet_settings
+    return read_fleet_settings(config)
+  except Exception:
+    return {"group": "", "trusted_keys": "", "updates": "off",
+            "pin_commit": "", "key_count": 0,
+            "error": "fleet update support unavailable (cryptography missing)",
+            "notes": []}
+
+
+def request_fleet_apply_trigger() -> None:
+  """Ask server.py to act on the stored target, via the existing channel."""
+  trigger_file = resolve_app_path(
+    os.getenv("BBS_FLEET_APPLY_TRIGGER_PATH"), "apply_update.trigger")
+  tmp = f"{trigger_file}.tmp"
+  with open(tmp, "w", encoding="utf-8") as handle:
+    handle.write(datetime.utcnow().isoformat())
+  os.replace(tmp, trigger_file)
+
+
+def build_fleet_view(config_path: str) -> dict:
+  """Everything the Fleet page shows, including why it might be inert."""
+  settings = load_fleet_settings(config_path)
+  group = settings.get("group", "")
+
+  local_version, local_commit = "", ""
+  try:
+    from version_info import get_app_version, get_git_commit_short
+    local_version, local_commit = get_app_version(), get_git_commit_short()
+  except Exception:
+    pass
+
+  key_ids = []
+  try:
+    import fleet_update
+    key_ids = sorted(fleet_update.parse_trusted_keys(
+      settings.get("trusted_keys", "")))
+  except Exception:
+    pass
+
+  target, peers = None, []
+  try:
+    from db_operations import get_fleet_target, get_node_versions
+    target = get_fleet_target(group) if group else None
+    peers = get_node_versions()
+  except Exception:
+    pass
+
+  on_target = bool(
+    target and local_commit
+    and str(target.get("commit", "")).startswith(local_commit[:7]))
+
+  return {
+    "local_version": local_version or "unknown",
+    "local_commit": local_commit,
+    "group": group,
+    "mode": settings.get("updates", "off"),
+    "pin_commit": settings.get("pin_commit", ""),
+    "key_count": len(key_ids),
+    "key_ids": key_ids,
+    "config_error": settings.get("error", ""),
+    "target": target,
+    "on_target": on_target,
+    "peers": peers,
+  }
+
+
 def load_public_chatter_settings(config_path: str) -> dict:
   config = read_config_file(config_path)
   return {
@@ -4895,6 +4969,66 @@ def create_app(runtime_interface=None) -> Flask:
         show_nav=True,
         filters=get_public_chatter_filters(),
       )
+
+    @app.get("/fleet")
+    @login_required
+    def fleet_page():
+      return render_template(
+        "fleet.html",
+        title="Fleet",
+        title_suffix="Bacon BBS",
+        show_nav=True,
+        fleet=build_fleet_view(app.config["CONFIG_PATH"]),
+      )
+
+    @app.post("/fleet/apply")
+    @login_required
+    def fleet_apply():
+      """Verify a pasted instruction, then record it.
+
+      The web admin password is the only thing in front of this box, and it
+      is plaintext in config.ini -- so the paste is NOT trusted because it
+      arrived here. It is trusted only if its signature checks out against a
+      key this node already holds, exactly as if it had arrived over the
+      air. That is why signing stays on the admin machine: this endpoint can
+      relay authority, never mint it.
+      """
+      blob = (request.form.get("instruction") or "").strip()
+      if not blob:
+        flash("Paste a signed instruction first.", "error")
+        return redirect(url_for("fleet_page"))
+
+      settings = load_fleet_settings(app.config["CONFIG_PATH"])
+      if settings.get("updates") == "off":
+        flash("Fleet updates are off on this node ([fleet] updates = off), so "
+              "the instruction was not stored.", "error")
+        return redirect(url_for("fleet_page"))
+
+      try:
+        import fleet_update
+        from db_operations import last_fleet_issued_at, store_fleet_target
+      except Exception:
+        flash("This node cannot verify signatures (the cryptography package is "
+              "missing), so the instruction was refused.", "error")
+        return redirect(url_for("fleet_page"))
+
+      trusted = fleet_update.parse_trusted_keys(settings.get("trusted_keys", ""))
+      group = settings.get("group", "")
+      try:
+        payload = fleet_update.verify_instruction(
+          blob, trusted, group, last_issued_at=last_fleet_issued_at(group))
+      except fleet_update.FleetVerificationError as exc:
+        flash(f"Instruction rejected: {exc}", "error")
+        return redirect(url_for("fleet_page"))
+
+      if store_fleet_target(payload, blob):
+        request_fleet_apply_trigger()
+        flash(f"Target accepted: version {payload.get('v')} "
+              f"(commit {str(payload.get('c'))[:12]}). It will be applied and "
+              "relayed to peers.", "success")
+      else:
+        flash("That instruction is not newer than the one already stored.", "error")
+      return redirect(url_for("fleet_page"))
 
     @app.get("/api/public/chatter")
     @login_required

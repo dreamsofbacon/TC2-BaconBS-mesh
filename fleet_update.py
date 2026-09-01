@@ -451,3 +451,55 @@ def apply_target(commit: str, version: str = "") -> tuple:
     logging.warning("Fleet update: switched %s -> %s; exiting so systemd "
                     "restarts on the new code", previous[:12], str(commit)[:12])
     return True, f"applied {str(commit)[:12]}"
+
+def read_fleet_settings(config) -> dict:
+    """Read [fleet] from a ConfigParser, refusing anything misconfigured.
+
+    Lives here rather than in config_init because the web admin needs it too,
+    and importing config_init drags in meshtastic and pyserial. Where that
+    import fails the caller degrades to "updates off" -- which looks like a
+    deliberate setting and is not. One reader, no heavy dependencies, no way
+    for the page and the process to disagree about whether updates are armed.
+
+    Two states look like they are working and are not, so both are surfaced:
+      * updates enabled with no usable key -- every instruction is ignored,
+        which is indistinguishable from "none were issued";
+      * a PRIVATE key on a node -- the one mistake that undoes the model,
+        since the whole point is that no node can command another.
+    """
+    group = config.get('fleet', 'group', fallback='').strip()
+    raw_keys = config.get('fleet', 'trusted_keys', fallback='').strip()
+    mode = config.get('fleet', 'updates', fallback='off').strip().lower()
+    pin = config.get('fleet', 'pin_commit', fallback='').strip().lower()
+    notes = []
+
+    if mode not in ('auto', 'notify', 'off'):
+        notes.append(f"updates = {mode!r} is not one of auto/notify/off; "
+                     "treating as off")
+        mode = 'off'
+
+    if 'PRIVATE KEY' in raw_keys.upper():
+        return {
+            'group': group, 'trusted_keys': '', 'updates': 'off',
+            'pin_commit': pin, 'key_count': 0,
+            'error': ("trusted_keys contains a PRIVATE key. Only the public "
+                      "half belongs on a node -- a private key here lets "
+                      "anyone who can read this file command the whole fleet. "
+                      "Replace it with the fk...:... entry from "
+                      "`fleet_sign.py --show-pubkey`."),
+            'notes': notes,
+        }
+
+    key_count = len(parse_trusted_keys(raw_keys))
+    if mode != 'off' and key_count == 0:
+        notes.append(f"updates = {mode} but no usable trusted key is "
+                     "configured, so every instruction will be ignored")
+    if mode != 'off' and not group:
+        notes.append("updates are enabled but no group is set; instructions "
+                     "are scoped to a group and none will match")
+    if pin:
+        notes.append(f"pinned to {pin[:12]}; targets are recorded but not applied")
+
+    return {'group': group, 'trusted_keys': raw_keys, 'updates': mode,
+            'pin_commit': pin, 'key_count': key_count, 'error': '',
+            'notes': notes}
