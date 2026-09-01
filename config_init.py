@@ -427,6 +427,59 @@ def reload_mqtt_links(system_config: dict[str, Any]) -> list:
     return fresh
 
 
+def _read_fleet_settings(config) -> dict:
+    """Read [fleet], and refuse to arm anything that is misconfigured.
+
+    Two states look like they are working and are not, so both are surfaced
+    loudly rather than left to be discovered when an update silently fails to
+    arrive:
+
+      * updates enabled with no trusted key -- the node ignores every
+        instruction, which is indistinguishable from "no updates were issued";
+      * a PRIVATE key sitting on a node -- the one mistake that undoes the
+        whole model, because the point of the design is that no node can
+        issue an instruction to any other.
+    """
+    group = config.get('fleet', 'group', fallback='').strip()
+    raw_keys = config.get('fleet', 'trusted_keys', fallback='').strip()
+    mode = config.get('fleet', 'updates', fallback='off').strip().lower()
+    pin = config.get('fleet', 'pin_commit', fallback='').strip().lower()
+
+    if mode not in ('auto', 'notify', 'off'):
+        print(f"[fleet] updates = {mode!r} is not one of auto/notify/off; "
+              "treating as off")
+        mode = 'off'
+
+    if 'PRIVATE KEY' in raw_keys.upper():
+        print("[fleet] REFUSING to arm updates: trusted_keys contains a "
+              "PRIVATE key. Only the public half belongs on a node -- a "
+              "private key here lets anyone who reads this file command the "
+              "whole fleet. Replace it with the fk...:... entry from "
+              "`fleet_sign.py --show-pubkey`.")
+        return {'group': group, 'trusted_keys': '', 'updates': 'off',
+                'pin_commit': pin, 'error': 'private key in trusted_keys'}
+
+    try:
+        from fleet_update import parse_trusted_keys
+        key_count = len(parse_trusted_keys(raw_keys))
+    except Exception:
+        key_count = 0
+
+    if mode != 'off' and key_count == 0:
+        print(f"[fleet] updates = {mode} but no usable trusted key is "
+              "configured, so every instruction will be ignored. Paste the "
+              "block from `fleet_sign.py --show-pubkey`.")
+    if mode != 'off' and not group:
+        print("[fleet] updates are enabled but no group is set; instructions "
+              "are scoped to a group and none will match.")
+    if pin:
+        print(f"[fleet] pinned to {pin[:12]}; fleet instructions will be "
+              "recorded but not applied.")
+
+    return {'group': group, 'trusted_keys': raw_keys, 'updates': mode,
+            'pin_commit': pin, 'key_count': key_count, 'error': ''}
+
+
 def initialize_config(config_file: str = None) -> dict[str, Any]:
     """
     Function reads and parses system configuration file
@@ -506,6 +559,8 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
     public_chatter_secondary_channels = _read_channel_indexes(
         config, 'secondary_channels') if public_chatter_enabled else []
 
+    fleet_settings = _read_fleet_settings(config)
+
     print(f"Nodes with Urgent board permissions: {allowed_nodes}")
 
     # --- Optional secondary radio (dual-radio bridge mode) -----------------
@@ -571,6 +626,7 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
         'bbs_nodes2': bbs_nodes2,
         'subscriber_nodes2': subscriber_nodes2,
         'allowed_nodes2': allowed_nodes2,
+        'fleet': fleet_settings,
         'public_chatter_enabled': public_chatter_enabled,
         'public_chatter_primary_channels': public_chatter_primary_channels,
         'public_chatter_secondary_channels': public_chatter_secondary_channels,

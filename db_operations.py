@@ -816,6 +816,7 @@ def initialize_database():
     _ensure_local_only_columns(c)
     _ensure_accounts_tables(c)
     _ensure_mail_dm_delivery_table(c)
+    _ensure_fleet_tables(c)
     _dedupe_channels_and_create_unique_index(c)
     _dedupe_messages_and_create_unique_indexes(c)
     conn.commit()
@@ -1126,6 +1127,34 @@ def _ensure_accounts_tables(cursor) -> None:
                 );''')
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_link_attempts_node_time
                     ON link_attempts (node_id, attempted_at);''')
+
+
+def _ensure_fleet_tables(cursor) -> None:
+    """Fleet target state, and the versions peers report.
+
+    Two tables with deliberately different trust levels. fleet_target holds
+    the ONE verified instruction this node is acting on, and only ever gets
+    written after a signature check. node_versions is gossip: it is what
+    peers say about themselves, is never an input to any decision, and exists
+    so an operator can see drift.
+    """
+    cursor.execute('''CREATE TABLE IF NOT EXISTS fleet_target (
+                    group_name TEXT PRIMARY KEY,
+                    target_commit TEXT NOT NULL,
+                    target_version TEXT NOT NULL DEFAULT '',
+                    issued_at TEXT NOT NULL,
+                    signer_key_id TEXT NOT NULL DEFAULT '',
+                    nonce TEXT NOT NULL DEFAULT '',
+                    instruction TEXT NOT NULL,
+                    received_at TEXT NOT NULL,
+                    applied_at TEXT
+                );''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS node_versions (
+                    node_id TEXT PRIMARY KEY,
+                    app_version TEXT NOT NULL DEFAULT '',
+                    commit_hash TEXT NOT NULL DEFAULT '',
+                    reported_at TEXT NOT NULL
+                );''')
 
 
 def _ensure_mail_dm_delivery_table(cursor) -> None:
@@ -4274,7 +4303,15 @@ def get_mail_relay_directory(exclude_node_id: Optional[str] = None) -> list[dict
     excluded_account_id = None
     if exclude_node_id and str(exclude_node_id) in linked:
         excluded_account_id = linked[str(exclude_node_id)][0]
-    c.execute("SELECT node_id FROM mail_relay_preferences WHERE enabled = 1 ORDER BY node_id")
+    c.execute(
+        """SELECT node_id FROM mail_relay_preferences WHERE enabled = 1
+           UNION
+           SELECT ln.node_id
+           FROM linked_nodes ln
+           JOIN accounts a ON a.account_id = ln.account_id
+           WHERE a.mail_relay_enabled = 1
+           ORDER BY node_id"""
+    )
     eligible_node_ids = [str(row[0]) for row in c.fetchall()]
     clients_by_node = {}
     for client in clients:
@@ -5539,3 +5576,93 @@ def sync_full_database_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[i
         'zork_saves_synced': g.get('zork_saves_synced', 0),
         'total_messages':    p.get('total_messages', 0) + g.get('total_messages', 0),
     }
+
+
+def get_fleet_target(group: str) -> Optional[dict]:
+    """The verified instruction this node is following, if any."""
+    conn = get_db_connection()
+    row = conn.execute(
+        """SELECT group_name, target_commit, target_version, issued_at,
+                  signer_key_id, instruction, received_at, applied_at
+           FROM fleet_target WHERE group_name = ?""", (str(group),)).fetchone()
+    if not row:
+        return None
+    keys = ('group', 'commit', 'version', 'issued_at', 'signer_key_id',
+            'instruction', 'received_at', 'applied_at')
+    return dict(zip(keys, row))
+
+
+def store_fleet_target(payload: dict, instruction: str) -> bool:
+    """Record an instruction that has ALREADY been verified.
+
+    This function does not verify anything and must never be called with an
+    unverified payload -- verification lives in fleet_update.verify_instruction
+    so there is exactly one place that decides what is trustworthy. The
+    monotonic check here is a second line of defence against a replay that
+    somehow reached storage.
+    """
+    group = str(payload.get('g', ''))
+    issued_at = str(payload.get('t', ''))
+    existing = get_fleet_target(group)
+    if existing and str(existing['issued_at']) >= issued_at:
+        return False
+    conn = get_db_connection()
+    conn.execute(
+        """INSERT INTO fleet_target
+               (group_name, target_commit, target_version, issued_at,
+                signer_key_id, nonce, instruction, received_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(group_name) DO UPDATE SET
+               target_commit = excluded.target_commit,
+               target_version = excluded.target_version,
+               issued_at = excluded.issued_at,
+               signer_key_id = excluded.signer_key_id,
+               nonce = excluded.nonce,
+               instruction = excluded.instruction,
+               received_at = excluded.received_at,
+               applied_at = NULL""",
+        (group, str(payload.get('c', '')), str(payload.get('v', '')),
+         issued_at, str(payload.get('k', '')), str(payload.get('n', '')),
+         str(instruction), datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+    return True
+
+
+def mark_fleet_target_applied(group: str) -> None:
+    conn = get_db_connection()
+    conn.execute("UPDATE fleet_target SET applied_at = ? WHERE group_name = ?",
+                 (datetime.now(timezone.utc).isoformat(), str(group)))
+    conn.commit()
+
+
+def last_fleet_issued_at(group: str) -> str:
+    """Feeds the replay check. Empty means nothing has been accepted yet."""
+    target = get_fleet_target(group)
+    return str(target['issued_at']) if target else ''
+
+
+def record_node_version(node_id: str, app_version: str, commit_hash: str) -> None:
+    """Remember what a peer says it is running. Advisory only."""
+    if not str(node_id or '').strip():
+        return
+    conn = get_db_connection()
+    conn.execute(
+        """INSERT INTO node_versions (node_id, app_version, commit_hash, reported_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(node_id) DO UPDATE SET
+               app_version = excluded.app_version,
+               commit_hash = excluded.commit_hash,
+               reported_at = excluded.reported_at""",
+        (str(node_id).strip(), str(app_version or ''), str(commit_hash or ''),
+         datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+
+
+def get_node_versions() -> list:
+    """Every peer's self-reported version, newest report first."""
+    conn = get_db_connection()
+    rows = conn.execute(
+        """SELECT node_id, app_version, commit_hash, reported_at
+           FROM node_versions ORDER BY reported_at DESC""").fetchall()
+    return [dict(zip(('node_id', 'app_version', 'commit_hash', 'reported_at'), r))
+            for r in rows]
