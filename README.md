@@ -757,6 +757,14 @@ options:
 
 ---
 
+## Handoff
+
+[HANDOFF.md](HANDOFF.md) covers the running deployment: the two live nodes and
+their topology, how to deploy and what to check afterwards, the open issues,
+and the decisions that look like tidying opportunities but are not.
+
+---
+
 ## Acknowledgements
 
 - [TheCommsChannel](https://github.com/TheCommsChannel) — original TC²-BBS-mesh
