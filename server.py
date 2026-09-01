@@ -12,6 +12,12 @@ database for data storage. Mail messages and bulletins are synced with
 other BBS servers listed in the config.ini file.
 """
 
+# Before anything else, including project imports: if a fleet update left
+# this node unable to start, the guard is what rolls it back, and it can
+# only do that if it has already run. See update_guard.py.
+import update_guard
+update_guard.check('server')
+
 import logging
 import json
 import os
@@ -299,6 +305,10 @@ def get_record_resolve_trigger_path() -> str:
 
 def get_link_reconnect_trigger_path() -> str:
     return resolve_app_path(os.getenv('BBS_LINK_RECONNECT_TRIGGER_PATH'), 'reconnect_link.trigger')
+
+
+def get_fleet_apply_trigger_path() -> str:
+    return resolve_app_path(os.getenv('BBS_FLEET_APPLY_TRIGGER_PATH'), 'apply_update.trigger')
 
 
 def get_links_reload_trigger_path() -> str:
@@ -739,8 +749,18 @@ def publish_mqtt_status(links, snapshot: dict) -> None:
     radios = snapshot.get('radios', []) if isinstance(snapshot, dict) else []
     if not radios:
         return
+    try:
+        from version_info import get_app_version, get_git_commit_short
+        _app_version, _commit = get_app_version(), get_git_commit_short()
+    except Exception:
+        _app_version, _commit = '', ''
     status = {
         'updated_at': snapshot.get('updated_at') if isinstance(snapshot, dict) else None,
+        # Retained, so a peer that connects later still learns what this node
+        # is running. This is the whole visibility half of fleet updates and
+        # it costs no new transport.
+        'app_version': _app_version,
+        'commit': _commit,
         'links': {
             str(r.get('name', 'primary')): {
                 'protocol': r.get('radio_protocol'),
@@ -1061,6 +1081,45 @@ def deliver_due_mail_dms(links, active_window_seconds: int = 900, retry_base_sec
             retry_mail_dm_delivery(entry['id'], str(exc), delay)
             logging.warning("Mail DM delivery to %s failed: %s", node_id, exc)
     return delivered
+
+
+def _apply_fleet_target_if_due(system_config: dict) -> bool:
+    """Move this node onto the stored fleet target, if it should.
+
+    The instruction was verified when it arrived; this only decides whether
+    to act on it and then does the git work. Returns True when the working
+    tree changed and the caller should exit so systemd restarts us.
+    """
+    fleet = (system_config or {}).get('fleet') or {}
+    mode = str(fleet.get('updates', 'off')).lower()
+    group = str(fleet.get('group', ''))
+    if mode != 'auto' or not group:
+        return False
+
+    pinned = str(fleet.get('pin_commit', '')).strip()
+    try:
+        from db_operations import get_fleet_target, mark_fleet_target_applied
+        import fleet_update
+    except Exception:
+        logging.warning("Fleet: update support unavailable; not applying.")
+        return False
+
+    target = get_fleet_target(group)
+    if not target:
+        return False
+
+    commit = str(target.get('commit', ''))
+    if pinned:
+        logging.warning("Fleet: target %s recorded but this node is pinned to "
+                        "%s; not applying.", commit[:12], pinned[:12])
+        return False
+
+    applied, detail = fleet_update.apply_target(commit, target.get('version', ''))
+    if applied:
+        mark_fleet_target_applied(group)
+        return True
+    logging.info("Fleet: not applying %s: %s", commit[:12], detail)
+    return False
 
 
 def persist_mesh_clients(links) -> None:
@@ -1815,6 +1874,7 @@ def main():
     record_resolve_trigger_path = get_record_resolve_trigger_path()
     link_reconnect_trigger_path = get_link_reconnect_trigger_path()
     links_reload_trigger_path = get_links_reload_trigger_path()
+    fleet_apply_trigger_path = get_fleet_apply_trigger_path()
     publish_mqtt_status(links, write_runtime_diagnostics_snapshot(links, system_config))
     persist_mesh_clients(links)
 
@@ -1873,6 +1933,9 @@ def main():
         last_record_resolve_trigger_mtime = 0.0
         last_link_reconnect_trigger_mtime = 0.0
         last_links_reload_trigger_mtime = 0.0
+        last_fleet_apply_trigger_mtime = 0.0
+        fleet_probation_confirmed = False
+        fleet_started_at = time.time()
         system_config['sync_last_trigger_reason'] = 'scheduled'
         system_config['sync_interval_minutes_runtime'] = int(system_config.get('sync_interval_minutes', 5))
         system_config['sync_next_run_epoch'] = int(time.time())
@@ -2080,6 +2143,36 @@ def main():
                             logging.info("Links reloaded from config: no changes.")
             except Exception as exc:
                 logging.debug(f"Unable to process links reload trigger: {exc}")
+
+            # A verified fleet target is waiting to be applied. Done here
+            # rather than on the receive thread that verified it, because
+            # applying ends with this process exiting.
+            try:
+                if os.path.exists(fleet_apply_trigger_path):
+                    trigger_mtime = os.path.getmtime(fleet_apply_trigger_path)
+                    if trigger_mtime > last_fleet_apply_trigger_mtime:
+                        last_fleet_apply_trigger_mtime = trigger_mtime
+                        os.remove(fleet_apply_trigger_path)
+                        if _apply_fleet_target_if_due(system_config):
+                            # The working tree is now the new version. Exit so
+                            # systemd (Restart=always) starts us on it.
+                            logging.warning("Fleet update applied; exiting to "
+                                            "restart on the new version.")
+                            return
+            except Exception as exc:
+                logging.debug(f"Unable to process fleet apply trigger: {exc}")
+
+            # End probation once this node has demonstrably been serving for
+            # a while. Until then every restart counts against the rollback
+            # budget, which is what makes the budget mean anything.
+            if not fleet_probation_confirmed and (time.time() - fleet_started_at) > 300:
+                try:
+                    if update_guard.confirm_healthy():
+                        logging.warning("Fleet update confirmed healthy; "
+                                        "rollback disarmed.")
+                except Exception:
+                    logging.debug("Could not confirm update health", exc_info=True)
+                fleet_probation_confirmed = True
 
             for link in links:
                 _run_link_tick(

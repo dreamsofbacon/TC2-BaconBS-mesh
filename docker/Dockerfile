@@ -71,6 +71,7 @@ ENV BBS_CONFIG_PATH=/config/config.ini \
     BBS_RECORD_RESOLVE_TRIGGER_PATH=/config/resolve_record.trigger \
     BBS_LINK_RECONNECT_TRIGGER_PATH=/config/reconnect_link.trigger \
     BBS_LINKS_RELOAD_TRIGGER_PATH=/config/reload_links.trigger \
+    BBS_FLEET_APPLY_TRIGGER_PATH=/config/apply_update.trigger \
     BBS_MQTT_CERT_DIR=/config/mqtt-certs \
     BBS_WEBGUI_PORT=8081
 
