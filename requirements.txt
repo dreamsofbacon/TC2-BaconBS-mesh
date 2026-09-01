@@ -16,3 +16,14 @@ flask
 # happens to pull it in today, but relying on another package's dependency
 # for something we import ourselves breaks the day that changes.
 pyserial
+
+# Ed25519 verification for fleet update instructions (fleet_update.py). This
+# is the security boundary for remote updates, so it is a hard requirement
+# rather than an optional extra: a node that cannot verify a signature must
+# not fall back to trusting the message.
+#
+# Declared explicitly and NOT taken from meshcore's transitive pycryptodome,
+# which is skipped entirely on Python 3.9 -- one of the two live nodes runs
+# 3.9 on armv7l, so the transitive route is absent exactly where it is
+# needed. Confirmed installable there from piwheels.
+cryptography>=41

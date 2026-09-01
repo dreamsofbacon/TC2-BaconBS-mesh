@@ -1458,6 +1458,120 @@ def _auto_update_profile(sender_id, interface):
         pass
 
 
+_pending_fleet_instructions = {}
+_pending_fleet_lock = threading.Lock()
+
+
+def _apply_fleet_instruction(blob: str, sender_node_id) -> None:
+    """Verify a reassembled instruction and record it if it is genuine.
+
+    Everything about this function assumes the sender is unknown and possibly
+    hostile: `sender_node_id` is used only for logging, never for trust. The
+    signature is the sole authority, and it is checked before the payload
+    reaches storage or the updater.
+    """
+    try:
+        import fleet_update
+        from db_operations import last_fleet_issued_at, store_fleet_target
+    except Exception:
+        # Only reachable if the crypto dependency is missing. Refusing here
+        # is correct: a node that cannot verify a signature must ignore the
+        # instruction, never fall back to trusting it.
+        logging.warning("FLEETVER: cannot verify instructions (%s); ignoring",
+                        "fleet support unavailable", exc_info=True)
+        return
+
+    try:
+        settings = _fleet_settings()
+    except Exception:
+        return
+    if not settings or settings.get('updates') == 'off':
+        return
+
+    trusted = fleet_update.parse_trusted_keys(settings.get('trusted_keys', ''))
+    group = settings.get('group', '')
+    try:
+        payload = fleet_update.verify_instruction(
+            blob, trusted, group, last_issued_at=last_fleet_issued_at(group))
+    except fleet_update.FleetVerificationError as exc:
+        # Logged at info, not warning: on a shared broker, instructions for
+        # other fleets are normal traffic, not incidents.
+        logging.info("Fleet instruction from %s not accepted: %s",
+                     sender_node_id, exc)
+        return
+
+    if store_fleet_target(payload, blob):
+        logging.warning(
+            "Fleet target accepted: %s -> commit %s (signed by %s, via %s)",
+            payload.get('v', '?'), str(payload.get('c', ''))[:12],
+            payload.get('k'), sender_node_id)
+        _request_fleet_apply()
+
+
+def _fleet_settings() -> dict:
+    """Read [fleet] fresh so a config edit takes effect without a restart."""
+    import configparser
+    from app_paths import resolve_app_path
+    import config_init
+    config = configparser.ConfigParser()
+    config.read(resolve_app_path(os.getenv("BBS_CONFIG_PATH"), "config.ini"))
+    return config_init._read_fleet_settings(config)
+
+
+def _request_fleet_apply() -> None:
+    """Ask server.py's main loop to do the actual update.
+
+    Deliberately not done inline: this runs on a receive thread, and an
+    update ends in the process exiting. The existing trigger-file channel is
+    how the web admin already asks the server to act.
+    """
+    try:
+        from app_paths import resolve_app_path
+        path = resolve_app_path(
+            os.getenv("BBS_FLEET_APPLY_TRIGGER_PATH"), "apply_update.trigger")
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(datetime.now(timezone.utc).isoformat())
+        os.replace(tmp, path)
+    except Exception:
+        logging.debug("Could not write the fleet apply trigger", exc_info=True)
+
+
+def _add_fleet_instruction_chunk(message: str, sender_node_id, interface) -> None:
+    """Reassemble a chunked FLEETVER frame, then verify the whole thing.
+
+    Chunks are held unverified because a signature only checks out over the
+    complete payload. Nothing is trusted until reassembly finishes and
+    _apply_fleet_instruction verifies it.
+    """
+    try:
+        if message.startswith("FLEETVER|"):
+            _, uid, expected, chunk = message.split("|", 3)
+            with _pending_fleet_lock:
+                _pending_fleet_instructions[uid] = {
+                    "expected": int(expected), "parts": {0: chunk}}
+        else:
+            _, uid, offset, chunk = message.split("|", 3)
+            with _pending_fleet_lock:
+                entry = _pending_fleet_instructions.get(uid)
+                if entry is None:
+                    return
+                entry["parts"][int(offset)] = chunk
+    except (ValueError, TypeError):
+        return
+
+    with _pending_fleet_lock:
+        entry = _pending_fleet_instructions.get(uid)
+        if entry is None:
+            return
+        assembled = "".join(entry["parts"][k] for k in sorted(entry["parts"]))
+        if len(assembled) < entry["expected"]:
+            return
+        _pending_fleet_instructions.pop(uid, None)
+
+    _apply_fleet_instruction(assembled, sender_node_id)
+
+
 def _store_public_chatter_payload(unique_id: str, encoded_payload: str) -> None:
     try:
         raw = base64.urlsafe_b64decode(encoded_payload.encode('ascii'))
@@ -2110,6 +2224,22 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             upsert_synced_user_profile(parts[1], short_name, long_name,
                                        decode_ts_second(parts[4]), decode_ts_second(parts[5]),
                                        messages_sent, bio)
+        elif message.startswith("FLEETVER|") or message.startswith("FLEETVERCONT|"):
+            _add_fleet_instruction_chunk(message, sender_node_id, interface)
+            return
+        elif message.startswith("NODEVER|"):
+            # Unsigned and forgeable. It may populate a drift display and
+            # must never influence what this node decides to run.
+            parts = message.split("|", 5)
+            if len(parts) >= 4 and parts[1].strip():
+                try:
+                    from db_operations import record_node_version
+                    record_node_version(parts[1].strip(), parts[2].strip(),
+                                        parts[3].strip())
+                except Exception:
+                    logging.debug("NODEVER: could not record peer version",
+                                  exc_info=True)
+            return
         elif message.startswith("RELAYPREF|"):
             parts = message.split("|", 3)
             if len(parts) != 4 or parts[2] not in ('0', '1') or not parts[1] or not parts[3]:
@@ -2645,7 +2775,8 @@ def on_receive(packet, interface):
                                   ["PCHAT|", "PCHATCONT|", "BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|", "DELETE_ZORKSAVE|",
                                    "CHANNEL|", "DELETE_CHANNEL|", "CHANNELCOMMENT|", "CHANNELCOMMENTCONT|", "CHANNELCOMMENTMETA|", "DELETE_CHANNELCOMMENT|",
                                    "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
-                                   "PROFILESYNC|", "RELAYPREF|", "SCORESYNC|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
+                                   "PROFILESYNC|", "RELAYPREF|", "SCORESYNC|",
+                                   "FLEETVER|", "FLEETVERCONT|", "NODEVER|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|", "HASHZGAP|",
                                    "HAVE|", "WANT|", "EVENT|", "PEERGOSSIP|",
                                    "APIREQ|", "APIRESP|", "APIRESPCONT|", "APIRESPMETA|",

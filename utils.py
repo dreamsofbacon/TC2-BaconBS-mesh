@@ -44,7 +44,7 @@ def get_max_text_bytes(interface=None) -> int:
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'fver')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'fver'=signed fleet version targets, 'pchat'=public chatter history
 
 # Single-char scope codes used by the 'scc' wire capability.  Senders gate
 # encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
@@ -1574,6 +1574,58 @@ def send_mail_relay_preference_to_bbs_nodes(node_id, enabled, updated_at, bbs_no
     sent = 0
     for peer_id in bbs_nodes or []:
         if peer_supports(peer_id, 'mrp'):
+            _send_one_sync(message, peer_id, interface)
+            sent += 1
+    return sent
+
+
+def send_fleet_target_to_bbs_nodes(instruction, bbs_nodes, interface):
+    """Relay a signed fleet instruction to capable peers.
+
+    The blob is self-authenticating, so relaying it is safe: a peer verifies
+    the signature itself and does not care who forwarded it. That is what lets
+    one paste reach the whole fleet, including nodes this one cannot hear
+    directly.
+
+    Chunked because an ed25519 signature is 86 characters of base64 and the
+    LoRa budget is 220 bytes for the entire frame.
+    """
+    try:
+        from db_operations import peer_supports
+    except Exception:
+        return 0
+    capable = [n for n in (bbs_nodes or []) if peer_supports(n, 'fver')]
+    if not capable or not instruction:
+        return 0
+    # A short id keyed to the content, so continuation frames reassemble
+    # against the right instruction and a re-sent one is recognised.
+    unique_id = hashlib.blake2b(
+        str(instruction).encode('utf-8'), digest_size=6).hexdigest()
+    payload = str(instruction)
+    _send_sync_with_cont(
+        f'FLEETVER|{unique_id}|{len(payload)}|', '', payload, unique_id,
+        cont_prefix=f'FLEETVERCONT|{unique_id}|',
+        bbs_nodes=capable,
+        interface=interface,
+        pause_seconds=get_sync_pause_seconds(interface),
+    )
+    return len(capable)
+
+
+def send_node_version_to_bbs_nodes(node_id, app_version, commit, bbs_nodes, interface):
+    """Tell peers what this node is running.
+
+    Advisory only. It is unsigned and trivially forgeable, so it may inform a
+    drift display and nothing else -- never a decision about what to run.
+    """
+    try:
+        from db_operations import peer_supports
+    except Exception:
+        return 0
+    message = f"NODEVER|{node_id}|{app_version}|{commit}|{int(time.time())}"
+    sent = 0
+    for peer_id in bbs_nodes or []:
+        if peer_supports(peer_id, 'fver'):
             _send_one_sync(message, peer_id, interface)
             sent += 1
     return sent
