@@ -75,14 +75,67 @@ def make_message_id(
     return 'pch:' + hashlib.blake2b(material, digest_size=16).hexdigest()
 
 
+# MeshCore packs the path length into the low 6 bits of a byte, so a path
+# cannot exceed this. 255 is not a very long path -- it is the sentinel for
+# direct (non-flood) routing.
+_MESHCORE_MAX_PATH = 63
+_MESHCORE_DIRECT_SENTINEL = 255
+
+
+# MeshCore channel messages carry no sender identity whatsoever. A channel
+# is encrypted with a shared key and the frame has no pubkey field at all --
+# unlike a MeshCore direct message, which does. So "unknown sender" was
+# accurate rather than broken.
+#
+# What clients do instead is write the sender's name into the body as a
+# "Name: " prefix. That prefix is the ONLY sender information that exists on
+# this transport, which is why it is worth parsing despite being a
+# convention rather than a protocol guarantee.
+_MESHCORE_SENDER_MAX = 32
+
+
+def split_meshcore_sender(content: str):
+    """Split a MeshCore channel body into (sender_name, message).
+
+    Returns ('', content) unchanged whenever the body does not clearly carry
+    a name. Guessing wrong attributes somebody's message to a person who
+    never sent it, so every ambiguous case declines to parse.
+
+    Splits on the FIRST colon-space and nothing else. Real traffic is full of
+    later colons -- a 'MM:YhW9uyPnvQ:36.23537,-86.71230' location payload, an
+    '@ 18:28' timestamp, a 'Route:' continuation line -- and any of them
+    would be mistaken for the delimiter by a rightmost or bare-colon split.
+    Requiring the space is what separates 'brown dog: Test' from 'MM:YhW9'.
+    """
+    head, separator, tail = content.partition(': ')
+    if not separator:
+        return '', content
+    name = head.strip()
+    body = tail.strip()
+    # A name is one line, non-empty, and short. Names legitimately contain
+    # spaces and emoji ('brown dog', 'N4NOV 🏠', '🔋'), so neither can be
+    # excluded -- length and line count are what remain to judge on.
+    if not name or not body or '\n' in head or len(name) > _MESHCORE_SENDER_MAX:
+        return '', content
+    return name, body
+
+
 def hops_used(packet: dict):
     """How many hops a broadcast travelled, or None when that is unknowable.
 
-    hop_start is the TTL the sender set out with, hop_limit is what was left
-    when we heard it, so the difference is hops traversed. Absence is common
-    and means unknown, not zero: firmware before 2.x never sent hop_start,
-    and protobuf omits zero-valued fields entirely, so a packet heard direct
-    can arrive with no hop_limit key at all.
+    The two transports count in completely different ways, which is why this
+    cannot be a single subtraction:
+
+    Meshtastic sends a TTL. hop_start is what the sender set out with,
+    hop_limit is what was left when we heard it, so the difference is hops
+    traversed. Absence is common and means unknown, not zero: firmware
+    before 2.x never sent hop_start, and protobuf omits zero-valued fields
+    entirely, so a packet heard direct can arrive with no hop_limit key.
+
+    MeshCore instead has each repeater append its own hash to the packet's
+    path, so the path length is the hop count directly, already parsed by
+    the library. There is no TTL to subtract, which is why reading only the
+    Meshtastic pair reported every MeshCore message as unknown.
 
     A packet that reached this node over MQTT rather than the air carries hop
     fields describing somebody else's radio path. Reporting that as our hop
@@ -90,6 +143,17 @@ def hops_used(packet: dict):
     """
     if packet.get('viaMqtt') or packet.get('via_mqtt'):
         return None
+
+    path_len = packet.get('path_len')
+    if path_len is not None:
+        try:
+            hops = int(path_len)
+        except (TypeError, ValueError):
+            return None
+        if hops == _MESHCORE_DIRECT_SENTINEL:
+            return None
+        return hops if 0 <= hops <= _MESHCORE_MAX_PATH else None
+
     start = packet.get('hopStart', packet.get('hop_start'))
     limit = packet.get('hopLimit', packet.get('hop_limit'))
     if start is None or limit is None:
@@ -150,10 +214,18 @@ def normalize_broadcast(
     sender_node_id = packet.get('fromId') or None
     sender_name = str(packet.get('sender_name') or '')
     native_id = packet.get('id', packet.get('message_hash'))
+    # Derive the id from the body EXACTLY as it arrived, before any prefix is
+    # stripped. make_message_id falls back to hashing the content when a
+    # packet carries no native id, so parsing first would make a node running
+    # this code and one running the old code disagree about which packet
+    # they are looking at -- and every MeshCore message would sync twice.
+    unique_id = make_message_id(
+        network, channel_index, sender_node_id, native_id, source_time, content
+    )
+    if network == 'meshcore' and not sender_node_id and not sender_name:
+        sender_name, content = split_meshcore_sender(content)
     return {
-        'unique_id': make_message_id(
-            network, channel_index, sender_node_id, native_id, source_time, content
-        ),
+        'unique_id': unique_id,
         'network': network,
         'channel_index': channel_index,
         'channel_name': channel_name,
