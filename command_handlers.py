@@ -282,7 +282,7 @@ def _mail_directory_page(entries: list[dict], page: int, selecting: bool) -> str
 
 
 def handle_active_users_command(sender_id, interface):
-    entries = get_mail_relay_directory(get_node_id_from_num(sender_id, interface))
+    entries = get_mail_relay_directory()
     if not entries:
         send_message("No users have opted into offline mail relay.", sender_id, interface)
         return
