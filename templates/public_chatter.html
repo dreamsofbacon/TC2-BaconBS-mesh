@@ -4,6 +4,9 @@
   .chatter-shell { max-width: 980px; margin: 0 auto; padding: 24px 0 48px; }
   .chatter-header { display:flex; justify-content:space-between; gap:16px; align-items:end; margin-bottom:20px; }
   .chatter-header h1 { margin:0; font-size:28px; }
+  /* Takes the space the legend does not, so the strapline wraps instead of
+     shouldering the legend off the row. */
+  .chatter-header > div:first-child { flex:1 1 auto; min-width:0; }
   .chatter-controls { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:12px; margin-bottom:18px; }
   .chatter-controls .form-group { margin:0; }
   .chatter-feed { display:grid; gap:10px; }
@@ -26,11 +29,18 @@
      surrounding entry's colour. */
   .cc-none { --cc:var(--text-faint, #6b7a8d); }
 
-  .chatter-legend { display:grid; grid-template-columns:repeat(2,minmax(0,1fr));
-                    gap:14px 24px; margin-bottom:16px; padding:12px 14px;
+  /* Sits beside the title. Columns size to their contents rather than
+     splitting the space evenly, so a short channel list does not leave a
+     gap; the whole block shrinks before the heading does, and caps its
+     height so an unusually long list scrolls instead of pushing the feed
+     down the page. */
+  .chatter-legend { display:grid; grid-template-columns:auto auto;
+                    gap:10px 20px; padding:10px 12px;
                     border:1px solid var(--border, #2b3645);
                     border-radius:var(--radius-md, 8px);
-                    background:var(--surface, #161d27); }
+                    background:var(--surface, #161d27);
+                    flex:0 1 auto; min-width:0;
+                    max-width:520px; max-height:148px; overflow-y:auto; }
   .legend-title { font-size:11px; letter-spacing:.06em; text-transform:uppercase;
                   color:var(--text-faint, #6b7a8d); margin:0 0 7px; }
   .legend-items { display:flex; flex-wrap:wrap; gap:6px 12px; }
@@ -67,7 +77,9 @@
     .chatter-shell { padding-top:14px; }
     .chatter-header { align-items:start; flex-direction:column; }
     .chatter-controls { grid-template-columns:1fr 1fr; }
-    .chatter-legend { grid-template-columns:1fr; }
+    /* Stacked under the title, so it may use the full width again. */
+    .chatter-legend { grid-template-columns:1fr; max-width:none;
+                      width:100%; max-height:none; }
   }
   @media (max-width:430px) { .chatter-controls { grid-template-columns:1fr; } }
 </style>
@@ -79,6 +91,16 @@
       <h1>Public Chatter</h1>
       <p class="text-muted">Meshtastic and MeshCore public channels heard by participating Bacon BBS nodes.</p>
     </div>
+    <section class="chatter-legend" id="chatter-legend" aria-label="Colour legend" hidden>
+      <div>
+        <h2 class="legend-title">Channels</h2>
+        <div class="legend-items" id="legend-channels"></div>
+      </div>
+      <div>
+        <h2 class="legend-title">Heard by</h2>
+        <div class="legend-items" id="legend-nodes"></div>
+      </div>
+    </section>
   </header>
 
   <section class="chatter-controls" aria-label="Chatter filters">
@@ -112,17 +134,6 @@
     <div class="form-group">
       <label for="chatter-search">Search</label>
       <input class="form-control" id="chatter-search" type="search" placeholder="Message or sender">
-    </div>
-  </section>
-
-  <section class="chatter-legend" id="chatter-legend" aria-label="Colour legend" hidden>
-    <div>
-      <h2 class="legend-title">Channels</h2>
-      <div class="legend-items" id="legend-channels"></div>
-    </div>
-    <div>
-      <h2 class="legend-title">Heard by</h2>
-      <div class="legend-items" id="legend-nodes"></div>
     </div>
   </section>
 
