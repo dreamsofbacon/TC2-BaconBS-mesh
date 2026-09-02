@@ -40,8 +40,6 @@
   .legend-swatch.is-round { border-radius:50%; }
   .legend-count { color:var(--text-faint, #6b7a8d); }
   .legend-empty { font-size:12px; color:var(--text-faint, #6b7a8d); }
-  .chatter-toggle { display:flex; align-items:center; gap:7px; font-size:13px;
-                    color:var(--text-muted, #9ca3af); white-space:nowrap; }
 
   /* Ten hues about 36 degrees apart. Ten well-separated colours beat twenty
      that only nearly differ -- past ten, colours repeat, and the legend is
@@ -62,11 +60,6 @@
   [data-theme="light"] .cc-8 { --cc:#7326b8; }
   [data-theme="light"] .cc-9 { --cc:#3f45c4; }
 
-  /* Colour off: fall back to the single accent stripe this page always had. */
-  .chatter-shell.no-colour .chatter-entry { --cc:var(--accent-color, #d6a84b); }
-  .chatter-shell.no-colour .chatter-node { color:var(--text-muted, #9ca3af); }
-  .chatter-shell.no-colour .chatter-swatch,
-  .chatter-shell.no-colour .chatter-legend { display:none; }
   .chatter-message { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.45; }
   .chatter-presets { display:flex; flex-wrap:wrap; gap:6px; }
   .chatter-state { padding:32px; text-align:center; color:var(--text-muted, #9ca3af); }
@@ -86,10 +79,6 @@
       <h1>Public Chatter</h1>
       <p class="text-muted">Meshtastic and MeshCore public channels heard by participating Bacon BBS nodes.</p>
     </div>
-    <label class="chatter-toggle">
-      <input type="checkbox" id="chatter-colour" checked>
-      Colour-code traffic
-    </label>
   </header>
 
   <section class="chatter-controls" aria-label="Chatter filters">

@@ -23,6 +23,12 @@ from pubsub import pub
 # MeshCore's BaseChatMesh limits direct-message text to 10 AES blocks.
 MESHCORE_MAX_TEXT_BYTES = 160
 
+# How many channel slots to poll for names at connect. MeshCore firmware
+# exposes a small fixed set; unconfigured slots answer empty or error, so
+# over-reaching costs one wasted round trip each and under-reaching would
+# silently leave a channel labelled by its number.
+MAX_CHANNELS = 8
+
 
 def _clean_key(value: Any) -> str:
     text = str(value or "").strip().lower()
@@ -102,6 +108,10 @@ class MeshCoreInterface:
         self.allowed_nodes: list[str] = []
         self.subscriber_nodes: list[str] = []
         self.nodes: dict[str, dict[str, Any]] = {}
+        # Real channel names, read off the radio at connect. Without these a
+        # captured message can only be labelled by its index, and "Channel 2"
+        # tells nobody which channel that is.
+        self.channel_names: dict[int, str] = {}
         self.myInfo = SimpleNamespace(my_node_num=0)
 
         self._meshcore: Optional[MeshCore] = None
@@ -202,6 +212,42 @@ class MeshCoreInterface:
         self.myInfo.my_node_num = _node_num(local_key)
         if local_key:
             self._num_to_key[self.myInfo.my_node_num] = local_key
+
+        await self._refresh_channel_names()
+
+    async def _refresh_channel_names(self) -> None:
+        """Ask the radio what its channels are actually called.
+
+        Queried once at connect rather than per message: the answer changes
+        only when someone reconfigures the radio, and a round trip per
+        captured packet would be absurd.
+
+        Every slot is polled because the configured capture list is attached
+        by server.py after this runs, so there is nothing here to narrow it
+        down to. Unconfigured slots come back empty or error, and are simply
+        not recorded -- an index with no name keeps falling back to its
+        number rather than showing a blank.
+        """
+        if self._meshcore is None:
+            return
+        names: dict[int, str] = {}
+        for index in range(MAX_CHANNELS):
+            try:
+                event = await self._meshcore.commands.get_channel(index)
+            except Exception:
+                logging.debug(
+                    "MeshCore channel %s could not be read", index, exc_info=True)
+                continue
+            if event is None or event.type == EventType.ERROR:
+                continue
+            name = str((event.payload or {}).get("channel_name") or "").strip()
+            if name:
+                names[index] = name
+        self.channel_names = names
+        if names:
+            logging.info(
+                "MeshCore channel names: %s",
+                ", ".join(f"{i}={n}" for i, n in sorted(names.items())))
 
     async def _on_contact_update(self, event) -> None:
         if self._meshcore is not None:
@@ -331,7 +377,11 @@ class MeshCoreInterface:
             },
             "to": 0,
             "channel_index": channel_index,
-            "channel_name": "Public" if channel_index == 0 else f"Channel {channel_index}",
+            # The radio's own name for it, falling back to the index when a
+            # slot has no name configured.
+            "channel_name": self.channel_names.get(
+                channel_index,
+                "Public" if channel_index == 0 else f"Channel {channel_index}"),
             "sender_timestamp": payload.get("sender_timestamp"),
             "message_hash": payload.get("txt_hash"),
             # How far it travelled. MeshCore has every repeater append its

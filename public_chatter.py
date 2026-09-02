@@ -208,8 +208,21 @@ def normalize_broadcast(
         return None
 
     network = str(getattr(interface, 'protocol_name', 'Meshtastic')).casefold()
+    # The radio's own name for the channel, in preference to its number.
+    # MeshCore stamps this onto the packet from names it read at connect;
+    # Meshtastic packets carry no name, so the table server.py built from
+    # the local node's channel config is consulted here instead.
     channel_name = str(packet.get('channel_name') or '')
+    if not channel_name:
+        known = getattr(interface, 'channel_names', None) or {}
+        try:
+            channel_name = str(known.get(channel_index) or '')
+        except Exception:
+            channel_name = ''
     if not channel_name and channel_index == 0:
+        # An unnamed primary channel. Both transports have a conventional
+        # name for it; db_operations.channel_name_placeholders knows these
+        # are stand-ins, so a real name learned later replaces them.
         channel_name = 'Public' if network == 'meshcore' else 'LongFast'
     sender_node_id = packet.get('fromId') or None
     sender_name = str(packet.get('sender_name') or '')

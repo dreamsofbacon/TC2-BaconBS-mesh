@@ -1020,6 +1020,61 @@ def get_public_chatter_filters(hours: int = 168) -> dict:
     return {'networks': networks, 'channels': channels, 'capture_nodes': capture_nodes}
 
 
+def channel_name_placeholders(channel_index: int) -> list:
+    """Labels that mean "we did not know the name", for one channel index.
+
+    Kept in one place because both the writer and the backfill have to agree
+    on what counts as a placeholder; if they drift, either real names get
+    overwritten or placeholders never get replaced.
+    """
+    index = int(channel_index)
+    placeholders = ['', f'Channel {index}']
+    if index == 0:
+        # The two defaults the capture path substitutes for an unnamed
+        # primary channel, one per transport.
+        placeholders.extend(['Public', 'LongFast'])
+    return placeholders
+
+
+def backfill_channel_names(network: str, names: dict) -> int:
+    """Replace placeholder channel labels with the radio's real names.
+
+    Every row stores the label known when it was captured, so anything heard
+    before the names were read says "Channel 2". Retention is a week, so this
+    would heal on its own -- but a week of a feed that cannot say which
+    channel a message came from is most of what the names are for.
+
+    Only placeholders are rewritten. A name genuinely captured from the air
+    is left alone, so a channel renamed mid-week keeps its history honest
+    instead of being retconned to the new name.
+    """
+    if not names:
+        return 0
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    updated = 0
+    for index, name in names.items():
+        label = str(name or '').strip()
+        if not label:
+            continue
+        placeholders = [p for p in channel_name_placeholders(index) if p != label]
+        if not placeholders:
+            continue
+        marks = ','.join('?' for _ in placeholders)
+        cursor.execute(
+            f"""UPDATE public_chatter SET channel_name = ?
+                 WHERE network = ? AND channel_index = ?
+                   AND channel_name IN ({marks})""",
+            [label, str(network or '').casefold(), int(index)] + placeholders,
+        )
+        updated += cursor.rowcount
+    conn.commit()
+    if updated:
+        logging.info(
+            "Relabelled %s public chatter row(s) with real channel names", updated)
+    return updated
+
+
 def normalize_alias(alias: str) -> str:
     """Comparison key for alias uniqueness.
 

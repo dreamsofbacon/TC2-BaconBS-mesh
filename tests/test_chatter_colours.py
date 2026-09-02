@@ -162,24 +162,18 @@ class ColourIsNeverTheOnlySignalTests(unittest.TestCase):
         """They repeat the label beside them; announcing them would be noise."""
         self.assertIn('element.setAttribute("aria-hidden", "true")', JS)
 
-    def test_colour_can_be_switched_off_entirely(self):
-        self.assertIn('id="chatter-colour"', HTML)
-        self.assertIn("no-colour", HTML)
-        self.assertIn("no-colour", JS)
+    def test_there_is_no_switch_to_turn_colour_off(self):
+        """Colour is always on. A toggle for it was one more control on a
+        page that already has four, defending against a problem the plain
+        text labels beside every swatch already solve."""
+        for needle in ("chatter-colour", "chatter-toggle", "no-colour"):
+            with self.subTest(needle=needle):
+                self.assertNotIn(needle, HTML)
+                self.assertNotIn(needle, JS)
 
-    def test_switching_it_off_restores_readable_text(self):
-        """Not just 'remove the colour' -- the label must go back to a real
-        text colour rather than inheriting a stripe colour."""
-        self.assertRegex(
-            HTML, r"\.no-colour \.chatter-node \{ color:var\(--text")
-
-    def test_the_preference_survives_a_reload(self):
-        self.assertIn("localStorage.setItem(COLOUR_KEY", JS)
-        self.assertIn("localStorage.getItem(COLOUR_KEY)", JS)
-
-    def test_storage_failure_does_not_break_the_page(self):
-        """Private windows and blocked site data throw on access."""
-        self.assertRegex(JS, r"try \{ localStorage\.setItem\(COLOUR_KEY[^}]*\} catch")
+    def test_no_preference_is_stored_for_it(self):
+        """Nothing to remember, so nothing touches browser storage."""
+        self.assertNotIn("localStorage", JS)
 
 
 class LegendTests(unittest.TestCase):
