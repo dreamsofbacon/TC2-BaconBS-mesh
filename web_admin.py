@@ -5172,6 +5172,135 @@ def create_app(runtime_interface=None) -> Flask:
       )
       return jsonify({"ok": True, **result})
 
+    # -- Client emulator ------------------------------------------------
+    #
+    # Types at the BBS the way a mesh user would, driving the real
+    # message_processing.process_message rather than a stand-in. bbs_emulator
+    # is imported lazily inside each handler: it reaches message_processing,
+    # which imports the meshtastic package, and the web admin is a separate
+    # service that otherwise starts without a radio library present.
+
+    def _emulator_session_or_error():
+      import bbs_emulator
+
+      token = (request.get_json(silent=True) or {}).get("token") \
+          if request.method == "POST" else request.args.get("token", "")
+      session = bbs_emulator.get_session(token)
+      if session is None:
+        return None, (jsonify({
+          "ok": False,
+          "error": "That session has expired. Start a new one.",
+        }), 410)
+      return session, None
+
+    def _emulator_state(session):
+      state = session.menu_state() or {}
+      return {
+        "token": session.token,
+        "node_id": session.sender_node_id,
+        "node_num": session.sender_id,
+        "label": session.label,
+        "acting_as_real": session.acting_as_real,
+        "max_text_bytes": session.interface.max_text_bytes,
+        "menu": {
+          "command": state.get("command"),
+          "step": state.get("step"),
+        },
+      }
+
+    @app.get("/emulator")
+    @login_required
+    def emulator_page():
+      import bbs_emulator
+
+      return render_template(
+        "emulator.html",
+        title="Emulator",
+        title_suffix="Bacon BBS",
+        show_nav=True,
+        roster=bbs_emulator.roster_choices(),
+        default_max_bytes=bbs_emulator.DEFAULT_MAX_TEXT_BYTES,
+      )
+
+    @app.post("/api/emulator/session")
+    @login_required
+    def emulator_start_session():
+      import bbs_emulator
+
+      payload = request.get_json(silent=True) or {}
+      node_id = str(payload.get("node_id") or "").strip()
+      # Acting as a real node writes to the shared database under that
+      # node's identity: mail is genuinely from them and a Zork autosave
+      # overwrites their real save. The page asks first; this refuses to
+      # take the caller's word for it having done so.
+      if node_id and not payload.get("confirm_act_as"):
+        return jsonify({
+          "ok": False,
+          "error": "Acting as a real node needs an explicit confirmation.",
+        }), 400
+      try:
+        max_bytes = int(payload.get("max_text_bytes")
+                        or bbs_emulator.DEFAULT_MAX_TEXT_BYTES)
+      except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "max_text_bytes must be a number"}), 400
+      session = bbs_emulator.start_session(
+        node_id=node_id or None,
+        short_name=payload.get("short_name"),
+        max_text_bytes=max(32, min(1024, max_bytes)),
+      )
+      return jsonify({"ok": True, "session": _emulator_state(session)})
+
+    @app.post("/api/emulator/send")
+    @login_required
+    def emulator_send():
+      session, error = _emulator_session_or_error()
+      if error is not None:
+        return error
+      text = str((request.get_json(silent=True) or {}).get("text") or "")
+      if not text.strip():
+        return jsonify({"ok": False, "error": "Nothing to send"}), 400
+      chunks, failure = session.send(text)
+      return jsonify({
+        "ok": True,
+        "chunks": chunks,
+        "error": failure,
+        "session": _emulator_state(session),
+      })
+
+    @app.get("/api/emulator/poll")
+    @login_required
+    def emulator_poll():
+      # Ask Nomad answers from a worker thread seconds to a minute after the
+      # question returned. Without this the page shows the slow ack and then
+      # nothing, which looks exactly like a broken gateway.
+      session, error = _emulator_session_or_error()
+      if error is not None:
+        return error
+      return jsonify({
+        "ok": True,
+        "chunks": session.drain(),
+        "session": _emulator_state(session),
+      })
+
+    @app.post("/api/emulator/reset")
+    @login_required
+    def emulator_reset():
+      import bbs_emulator
+
+      session, error = _emulator_session_or_error()
+      if error is not None:
+        return error
+      bbs_emulator.reset_session(session.token)
+      return jsonify({"ok": True, "session": _emulator_state(session)})
+
+    @app.post("/api/emulator/end")
+    @login_required
+    def emulator_end():
+      import bbs_emulator
+
+      token = str((request.get_json(silent=True) or {}).get("token") or "")
+      return jsonify({"ok": bbs_emulator.end_session(token)})
+
     @app.route("/mesh-ui/")
     @app.route("/mesh-ui/<path:filename>")
     @login_required

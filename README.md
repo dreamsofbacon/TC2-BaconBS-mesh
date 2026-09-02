@@ -773,6 +773,30 @@ code execution, and the signature is the only thing protecting it.
 
 ---
 
+## Emulator
+
+**Tools &rarr; Emulator** in the web admin types at the BBS the way a mesh
+user would. It drives the real command handlers rather than a stand-in, so
+the reply is what a radio would have received &mdash; shown as the separate
+packets it would have arrived in, with byte counts, which is the one thing
+no other view exposes. Lower the packet limit to see where a long menu
+splits on a constrained link.
+
+It writes to the live database: a bulletin posted there is a real bulletin
+and syncs to your other nodes. It can also act as any node on the roster,
+which attributes everything it does to that node for real, so that mode asks
+for confirmation first.
+
+## SSH access
+
+Reaching the BBS over SSH, with self-registered accounts, is designed in
+[docs/SSH-ACCESS.md](docs/SSH-ACCESS.md) and **not implemented**. Read it
+before building any of it: mail is authorized by nothing but the node id a
+session presents, so the design turns on keeping SSH identities inside a
+namespace they cannot leave.
+
+---
+
 ## Handoff
 
 [HANDOFF.md](HANDOFF.md) covers the running deployment: the two live nodes and

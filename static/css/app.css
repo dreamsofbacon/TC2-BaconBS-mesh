@@ -1514,3 +1514,70 @@ kbd {
   .nav-right .link-status,
   .nav-right .sync-pill { display: none; }
 }
+
+/* ── Client emulator ─────────────────────────────────────────── */
+/* Each reply block is one packet. They stay visually separate on purpose:
+   seeing a menu arrive as three packets is the point of the page. */
+.emu-transcript {
+  background: var(--terminal-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--terminal-fg);
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  height: 420px;
+  overflow-y: auto;
+  padding: 10px;
+}
+.emu-chunk {
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  padding: 6px 8px;
+}
+.emu-chunk-in {
+  background: var(--surface);
+  border-left: 3px solid var(--success);
+}
+.emu-chunk-out {
+  background: var(--surface-2);
+  border-left: 3px solid var(--info);
+  color: var(--text);
+}
+.emu-chunk-meta {
+  color: var(--text-faint);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+.emu-chunk-body {
+  font-family: inherit;
+  font-size: inherit;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.emu-note {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-style: italic;
+  margin: 6px 0;
+}
+.emu-note-error { color: var(--error-fg); font-style: normal; }
+
+.emu-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 8px;
+}
+.emu-input-row {
+  display: flex;
+  gap: 8px;
+}
+.emu-input-row .form-control { flex: 1 1 auto; }
+
+@media (max-width: 480px) {
+  .emu-transcript  { height: 300px; }
+  .emu-input-row   { flex-direction: column; }
+}

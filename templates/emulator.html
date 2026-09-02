@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <h1>Emulator</h1>
+  <p class="text-muted">
+    Type at the BBS the way a mesh user would. This drives the real command
+    handlers, so what comes back is what a radio would have received &mdash;
+    in the packets it would have arrived in.
+  </p>
+</div>
+
+<div class="alert alert-warning">
+  <strong>This writes to the live database.</strong> A bulletin posted here is
+  a real bulletin and will sync to your other nodes on the next cycle; mail
+  sent here lands in a real inbox. There is no undo.
+</div>
+
+<div class="card">
+  <div class="card-header"><h2>Session</h2></div>
+  <div class="card-body">
+    <div id="emu-idle">
+      <div class="form-group">
+        <label for="emu-identity">Act as</label>
+        <select class="form-control" id="emu-identity">
+          <option value="">A test user (synthetic, not a real node)</option>
+          {% for node in roster %}
+          <option value="{{ node.node_id }}">
+            {{ node.short_name or node.node_id }}
+            {%- if node.long_name %} &mdash; {{ node.long_name }}{% endif %}
+            ({{ node.node_id }})
+          </option>
+          {% endfor %}
+        </select>
+        <small class="text-muted">
+          Choosing a real node means acting <em>as</em> them: anything posted
+          is attributed to them, mail is genuinely from them, and starting a
+          game overwrites their saved position. A test user is safe to
+          experiment with.
+        </small>
+      </div>
+      <div class="form-group">
+        <label for="emu-name">Test user short name</label>
+        <input class="form-control" id="emu-name" maxlength="12" placeholder="emu1">
+      </div>
+      <div class="form-group">
+        <label for="emu-bytes">Packet size limit (bytes)</label>
+        <input class="form-control" id="emu-bytes" type="number"
+               min="32" max="1024" value="{{ default_max_bytes }}">
+        <small class="text-muted">
+          220 is the Meshtastic default. Lower it to see where a long menu
+          splits on a constrained link.
+        </small>
+      </div>
+      <button type="button" class="btn btn-primary" id="emu-start">Start session</button>
+    </div>
+
+    <div id="emu-live" hidden>
+      <div class="table-scroll-container">
+        <table class="table">
+          <tbody>
+            <tr><th>Acting as</th><td id="emu-who"></td></tr>
+            <tr><th>Node id</th><td><code id="emu-node"></code></td></tr>
+            <tr><th>Packet limit</th><td><span id="emu-limit"></span> bytes</td></tr>
+            <tr><th>Menu state</th><td><code id="emu-menu">main menu</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="emu-actas" class="alert alert-danger" hidden>
+        Acting as a real node. Everything you do is attributed to them.
+      </div>
+      <button type="button" class="btn" id="emu-reset">Back to main menu</button>
+      <button type="button" class="btn" id="emu-end">End session</button>
+    </div>
+  </div>
+</div>
+
+<div class="card" id="emu-console-card" hidden>
+  <div class="card-header"><h2>Transcript</h2></div>
+  <div class="card-body">
+    <p class="text-muted">
+      Each block is one packet. The byte count is what decides whether a
+      reply needed to be split.
+    </p>
+    <div id="emu-transcript" class="emu-transcript" aria-live="polite"></div>
+    <div class="emu-quick">
+      <button type="button" class="btn btn-sm emu-quick-btn" data-send="?">? help</button>
+      <button type="button" class="btn btn-sm emu-quick-btn" data-send="B">B boards</button>
+      <button type="button" class="btn btn-sm emu-quick-btn" data-send="M">M mail</button>
+      <button type="button" class="btn btn-sm emu-quick-btn" data-send="U">U utilities</button>
+      <button type="button" class="btn btn-sm emu-quick-btn" data-send="X">X exit</button>
+    </div>
+    <form id="emu-form" class="emu-input-row" autocomplete="off">
+      <input class="form-control" id="emu-input" type="text"
+             placeholder="Type a message and press Enter" maxlength="500">
+      <button type="submit" class="btn btn-primary">Send</button>
+    </form>
+    <div id="emu-status" class="text-muted" role="status"></div>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/emulator.js', v=asset_version) }}" defer></script>
+{% endblock %}
