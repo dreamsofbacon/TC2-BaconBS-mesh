@@ -57,6 +57,35 @@ class HopExtractionTests(unittest.TestCase):
             with self.subTest(packet=packet):
                 self.assertIsNone(public_chatter.hops_used(packet))
 
+    def test_meshcore_reports_its_path_length_as_hops(self):
+        """MeshCore has no TTL to subtract: each repeater appends its hash to
+        the path, so the path length IS the hop count. Reading only the
+        Meshtastic pair reported every MeshCore message as unknown."""
+        self.assertEqual(public_chatter.hops_used({"path_len": 2}), 2)
+
+    def test_a_meshcore_packet_heard_direct_is_zero(self):
+        self.assertEqual(public_chatter.hops_used({"path_len": 0}), 0)
+
+    def test_meshcores_direct_routing_sentinel_is_not_255_hops(self):
+        """255 flags direct (non-flood) routing, not a very long path."""
+        self.assertIsNone(public_chatter.hops_used({"path_len": 255}))
+
+    def test_a_path_longer_than_six_bits_is_rejected(self):
+        self.assertIsNone(public_chatter.hops_used({"path_len": 64}))
+
+    def test_a_meshcore_path_beyond_the_meshtastic_cap_still_counts(self):
+        """The 7-hop ceiling is a Meshtastic TTL limit and must not be
+        applied to MeshCore, whose paths can legitimately run longer."""
+        self.assertEqual(public_chatter.hops_used({"path_len": 12}), 12)
+
+    def test_a_non_numeric_path_length_is_unknown(self):
+        self.assertIsNone(public_chatter.hops_used({"path_len": "x"}))
+
+    def test_meshcore_over_mqtt_still_reports_nothing(self):
+        """Somebody else's radio path, same as for Meshtastic."""
+        self.assertIsNone(
+            public_chatter.hops_used({"path_len": 3, "viaMqtt": True}))
+
     def test_snake_case_keys_are_accepted(self):
         """The library hands over camelCase, but a raw protobuf dict uses
         snake_case and both reach this code path."""

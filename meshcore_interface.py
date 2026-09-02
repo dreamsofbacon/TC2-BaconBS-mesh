@@ -334,6 +334,14 @@ class MeshCoreInterface:
             "channel_name": "Public" if channel_index == 0 else f"Channel {channel_index}",
             "sender_timestamp": payload.get("sender_timestamp"),
             "message_hash": payload.get("txt_hash"),
+            # How far it travelled. MeshCore has every repeater append its
+            # hash to the packet's path, so the path length IS the hop count
+            # and the library has already parsed it out for us. Dropping it
+            # here was why MeshCore chatter could never show hops: the
+            # Meshtastic hop_start/hop_limit pair this used to rely on does
+            # not exist on this transport.
+            "path_len": payload.get("path_len"),
+            "snr": payload.get("SNR"),
             "public_chatter_only": True,
         }
         self._incoming.put(packet)
