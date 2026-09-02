@@ -757,6 +757,22 @@ options:
 
 ---
 
+## Fleet Updates
+
+Tell every node in a group to run the same commit, without SSH. The mesh
+carries only a short Ed25519-signed instruction naming a commit; each node
+fetches the code from git itself, smoke-tests it before switching, and rolls
+back if it will not run.
+
+A node ignores every instruction unless its `config.ini` lists your public
+key, so sharing an MQTT broker with someone is not joining their fleet.
+
+See [docs/FLEET-UPDATES.md](docs/FLEET-UPDATES.md) for setup, and read the
+threat model there before arming it &mdash; an update instruction is remote
+code execution, and the signature is the only thing protecting it.
+
+---
+
 ## Handoff
 
 [HANDOFF.md](HANDOFF.md) covers the running deployment: the two live nodes and
