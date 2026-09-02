@@ -54,7 +54,7 @@
          role="listitem">Settings</a>
       <span class="nav-sep" aria-hidden="true"></span>
       <!-- Tools dropdown -->
-      {% set tools_active = request.endpoint in ['system_transmissions', 'system_flowchart', 'meshtastic_device'] %}
+      {% set tools_active = request.endpoint in ['emulator_page', 'system_transmissions', 'system_flowchart', 'meshtastic_device'] %}
       <div class="nav-dropdown" id="tools-dropdown">
         <button class="nav-link nav-dropdown-toggle{% if tools_active %} active{% endif %}"
                 id="tools-dropdown-btn"
@@ -66,6 +66,9 @@
           <svg viewBox="0 0 10 6" fill="currentColor" width="9" height="9" aria-hidden="true" style="opacity:0.6"><path d="M1 1l4 4 4-4"/></svg>
         </button>
         <div class="nav-dropdown-menu" id="tools-dropdown-menu" role="menu">
+          <a href="{{ url_for('emulator_page') }}"
+             class="nav-dropdown-item{% if request.endpoint == 'emulator_page' %} active{% endif %}"
+             role="menuitem">Emulator</a>
           <a href="{{ url_for('system_transmissions') }}"
              class="nav-dropdown-item{% if request.endpoint == 'system_transmissions' %} active{% endif %}"
              role="menuitem">Transmissions</a>
@@ -127,6 +130,7 @@
     <a href="{{ url_for('clients_summary') }}" class="drawer-link">Clients</a>
     <a href="{{ url_for('accounts_list') }}" class="drawer-link">Accounts</a>
     <a href="{{ url_for('settings_page') }}" class="drawer-link">Settings</a>
+    <a href="{{ url_for('emulator_page') }}" class="drawer-link">Emulator</a>
     <a href="{{ url_for('system_transmissions') }}" class="drawer-link">Transmissions</a>
     <a href="{{ url_for('system_flowchart') }}" class="drawer-link">Docs</a>
     <a href="{{ url_for('deleted_content') }}" class="drawer-link">Deleted</a>

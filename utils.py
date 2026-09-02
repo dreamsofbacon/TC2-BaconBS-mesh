@@ -704,7 +704,9 @@ def get_node_id_from_num(node_num, interface):
 
 
 def home_network(node_id) -> str:
-    """Return 'meshtastic', 'meshcore', or 'mqtt' based on node-id string shape.
+    """Classify a node id by its string shape.
+
+    Returns 'meshtastic', 'meshcore', 'mqtt', or 'emulator'.
 
     Meshtastic node ids are '!'-prefixed hex (e.g. '!04058ac8'); MeshCore
     node ids are bare hex public keys/prefixes with no '!' (see
@@ -719,12 +721,19 @@ def home_network(node_id) -> str:
     bbs_nodes/subscriber_nodes list, read from a separate config section,
     is what actually keeps different networks' peers from being conflated;
     see server._link_for_node's peer-list-membership-first match).
+
+    'emu:' ids come from bbs_emulator.py and exist only inside the web
+    admin's process, never on a radio. They get their own bucket for the
+    same reason 'mqtt:' does: so they cannot be silently mistaken for a
+    MeshCore node by the unrecognised-shape default below.
     """
     text = str(node_id or '').strip()
     if text.startswith('!'):
         return 'meshtastic'
     if text.startswith('mqtt:'):
         return 'mqtt'
+    if text.startswith('emu:'):
+        return 'emulator'
     return 'meshcore'
 
 
