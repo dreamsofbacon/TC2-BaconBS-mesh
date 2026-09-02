@@ -11,7 +11,7 @@
   var colourToggle = document.getElementById("chatter-colour");
   var legend = document.getElementById("chatter-legend");
   var legendChannels = document.getElementById("legend-channels");
-  var legendSenders = document.getElementById("legend-senders");
+  var legendNodes = document.getElementById("legend-nodes");
   var searchTimer = null;
 
   var PALETTE_SIZE = 10;
@@ -24,9 +24,9 @@
     parent.appendChild(element);
   }
 
-  // djb2. Stable across reloads and across nodes, so a station keeps the
-  // same colour every time you open the page -- which is the whole point of
-  // colouring by identity rather than by arrival order.
+  // djb2. Stable across reloads and across nodes, so a capture node keeps
+  // the same colour every time you open the page -- which is the whole point
+  // of colouring by identity rather than by arrival order.
   function paletteIndex(text) {
     var hash = 5381;
     for (var i = 0; i < text.length; i++) {
@@ -35,13 +35,56 @@
     return hash % PALETTE_SIZE;
   }
 
-  // Meshtastic carries a node id. MeshCore channel messages carry no sender
-  // identity at all, so the name parsed from the body prefix is all there
-  // is. A message with neither returns null and gets NO colour: painting
-  // every anonymous sender the same would imply they are one station, which
-  // is worse than saying nothing.
-  function senderKey(entry) {
-    return entry.sender_node_id || entry.sender_name || null;
+  // Hash alone gives a stable colour, but with only a handful of nodes in a
+  // fleet and ten buckets, two of them collide about half the time -- which
+  // defeats the entire point. So hash first, then probe forward over the set
+  // that is actually present. Still deterministic: the same fleet produces
+  // the same assignment on every reload, on every node, with nothing stored.
+  // The set only reshuffles if a node joins or leaves, which is rare and
+  // visible.
+  function assignColours(keys) {
+    var taken = Object.create(null);
+    var map = Object.create(null);
+    keys.slice().sort().forEach(function (key) {
+      var index = paletteIndex(key);
+      for (var n = 0; n < PALETTE_SIZE && taken[index]; n++) {
+        index = (index + 1) % PALETTE_SIZE;
+      }
+      taken[index] = true;
+      map[key] = index;
+    });
+    return map;
+  }
+
+  // Both dimensions of what is currently on screen, coloured together.
+  function buildPalette(entries) {
+    var nodes = Object.create(null);
+    var channels = Object.create(null);
+    entries.forEach(function (entry) {
+      var nk = captureKey(entry);
+      if (nk !== null) nodes[nk] = true;
+      channels[channelKey(entry)] = true;
+    });
+    return {
+      nodes: assignColours(Object.keys(nodes)),
+      channels: assignColours(Object.keys(channels))
+    };
+  }
+
+  // Which BBS node heard this. That is the useful "where did this come
+  // from" for a fleet where several nodes feed the same table over MQTT --
+  // not who sent the message, which is a different question the sender
+  // fields already answer in text.
+  function captureKey(entry) {
+    return entry.capture_node_id || null;
+  }
+
+  // Capture ids are node keys: a MeshCore one is 64 hex characters and
+  // swamps the row. Head and tail are what a person actually matches on,
+  // and the full value stays in the title attribute.
+  function shortNodeId(id) {
+    var text = String(id || "");
+    return text.length > 20 ? text.slice(0, 10) + "…" + text.slice(-6) : text;
   }
 
   function senderLabel(entry) {
@@ -60,30 +103,28 @@
       + (entry.channel_name || "Channel " + entry.channel_index);
   }
 
-  function renderEntry(entry) {
+  function swatch(className, round, title) {
+    var element = document.createElement("span");
+    element.className = "chatter-swatch " + (round ? "is-round " : "") + className;
+    element.setAttribute("aria-hidden", "true");
+    if (title) element.title = title;
+    return element;
+  }
+
+  function renderEntry(entry, palette) {
     var article = document.createElement("article");
-    // The entry carries the CHANNEL colour; the sender elements below carry
-    // their own cc-N, which shadows it for their subtree.
-    article.className = "chatter-entry cc-" + paletteIndex(channelKey(entry));
+    // The stripe carries the capture node: which of your nodes heard this.
+    var capture = captureKey(entry);
+    article.className = "chatter-entry "
+      + (capture === null ? "cc-none" : "cc-" + palette.nodes[capture]);
 
     var meta = document.createElement("div");
     meta.className = "chatter-meta";
 
-    var key = senderKey(entry);
-    var senderClass = key === null ? "cc-none" : "cc-" + paletteIndex(key);
-
-    var dot = document.createElement("span");
-    dot.className = "chatter-dot " + senderClass;
-    dot.setAttribute("aria-hidden", "true");
-    meta.appendChild(dot);
-
     // The long name is what a person recognises; sender_name holds only the
     // short name, which for most nodes is just the hex tail of the id.
     var name = senderLabel(entry);
-    var strong = document.createElement("strong");
-    strong.className = "chatter-sender " + senderClass;
-    strong.textContent = name;
-    meta.appendChild(strong);
+    appendText(meta, "strong", name);
 
     // Keep the short name and id visible when they add something the long
     // name does not, so a station stays identifiable across renames.
@@ -93,7 +134,14 @@
     if (entry.sender_node_id && entry.sender_node_id !== name) {
       appendText(meta, "span", entry.sender_node_id);
     }
-    appendText(meta, "span", channelLabel(entry));
+
+    var channelWrap = document.createElement("span");
+    channelWrap.className = "legend-item";
+    channelWrap.appendChild(
+      swatch("cc-" + palette.channels[channelKey(entry)], false));
+    appendText(channelWrap, "span", channelLabel(entry));
+    meta.appendChild(channelWrap);
+
     // 0 is a real answer ("heard direct"), null means the packet carried no
     // usable hop data -- so test for null rather than falsiness.
     if (entry.hops !== null && entry.hops !== undefined) {
@@ -101,87 +149,97 @@
         ? "direct" : entry.hops + (entry.hops === 1 ? " hop" : " hops"));
     }
     appendText(meta, "time", new Date(entry.message_timestamp).toLocaleString());
-    if (entry.capture_node_id) appendText(meta, "span", "Heard by " + entry.capture_node_id);
+
+    if (capture !== null) {
+      var captureWrap = document.createElement("span");
+      captureWrap.className = "legend-item chatter-node";
+      captureWrap.appendChild(
+        swatch("cc-" + palette.nodes[capture], true, capture));
+      var label = document.createElement("span");
+      label.textContent = "Heard by " + shortNodeId(capture);
+      label.title = capture;
+      captureWrap.appendChild(label);
+      meta.appendChild(captureWrap);
+    }
+
     article.appendChild(meta);
     appendText(article, "div", entry.content, "chatter-message");
     feed.appendChild(article);
   }
 
-  function addLegendItem(container, label, index, round, count) {
+  function addLegendItem(container, label, index, round, count, title) {
     var item = document.createElement("span");
     item.className = "legend-item";
-    var swatch = document.createElement("span");
-    swatch.className = "legend-swatch" + (round ? " is-round" : "")
+    var mark = document.createElement("span");
+    mark.className = "legend-swatch" + (round ? " is-round" : "")
       + " " + (index === null ? "cc-none" : "cc-" + index);
-    item.appendChild(swatch);
-    appendText(item, "span", label);
+    item.appendChild(mark);
+    var text = document.createElement("span");
+    text.textContent = label;
+    if (title) text.title = title;
+    item.appendChild(text);
     appendText(item, "span", "(" + count + ")", "legend-count");
     container.appendChild(item);
   }
 
   // Built from what is actually on screen. A legend of every channel that
   // ever existed would be noise; this one answers "what am I looking at".
-  function renderLegend(entries) {
+  function renderLegend(entries, palette) {
     legendChannels.replaceChildren();
-    legendSenders.replaceChildren();
+    legendNodes.replaceChildren();
 
-    // Null-prototype: keys here are sender names and node ids straight off
-    // the air, and a station calling itself "__proto__" or "constructor"
-    // would otherwise collide with Object.prototype instead of getting its
-    // own row.
+    // Null-prototype: keys here are node ids and channel names straight off
+    // the air, and one calling itself "__proto__" or "constructor" would
+    // otherwise collide with Object.prototype instead of getting its own row.
     var channels = Object.create(null);
-    var senders = Object.create(null);
+    var nodes = Object.create(null);
     // Counted on its own rather than under a sentinel key, so no string can
     // ever collide with it.
-    var unknown = 0;
+    var unattributed = 0;
 
     entries.forEach(function (entry) {
       var ck = channelKey(entry);
       if (!channels[ck]) channels[ck] = { label: channelLabel(entry), count: 0 };
       channels[ck].count++;
 
-      var sk = senderKey(entry);
-      if (sk === null) {
-        unknown++;
+      var nk = captureKey(entry);
+      if (nk === null) {
+        unattributed++;
         return;
       }
-      if (!senders[sk]) {
-        senders[sk] = {
-          label: senderLabel(entry),
-          index: paletteIndex(sk),
-          count: 0
-        };
+      if (!nodes[nk]) {
+        nodes[nk] = { label: shortNodeId(nk), full: nk, count: 0 };
       }
-      senders[sk].count++;
+      nodes[nk].count++;
     });
 
     Object.keys(channels).sort().forEach(function (key) {
       addLegendItem(legendChannels, channels[key].label,
-        paletteIndex(key), false, channels[key].count);
+        palette.channels[key], false, channels[key].count);
     });
 
-    // Busiest first: with many stations the tail is a long list of one-offs.
-    var ranked = Object.keys(senders).map(function (key) {
-      return senders[key];
+    // Busiest first: the node hearing most of the traffic is the one you
+    // usually want to pick out.
+    var ranked = Object.keys(nodes).map(function (key) {
+      return nodes[key];
     }).sort(function (a, b) {
       return b.count - a.count || a.label.localeCompare(b.label);
     });
-    // Unaddressable senders go last, under one neutral swatch. They are not
-    // one station and must not look like one, so the row says how many
-    // messages rather than naming anybody.
-    if (unknown) {
-      ranked.push({ label: "Unknown sender", index: null, count: unknown });
-    }
-    ranked.forEach(function (sender) {
-      addLegendItem(legendSenders, sender.label, sender.index, true,
-        sender.count);
+    ranked.forEach(function (node) {
+      addLegendItem(legendNodes, node.label, palette.nodes[node.full], true,
+        node.count, node.full);
     });
+    // Rows that recorded no capture node. Neutral, and counted rather than
+    // named, because they are not one node.
+    if (unattributed) {
+      addLegendItem(legendNodes, "Not recorded", null, true, unattributed);
+    }
 
     if (!Object.keys(channels).length) {
       appendText(legendChannels, "span", "None in view", "legend-empty");
     }
-    if (!ranked.length) {
-      appendText(legendSenders, "span", "None in view", "legend-empty");
+    if (!ranked.length && !unattributed) {
+      appendText(legendNodes, "span", "None in view", "legend-empty");
     }
     legend.hidden = entries.length === 0;
   }
@@ -211,8 +269,9 @@
       if (!response.ok) throw new Error("Request failed");
       var data = await response.json();
       feed.replaceChildren();
-      data.entries.forEach(renderEntry);
-      renderLegend(data.entries);
+      var palette = buildPalette(data.entries);
+      data.entries.forEach(function (entry) { renderEntry(entry, palette); });
+      renderLegend(data.entries, palette);
       if (!colourToggle.checked) legend.hidden = true;
       state.hidden = feed.children.length > 0;
       state.textContent = "No public messages in this time window.";
