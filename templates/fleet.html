@@ -40,12 +40,6 @@
                   applied</span>
               {% endif %}
             </td></tr>
-        <tr><th>Trusted keys</th>
-            <td>
-              {% if fleet.key_ids %}
-                {% for kid in fleet.key_ids %}<code>{{ kid }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
-              {% else %}<span class="text-muted">none</span>{% endif %}
-            </td></tr>
       </tbody>
     </table>
     </div>
@@ -79,6 +73,105 @@
     {% else %}
       <p class="text-muted">No target has been set for this group.</p>
     {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><h2>Configuration</h2></div>
+  <div class="card-body">
+    <p class="text-muted">
+      Changes are written to <code>config.ini</code> and take effect when the
+      BBS service restarts.
+    </p>
+    <form method="post" action="{{ url_for('fleet_config') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-group">
+        <label for="group">Group</label>
+        <input class="form-control" id="group" name="group"
+               value="{{ fleet.group }}" placeholder="baconbbsvt">
+        <small class="text-muted">Scopes instructions. A node ignores one
+          issued for a different group, even if it trusts the signing key.</small>
+      </div>
+      <div class="form-group">
+        <label for="updates">Updates</label>
+        <select class="form-control" id="updates" name="updates">
+          <option value="off" {% if fleet.mode == 'off' %}selected{% endif %}>
+            off &mdash; ignore instructions entirely</option>
+          <option value="notify" {% if fleet.mode == 'notify' %}selected{% endif %}>
+            notify &mdash; record the target, apply it by hand</option>
+          <option value="auto" {% if fleet.mode == 'auto' %}selected{% endif %}>
+            auto &mdash; fetch, test, switch, roll back on failure</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="pin_commit">Pin to commit</label>
+        <input class="form-control" id="pin_commit" name="pin_commit"
+               value="{{ fleet.pin_commit }}" placeholder="(empty = not pinned)">
+        <small class="text-muted">Freezes this node while you debug it.
+          Targets are still recorded, just not applied.</small>
+      </div>
+      <button type="submit" class="btn btn-primary">Save</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><h2>Trusted keys</h2></div>
+  <div class="card-body">
+    {% if fleet.key_ids %}
+      <div class="table-scroll-container">
+      <table class="table">
+        <tbody>
+          {% for kid in fleet.key_ids %}
+          <tr>
+            <td><code>{{ kid }}</code></td>
+            <td style="text-align:right;">
+              <form method="post" action="{{ url_for('fleet_key_remove') }}"
+                    style="display:inline;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="key_id" value="{{ kid }}">
+                <button type="submit" class="btn btn-sm">Stop trusting</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    {% else %}
+      <p class="text-muted">
+        No keys trusted, so every update instruction is ignored. That is the
+        safe default &mdash; sharing an MQTT broker with someone is not the
+        same as joining their fleet.
+      </p>
+    {% endif %}
+
+    <hr>
+    <p><strong>Trust a new key</strong></p>
+    <div class="alert alert-warning">
+      Whoever holds the matching private key will be able to make this node
+      run any commit they choose. Only add a key from someone you would give
+      shell access to.
+    </div>
+    <form method="post" action="{{ url_for('fleet_key_add') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-group">
+        <label for="trusted_key">Public key entry</label>
+        <input class="form-control" id="trusted_key" name="trusted_key"
+               placeholder="fkabc123:base64publickey">
+        <small class="text-muted">From
+          <code>fleet_sign.py --show-pubkey --entry-only</code> on the admin
+          machine. Public keys only &mdash; a private key here would let anyone
+          who can read config.ini command the whole fleet.</small>
+      </div>
+      <div class="form-group">
+        <label>
+          <input type="checkbox" name="confirm" value="1">
+          I understand this lets the key's holder run code on this node.
+        </label>
+      </div>
+      <button type="submit" class="btn btn-primary">Trust this key</button>
+    </form>
   </div>
 </div>
 

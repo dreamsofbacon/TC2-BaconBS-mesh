@@ -5030,6 +5030,130 @@ def create_app(runtime_interface=None) -> Flask:
         flash("That instruction is not newer than the one already stored.", "error")
       return redirect(url_for("fleet_page"))
 
+    def _save_fleet_config(mutate) -> None:
+      """Apply a change to [fleet] in config.ini.
+
+      Read-modify-write of the live file rather than of a cached copy: the
+      operator may have edited it by hand, and silently reverting that would
+      be worse than any of the changes made here.
+      """
+      config = read_config_file(app.config["CONFIG_PATH"])
+      if not config.has_section("fleet"):
+        config.add_section("fleet")
+      mutate(config)
+      write_config_file(config, app.config["CONFIG_PATH"])
+
+    @app.post("/fleet/config")
+    @login_required
+    def fleet_config():
+      """Group, update mode and pin. None of these can grant new authority:
+      they scope or disable what an already-trusted key may do."""
+      group = (request.form.get("group") or "").strip()
+      mode = (request.form.get("updates") or "off").strip().lower()
+      pin = (request.form.get("pin_commit") or "").strip().lower()
+
+      if mode not in ("auto", "notify", "off"):
+        flash("Updates must be auto, notify or off.", "error")
+        return redirect(url_for("fleet_page"))
+      if pin and not re.fullmatch(r"[0-9a-f]{7,40}", pin):
+        flash("Pin commit must be a hex commit sha, or empty.", "error")
+        return redirect(url_for("fleet_page"))
+
+      def mutate(config):
+        config.set("fleet", "group", group)
+        config.set("fleet", "updates", mode)
+        config.set("fleet", "pin_commit", pin)
+
+      _save_fleet_config(mutate)
+      logging.warning("Fleet config changed via web admin: group=%r updates=%r "
+                      "pin=%r", group, mode, pin[:12])
+      flash("Fleet settings saved. Restart the BBS service for them to take "
+            "effect.", "success")
+      return redirect(url_for("fleet_page"))
+
+    @app.post("/fleet/keys/add")
+    @login_required
+    def fleet_key_add():
+      """Trust a new signing key.
+
+      This is the only setting on the page that MINTS authority rather than
+      scoping it: whoever holds the matching private key can from now on run
+      code on this node. So it needs an explicit acknowledgement, it shows
+      the fingerprint actually derived from the key rather than whatever the
+      paste claimed, and it is logged at warning level.
+      """
+      entry = (request.form.get("trusted_key") or "").strip()
+      confirmed = (request.form.get("confirm") or "").strip() == "1"
+      if not entry:
+        flash("Paste a public key entry first.", "error")
+        return redirect(url_for("fleet_page"))
+      if not confirmed:
+        flash("Trusting a key lets its holder run code on this node. Tick the "
+              "confirmation box to continue.", "error")
+        return redirect(url_for("fleet_page"))
+
+      try:
+        from fleet_update import parse_trusted_keys, public_key_entry
+      except Exception:
+        flash("This node cannot validate keys (the cryptography package is "
+              "missing).", "error")
+        return redirect(url_for("fleet_page"))
+
+      parsed = parse_trusted_keys(entry)
+      if not parsed:
+        flash("That is not a usable public key entry. It should look like "
+              "fkabc123:<base64>, from `fleet_sign.py --show-pubkey`.", "error")
+        return redirect(url_for("fleet_page"))
+
+      settings = load_fleet_settings(app.config["CONFIG_PATH"])
+      existing = parse_trusted_keys(settings.get("trusted_keys", ""))
+      added = {k: v for k, v in parsed.items() if k not in existing}
+      if not added:
+        flash("That key is already trusted.", "success")
+        return redirect(url_for("fleet_page"))
+
+      merged = {**existing, **added}
+      # Rebuilt from the parsed keys, so a hand-edited id cannot end up
+      # stored: the entry written is always derived from the key itself.
+      canonical = ",".join(public_key_entry(raw) for raw in merged.values())
+
+      def mutate(config):
+        config.set("fleet", "trusted_keys", canonical)
+
+      _save_fleet_config(mutate)
+      for key_id in added:
+        logging.warning("Fleet: trusted key %s ADDED via web admin. Its holder "
+                        "can now direct this node to run any commit.", key_id)
+      flash(f"Now trusting {', '.join(sorted(added))}. Restart the BBS service "
+            "for it to take effect.", "success")
+      return redirect(url_for("fleet_page"))
+
+    @app.post("/fleet/keys/remove")
+    @login_required
+    def fleet_key_remove():
+      """Revoking is always safe, so it needs no confirmation."""
+      key_id = (request.form.get("key_id") or "").strip().lower()
+      try:
+        from fleet_update import parse_trusted_keys, public_key_entry
+      except Exception:
+        flash("This node cannot validate keys.", "error")
+        return redirect(url_for("fleet_page"))
+
+      settings = load_fleet_settings(app.config["CONFIG_PATH"])
+      remaining = {k: v for k, v in
+                   parse_trusted_keys(settings.get("trusted_keys", "")).items()
+                   if k != key_id}
+      canonical = ",".join(public_key_entry(raw) for raw in remaining.values())
+
+      def mutate(config):
+        config.set("fleet", "trusted_keys", canonical)
+
+      _save_fleet_config(mutate)
+      logging.warning("Fleet: trusted key %s removed via web admin.", key_id)
+      flash(f"No longer trusting {key_id}. Restart the BBS service for it to "
+            "take effect.", "success")
+      return redirect(url_for("fleet_page"))
+
     @app.get("/api/public/chatter")
     @login_required
     def public_chatter_api():
