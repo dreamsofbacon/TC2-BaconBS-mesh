@@ -7,8 +7,63 @@
   .chatter-controls { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:12px; margin-bottom:18px; }
   .chatter-controls .form-group { margin:0; }
   .chatter-feed { display:grid; gap:10px; }
-  .chatter-entry { border-left:3px solid var(--accent-color, #d6a84b); padding:12px 14px; background:var(--surface-raised, #17191d); }
-  .chatter-meta { display:flex; flex-wrap:wrap; gap:8px 14px; font-size:13px; color:var(--text-muted, #9ca3af); margin-bottom:7px; }
+  /* Every colour resolves through one custom property, --cc, set by a cc-N
+     class. Nesting does the work: the entry carries the CHANNEL's cc-N, and
+     the sender elements carry their own, which shadows it. So no element
+     ever has to be told a literal colour, and a theme switch repaints
+     everything with no JavaScript involved. */
+  .chatter-entry { border-left:3px solid var(--cc, var(--accent-color, #d6a84b)); padding:12px 14px; background:var(--surface-raised, #17191d); }
+  .chatter-meta { display:flex; flex-wrap:wrap; gap:8px 14px; font-size:13px; color:var(--text-muted, #9ca3af); margin-bottom:7px; align-items:center; }
+  .chatter-sender { color:var(--cc, inherit); }
+  /* A dot rather than a coloured row: colour is an aid, never the only
+     signal, so every label stays readable with colour switched off. */
+  .chatter-dot { width:9px; height:9px; border-radius:50%; flex:0 0 auto;
+                 background:var(--cc, var(--text-faint, #6b7a8d)); }
+  /* A sender with no identity to key on. Explicitly neutral so it cannot
+     inherit the channel's colour from the entry around it. */
+  .cc-none { --cc:var(--text-faint, #6b7a8d); }
+
+  .chatter-legend { display:grid; grid-template-columns:repeat(2,minmax(0,1fr));
+                    gap:14px 24px; margin-bottom:16px; padding:12px 14px;
+                    border:1px solid var(--border, #2b3645);
+                    border-radius:var(--radius-md, 8px);
+                    background:var(--surface, #161d27); }
+  .legend-title { font-size:11px; letter-spacing:.06em; text-transform:uppercase;
+                  color:var(--text-faint, #6b7a8d); margin:0 0 7px; }
+  .legend-items { display:flex; flex-wrap:wrap; gap:6px 12px; }
+  .legend-item { display:flex; align-items:center; gap:6px; font-size:12px; }
+  .legend-swatch { width:10px; height:10px; border-radius:2px; flex:0 0 auto;
+                   background:var(--cc, var(--text-faint, #6b7a8d)); }
+  .legend-swatch.is-round { border-radius:50%; }
+  .legend-count { color:var(--text-faint, #6b7a8d); }
+  .legend-empty { font-size:12px; color:var(--text-faint, #6b7a8d); }
+  .chatter-toggle { display:flex; align-items:center; gap:7px; font-size:13px;
+                    color:var(--text-muted, #9ca3af); white-space:nowrap; }
+
+  /* Ten hues about 36 degrees apart. Ten well-separated colours beat twenty
+     that only nearly differ -- past ten, colours repeat, and the legend is
+     what actually identifies a station. Defined per theme because a hue that
+     reads on #0f141b is invisible on white. */
+  .cc-0 { --cc:#6aa9ff; } .cc-1 { --cc:#2dd4bf; } .cc-2 { --cc:#7ddb5c; }
+  .cc-3 { --cc:#c3cf3a; } .cc-4 { --cc:#f2c14e; } .cc-5 { --cc:#f08a3c; }
+  .cc-6 { --cc:#ef6b6b; } .cc-7 { --cc:#ec6bb0; } .cc-8 { --cc:#b07bea; }
+  .cc-9 { --cc:#8b93f0; }
+  [data-theme="light"] .cc-0 { --cc:#1d5fd0; }
+  [data-theme="light"] .cc-1 { --cc:#00786d; }
+  [data-theme="light"] .cc-2 { --cc:#2f7d32; }
+  [data-theme="light"] .cc-3 { --cc:#6b7000; }
+  [data-theme="light"] .cc-4 { --cc:#9a6700; }
+  [data-theme="light"] .cc-5 { --cc:#b45309; }
+  [data-theme="light"] .cc-6 { --cc:#c0392b; }
+  [data-theme="light"] .cc-7 { --cc:#b3277f; }
+  [data-theme="light"] .cc-8 { --cc:#7326b8; }
+  [data-theme="light"] .cc-9 { --cc:#3f45c4; }
+
+  /* Colour off: fall back to the single accent stripe this page always had. */
+  .chatter-shell.no-colour .chatter-entry { --cc:var(--accent-color, #d6a84b); }
+  .chatter-shell.no-colour .chatter-sender { color:var(--text, #d7dde5); }
+  .chatter-shell.no-colour .chatter-dot,
+  .chatter-shell.no-colour .chatter-legend { display:none; }
   .chatter-message { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.45; }
   .chatter-presets { display:flex; flex-wrap:wrap; gap:6px; }
   .chatter-state { padding:32px; text-align:center; color:var(--text-muted, #9ca3af); }
@@ -16,6 +71,7 @@
     .chatter-shell { padding-top:14px; }
     .chatter-header { align-items:start; flex-direction:column; }
     .chatter-controls { grid-template-columns:1fr 1fr; }
+    .chatter-legend { grid-template-columns:1fr; }
   }
   @media (max-width:430px) { .chatter-controls { grid-template-columns:1fr; } }
 </style>
@@ -27,6 +83,10 @@
       <h1>Public Chatter</h1>
       <p class="text-muted">Meshtastic and MeshCore public channels heard by participating Bacon BBS nodes.</p>
     </div>
+    <label class="chatter-toggle">
+      <input type="checkbox" id="chatter-colour" checked>
+      Colour-code traffic
+    </label>
   </header>
 
   <section class="chatter-controls" aria-label="Chatter filters">
@@ -60,6 +120,17 @@
     <div class="form-group">
       <label for="chatter-search">Search</label>
       <input class="form-control" id="chatter-search" type="search" placeholder="Message or sender">
+    </div>
+  </section>
+
+  <section class="chatter-legend" id="chatter-legend" aria-label="Colour legend" hidden>
+    <div>
+      <h2 class="legend-title">Channels</h2>
+      <div class="legend-items" id="legend-channels"></div>
+    </div>
+    <div>
+      <h2 class="legend-title">Stations</h2>
+      <div class="legend-items" id="legend-senders"></div>
     </div>
   </section>
 
