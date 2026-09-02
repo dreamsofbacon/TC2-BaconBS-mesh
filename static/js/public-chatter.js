@@ -1,21 +1,18 @@
 (function () {
   "use strict";
 
-  var shell = document.querySelector(".chatter-shell");
   var feed = document.getElementById("chatter-feed");
   var state = document.getElementById("chatter-state");
   var hours = document.getElementById("chatter-hours");
   var network = document.getElementById("chatter-network");
   var channel = document.getElementById("chatter-channel");
   var search = document.getElementById("chatter-search");
-  var colourToggle = document.getElementById("chatter-colour");
   var legend = document.getElementById("chatter-legend");
   var legendChannels = document.getElementById("legend-channels");
   var legendNodes = document.getElementById("legend-nodes");
   var searchTimer = null;
 
   var PALETTE_SIZE = 10;
-  var COLOUR_KEY = "bbs_chatter_colour";
 
   function appendText(parent, tag, text, className) {
     var element = document.createElement(tag);
@@ -244,13 +241,6 @@
     legend.hidden = entries.length === 0;
   }
 
-  function applyColourPreference() {
-    var on = colourToggle.checked;
-    shell.classList.toggle("no-colour", !on);
-    legend.hidden = !on || !feed.children.length;
-    try { localStorage.setItem(COLOUR_KEY, on ? "1" : "0"); } catch (e) {}
-  }
-
   function params() {
     var result = new URLSearchParams({
       hours: String(Math.max(1, Math.min(168, Number(hours.value) || 24)))
@@ -272,7 +262,6 @@
       var palette = buildPalette(data.entries);
       data.entries.forEach(function (entry) { renderEntry(entry, palette); });
       renderLegend(data.entries, palette);
-      if (!colourToggle.checked) legend.hidden = true;
       state.hidden = feed.children.length > 0;
       state.textContent = "No public messages in this time window.";
     } catch (error) {
@@ -295,13 +284,6 @@
     window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(function () { load(); }, 300);
   });
-  colourToggle.addEventListener("change", applyColourPreference);
-
-  var saved = null;
-  try { saved = localStorage.getItem(COLOUR_KEY); } catch (e) {}
-  if (saved === "0") colourToggle.checked = false;
-  applyColourPreference();
-
   load();
   window.setInterval(function () { load(); }, 30000);
 }());

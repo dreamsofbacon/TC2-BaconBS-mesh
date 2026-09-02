@@ -558,6 +558,75 @@ def configure_public_chatter_interface(interface, system_config: dict, link_name
             user.get('publicKey') or user.get('id') or info.get('num') or '')
     except Exception:
         interface.public_chatter_capture_node_id = ''
+    _attach_channel_names(interface)
+
+
+# Meshtastic leaves the primary channel's name blank when it is the default
+# one, and clients show the modem preset in its place. Reproducing that here
+# keeps the feed saying what the radio says.
+_MODEM_PRESET_NAMES = {
+    0: 'LongFast', 1: 'LongSlow', 2: 'VeryLongSlow', 3: 'MediumSlow',
+    4: 'MediumFast', 5: 'ShortSlow', 6: 'ShortFast', 7: 'LongModerate',
+    8: 'ShortTurbo',
+}
+
+
+def _meshtastic_channel_names(interface) -> dict:
+    """Index to name, read from the radio's own channel table."""
+    names = {}
+    channels = getattr(getattr(interface, 'localNode', None), 'channels', None)
+    if not channels:
+        return names
+    preset = None
+    try:
+        lora = interface.localNode.localConfig.lora
+        preset = _MODEM_PRESET_NAMES.get(int(lora.modem_preset))
+    except Exception:
+        preset = None
+    for channel in channels:
+        try:
+            # role 0 is DISABLED: an empty slot, not a channel with no name.
+            if int(getattr(channel, 'role', 0)) == 0:
+                continue
+            index = int(getattr(channel, 'index', 0))
+            name = str(getattr(channel.settings, 'name', '') or '').strip()
+            if not name and index == 0:
+                name = preset or 'LongFast'
+            if name:
+                names[index] = name
+        except Exception:
+            continue
+    return names
+
+
+def _attach_channel_names(interface) -> None:
+    """Give the capture path the radio's real channel names.
+
+    MeshCore fills this in itself at connect, because only the radio knows;
+    Meshtastic keeps them in the local node's channel table, so they are read
+    here. Either way a failure is not fatal -- the feed falls back to the
+    channel number, which is what it always showed before.
+    """
+    # MeshCore has already filled this in from the radio. Do not overwrite it
+    # -- but do fall through, because the logging and the backfill below
+    # apply to whoever populated it.
+    if not getattr(interface, 'channel_names', None):
+        try:
+            interface.channel_names = _meshtastic_channel_names(interface)
+        except Exception:
+            logging.debug("Could not read channel names", exc_info=True)
+            return
+    if interface.channel_names:
+        logging.info(
+            "Channel names: %s",
+            ", ".join(f"{i}={n}" for i, n in sorted(interface.channel_names.items())))
+        try:
+            from db_operations import backfill_channel_names
+            backfill_channel_names(
+                str(getattr(interface, 'protocol_name', 'Meshtastic')).casefold(),
+                interface.channel_names)
+        except Exception:
+            logging.debug("Channel name backfill failed", exc_info=True)
 
 
 def _describe_radio(interface, system_config: dict, *, bbs_nodes_key='bbs_nodes', allowed_nodes_key='allowed_nodes') -> dict:
