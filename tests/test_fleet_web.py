@@ -186,3 +186,151 @@ class LocalOptOutTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConfigFormTests(unittest.TestCase):
+    """group, updates and pin can only scope or disable what an
+    already-trusted key may do, so they save without ceremony."""
+
+    def _post(self, node, path, data):
+        page = node.client.get("/fleet")
+        data = dict(data)
+        data["csrf_token"] = node._token(page.get_data(as_text=True))
+        return node.client.post(path, data=data, follow_redirects=True)
+
+    def _config(self, node):
+        import configparser
+        parser = configparser.ConfigParser()
+        parser.read(node.config)
+        return parser
+
+    def test_saving_group_and_mode_writes_config(self):
+        with _Node() as node:
+            self._post(node, "/fleet/config",
+                       {"group": "newgroup", "updates": "notify",
+                        "pin_commit": ""})
+            config = self._config(node)
+            self.assertEqual(config.get("fleet", "group"), "newgroup")
+            self.assertEqual(config.get("fleet", "updates"), "notify")
+
+    def test_an_invalid_mode_is_refused(self):
+        with _Node() as node:
+            self._post(node, "/fleet/config",
+                       {"group": GROUP, "updates": "whenever", "pin_commit": ""})
+            self.assertEqual(self._config(node).get("fleet", "updates"), "auto")
+
+    def test_a_non_hex_pin_is_refused(self):
+        with _Node() as node:
+            self._post(node, "/fleet/config",
+                       {"group": GROUP, "updates": "auto",
+                        "pin_commit": "not-a-sha"})
+            self.assertEqual(
+                self._config(node).get("fleet", "pin_commit", fallback=""), "")
+
+    def test_saving_does_not_disturb_the_trusted_keys(self):
+        """The form does not post them, so a naive write would erase them."""
+        with _Node() as node:
+            self._post(node, "/fleet/config",
+                       {"group": GROUP, "updates": "auto", "pin_commit": ""})
+            self.assertIn(node.key_id,
+                          self._config(node).get("fleet", "trusted_keys"))
+
+
+class TrustedKeyFormTests(unittest.TestCase):
+    """Adding a key is the one action here that MINTS authority rather than
+    scoping it, so it is the one that needs a gate."""
+
+    def _post(self, node, path, data):
+        page = node.client.get("/fleet")
+        data = dict(data)
+        data["csrf_token"] = node._token(page.get_data(as_text=True))
+        return node.client.post(path, data=data, follow_redirects=True)
+
+    def _trusted(self, node):
+        import configparser
+        parser = configparser.ConfigParser()
+        parser.read(node.config)
+        return fleet_update.parse_trusted_keys(
+            parser.get("fleet", "trusted_keys", fallback=""))
+
+    def test_adding_a_key_without_confirming_is_refused(self):
+        with _Node() as node:
+            _, public, new_id = fleet_update.generate_keypair()
+            entry = fleet_update.public_key_entry(public)
+            page = self._post(node, "/fleet/keys/add", {"trusted_key": entry})
+            self.assertNotIn(new_id, self._trusted(node))
+            self.assertIn("confirmation", page.get_data(as_text=True).lower())
+
+    def test_adding_a_key_with_confirmation_works(self):
+        with _Node() as node:
+            _, public, new_id = fleet_update.generate_keypair()
+            entry = fleet_update.public_key_entry(public)
+            self._post(node, "/fleet/keys/add",
+                       {"trusted_key": entry, "confirm": "1"})
+            self.assertIn(new_id, self._trusted(node))
+
+    def test_adding_a_key_keeps_the_existing_ones(self):
+        """Onboarding a second signer must not silently revoke the first."""
+        with _Node() as node:
+            _, public, new_id = fleet_update.generate_keypair()
+            self._post(node, "/fleet/keys/add",
+                       {"trusted_key": fleet_update.public_key_entry(public),
+                        "confirm": "1"})
+            trusted = self._trusted(node)
+            self.assertIn(new_id, trusted)
+            self.assertIn(node.key_id, trusted)
+
+    def test_a_malformed_key_is_refused(self):
+        with _Node() as node:
+            for junk in ("nonsense", "fkabc123:notbase64!!", "fkabc123:c2hvcnQ"):
+                with self.subTest(junk=junk):
+                    self._post(node, "/fleet/keys/add",
+                               {"trusted_key": junk, "confirm": "1"})
+                    self.assertEqual(list(self._trusted(node)), [node.key_id])
+
+    def test_a_private_key_paste_is_refused(self):
+        """The one mistake that undoes the whole model."""
+        with _Node() as node:
+            self._post(node, "/fleet/keys/add",
+                       {"trusted_key": "-----BEGIN PRIVATE KEY-----",
+                        "confirm": "1"})
+            self.assertEqual(list(self._trusted(node)), [node.key_id])
+
+    def test_an_entry_whose_id_does_not_match_its_key_is_refused(self):
+        """The id is derived from the key, so a mismatch means the entry was
+        assembled or edited by hand. It is refused outright rather than
+        silently rewritten, so the operator finds out their paste was wrong
+        instead of trusting a key whose id is not what they were shown.
+
+        Asserted against the raw config text: parse_trusted_keys drops a
+        mismatched id on read, so checking through it would pass whatever the
+        writer did and prove nothing.
+        """
+        import configparser
+        with _Node() as node:
+            _, public, real_id = fleet_update.generate_keypair()
+            _, _, key_b64 = fleet_update.public_key_entry(public).partition(":")
+            page = self._post(node, "/fleet/keys/add",
+                              {"trusted_key": f"fkdead99:{key_b64}",
+                               "confirm": "1"})
+            parser = configparser.ConfigParser()
+            parser.read(node.config)
+            raw = parser.get("fleet", "trusted_keys", fallback="")
+            self.assertNotIn("fkdead99", raw)
+            self.assertNotIn(real_id, raw, "a mis-labelled entry was stored anyway")
+            self.assertIn("not a usable public key", page.get_data(as_text=True).lower())
+
+    def test_removing_a_key_needs_no_confirmation(self):
+        """Reducing authority is always safe."""
+        with _Node() as node:
+            self._post(node, "/fleet/keys/remove", {"key_id": node.key_id})
+            self.assertEqual(self._trusted(node), {})
+
+    def test_key_changes_require_csrf(self):
+        with _Node() as node:
+            _, public, new_id = fleet_update.generate_keypair()
+            response = node.client.post("/fleet/keys/add", data={
+                "trusted_key": fleet_update.public_key_entry(public),
+                "confirm": "1"})
+            self.assertEqual(response.status_code, 403)
+            self.assertNotIn(new_id, self._trusted(node))
