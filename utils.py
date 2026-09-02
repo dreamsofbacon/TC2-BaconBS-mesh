@@ -1038,6 +1038,12 @@ def send_public_chatter_to_bbs_nodes(row, bbs_nodes, interface):
         'n': row[1], 'c': row[2], 'l': row[3], 's': row[4], 'a': row[5],
         'm': row[6], 't': row[7], 'r': row[8], 'o': row[9], 'e': row[10],
     }
+    # Hops is appended last in the row and omitted when unknown, so a peer
+    # running an older build sends nothing here and one receiving this simply
+    # ignores a key it does not read. Sending null would waste packet bytes
+    # on a LoRa link to say nothing.
+    if len(row) > 13 and row[13] is not None:
+        fields['h'] = int(row[13])
     payload = base64.urlsafe_b64encode(
         json.dumps(fields, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
     ).decode('ascii')

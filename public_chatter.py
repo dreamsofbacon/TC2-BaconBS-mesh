@@ -75,6 +75,34 @@ def make_message_id(
     return 'pch:' + hashlib.blake2b(material, digest_size=16).hexdigest()
 
 
+def hops_used(packet: dict):
+    """How many hops a broadcast travelled, or None when that is unknowable.
+
+    hop_start is the TTL the sender set out with, hop_limit is what was left
+    when we heard it, so the difference is hops traversed. Absence is common
+    and means unknown, not zero: firmware before 2.x never sent hop_start,
+    and protobuf omits zero-valued fields entirely, so a packet heard direct
+    can arrive with no hop_limit key at all.
+
+    A packet that reached this node over MQTT rather than the air carries hop
+    fields describing somebody else's radio path. Reporting that as our hop
+    count would be worse than reporting nothing.
+    """
+    if packet.get('viaMqtt') or packet.get('via_mqtt'):
+        return None
+    start = packet.get('hopStart', packet.get('hop_start'))
+    limit = packet.get('hopLimit', packet.get('hop_limit'))
+    if start is None or limit is None:
+        return None
+    try:
+        hops = int(start) - int(limit)
+    except (TypeError, ValueError):
+        return None
+    # Meshtastic caps the TTL at 7; anything outside that is a malformed or
+    # rewritten packet rather than a very long path.
+    return hops if 0 <= hops <= 7 else None
+
+
 def normalize_broadcast(
     packet: dict,
     interface,
@@ -136,6 +164,7 @@ def normalize_broadcast(
         'captured_at': _iso(now),
         'capture_node_id': str(getattr(interface, 'public_chatter_capture_node_id', '') or ''),
         'expires_at': _iso(expires),
+        'hops': hops_used(packet),
     }
 
 
