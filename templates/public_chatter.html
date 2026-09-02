@@ -14,13 +14,16 @@
      everything with no JavaScript involved. */
   .chatter-entry { border-left:3px solid var(--cc, var(--accent-color, #d6a84b)); padding:12px 14px; background:var(--surface-raised, #17191d); }
   .chatter-meta { display:flex; flex-wrap:wrap; gap:8px 14px; font-size:13px; color:var(--text-muted, #9ca3af); margin-bottom:7px; align-items:center; }
-  .chatter-sender { color:var(--cc, inherit); }
-  /* A dot rather than a coloured row: colour is an aid, never the only
-     signal, so every label stays readable with colour switched off. */
-  .chatter-dot { width:9px; height:9px; border-radius:50%; flex:0 0 auto;
-                 background:var(--cc, var(--text-faint, #6b7a8d)); }
-  /* A sender with no identity to key on. Explicitly neutral so it cannot
-     inherit the channel's colour from the entry around it. */
+  .chatter-node { color:var(--cc, inherit); }
+  /* A swatch beside the label it colours, rather than a coloured row:
+     colour is an aid, never the only signal, so every label stays readable
+     with colour switched off. Round for a capture node, square for a
+     channel, so the two dimensions stay tellable apart at a glance. */
+  .chatter-swatch { width:9px; height:9px; border-radius:2px; flex:0 0 auto;
+                    background:var(--cc, var(--text-faint, #6b7a8d)); }
+  .chatter-swatch.is-round { border-radius:50%; }
+  /* Nothing to key on. Explicitly neutral so it cannot inherit the
+     surrounding entry's colour. */
   .cc-none { --cc:var(--text-faint, #6b7a8d); }
 
   .chatter-legend { display:grid; grid-template-columns:repeat(2,minmax(0,1fr));
@@ -61,8 +64,8 @@
 
   /* Colour off: fall back to the single accent stripe this page always had. */
   .chatter-shell.no-colour .chatter-entry { --cc:var(--accent-color, #d6a84b); }
-  .chatter-shell.no-colour .chatter-sender { color:var(--text, #d7dde5); }
-  .chatter-shell.no-colour .chatter-dot,
+  .chatter-shell.no-colour .chatter-node { color:var(--text-muted, #9ca3af); }
+  .chatter-shell.no-colour .chatter-swatch,
   .chatter-shell.no-colour .chatter-legend { display:none; }
   .chatter-message { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.45; }
   .chatter-presets { display:flex; flex-wrap:wrap; gap:6px; }
@@ -129,8 +132,8 @@
       <div class="legend-items" id="legend-channels"></div>
     </div>
     <div>
-      <h2 class="legend-title">Stations</h2>
-      <div class="legend-items" id="legend-senders"></div>
+      <h2 class="legend-title">Heard by</h2>
+      <div class="legend-items" id="legend-nodes"></div>
     </div>
   </section>
 
