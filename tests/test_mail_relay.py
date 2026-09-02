@@ -160,6 +160,32 @@ class MailRelayDatabaseTests(unittest.TestCase):
         self.assertEqual(account_entry["protocols"], ["MeshCore", "Meshtastic"])
         self.assertIn(account_entry["recipient_node_id"], {"!aaa11111", "bbbb2222"})
 
+    def test_relay_directory_includes_enabled_account_without_preference_rows(self):
+        account_id = self._linked_account()
+        conn = db_operations.get_db_connection()
+        conn.execute("DELETE FROM mail_relay_preferences")
+        conn.commit()
+
+        directory = db_operations.get_mail_relay_directory()
+
+        self.assertEqual(len(directory), 1)
+        self.assertEqual(directory[0]["account_id"], account_id)
+        self.assertEqual(directory[0]["display_name"], "Relay User")
+        self.assertEqual(directory[0]["node_ids"], ["!aaa11111", "bbbb2222"])
+
+    def test_active_users_directory_includes_requesting_account(self):
+        account_id = db_operations.create_account()
+        db_operations.set_account_alias(account_id, "Sender Relay")
+        db_operations.link_node_to_account("!sender", account_id, "meshtastic")
+        db_operations.set_account_mail_relay(account_id, True)
+
+        with mock.patch.object(command_handlers, "send_message") as send:
+            command_handlers.handle_active_users_command(111, self.interface)
+
+        message = send.call_args.args[0]
+        self.assertIn("Sender Relay", message)
+        self.assertNotIn("No users have opted", message)
+
     def test_mail_snapshots_linked_targets_and_replay_is_idempotent(self):
         account_id = self._linked_account()
         unique_id = db_operations.add_mail(
