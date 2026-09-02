@@ -21,8 +21,26 @@
     article.className = "chatter-entry";
     var meta = document.createElement("div");
     meta.className = "chatter-meta";
-    appendText(meta, "strong", entry.sender_name || entry.sender_node_id || "Unknown sender");
+    // The long name is what a person recognises; sender_name holds only the
+    // short name, which for most nodes is just the hex tail of the id.
+    var name = entry.sender_long_name || entry.sender_name || entry.sender_node_id
+      || "Unknown sender";
+    appendText(meta, "strong", name);
+    // Keep the short name and id visible when they add something the long
+    // name does not, so a station stays identifiable across renames.
+    if (entry.sender_name && entry.sender_name !== name) {
+      appendText(meta, "span", entry.sender_name);
+    }
+    if (entry.sender_node_id && entry.sender_node_id !== name) {
+      appendText(meta, "span", entry.sender_node_id);
+    }
     appendText(meta, "span", (entry.network || "Unknown") + " / " + (entry.channel_name || "Channel " + entry.channel_index));
+    // 0 is a real answer ("heard direct"), null means the packet carried no
+    // usable hop data -- so test for null rather than falsiness.
+    if (entry.hops !== null && entry.hops !== undefined) {
+      appendText(meta, "span", entry.hops === 0
+        ? "direct" : entry.hops + (entry.hops === 1 ? " hop" : " hops"));
+    }
     appendText(meta, "time", new Date(entry.message_timestamp).toLocaleString());
     if (entry.capture_node_id) appendText(meta, "span", "Heard by " + entry.capture_node_id);
     article.appendChild(meta);

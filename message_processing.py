@@ -1591,6 +1591,7 @@ def _store_public_chatter_payload(unique_id: str, encoded_payload: str) -> None:
             channel_name=str(fields.get('l') or ''),
             sender_node_id=str(fields['s']) if fields.get('s') else None,
             sender_name=str(fields.get('a') or ''),
+            hops=int(fields['h']) if str(fields.get('h', '')).strip() != '' else None,
             content=str(fields['m']),
             message_timestamp=str(fields['t']),
             captured_at=str(fields['r']),

@@ -622,8 +622,10 @@ def initialize_database():
                     capture_node_id TEXT NOT NULL DEFAULT '',
                     expires_at TEXT NOT NULL,
                     expected_content_length INTEGER,
-                    content_complete INTEGER NOT NULL DEFAULT 1
+                    content_complete INTEGER NOT NULL DEFAULT 1,
+                    hops INTEGER
                 );''')
+    _ensure_public_chatter_hops_column(c)
     c.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_public_chatter_unique_id
                     ON public_chatter (unique_id);''')
     c.execute('''CREATE INDEX IF NOT EXISTS idx_public_chatter_time
@@ -836,6 +838,7 @@ def add_public_chatter(
     capture_node_id: str,
     expires_at: str,
     sync_received: bool = False,
+    hops: Optional[int] = None,
 ) -> bool:
     """Store one immutable public RF observation.
 
@@ -848,13 +851,14 @@ def add_public_chatter(
                (unique_id, network, channel_index, channel_name, sender_node_id,
                 sender_name, content, message_timestamp, captured_at,
                 capture_node_id, expires_at, expected_content_length,
-                content_complete)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)''',
+                content_complete, hops)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)''',
         (
             str(unique_id), str(network), int(channel_index), str(channel_name or ''),
             str(sender_node_id) if sender_node_id else None, str(sender_name or ''),
             str(content), str(message_timestamp), str(captured_at),
             str(capture_node_id or ''), str(expires_at), len(str(content).encode('utf-8')),
+            None if hops is None else int(hops),
         ),
     )
     inserted = cursor.rowcount == 1
@@ -865,12 +869,19 @@ def add_public_chatter(
                    sender_node_id = COALESCE(sender_node_id, ?),
                    sender_name = CASE WHEN sender_name = '' THEN ? ELSE sender_name END,
                    captured_at = MIN(captured_at, ?),
-                   expires_at = MIN(expires_at, ?)
+                   expires_at = MIN(expires_at, ?),
+                   hops = CASE
+                       WHEN ? IS NULL THEN hops
+                       WHEN hops IS NULL THEN ?
+                       ELSE MIN(hops, ?) END
                WHERE unique_id = ?''',
             (
                 str(channel_name or ''),
                 str(sender_node_id) if sender_node_id else None,
                 str(sender_name or ''), str(captured_at), str(expires_at),
+                None if hops is None else int(hops),
+                None if hops is None else int(hops),
+                None if hops is None else int(hops),
                 str(unique_id),
             ),
         )
@@ -890,7 +901,7 @@ def get_public_chatter_by_unique_id(unique_id: str):
         '''SELECT unique_id, network, channel_index, channel_name, sender_node_id,
                   sender_name, content, message_timestamp, captured_at,
                   capture_node_id, expires_at, expected_content_length,
-                  content_complete
+                  content_complete, hops
               FROM public_chatter WHERE unique_id = ? AND expires_at > ?''',
           (str(unique_id), now),
     ).fetchone()
@@ -912,42 +923,50 @@ def get_public_chatter_history(
     normalized_limit = None if limit is None else max(1, min(200, int(limit)))
     now = datetime.now(timezone.utc)
     cutoff = (now - timedelta(hours=normalized_hours)).isoformat().replace('+00:00', 'Z')
-    clauses = ['message_timestamp >= ?', 'expires_at > ?']
+    clauses = ['p.message_timestamp >= ?', 'p.expires_at > ?']
     params = [cutoff, now.isoformat().replace('+00:00', 'Z')]
 
     normalized_network = str(network or '').strip().casefold()
     if normalized_network:
-        clauses.append('network = ?')
+        clauses.append('p.network = ?')
         params.append(normalized_network)
     if channel_index is not None:
-        clauses.append('channel_index = ?')
+        clauses.append('p.channel_index = ?')
         params.append(int(channel_index))
     normalized_capture = str(capture_node_id or '').strip()
     if normalized_capture:
-        clauses.append('capture_node_id = ?')
+        clauses.append('p.capture_node_id = ?')
         params.append(normalized_capture)
     normalized_search = str(search_query or '').strip()
     if normalized_search:
         clauses.append(
-            "(content LIKE ? OR sender_name LIKE ? OR COALESCE(sender_node_id, '') LIKE ?)"
+            "(p.content LIKE ? OR p.sender_name LIKE ? OR COALESCE(p.sender_node_id, '') LIKE ?)"
         )
         like_value = f'%{normalized_search}%'
         params.extend([like_value, like_value, like_value])
     if before_time and before_id > 0:
-        clauses.append('(message_timestamp < ? OR (message_timestamp = ? AND id < ?))')
+        clauses.append('(p.message_timestamp < ? OR (p.message_timestamp = ? AND p.id < ?))')
         params.extend([str(before_time), str(before_time), int(before_id)])
 
     limit_clause = ''
     if normalized_limit is not None:
         limit_clause = 'LIMIT ?'
         params.append(normalized_limit + 1)
+    # sender_name is captured at receive time and holds only the SHORT name
+    # -- often just the hex tail of the node id ('43b5', 'a02c'). The roster
+    # already knows the long name, so join it rather than storing a second
+    # copy that would go stale when someone renames their node. A node can
+    # appear on several links, hence MAX() to collapse to one row.
     rows = get_db_connection().execute(
-        f'''SELECT id, unique_id, network, channel_index, channel_name,
-                   sender_node_id, sender_name, content, message_timestamp,
-                   captured_at, capture_node_id
-            FROM public_chatter
+        f'''SELECT p.id, p.unique_id, p.network, p.channel_index, p.channel_name,
+                   p.sender_node_id, p.sender_name, p.content, p.message_timestamp,
+                   p.captured_at, p.capture_node_id, p.hops,
+                   (SELECT MAX(NULLIF(m.long_name, ''))
+                      FROM mesh_clients m
+                     WHERE m.node_id = p.sender_node_id)
+            FROM public_chatter p
             WHERE {' AND '.join(clauses)}
-            ORDER BY message_timestamp DESC, id DESC
+            ORDER BY p.message_timestamp DESC, p.id DESC
             {limit_clause}''',
         tuple(params),
     ).fetchall()
@@ -957,7 +976,7 @@ def get_public_chatter_history(
     columns = (
         'id', 'unique_id', 'network', 'channel_index', 'channel_name',
         'sender_node_id', 'sender_name', 'content', 'message_timestamp',
-        'captured_at', 'capture_node_id',
+        'captured_at', 'capture_node_id', 'hops', 'sender_long_name',
     )
     entries = [dict(zip(columns, row)) for row in rows]
     next_cursor = None
@@ -1127,6 +1146,20 @@ def _ensure_accounts_tables(cursor) -> None:
                 );''')
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_link_attempts_node_time
                     ON link_attempts (node_id, attempted_at);''')
+
+
+def _ensure_public_chatter_hops_column(cursor) -> None:
+    """Add hops to an existing chatter table.
+
+    Nullable on purpose: NULL means "not knowable", which is different from
+    zero. Firmware before 2.x sends no hop_start, protobuf omits zero-valued
+    fields, and a packet relayed over MQTT carries somebody else's hop
+    counts -- all of which are unknown, while 0 is the real and useful
+    answer "heard direct".
+    """
+    cursor.execute("PRAGMA table_info(public_chatter)")
+    if 'hops' not in {row[1] for row in cursor.fetchall()}:
+        cursor.execute("ALTER TABLE public_chatter ADD COLUMN hops INTEGER")
 
 
 def _ensure_fleet_tables(cursor) -> None:
