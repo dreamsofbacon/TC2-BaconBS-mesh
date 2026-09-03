@@ -814,7 +814,9 @@ the code was installed.
 
 Enable and configure `[ssh]` from the web Settings page or `config.ini`, then
 start the service. Use a high alternate port such as 2222 so the listener does
-not conflict with the host's administrative SSH service on port 22.
+not conflict with the host's administrative SSH service on port 22. For LAN
+access by `.local` name, use `host = 0.0.0.0, ::` so clients can connect over
+either IPv4 or IPv6.
 
 With no shared access username/password configured, the SSH credentials are
 the user's BBS account credentials:

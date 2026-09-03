@@ -2,6 +2,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
 import asyncssh
 
@@ -58,6 +59,16 @@ class SessionLimiterTests(unittest.TestCase):
         limiter.release("account-a")
         self.assertTrue(limiter.reserve_pending())
         limiter.release_pending()
+
+
+class SSHBindTests(unittest.IsolatedAsyncioTestCase):
+    @mock.patch("ssh_server.ensure_host_key", return_value="host-key")
+    @mock.patch("ssh_server.asyncssh.create_server", new_callable=mock.AsyncMock)
+    async def test_multiple_bind_addresses_are_passed_as_a_list(
+            self, create_server, _ensure_host_key):
+        await start_server(SSHConfig(host="0.0.0.0, ::"))
+        self.assertEqual(create_server.await_args.args[1], ["0.0.0.0", "::"])
+        self.assertEqual(create_server.await_args.args[2], 2222)
 
 
 class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
