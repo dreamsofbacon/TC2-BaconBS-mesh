@@ -77,6 +77,60 @@
 </div>
 
 <div class="card">
+  <div class="card-header"><h2>Set up fleet signing</h2></div>
+  <div class="card-body">
+    <ol>
+      <li>Choose a group and update mode under <strong>Configuration</strong>,
+        then save them.</li>
+      <li>Generate a signing key below. On HTTPS or localhost it is created
+        entirely in your browser. On plain HTTP the node creates it in memory
+        and returns it once. The private key is never stored by the node.</li>
+      <li>Move the downloaded file to
+        <code>%APPDATA%\TC2-BaconBS\fleet-key</code> on Windows or
+        <code>~/.config/bacon-bbs/fleet-key</code> on Linux, and keep an
+        offline backup.</li>
+      <li>On every other node, open its Fleet tab and paste the displayed
+        public entry under <strong>Trust a new key</strong>.</li>
+      <li>Push the commit, run
+        <code>python scripts/fleet_sign.py --group {{ fleet.group or 'baconbbs' }} sign HEAD</code>,
+        then paste the signed instruction into any fleet node below.</li>
+    </ol>
+
+    <div class="alert alert-warning">
+      The downloaded private key can command every node that trusts it. It is
+      never stored by this BBS. Generate it from a browser and network you
+      trust, then store it like an SSH private key.
+    </div>
+    <div class="alert alert-danger" id="fleet-key-http-warning" hidden>
+      This page is using plain HTTP, so the node must generate the key and
+      return it over this connection. Anyone able to intercept this admin
+      session could capture it. Use a trusted local network or HTTPS.
+    </div>
+    <div id="fleet-key-generator">
+      <div class="form-group">
+        <label>
+          <input type="checkbox" id="fleet-key-confirm">
+          I understand that losing this private key requires installing a new
+          public key on every node.
+        </label>
+      </div>
+      <button type="button" class="btn btn-primary" id="fleet-key-generate">
+        Generate and download key
+      </button>
+      <p id="fleet-key-status" class="text-muted" role="status" aria-live="polite"></p>
+      <div id="fleet-key-result" hidden>
+        <div class="form-group">
+          <label for="fleet-generated-public">Public key entry</label>
+          <textarea class="form-control" id="fleet-generated-public" rows="2" readonly></textarea>
+        </div>
+        <button type="button" class="btn" id="fleet-key-copy">Copy public key</button>
+      </div>
+      <noscript><p class="text-danger">JavaScript is required to generate a key in the browser.</p></noscript>
+    </div>
+  </div>
+</div>
+
+<div class="card">
   <div class="card-header"><h2>Configuration</h2></div>
   <div class="card-body">
     <p class="text-muted">
@@ -235,4 +289,8 @@
     {% endif %}
   </div>
 </div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='js/fleet.js', v=asset_version) }}"></script>
 {% endblock %}
