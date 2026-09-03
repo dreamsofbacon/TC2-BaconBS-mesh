@@ -11,6 +11,7 @@ every node in the fleet.
 import sys
 import types
 import unittest
+from unittest import mock
 
 if "meshtastic" not in sys.modules:
     sys.modules["meshtastic"] = types.SimpleNamespace(BROADCAST_NUM=0)
@@ -220,6 +221,34 @@ class KeyIdTests(unittest.TestCase):
     def test_different_keys_get_different_ids(self):
         ids = {fleet_update.generate_keypair()[2] for _ in range(25)}
         self.assertEqual(len(ids), 25)
+
+
+class ApplyLifecycleTests(unittest.TestCase):
+    def test_dependency_failure_restores_previous_commit_without_restart(self):
+        previous = "a" * 40
+        target = "b" * 40
+        git_result = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch.object(fleet_update, "current_commit", return_value=previous), \
+                mock.patch.object(
+                    fleet_update, "fetch_commit", return_value=(True, "fetched")), \
+                mock.patch.object(
+                    fleet_update, "smoke_test_commit",
+                    return_value=(True, "passes")), \
+                mock.patch.object(fleet_update, "write_update_state"), \
+                mock.patch.object(
+                    fleet_update, "install_requirements",
+                    return_value=(False, "pip failed")), \
+                mock.patch.object(fleet_update, "clear_update_state") as clear, \
+                mock.patch.object(
+                    fleet_update, "_git", return_value=git_result) as git:
+            applied, detail = fleet_update.apply_target(target, "0.1.999")
+
+        self.assertFalse(applied)
+        self.assertIn("dependency install failed", detail)
+        git.assert_any_call("checkout", "--quiet", "--detach", target)
+        git.assert_any_call(
+            "checkout", "--quiet", "--force", "--detach", previous)
+        clear.assert_called_once_with()
 
 
 if __name__ == "__main__":

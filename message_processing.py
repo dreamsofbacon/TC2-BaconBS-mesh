@@ -93,6 +93,7 @@ from utils import (
     pack_missing, unpack_missing,
     compact_channel_manifest_key,
     send_api_response, pop_api_request, get_api_request,
+    send_fleet_target_to_bbs_nodes,
     _send_one_sync, get_max_text_bytes,
 )
 
@@ -1460,9 +1461,12 @@ def _auto_update_profile(sender_id, interface):
 
 _pending_fleet_instructions = {}
 _pending_fleet_lock = threading.Lock()
+_FLEET_INSTRUCTION_MAX_CHARS = 4096
+_FLEET_PENDING_MAX = 32
+_FLEET_PENDING_TTL_SECONDS = 300
 
 
-def _apply_fleet_instruction(blob: str, sender_node_id) -> None:
+def _apply_fleet_instruction(blob: str, sender_node_id, interface=None) -> None:
     """Verify a reassembled instruction and record it if it is genuine.
 
     Everything about this function assumes the sender is unknown and possibly
@@ -1505,6 +1509,12 @@ def _apply_fleet_instruction(blob: str, sender_node_id) -> None:
             "Fleet target accepted: %s -> commit %s (signed by %s, via %s)",
             payload.get('v', '?'), str(payload.get('c', ''))[:12],
             payload.get('k'), sender_node_id)
+        if interface is not None:
+            peers = [
+                peer for peer in (getattr(interface, 'bbs_nodes', []) or [])
+                if str(peer) != str(sender_node_id)
+            ]
+            send_fleet_target_to_bbs_nodes(blob, peers, interface)
         _request_fleet_apply()
 
 
@@ -1547,16 +1557,47 @@ def _add_fleet_instruction_chunk(message: str, sender_node_id, interface) -> Non
     try:
         if message.startswith("FLEETVER|"):
             _, uid, expected, chunk = message.split("|", 3)
+            expected = int(expected)
+            if (not uid or len(uid) > 32 or expected < 1
+                    or expected > _FLEET_INSTRUCTION_MAX_CHARS
+                    or len(chunk) > expected):
+                return
             with _pending_fleet_lock:
+                now = time.time()
+                stale = [
+                    key for key, value in _pending_fleet_instructions.items()
+                    if now - float(value.get("updated_at", 0))
+                    > _FLEET_PENDING_TTL_SECONDS
+                ]
+                for key in stale:
+                    _pending_fleet_instructions.pop(key, None)
+                if (uid not in _pending_fleet_instructions
+                        and len(_pending_fleet_instructions) >= _FLEET_PENDING_MAX):
+                    oldest = min(
+                        _pending_fleet_instructions,
+                        key=lambda key: _pending_fleet_instructions[key].get(
+                            "updated_at", 0))
+                    _pending_fleet_instructions.pop(oldest, None)
                 _pending_fleet_instructions[uid] = {
-                    "expected": int(expected), "parts": {0: chunk}}
+                    "expected": expected, "parts": {0: chunk},
+                    "updated_at": now}
         else:
             _, uid, offset, chunk = message.split("|", 3)
+            offset = int(offset)
             with _pending_fleet_lock:
                 entry = _pending_fleet_instructions.get(uid)
                 if entry is None:
                     return
-                entry["parts"][int(offset)] = chunk
+                if (offset < 0 or offset >= entry["expected"]
+                        or offset + len(chunk) > entry["expected"]):
+                    _pending_fleet_instructions.pop(uid, None)
+                    return
+                existing = entry["parts"].get(offset)
+                if existing is not None and existing != chunk:
+                    _pending_fleet_instructions.pop(uid, None)
+                    return
+                entry["parts"][offset] = chunk
+                entry["updated_at"] = time.time()
     except (ValueError, TypeError):
         return
 
@@ -1564,12 +1605,20 @@ def _add_fleet_instruction_chunk(message: str, sender_node_id, interface) -> Non
         entry = _pending_fleet_instructions.get(uid)
         if entry is None:
             return
-        assembled = "".join(entry["parts"][k] for k in sorted(entry["parts"]))
-        if len(assembled) < entry["expected"]:
+        cursor = 0
+        assembled_parts = []
+        for offset in sorted(entry["parts"]):
+            if offset != cursor:
+                return
+            part = entry["parts"][offset]
+            assembled_parts.append(part)
+            cursor += len(part)
+        if cursor != entry["expected"]:
             return
+        assembled = "".join(assembled_parts)
         _pending_fleet_instructions.pop(uid, None)
 
-    _apply_fleet_instruction(assembled, sender_node_id)
+    _apply_fleet_instruction(assembled, sender_node_id, interface)
 
 
 def _store_public_chatter_payload(unique_id: str, encoded_payload: str) -> None:
@@ -2241,6 +2290,25 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     logging.debug("NODEVER: could not record peer version",
                                   exc_info=True)
             return
+        elif message.startswith("FLEETSTATUS|"):
+            # Advisory only, like NODEVER. The signed target remains the sole
+            # authority for deciding what code this node runs.
+            parts = message.split("|", 6)
+            allowed_states = {
+                'pending', 'applying', 'probation', 'healthy', 'failed',
+                'pinned', 'confirmed', 'rolled_back', 'rollback_failed',
+            }
+            if (len(parts) == 7 and parts[1].strip()
+                    and parts[5].strip() in allowed_states):
+                try:
+                    from db_operations import record_node_version
+                    record_node_version(
+                        parts[1].strip(), parts[2].strip(), parts[3].strip(),
+                        parts[4].strip(), parts[5].strip())
+                except Exception:
+                    logging.debug("FLEETSTATUS: could not record peer status",
+                                  exc_info=True)
+            return
         elif message.startswith("RELAYPREF|"):
             parts = message.split("|", 3)
             if len(parts) != 4 or parts[2] not in ('0', '1') or not parts[1] or not parts[3]:
@@ -2777,7 +2845,7 @@ def on_receive(packet, interface):
                                    "CHANNEL|", "DELETE_CHANNEL|", "CHANNELCOMMENT|", "CHANNELCOMMENTCONT|", "CHANNELCOMMENTMETA|", "DELETE_CHANNELCOMMENT|",
                                    "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
                                    "PROFILESYNC|", "RELAYPREF|", "SCORESYNC|",
-                                   "FLEETVER|", "FLEETVERCONT|", "NODEVER|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
+                                   "FLEETVER|", "FLEETVERCONT|", "NODEVER|", "FLEETSTATUS|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|", "HASHZGAP|",
                                    "HAVE|", "WANT|", "EVENT|", "PEERGOSSIP|",
                                    "APIREQ|", "APIRESP|", "APIRESPCONT|", "APIRESPMETA|",

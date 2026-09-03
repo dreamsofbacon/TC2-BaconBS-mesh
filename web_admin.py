@@ -1,5 +1,5 @@
-import base64
-import binascii
+import hashlib
+import hmac
 import os
 import json
 import logging
@@ -219,7 +219,7 @@ def request_fleet_apply_trigger() -> None:
     os.getenv("BBS_FLEET_APPLY_TRIGGER_PATH"), "apply_update.trigger")
   tmp = f"{trigger_file}.tmp"
   with open(tmp, "w", encoding="utf-8") as handle:
-    handle.write(datetime.utcnow().isoformat())
+    handle.write(datetime.now(dt_timezone.utc).isoformat())
   os.replace(tmp, trigger_file)
 
 
@@ -243,17 +243,53 @@ def build_fleet_view(config_path: str) -> dict:
   except Exception:
     pass
 
-  target, peers = None, []
+  target, history, peers, update_state = None, [], [], {}
   try:
-    from db_operations import get_fleet_target, get_node_versions
+    from db_operations import (
+      get_fleet_target, get_fleet_target_history, get_node_versions,
+    )
     target = get_fleet_target(group) if group else None
+    history = get_fleet_target_history(group, limit=20) if group else []
     peers = get_node_versions()
+  except Exception:
+    pass
+  try:
+    import fleet_update
+    update_state = fleet_update.read_update_state()
   except Exception:
     pass
 
   on_target = bool(
     target and local_commit
     and str(target.get("commit", "")).startswith(local_commit[:7]))
+  target_commit = str((target or {}).get("commit") or "").lower()
+  classified_peers = []
+  now_utc = datetime.now(dt_timezone.utc)
+  for original in peers:
+    peer = dict(original)
+    reported_at = str(peer.get("reported_at") or "")
+    try:
+      reported = datetime.fromisoformat(reported_at.replace("Z", "+00:00"))
+      if reported.tzinfo is None:
+        reported = reported.replace(tzinfo=dt_timezone.utc)
+      stale = (now_utc - reported).total_seconds() > 3600
+    except (TypeError, ValueError):
+      stale = True
+    reported_state = str(peer.get("rollout_state") or "").strip()
+    commit = str(peer.get("commit_hash") or "").strip().lower()
+    matches = bool(target_commit and commit and target_commit.startswith(commit))
+    if stale:
+      peer["fleet_state"] = "stale"
+    elif reported_state and reported_state not in ("healthy", "confirmed"):
+      peer["fleet_state"] = reported_state
+    else:
+      peer["fleet_state"] = "healthy" if matches else "pending"
+    classified_peers.append(peer)
+  peers = classified_peers
+  healthy_peers = sum(
+    1 for peer in peers if peer.get("fleet_state") == "healthy")
+  local_state = str(update_state.get("state") or (
+    "healthy" if on_target else "pending"))
 
   return {
     "local_version": local_version or "unknown",
@@ -265,8 +301,13 @@ def build_fleet_view(config_path: str) -> dict:
     "key_ids": key_ids,
     "config_error": settings.get("error", ""),
     "target": target,
+    "history": history,
     "on_target": on_target,
     "peers": peers,
+    "update_state": update_state,
+    "local_state": local_state,
+    "healthy_peers": healthy_peers,
+    "pending_peers": len(peers) - healthy_peers if target else 0,
   }
 
 
@@ -4930,11 +4971,29 @@ def create_app(runtime_interface=None) -> Flask:
 
         return wrapped
 
+    def _fleet_api_token_valid() -> bool:
+      config = read_config_file(app.config["CONFIG_PATH"])
+      expected_hash = os.getenv("BBS_FLEET_API_TOKEN_HASH", "").strip().lower()
+      raw_token = os.getenv("BBS_FLEET_API_TOKEN", "").strip()
+      if not expected_hash and raw_token:
+        expected_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+      if not expected_hash and config.has_section("fleet"):
+        expected_hash = config.get(
+          "fleet", "api_token_hash", fallback="").strip().lower()
+      authorization = request.headers.get("Authorization", "")
+      scheme, _, supplied = authorization.partition(" ")
+      if scheme.lower() != "bearer" or not supplied or not expected_hash:
+        return False
+      supplied_hash = hashlib.sha256(supplied.encode("utf-8")).hexdigest()
+      return hmac.compare_digest(supplied_hash, expected_hash)
+
     @app.before_request
     def enforce_csrf_for_mutations():
       if request.method not in _MUTATING_METHODS:
         return None
       if request.endpoint == "static":
+        return None
+      if request.path == "/api/fleet/apply":
         return None
       if csrf_request_valid():
         return None
@@ -4981,6 +5040,33 @@ def create_app(runtime_interface=None) -> Flask:
         fleet=build_fleet_view(app.config["CONFIG_PATH"]),
       )
 
+    def _accept_fleet_instruction(blob: str) -> tuple[str, Optional[dict], str]:
+      if not blob:
+        return "invalid", None, "Signed instruction is required."
+
+      settings = load_fleet_settings(app.config["CONFIG_PATH"])
+      if settings.get("updates") == "off":
+        return "disabled", None, "Fleet updates are off on this node."
+
+      try:
+        import fleet_update
+        from db_operations import last_fleet_issued_at, store_fleet_target
+      except Exception:
+        return "unavailable", None, "Signature verification is unavailable."
+
+      trusted = fleet_update.parse_trusted_keys(settings.get("trusted_keys", ""))
+      group = settings.get("group", "")
+      try:
+        payload = fleet_update.verify_instruction(
+          blob, trusted, group, last_issued_at=last_fleet_issued_at(group))
+      except fleet_update.FleetVerificationError as exc:
+        return "rejected", None, str(exc)
+
+      if not store_fleet_target(payload, blob):
+        return "duplicate", payload, "Instruction is not newer than the stored target."
+      request_fleet_apply_trigger()
+      return "accepted", payload, "Target accepted."
+
     @app.post("/fleet/apply")
     @login_required
     def fleet_apply():
@@ -4998,37 +5084,65 @@ def create_app(runtime_interface=None) -> Flask:
         flash("Paste a signed instruction first.", "error")
         return redirect(url_for("fleet_page"))
 
-      settings = load_fleet_settings(app.config["CONFIG_PATH"])
-      if settings.get("updates") == "off":
-        flash("Fleet updates are off on this node ([fleet] updates = off), so "
-              "the instruction was not stored.", "error")
-        return redirect(url_for("fleet_page"))
-
-      try:
-        import fleet_update
-        from db_operations import last_fleet_issued_at, store_fleet_target
-      except Exception:
-        flash("This node cannot verify signatures (the cryptography package is "
-              "missing), so the instruction was refused.", "error")
-        return redirect(url_for("fleet_page"))
-
-      trusted = fleet_update.parse_trusted_keys(settings.get("trusted_keys", ""))
-      group = settings.get("group", "")
-      try:
-        payload = fleet_update.verify_instruction(
-          blob, trusted, group, last_issued_at=last_fleet_issued_at(group))
-      except fleet_update.FleetVerificationError as exc:
-        flash(f"Instruction rejected: {exc}", "error")
-        return redirect(url_for("fleet_page"))
-
-      if store_fleet_target(payload, blob):
-        request_fleet_apply_trigger()
+      status, payload, detail = _accept_fleet_instruction(blob)
+      if status == "accepted":
         flash(f"Target accepted: version {payload.get('v')} "
               f"(commit {str(payload.get('c'))[:12]}). It will be applied and "
               "relayed to peers.", "success")
       else:
-        flash("That instruction is not newer than the one already stored.", "error")
+        flash(f"Instruction {status}: {detail}", "error")
       return redirect(url_for("fleet_page"))
+
+    @app.post("/api/fleet/apply")
+    def fleet_apply_api():
+      if not _fleet_api_token_valid():
+        return jsonify({"ok": False, "code": "unauthorized",
+                        "error": "Invalid fleet API token."}), 401
+      body = request.get_json(silent=True) or {}
+      blob = str(body.get("instruction") or "").strip()
+      if len(blob) > 4096:
+        return jsonify({"ok": False, "code": "too_large",
+                        "error": "Signed instruction is too large."}), 413
+      status, payload, detail = _accept_fleet_instruction(blob)
+      response = {
+        "ok": status in ("accepted", "duplicate"),
+        "code": status,
+        "error" if status not in ("accepted", "duplicate") else "message": detail,
+      }
+      if payload:
+        response["target"] = {
+          "group": payload.get("g"), "commit": payload.get("c"),
+          "version": payload.get("v"), "issued_at": payload.get("t"),
+        }
+      http_status = 202 if status == "accepted" else (200 if status == "duplicate" else 400)
+      return jsonify(response), http_status
+
+    @app.get("/api/fleet/status")
+    def fleet_status_api():
+      if not _fleet_api_token_valid():
+        return jsonify({"ok": False, "code": "unauthorized",
+                        "error": "Invalid fleet API token."}), 401
+      fleet = build_fleet_view(app.config["CONFIG_PATH"])
+      return jsonify({
+        "ok": True,
+        "group": fleet["group"],
+        "mode": fleet["mode"],
+        "trusted_key_ids": fleet["key_ids"],
+        "config_error": fleet["config_error"],
+        "local": {
+          "version": fleet["local_version"],
+          "commit": fleet["local_commit"],
+          "on_target": fleet["on_target"],
+          "update_state": fleet["update_state"],
+        },
+        "target": fleet["target"],
+        "history": fleet["history"],
+        "nodes": fleet["peers"],
+        "summary": {
+          "healthy": fleet["healthy_peers"] + (1 if fleet["on_target"] else 0),
+          "pending": fleet["pending_peers"] + (0 if fleet["on_target"] else 1),
+        },
+      })
 
     def _save_fleet_config(mutate) -> None:
       """Apply a change to [fleet] in config.ini.
@@ -5134,94 +5248,6 @@ def create_app(runtime_interface=None) -> Flask:
       flash(f"Now trusting {', '.join(sorted(added))}. Restart the BBS service "
             "for it to take effect.", "success")
       return redirect(url_for("fleet_page"))
-
-    @app.post("/api/fleet/keys/generated")
-    @login_required
-    def fleet_generated_key_add():
-      """Trust the public half of a key generated inside the browser.
-
-      The private half is downloaded by JavaScript and never reaches this
-      process. Keeping that boundary means compromising a BBS node still
-      does not grant authority over every other node in the fleet.
-      """
-      data = request.get_json(silent=True) or {}
-      if data.get("confirm") is not True:
-        return jsonify({"ok": False, "error":
-                        "Confirm that the downloaded private key controls the fleet."}), 400
-
-      encoded = str(data.get("public_key") or "").strip()
-      try:
-        padded = encoded + "=" * (-len(encoded) % 4)
-        public_raw = base64.b64decode(
-          padded, altchars=b"-_", validate=True)
-      except (binascii.Error, ValueError):
-        public_raw = b""
-      if len(public_raw) != 32:
-        return jsonify({"ok": False,
-                        "error": "The generated Ed25519 public key is invalid."}), 400
-
-      try:
-        from fleet_update import parse_trusted_keys, public_key_entry
-        entry = public_key_entry(public_raw)
-        parsed = parse_trusted_keys(entry)
-      except Exception:
-        return jsonify({"ok": False,
-                        "error": "This node cannot validate fleet keys."}), 503
-
-      added = _store_fleet_trusted_keys(parsed)
-      key_id = next(iter(parsed))
-      if added:
-        logging.warning("Fleet: trusted key %s generated in the web admin. "
-                        "The private half was downloaded by the browser and "
-                        "was not sent to this node.", key_id)
-      return jsonify({
-        "ok": True,
-        "key_id": key_id,
-        "public_entry": entry,
-        "already_trusted": not bool(added),
-      })
-
-    @app.post("/api/fleet/keys/create")
-    @login_required
-    def fleet_key_create():
-      """Create and return a fleet key for browsers served over plain HTTP.
-
-      Web Crypto refuses Ed25519 outside a secure context. The private key
-      therefore exists briefly in this process for this fallback, but is
-      returned once, never written to disk, and excluded from caches.
-      """
-      data = request.get_json(silent=True) or {}
-      if data.get("confirm") is not True:
-        return jsonify({"ok": False, "error":
-                        "Confirm the private-key handling warning first."}), 400
-      try:
-        from cryptography.hazmat.primitives import serialization
-        from fleet_update import generate_keypair, parse_trusted_keys, public_key_entry
-        private_key, public_raw, key_id = generate_keypair()
-        private_pem = private_key.private_bytes(
-          encoding=serialization.Encoding.PEM,
-          format=serialization.PrivateFormat.PKCS8,
-          encryption_algorithm=serialization.NoEncryption(),
-        ).decode("ascii")
-        entry = public_key_entry(public_raw)
-        added = _store_fleet_trusted_keys(parse_trusted_keys(entry))
-      except Exception:
-        logging.exception("Fleet: web key generation failed")
-        return jsonify({"ok": False,
-                        "error": "This node could not generate a fleet key."}), 503
-
-      logging.warning("Fleet: trusted key %s generated by the web admin. The "
-                      "private half was returned once and was not stored.", key_id)
-      response = jsonify({
-        "ok": True,
-        "key_id": key_id,
-        "public_entry": entry,
-        "private_key": private_pem,
-        "already_trusted": not bool(added),
-      })
-      response.headers["Cache-Control"] = "no-store"
-      response.headers["Pragma"] = "no-cache"
-      return response
 
     @app.post("/fleet/keys/remove")
     @login_required
