@@ -132,8 +132,8 @@ UTILITIES_NUMBER_MAP = {
     'F': "[2] Fortune",
     'W': "[3] Wall of Shame",
     'G': "[4] Games",
-    'H': "[6] Public Chatter",
-    'X': "[0] Exit",
+    'H': "[5] Public Chatter",
+    'X': "[0] Back",
 }
 
 BBS_NUMBER_MAP = {
@@ -141,7 +141,7 @@ BBS_NUMBER_MAP = {
     'B': "[2] Bulletins",
     'C': "[3] Channel Dir",
     'J': "[4] JS8CALL",
-    'X': "[0] Exit",
+    'X': "[0] Back",
 }
 
 # Numbers are deliberately append-only: renumbering Quick Commands or BBS
@@ -152,8 +152,8 @@ MAIN_NUMBER_MAP = {
     'U': "[3] Utilities",
     'P': "[4] Profile",
     'N': "[5] Ask Nomad",
-    'A': "[6] API Gateway",
-    'S': "[7] Settings",
+    'A': "[6] Web Fetch",
+    'S': "[7] Linked Devices",
     'X': "[0] Exit",
 }
 
@@ -210,8 +210,11 @@ def build_menu(items, menu_name):
                     menu_items.insert(menu_items.index('X'), required)
                 else:
                     menu_items.append(required)
+            menu_items = [item for item in menu_items if item != 'X']
 
     if menu_name == "📰BBS Menu📰":
+        if not _js8call_configured():
+            menu_items = [item for item in menu_items if item != 'J']
         number_map = BBS_NUMBER_MAP
     else:
         number_map = MAIN_NUMBER_MAP
@@ -221,7 +224,13 @@ def build_menu(items, menu_name):
             menu_str += number_map[item] + "\n"
     return menu_str
 
-def handle_help_command(sender_id, interface, menu_name=None):
+
+def _js8call_configured() -> bool:
+    current = configparser.ConfigParser()
+    current.read(os.getenv('BBS_CONFIG_PATH', 'config.ini'))
+    return bool(current.get('js8call', 'db_file', fallback='').strip())
+
+def handle_help_command(sender_id, interface, menu_name=None, notice=None):
     if menu_name:
         update_user_state(sender_id, {'command': 'MENU', 'menu': menu_name, 'step': 1})
         if menu_name == 'bbs':
@@ -234,6 +243,8 @@ def handle_help_command(sender_id, interface, menu_name=None):
         update_user_state(sender_id, {'command': 'MAIN_MENU', 'step': 1})  # Reset to main menu state
         mail = get_mail(get_node_id_from_num(sender_id, interface))
         response = build_menu(main_menu_items, f"💾Bacon BBS💾 (✉️:{len(mail)})")
+    if notice:
+        response = f"{notice}{LINE_BREAK}{response}"
     send_message(response, sender_id, interface)
 
 
@@ -252,7 +263,7 @@ def get_node_name(node_id, interface):
 
 
 def handle_mail_command(sender_id, interface):
-    response = "✉️Mail Menu✉️\nWhat would you like to do with mail?\n[1]Read [2]Send [3]Relay Directory [0]Exit"
+    response = "✉️Mail Menu✉️\nWhat would you like to do with mail?\n[1]Read [2]Send [3]Relay Directory [0]Back"
     send_message(response, sender_id, interface)
     update_user_state(sender_id, {'command': 'MAIL', 'step': 1})
 
@@ -277,7 +288,7 @@ def _mail_directory_page(entries: list[dict], page: int, selecting: bool) -> str
         controls.append("[N]ext")
     if selecting:
         controls.append("[A]ddress")
-    controls.append("E[X]IT")
+    controls.append("[0] Back")
     lines.append(" ".join(controls))
     return "\n".join(lines)
 
@@ -286,6 +297,7 @@ def handle_active_users_command(sender_id, interface):
     entries = get_mail_relay_directory()
     if not entries:
         send_message("No users have opted into offline mail relay.", sender_id, interface)
+        handle_mail_command(sender_id, interface)
         return
     send_message(_mail_directory_page(entries, 0, selecting=False), sender_id, interface)
     update_user_state(sender_id, {
@@ -325,7 +337,7 @@ def _chatter_windows_text() -> str:
         "Show the last:",
         ' '.join(keys[:3]),
         ' '.join(keys[3:]),
-        "[0] Exit",
+        "[0] Back",
     ])
 
 
@@ -386,7 +398,7 @@ def _chatter_filter_text(state: dict) -> str:
     if not options:
         return LINE_BREAK.join([
             "Nothing heard in this window to filter.",
-            "[T]ime [0] Exit",
+            "[T]ime [0] Back",
         ])
     chosen = set(state.get('channels') or []) | set(state.get('nodes') or [])
     lines = ["Filter  (* = shown)"]
@@ -431,7 +443,7 @@ def _chatter_controls(state: dict, has_more: bool) -> str:
         controls.append('[F]ilter*')
     else:
         controls.append('[F]ilter')
-    controls.extend(['[T]ime', '[0] Exit'])
+    controls.extend(['[T]ime', '[0] Back'])
     return ' '.join(controls)
 
 
@@ -452,7 +464,7 @@ def _send_chatter_batch(sender_id, interface, state: dict, *, older: bool) -> No
         send_message(
             LINE_BREAK.join([
                 "No older chatter." if older else "Nothing heard in this window.",
-                _chatter_controls(state, False),
+                "[T]ime [0] Back",
             ]),
             sender_id, interface)
         update_user_state(sender_id, state)
@@ -565,7 +577,7 @@ def handle_public_chatter_steps(sender_id, message, interface, state):
 def _start_mail_recipient_selection(sender_id, interface) -> None:
     entries = get_mail_relay_directory(get_node_id_from_num(sender_id, interface))
     if not entries:
-        send_message("No relay users are listed. Reply A to enter an opted-in alias, short name, or node ID.", sender_id, interface)
+        send_message("No relay users are listed. [A] Enter an address [0] Cancel", sender_id, interface)
         update_user_state(sender_id, {'command': 'MAIL', 'step': 9, 'directory': [], 'directory_page': 0})
         return
     send_message(_mail_directory_page(entries, 0, selecting=True), sender_id, interface)
@@ -604,7 +616,7 @@ def handle_bulletin_command(sender_id, interface):
     board_options = "\n".join([f"[{index}] {board}" for index, board in enumerate(boards, start=1)])
     response = (
         f"📰Bulletin Menu📰\nWhich board would you like to enter?\n{board_options}"
-        "\nReply with board number, name, or first letter.\nE[X]IT"
+        "\nReply with board number, name, or first letter.\n[0] Back"
     )
     send_message(response, sender_id, interface)
     update_user_state(sender_id, {'command': 'BULLETIN_MENU', 'step': 1, 'boards': boards})
@@ -616,7 +628,7 @@ def handle_exit_command(sender_id, interface):
 
 
 def handle_stats_command(sender_id, interface):
-    response = "📊Stats Menu📊\nWhat stats would you like to view?\n[1]Nodes [2]Hardware [3]Roles [0]Exit"
+    response = "📊Stats Menu📊\nWhat stats would you like to view?\n[1]Nodes [2]Hardware [3]Roles [0]Back"
     send_message(response, sender_id, interface)
     update_user_state(sender_id, {'command': 'STATS', 'step': 1})
 
@@ -627,19 +639,20 @@ def handle_fortune_command(sender_id, interface):
             fortunes = file.readlines()
         if not fortunes:
             send_message("No fortunes available.", sender_id, interface)
-            return
-        fortune = random.choice(fortunes).strip()
-        decorated_fortune = f"🔮 {fortune} 🔮"
-        send_message(decorated_fortune, sender_id, interface)
+        else:
+            fortune = random.choice(fortunes).strip()
+            decorated_fortune = f"🔮 {fortune} 🔮"
+            send_message(decorated_fortune, sender_id, interface)
     except Exception as e:
         send_message(f"Error generating fortune: {e}", sender_id, interface)
+    handle_help_command(sender_id, interface, 'utilities')
 
 
 def handle_games_command(sender_id, interface):
     menu = "🎮 Games 🎮\n"
     for i, (game_id, info) in enumerate(GAME_LIST, start=1):
         menu += f"[{i}] {info['name']}\n"
-    menu += "[S]cores [H]all of Fame [0]Exit"
+    menu += "[S]cores [H]all of Fame [0]Back"
     sync_notice = get_zork_save_sync_notice()
     if sync_notice:
         menu += f"\n\n{sync_notice}"
@@ -744,12 +757,10 @@ def _apigw_authorized(sender_id, interface) -> bool:
 def handle_apigw_command(sender_id, interface):
     if not _apigw_authorized(sender_id, interface):
         send_message("API gateway: your node is not on the allow-list.", sender_id, interface)
-        handle_help_command(sender_id, interface, 'utilities')
+        handle_help_command(sender_id, interface)
         return
-    menu = ("🌐 API Gateway\n[1] Ask Project Nomad\n[2] HTTP GET (allowed hosts)\n[0] Exit\n"
-            "Send a number:")
-    send_message(menu, sender_id, interface)
-    update_user_state(sender_id, {'command': 'APIGW', 'step': 1})
+    send_message("Enter the URL to fetch (must be an allowed host), or 0 to cancel:", sender_id, interface)
+    update_user_state(sender_id, {'command': 'APIGW', 'step': 2, 'mode': 'http'})
 
 
 _APIGW_UNIT_SEP = "\x1f"
@@ -856,7 +867,7 @@ def handle_apigw_steps(sender_id, message, interface):
     state = get_user_state(sender_id) or {}
     step = state.get('step', 1)
     if choice.lower() in ('x', '0', 'exit'):
-        handle_help_command(sender_id, interface, 'utilities')
+        handle_help_command(sender_id, interface)
         return
 
     if step == 1:
@@ -874,7 +885,7 @@ def handle_apigw_steps(sender_id, message, interface):
     mode = state.get('mode', 'ai')
     if not choice:
         send_message("Empty input — cancelled.", sender_id, interface)
-        handle_help_command(sender_id, interface, 'utilities')
+        handle_help_command(sender_id, interface)
         return
     if mode == 'ai':
         _apigw_submit(sender_id, interface, 'r', f"ai{_APIGW_UNIT_SEP}{choice}", "Project Nomad")
@@ -989,11 +1000,8 @@ _SETTINGS_MENU_TEXT = (
 
 
 def handle_settings_command(sender_id, interface):
-    """User-facing settings. Account linking lives here because Profile >
-    Linked Devices was effectively undiscoverable -- nothing on the main
-    menu suggested that linking a second device existed at all."""
-    send_message(_SETTINGS_MENU_TEXT, sender_id, interface)
-    update_user_state(sender_id, {'command': 'SETTINGS', 'step': 1})
+    """Open Linked Devices directly from its discoverable main-menu entry."""
+    handle_account_command(sender_id, interface, return_to='main')
 
 
 def handle_settings_steps(sender_id, message, interface, sender_node_id):
@@ -1002,7 +1010,7 @@ def handle_settings_steps(sender_id, message, interface, sender_node_id):
         handle_help_command(sender_id, interface)
         return
     if choice == '1':
-        handle_account_command(sender_id, interface)
+        handle_account_command(sender_id, interface, return_to='settings')
         return
     send_message(_SETTINGS_MENU_TEXT, sender_id, interface)
 
@@ -1027,7 +1035,7 @@ def handle_profile_command(sender_id, interface):
         lines.append(f"Bio: {bio}")
     node_id = get_node_id_from_num(sender_id, interface)
     relay_status = "On" if get_mail_relay_preference(node_id) else "Off"
-    lines.append(f"[1]Edit Bio [2]Linked Devices [3]Offline Relay:{relay_status} [0]Back")
+    lines.append(f"[1]Edit Bio [3]Offline Relay:{relay_status} [0]Back")
     send_message("\n".join(lines), sender_id, interface)
     update_user_state(sender_id, {'command': 'PROFILE', 'step': 1})
 
@@ -1036,6 +1044,9 @@ def handle_profile_steps(sender_id, message, interface, sender_node_id=None):
     state = get_user_state(sender_id) or {}
     choice = message.strip()
     if state.get('step') == 2:
+        if choice.lower() in ('0', 'x', 'cancel'):
+            handle_profile_command(sender_id, interface)
+            return
         bio = choice[:100]
         update_user_bio(sender_id, bio)
         send_message("Bio updated!", sender_id, interface)
@@ -1065,7 +1076,7 @@ def handle_profile_steps(sender_id, message, interface, sender_node_id=None):
         handle_help_command(sender_id, interface)
         return
     if choice.lower() in ('e', '1'):
-        send_message("Enter your bio (max 100 chars):", sender_id, interface)
+        send_message("Enter your bio (max 100 chars), or 0 to cancel:", sender_id, interface)
         update_user_state(sender_id, {'command': 'PROFILE', 'step': 2})
         return
     if choice.lower() in ('d', '2'):
@@ -1134,9 +1145,22 @@ def _account_max_linked_devices() -> int:
     return _config_int('accounts', 'max_linked_devices', 6)
 
 
-def handle_account_command(sender_id, interface):
+def _account_state(sender_id, step, **values):
+    state = {'command': 'ACCOUNT', 'step': step}
+    return_to = (get_user_state(sender_id) or {}).get('return_to')
+    if return_to:
+        state['return_to'] = return_to
+    state.update(values)
+    update_user_state(sender_id, state)
+
+
+def handle_account_command(sender_id, interface, return_to=None):
+    previous_return = (get_user_state(sender_id) or {}).get('return_to')
     send_message(_ACCOUNT_MENU_TEXT, sender_id, interface)
-    update_user_state(sender_id, {'command': 'ACCOUNT', 'step': 1})
+    state = {'command': 'ACCOUNT', 'step': 1}
+    if return_to or previous_return:
+        state['return_to'] = return_to or previous_return
+    update_user_state(sender_id, state)
 
 
 def handle_account_steps(sender_id, message, interface, sender_node_id=None):
@@ -1155,14 +1179,19 @@ def handle_account_steps(sender_id, message, interface, sender_node_id=None):
 
     if step == 1:
         if choice_lower in ('0', 'x', 'back', 'exit'):
-            handle_profile_command(sender_id, interface)
+            if state.get('return_to') == 'settings':
+                handle_settings_command(sender_id, interface)
+            elif state.get('return_to') == 'main':
+                handle_help_command(sender_id, interface)
+            else:
+                handle_profile_command(sender_id, interface)
             return
         if choice == '1':
             _handle_request_link_code(sender_id, interface, sender_node_id)
             return
         if choice == '2':
-            send_message("Enter the 6-digit code from your other device:", sender_id, interface)
-            update_user_state(sender_id, {'command': 'ACCOUNT', 'step': 2})
+            send_message("Enter the 6-digit code from your other device, or 0 to cancel:", sender_id, interface)
+            _account_state(sender_id, 2)
             return
         if choice == '3':
             _handle_list_devices(sender_id, interface, sender_node_id)
@@ -1171,10 +1200,10 @@ def handle_account_steps(sender_id, message, interface, sender_node_id=None):
             send_message(
                 "Enter a shared alias (max 20 chars). Shown instead of this "
                 "device's short name on your posts once you have at least "
-                "one linked device:",
+                "one linked device. Send 0 to cancel:",
                 sender_id, interface,
             )
-            update_user_state(sender_id, {'command': 'ACCOUNT', 'step': 4})
+            _account_state(sender_id, 4)
             return
         if choice == '5':
             _handle_start_unlink(sender_id, interface, sender_node_id)
@@ -1186,10 +1215,16 @@ def handle_account_steps(sender_id, message, interface, sender_node_id=None):
         return
 
     if step == 2:
+        if choice_lower in ('0', 'x', 'cancel'):
+            handle_account_command(sender_id, interface)
+            return
         _handle_submit_link_code(sender_id, interface, sender_node_id, choice)
         return
 
     if step == 4:
+        if choice_lower in ('0', 'x', 'cancel'):
+            handle_account_command(sender_id, interface)
+            return
         _handle_set_alias(sender_id, interface, sender_node_id, choice)
         return
 
@@ -1332,7 +1367,7 @@ def _handle_start_unlink(sender_id, interface, sender_node_id):
     for i, (node_id, network, _linked_at) in enumerate(detail):
         lines.append(f"{i + 1:02d}. {node_id} [{network}]")
     send_message("\n".join(lines), sender_id, interface)
-    update_user_state(sender_id, {'command': 'ACCOUNT', 'step': 5, 'devices': detail})
+    _account_state(sender_id, 5, devices=detail)
 
 
 def _handle_pick_unlink_target(sender_id, interface, choice, state):
@@ -1347,7 +1382,7 @@ def _handle_pick_unlink_target(sender_id, interface, choice, state):
         return
     node_id = devices[idx][0]
     send_message(f"Unlink {node_id}? [Y]es [N]o", sender_id, interface)
-    update_user_state(sender_id, {'command': 'ACCOUNT', 'step': 6, 'unlink_node_id': node_id})
+    _account_state(sender_id, 6, unlink_node_id=node_id)
 
 
 def _handle_confirm_unlink(sender_id, interface, choice, state):
@@ -1491,7 +1526,7 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
 
         board_name = boards[board_index]
         bulletins = get_bulletins(board_name)
-        response = f"{board_name} has {len(bulletins)} messages.\n[1]Read [2]Post [0]Exit"
+        response = f"{board_name} has {len(bulletins)} messages.\n[1]Read [2]Post [0]Back"
         send_message(response, sender_id, interface)
         update_user_state(sender_id, {'command': 'BULLETIN_ACTION', 'step': 2, 'board': board_name, 'boards': boards})
 
@@ -1518,7 +1553,7 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
                     send_message("You don't have permission to post to this board.", sender_id, interface)
                     handle_bb_steps(sender_id, 'e', 1, state, interface, bbs_nodes)
                     return
-            send_message("What is the subject of your bulletin? Keep it short.", sender_id, interface)
+            send_message("What is the subject of your bulletin? Keep it short. [0] Cancel", sender_id, interface)
             update_user_state(sender_id, {'command': 'BULLETIN_POST', 'step': 4, 'board': board_name})
 
     elif step == 3:
@@ -1538,11 +1573,19 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
         handle_bb_steps(sender_id, 'e', 1, state, interface, bbs_nodes)
 
     elif step == 4:
+        if message.lower() in ('0', 'x', 'cancel'):
+            send_message("Bulletin cancelled.", sender_id, interface)
+            handle_bulletin_command(sender_id, interface)
+            return
         subject = message
-        send_message("Send the contents of your bulletin. Send a message with END when finished.", sender_id, interface)
+        send_message("Send the contents of your bulletin. Send END when finished, or 0 to cancel.", sender_id, interface)
         update_user_state(sender_id, {'command': 'BULLETIN_POST_CONTENT', 'step': 5, 'board': state['board'], 'subject': subject, 'content': ''})
 
     elif step == 5:
+        if message.lower() in ('0', 'cancel'):
+            send_message("Bulletin cancelled.", sender_id, interface)
+            handle_bulletin_command(sender_id, interface)
+            return
         if message.lower() == "end":
             board = state['board']
             subject = state['subject']
@@ -1566,6 +1609,10 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
     message = message.strip()
     if len(message) == 2 and message[1] == 'x':
         message = message[0]
+    if step in (3, 5, 7) and message.lower() in ('0', 'cancel'):
+        send_message("Mail cancelled.", sender_id, interface)
+        handle_mail_command(sender_id, interface)
+        return
 
     if step == 1:
         choice = message.lower()
@@ -1581,7 +1628,7 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
                 update_user_state(sender_id, {'command': 'MAIL', 'step': 2})
             else:
                 send_message("There are no messages in your mailbox.📭", sender_id, interface)
-                update_user_state(sender_id, None)
+                handle_mail_command(sender_id, interface)
         elif choice == 's':
             _start_mail_recipient_selection(sender_id, interface)
         elif choice == 'a':
@@ -1613,7 +1660,7 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             send_message("That relay user was not found, is ambiguous, or has not opted in.", sender_id, interface)
             handle_mail_command(sender_id, interface)
         else:
-            send_message(f"What is the subject of your message to {recipient['display_name']}?\nKeep it short.", sender_id, interface)
+            send_message(f"What is the subject of your message to {recipient['display_name']}?\nKeep it short. [0] Cancel", sender_id, interface)
             update_user_state(sender_id, {
                 'command': 'MAIL', 'step': 5,
                 'recipient_id': recipient['recipient_node_id'],
@@ -1639,7 +1686,7 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
 
     elif step == 5:
         subject = message
-        send_message("Send your message. You can send it in multiple messages if it's too long for one.\nSend a single message with END when you're done", sender_id, interface)
+        send_message("Send your message in one or more parts. Send END when done, or 0 to cancel.", sender_id, interface)
         update_user_state(sender_id, {
             'command': 'MAIL', 'step': 7,
             'recipient_id': state['recipient_id'],
@@ -1698,7 +1745,7 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
         page_count = max(1, (len(entries) + _MAIL_DIRECTORY_PAGE_SIZE - 1) // _MAIL_DIRECTORY_PAGE_SIZE)
         page = max(0, min(int(state.get('directory_page', 0)), page_count - 1))
         choice = message.lower()
-        if choice == 'x':
+        if choice in ('0', 'x', 'cancel'):
             handle_mail_command(sender_id, interface)
             return
         if choice == 'a':
@@ -1757,12 +1804,28 @@ def handle_wall_of_shame_command(sender_id, interface):
     if response == "Devices with battery levels below 20%:\n":
         response = "No devices with battery levels below 20% found."
     send_message(response, sender_id, interface)
+    handle_help_command(sender_id, interface, 'utilities')
 
 
 def handle_channel_directory_command(sender_id, interface):
-    response = "📚CHANNEL DIRECTORY📚\nWhat would you like to do?\n[1]View [2]Post [0]Exit"
+    response = "📚CHANNEL DIRECTORY📚\nWhat would you like to do?\n[1]View [2]Post [0]Back"
     send_message(response, sender_id, interface)
     update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 1})
+
+
+def _send_channel_categories(sender_id, interface):
+    categories = get_channel_categories()
+    if not categories:
+        send_message("No channels available in the directory.", sender_id, interface)
+        handle_channel_directory_command(sender_id, interface)
+        return
+    response = "Select a channel category to view:\n" + "\n".join(
+        [f"[{i}] {category[0]} ({category[1]} post{'s' if category[1] != 1 else ''})"
+         for i, category in enumerate(categories, 1)])
+    send_message(response + "\n[0] Back", sender_id, interface)
+    update_user_state(sender_id, {
+        'command': 'CHANNEL_DIRECTORY', 'step': 2, 'categories': categories,
+    })
 
 
 def handle_channel_directory_steps(sender_id, message, step, state, interface):
@@ -1777,22 +1840,17 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
             handle_help_command(sender_id, interface)
             return
         elif choice == 'v':
-            categories = get_channel_categories()
-            if categories:
-                response = "Select a channel category to view:\n" + "\n".join(
-                    [f"[{i}] {category[0]} ({category[1]} post{'s' if category[1] != 1 else ''})" for i, category in enumerate(categories)])
-                send_message(response, sender_id, interface)
-                update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 2, 'categories': categories})
-            else:
-                send_message("No channels available in the directory.", sender_id, interface)
-                handle_channel_directory_command(sender_id, interface)
+            _send_channel_categories(sender_id, interface)
         elif choice == 'p':
             send_message("Name your channel for the directory:", sender_id, interface)
             update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 3})
 
     elif step == 2:
+        if message.lower() in ('0', 'x', 'back', 'exit'):
+            handle_channel_directory_command(sender_id, interface)
+            return
         try:
-            category_index = int(message)
+            category_index = int(message) - 1
         except ValueError:
             send_message("Invalid selection. Please try again.", sender_id, interface)
             return
@@ -1802,7 +1860,7 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
             posts = get_channels_by_name(channel_name)
             if posts:
                 post_lines = []
-                for i, post in enumerate(posts):
+                for i, post in enumerate(posts, 1):
                     post_id = post[0]
                     comments = get_channel_comments(post_id)
                     if comments:
@@ -1810,7 +1868,7 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
                         post_lines.append(f"[{i}] {latest_commenter}")
                     else:
                         post_lines.append(f"[{i}] No comments yet")
-                response = f"{channel_name} posts:\n" + "\n".join(post_lines)
+                response = f"{channel_name} posts:\n" + "\n".join(post_lines) + "\n[0] Back"
                 send_message(response, sender_id, interface)
                 update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 5, 'posts': posts, 'channel_name': channel_name})
                 return
@@ -1820,8 +1878,11 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
         handle_channel_directory_command(sender_id, interface)
 
     elif step == 5:
+        if message.lower() in ('0', 'x', 'back', 'exit'):
+            _send_channel_categories(sender_id, interface)
+            return
         try:
-            post_index = int(message)
+            post_index = int(message) - 1
         except ValueError:
             send_message("Invalid post number. Please try again.", sender_id, interface)
             return
@@ -1895,11 +1956,17 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
             update_user_state(sender_id, state)
 
     elif step == 3:
+        if message.lower() in ('0', 'x', 'cancel'):
+            handle_channel_directory_command(sender_id, interface)
+            return
         channel_name = message
-        send_message("Send a message with your channel URL or PSK:", sender_id, interface)
+        send_message("Send the channel URL or PSK, or 0 to cancel:", sender_id, interface)
         update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 4, 'channel_name': channel_name})
 
     elif step == 4:
+        if message.lower() in ('0', 'x', 'cancel'):
+            handle_channel_directory_command(sender_id, interface)
+            return
         channel_url = message
         channel_name = state['channel_name']
         add_channel(channel_name, channel_url, interface.bbs_nodes, interface)

@@ -102,10 +102,8 @@ from utils import (
 _MAIN_NUMBER_ALIAS = number_alias(MAIN_NUMBER_MAP)
 _BBS_NUMBER_ALIAS = number_alias(BBS_NUMBER_MAP)
 _UTILITIES_NUMBER_ALIAS = number_alias(UTILITIES_NUMBER_MAP)
-# The API Gateway moved to the main menu, so it no longer has a Utilities
-# number -- but 5 meant "API Gateway" here for a long time, so keep honoring
-# it rather than silently dropping people back to the menu.
-_UTILITIES_NUMBER_ALIAS.setdefault('5', 'a')
+# Public Chatter used 6 before Utilities numbering was made contiguous.
+_UTILITIES_NUMBER_ALIAS.setdefault('6', 'h')
 
 main_menu_handlers = {
     "q": handle_quick_help_command,
@@ -143,7 +141,7 @@ utilities_menu_handlers = {
 board_action_handlers = {
     "r": lambda sender_id, interface, state: handle_bb_steps(sender_id, 'r', 2, state, interface, None),
     "p": lambda sender_id, interface, state: handle_bb_steps(sender_id, 'p', 2, state, interface, None),
-    "x": handle_help_command
+    "x": lambda sender_id, interface, _state: handle_bulletin_command(sender_id, interface)
 }
 
 
@@ -2822,7 +2820,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             door_session = state and state.get('command') in ('ZORK', 'TRIVIA')
             # `handlers` guard is ours: an empty handler map means no menu is
             # active, and X should not then bounce the user to the main menu.
-            if handlers and message_lower == 'x' and not door_session:
+            if (handlers and message_lower == 'x' and not door_session
+                    and state and state.get('command') in ('MENU', 'MAIN_MENU')):
                 # Reset to main menu state
                 handle_help_command(sender_id, interface)
                 return
@@ -2832,6 +2831,10 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     handlers[message_lower](sender_id, interface, state)
                 else:
                     handlers[message_lower](sender_id, interface)
+            elif state and state['command'] in ('MENU', 'MAIN_MENU'):
+                menu_name = state.get('menu') if state['command'] == 'MENU' else None
+                handle_help_command(
+                    sender_id, interface, menu_name, notice="Invalid choice.")
             elif state:
                 command = state['command']
                 step = state['step']

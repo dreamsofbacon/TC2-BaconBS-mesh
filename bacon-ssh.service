@@ -1,0 +1,19 @@
+[Unit]
+Description=BACON BBS SSH Access
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=10
+User=__SERVICE_USER__
+WorkingDirectory=__PROJECT_DIR__
+Environment="BBS_CONFIG_PATH=__PROJECT_DIR__/config.ini"
+ExecStart=__PROJECT_DIR__/venv/bin/python3 __PROJECT_DIR__/ssh_server.py
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

@@ -4,13 +4,34 @@ import time
 import sqlite3
 import configparser
 import logging
+import os
 
 from meshtastic import BROADCAST_NUM
 
 from command_handlers import handle_help_command
 from utils import send_message, update_user_state
 
-config_file = 'config.ini'
+config_file = os.getenv('BBS_CONFIG_PATH', 'config.ini')
+
+
+def _history_connection():
+    current = configparser.ConfigParser()
+    current.read(os.getenv('BBS_CONFIG_PATH', config_file))
+    db_file = current.get('js8call', 'db_file', fallback='').strip()
+    return sqlite3.connect(db_file) if db_file else None
+
+
+def _history_rows(query, params=()):
+    connection = _history_connection()
+    if connection is None:
+        return None
+    try:
+        return connection.execute(query, params).fetchall()
+    except sqlite3.Error:
+        logging.exception("Unable to read JS8Call history")
+        return None
+    finally:
+        connection.close()
 
 def from_message(content):
     try:
@@ -214,6 +235,12 @@ class JS8CallClient:
 
 
 def handle_js8call_command(sender_id, interface):
+    connection = _history_connection()
+    if connection is None:
+        send_message("JS8Call history is not configured.", sender_id, interface)
+        handle_help_command(sender_id, interface, 'bbs')
+        return
+    connection.close()
     response = "JS8Call Menu:\n[G]roup Messages\n[S]tation Messages\n[U]rgent Messages\nE[X]IT"
     send_message(response, sender_id, interface)
     update_user_state(sender_id, {'command': 'JS8CALL_MENU', 'step': 1})
@@ -242,10 +269,11 @@ def handle_js8call_steps(sender_id, message, step, interface, state):
 
 
 def handle_group_messages_command(sender_id, interface):
-    conn = sqlite3.connect('js8call.db')
-    c = conn.cursor()
-    c.execute("SELECT DISTINCT groupname FROM groups")
-    groups = c.fetchall()
+    groups = _history_rows("SELECT DISTINCT groupname FROM groups")
+    if groups is None:
+        send_message("JS8Call history is unavailable.", sender_id, interface)
+        handle_help_command(sender_id, interface, 'bbs')
+        return
     if groups:
         response = "Group Messages Menu:\n" + "\n".join([f"[{i}] {group[0]}" for i, group in enumerate(groups)])
         send_message(response, sender_id, interface)
@@ -255,10 +283,11 @@ def handle_group_messages_command(sender_id, interface):
         handle_js8call_command(sender_id, interface)
 
 def handle_station_messages_command(sender_id, interface):
-    conn = sqlite3.connect('js8call.db')
-    c = conn.cursor()
-    c.execute("SELECT sender, receiver, message, timestamp FROM messages")
-    messages = c.fetchall()
+    messages = _history_rows("SELECT sender, receiver, message, timestamp FROM messages")
+    if messages is None:
+        send_message("JS8Call history is unavailable.", sender_id, interface)
+        handle_help_command(sender_id, interface, 'bbs')
+        return
     if messages:
         response = "Station Messages:\n" + "\n".join([f"[{i+1}] {msg[0]} -> {msg[1]}: {msg[2]} ({msg[3]})" for i, msg in enumerate(messages)])
         send_message(response, sender_id, interface)
@@ -267,10 +296,11 @@ def handle_station_messages_command(sender_id, interface):
     handle_js8call_command(sender_id, interface)
 
 def handle_urgent_messages_command(sender_id, interface):
-    conn = sqlite3.connect('js8call.db')
-    c = conn.cursor()
-    c.execute("SELECT sender, groupname, message, timestamp FROM urgent")
-    messages = c.fetchall()
+    messages = _history_rows("SELECT sender, groupname, message, timestamp FROM urgent")
+    if messages is None:
+        send_message("JS8Call history is unavailable.", sender_id, interface)
+        handle_help_command(sender_id, interface, 'bbs')
+        return
     if messages:
         response = "Urgent Messages:\n" + "\n".join([f"[{i+1}] {msg[0]} -> {msg[1]}: {msg[2]} ({msg[3]})" for i, msg in enumerate(messages)])
         send_message(response, sender_id, interface)
@@ -284,10 +314,12 @@ def handle_group_message_selection(sender_id, message, step, state, interface):
         group_index = int(message)
         groupname = groups[group_index][0]
 
-        conn = sqlite3.connect('js8call.db')
-        c = conn.cursor()
-        c.execute("SELECT sender, message, timestamp FROM groups WHERE groupname=?", (groupname,))
-        messages = c.fetchall()
+        messages = _history_rows(
+            "SELECT sender, message, timestamp FROM groups WHERE groupname=?", (groupname,))
+        if messages is None:
+            send_message("JS8Call history is unavailable.", sender_id, interface)
+            handle_help_command(sender_id, interface, 'bbs')
+            return
 
         if messages:
             response = f"Messages for group {groupname}:\n" + "\n".join([f"[{i+1}] {msg[0]}: {msg[1]} ({msg[2]})" for i, msg in enumerate(messages)])

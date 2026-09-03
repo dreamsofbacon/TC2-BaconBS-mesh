@@ -350,8 +350,6 @@
   }
 
   async function load() {
-    state.hidden = false;
-    state.textContent = "Loading messages...";
     try {
       var response = await fetch("/api/public/chatter?" + params());
       if (!response.ok) throw new Error("Request failed");
