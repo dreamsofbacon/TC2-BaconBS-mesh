@@ -134,9 +134,27 @@ class LayoutTests(unittest.TestCase):
         self.assertIn('<div class="history-row">', HTML)
         self.assertRegex(HTML, r"\.history-row \{ display:flex")
 
-    def test_the_controls_are_one_row_of_three(self):
+    def test_the_legend_gets_three_quarters_of_the_width(self):
+        """It holds every channel and node, which is what a person reads;
+        the two controls beside it need far less."""
         self.assertRegex(
-            HTML, r"\.chatter-controls \{[^}]*grid-template-columns:auto auto minmax\(0,1fr\)")
+            HTML,
+            r"\.chatter-controls \{[^}]*grid-template-columns:"
+            r"minmax\(0,1fr\) minmax\(0,3fr\)")
+        self.assertRegex(HTML, r"\.chatter-legend\s+\{ grid-column:2;")
+
+    def test_search_sits_above_the_time_filter(self):
+        """Both in the left quarter, search first -- in the markup too, so
+        tab order and screen-reader order match what is on screen."""
+        self.assertLess(HTML.index('id="chatter-search"'),
+                        HTML.index('id="chatter-hours"'))
+        self.assertRegex(HTML, r"\.chatter-search-group\s+\{ grid-column:1;")
+        self.assertRegex(HTML, r"\.chatter-history-group \{ grid-column:1;")
+
+    def test_the_legend_spans_both_control_rows(self):
+        """Otherwise it would sit beside search only and leave a hole under
+        itself."""
+        self.assertIn("grid-row:1 / span 2", HTML)
 
     def test_it_stacks_rather_than_squeezing_on_a_narrow_screen(self):
         self.assertRegex(
