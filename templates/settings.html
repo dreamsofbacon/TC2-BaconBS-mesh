@@ -40,6 +40,10 @@
         <span class="settings-nav-title">Public Chatter</span>
         <span class="settings-nav-hint">Monitored radio channels</span>
       </a>
+      <a class="settings-nav-link" href="#ssh" data-panel-link="ssh">
+        <span class="settings-nav-title">SSH Access</span>
+        <span class="settings-nav-hint">Listener, registration, and limits</span>
+      </a>
       <a class="settings-nav-link" href="#admin" data-panel-link="admin">
         <span class="settings-nav-title">Admin Credentials</span>
         <span class="settings-nav-hint">Web admin login</span>
@@ -1077,6 +1081,60 @@
       <input class="form-control" id="secondary_channels" name="secondary_channels" value="{{ public_chatter.secondary_channels }}" placeholder="0">
     </div>
     <button class="btn" type="submit">Save chatter settings</button>
+  </form>
+</section>
+
+<section class="card settings-panel" id="ssh" data-settings-panel="ssh" style="max-width:700px">
+  <h2>SSH Access</h2>
+  <p class="text-muted">Configure the standalone interactive SSH listener. Saving does not restart the service; run <code>sudo systemctl restart bacon-ssh.service</code> to apply changes.</p>
+  <form method="post" action="{{ url_for('settings_page') }}#ssh">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="ssh">
+    <div class="form-group">
+      <label><input type="checkbox" name="ssh_enabled" value="true" {% if ssh.enabled %}checked{% endif %}> Enable SSH access</label>
+    </div>
+    <div class="form-group">
+      <label for="ssh_host">Bind address</label>
+      <input type="text" id="ssh_host" name="ssh_host" class="form-control" value="{{ ssh.host }}" required>
+      <p class="text-muted"><code>127.0.0.1</code> accepts local connections only. <code>0.0.0.0</code> listens on all IPv4 interfaces.</p>
+    </div>
+    <div class="form-group">
+      <label for="ssh_port">Port</label>
+      <input type="number" id="ssh_port" name="ssh_port" class="form-control" style="width:140px" min="1" max="65535" value="{{ ssh.port }}" required>
+    </div>
+    <div class="form-group">
+      <label for="ssh_host_key">Host key path</label>
+      <input type="text" id="ssh_host_key" name="ssh_host_key" class="form-control" value="{{ ssh.host_key }}" required>
+      <p class="text-muted">Back up this key after it is generated. Replacing it causes host-key warnings for returning clients.</p>
+    </div>
+    <div class="form-group">
+      <label><input type="checkbox" name="ssh_registration_enabled" value="true" {% if ssh.registration_enabled %}checked{% endif %}> Allow new account registration</label>
+    </div>
+    <div class="form-group">
+      <label for="ssh_registration_limit_per_hour">Registrations per IP, per hour</label>
+      <input type="number" id="ssh_registration_limit_per_hour" name="ssh_registration_limit_per_hour" class="form-control" style="width:140px" min="0" value="{{ ssh.registration_limit_per_hour }}" required>
+    </div>
+    <div class="form-group">
+      <label for="ssh_login_limit_per_hour">Login attempts per IP, per hour</label>
+      <input type="number" id="ssh_login_limit_per_hour" name="ssh_login_limit_per_hour" class="form-control" style="width:140px" min="0" value="{{ ssh.login_limit_per_hour }}" required>
+    </div>
+    <div class="form-group">
+      <label for="ssh_max_sessions">Maximum concurrent sessions</label>
+      <input type="number" id="ssh_max_sessions" name="ssh_max_sessions" class="form-control" style="width:140px" min="1" value="{{ ssh.max_sessions }}" required>
+    </div>
+    <div class="form-group">
+      <label for="ssh_max_sessions_per_account">Maximum sessions per account</label>
+      <input type="number" id="ssh_max_sessions_per_account" name="ssh_max_sessions_per_account" class="form-control" style="width:140px" min="1" value="{{ ssh.max_sessions_per_account }}" required>
+    </div>
+    <div class="form-group">
+      <label for="ssh_idle_timeout_seconds">Idle timeout (seconds)</label>
+      <input type="number" id="ssh_idle_timeout_seconds" name="ssh_idle_timeout_seconds" class="form-control" style="width:160px" min="1" value="{{ ssh.idle_timeout_seconds }}" required>
+    </div>
+    <div class="form-group">
+      <label for="ssh_max_text_bytes">Maximum input bytes per command</label>
+      <input type="number" id="ssh_max_text_bytes" name="ssh_max_text_bytes" class="form-control" style="width:160px" min="1024" value="{{ ssh.max_text_bytes }}" required>
+    </div>
+    <button class="btn btn-primary" type="submit">Save SSH Settings</button>
   </form>
 </section>
 
