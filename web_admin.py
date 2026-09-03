@@ -320,6 +320,24 @@ def load_public_chatter_settings(config_path: str) -> dict:
   }
 
 
+def load_ssh_settings(config_path: str) -> dict:
+  """Read [ssh] values without importing the optional AsyncSSH runtime."""
+  config = read_config_file(config_path)
+  return {
+    "enabled": config.getboolean("ssh", "enabled", fallback=False),
+    "host": config.get("ssh", "host", fallback="127.0.0.1").strip() or "127.0.0.1",
+    "port": config.get("ssh", "port", fallback="2222").strip() or "2222",
+    "host_key": config.get("ssh", "host_key", fallback="data/ssh_host_key").strip() or "data/ssh_host_key",
+    "registration_enabled": config.getboolean("ssh", "registration_enabled", fallback=True),
+    "registration_limit_per_hour": config.get("ssh", "registration_limit_per_hour", fallback="5").strip() or "5",
+    "login_limit_per_hour": config.get("ssh", "login_limit_per_hour", fallback="20").strip() or "20",
+    "max_sessions": config.get("ssh", "max_sessions", fallback="20").strip() or "20",
+    "max_sessions_per_account": config.get("ssh", "max_sessions_per_account", fallback="2").strip() or "2",
+    "idle_timeout_seconds": config.get("ssh", "idle_timeout_seconds", fallback="1800").strip() or "1800",
+    "max_text_bytes": config.get("ssh", "max_text_bytes", fallback="8192").strip() or "8192",
+  }
+
+
 # Every place a sync peer can be configured. Peers are spread across the
 # primary radio, the optional second radio, and one section per MQTT link,
 # so there has never been a single view of "who does this node sync with" --
@@ -3781,6 +3799,54 @@ def create_app(runtime_interface=None) -> Flask:
       write_config_file(config, app.config["CONFIG_PATH"])
       return []
 
+    def save_ssh_settings(form) -> list[str]:
+      errors = []
+      host = form.get("ssh_host", "").strip()
+      host_key = form.get("ssh_host_key", "").strip()
+      if not host:
+        errors.append("SSH bind address is required.")
+      if not host_key:
+        errors.append("SSH host key path is required.")
+
+      integer_values = {}
+      for key, label, default, minimum, maximum in (
+        ("port", "Port", 2222, 1, 65535),
+        ("registration_limit_per_hour", "Registration limit", 5, 0, None),
+        ("login_limit_per_hour", "Login limit", 20, 0, None),
+        ("max_sessions", "Maximum sessions", 20, 1, None),
+        ("max_sessions_per_account", "Maximum sessions per account", 2, 1, None),
+        ("idle_timeout_seconds", "Idle timeout", 1800, 1, None),
+        ("max_text_bytes", "Maximum text bytes", 8192, 1024, None),
+      ):
+        raw = form.get(f"ssh_{key}", str(default)).strip()
+        try:
+          value = int(raw)
+        except ValueError:
+          errors.append(f"SSH {label.lower()} must be a whole number.")
+          continue
+        if value < minimum or (maximum is not None and value > maximum):
+          range_text = f"between {minimum} and {maximum}" if maximum is not None else f"at least {minimum}"
+          errors.append(f"SSH {label.lower()} must be {range_text}.")
+        integer_values[key] = value
+
+      if errors:
+        return errors
+
+      config = read_config_file(app.config["CONFIG_PATH"])
+      if not config.has_section("ssh"):
+        config.add_section("ssh")
+      config.set("ssh", "enabled", "true" if _parse_bool_setting(form.get("ssh_enabled", "")) else "false")
+      config.set("ssh", "host", host)
+      config.set("ssh", "host_key", host_key)
+      config.set(
+        "ssh", "registration_enabled",
+        "true" if _parse_bool_setting(form.get("ssh_registration_enabled", "")) else "false",
+      )
+      for key, value in integer_values.items():
+        config.set("ssh", key, str(value))
+      write_config_file(config, app.config["CONFIG_PATH"])
+      return []
+
     def save_gateway_settings(form) -> None:
       """Persist the [gateway] section from the web-admin form. Hot-reloads:
       gateway.py + local_capabilities_token read config fresh on every call, so
@@ -4922,6 +4988,7 @@ def create_app(runtime_interface=None) -> Flask:
       gateway_settings = load_gateway_settings(app.config["CONFIG_PATH"])
       storage_settings = load_storage_settings(app.config["CONFIG_PATH"])
       public_chatter_settings = load_public_chatter_settings(app.config["CONFIG_PATH"])
+      ssh_settings = load_ssh_settings(app.config["CONFIG_PATH"])
       subscriber_settings = load_subscriber_settings(app.config["CONFIG_PATH"])
       device_settings = load_device_settings(app.config["CONFIG_PATH"])
       account_settings = load_account_settings(app.config["CONFIG_PATH"])
@@ -4938,6 +5005,7 @@ def create_app(runtime_interface=None) -> Flask:
         gateway=gateway_settings,
         storage=storage_settings,
         public_chatter=public_chatter_settings,
+        ssh=ssh_settings,
         subscribers=subscriber_settings,
         devices=device_settings,
         accounts=account_settings,
@@ -5662,6 +5730,14 @@ def create_app(runtime_interface=None) -> Flask:
           if not errors:
             flash("Public chatter monitoring settings saved and will hot-reload shortly.", "success")
           return redirect(url_for("settings_page") + "#public-chatter")
+
+        if section == "ssh":
+          errors = save_ssh_settings(request.form)
+          for error in errors:
+            flash(error, "error")
+          if not errors:
+            flash("SSH settings saved. Restart bacon-ssh.service for the change to take effect.", "success")
+          return redirect(url_for("settings_page") + "#ssh")
 
         if section == "admin":
           changed = update_admin_settings(

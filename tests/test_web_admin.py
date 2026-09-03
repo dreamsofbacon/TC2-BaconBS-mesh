@@ -1087,6 +1087,76 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(config.get("accounts", "link_code_ttl_minutes"), "15")
         self.assertEqual(config.get("accounts", "max_linked_devices"), "3")
 
+    def test_ssh_settings_render_defaults_and_save(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+        page = client.get("/settings").get_data(as_text=True)
+        self.assertIn("SSH Access", page)
+        self.assertIn('name="ssh_port"', page)
+        self.assertIn('value="2222"', page)
+
+        response = self.post_with_csrf(
+            client, "/settings",
+            data={
+                "settings_section": "ssh",
+                "ssh_enabled": "true",
+                "ssh_host": "0.0.0.0",
+                "ssh_port": "2200",
+                "ssh_host_key": "data/custom_ssh_host_key",
+                "ssh_registration_enabled": "true",
+                "ssh_registration_limit_per_hour": "3",
+                "ssh_login_limit_per_hour": "12",
+                "ssh_max_sessions": "10",
+                "ssh_max_sessions_per_account": "1",
+                "ssh_idle_timeout_seconds": "900",
+                "ssh_max_text_bytes": "4096",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.headers["Location"].endswith("#ssh"))
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertTrue(config.getboolean("ssh", "enabled"))
+        self.assertTrue(config.getboolean("ssh", "registration_enabled"))
+        self.assertEqual(config.get("ssh", "host"), "0.0.0.0")
+        self.assertEqual(config.getint("ssh", "port"), 2200)
+        self.assertEqual(config.getint("ssh", "max_text_bytes"), 4096)
+
+    def test_invalid_ssh_settings_do_not_modify_config(self):
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        config["ssh"] = {"enabled": "false", "port": "2222"}
+        with open(self.config_path, "w", encoding="utf-8") as config_file:
+            config.write(config_file)
+
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+        response = self.post_with_csrf(
+            client, "/settings",
+            data={
+                "settings_section": "ssh",
+                "ssh_enabled": "true",
+                "ssh_host": "",
+                "ssh_port": "70000",
+                "ssh_host_key": "",
+                "ssh_registration_limit_per_hour": "5",
+                "ssh_login_limit_per_hour": "20",
+                "ssh_max_sessions": "20",
+                "ssh_max_sessions_per_account": "2",
+                "ssh_idle_timeout_seconds": "1800",
+                "ssh_max_text_bytes": "8192",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn("SSH bind address is required", response.get_data(as_text=True))
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertFalse(config.getboolean("ssh", "enabled"))
+        self.assertEqual(config.getint("ssh", "port"), 2222)
+
     def test_create_app_initializes_schema_without_a_prior_initialize_database_call(self):
         """Regression test: bacon-web-admin.service is a separate process
         from mesh-bbs.service and must not depend on that other service
