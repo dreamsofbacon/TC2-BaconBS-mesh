@@ -56,9 +56,8 @@ class TheDropdownsAreGoneTests(unittest.TestCase):
 
 
 class TheLegendIsTheControlTests(unittest.TestCase):
-    def test_all_three_dimensions_have_a_group(self):
-        for needle in ('id="legend-networks"', 'id="legend-channels"',
-                       'id="legend-nodes"'):
+    def test_both_dimensions_have_a_group(self):
+        for needle in ('id="legend-channels"', 'id="legend-nodes"'):
             with self.subTest(needle=needle):
                 self.assertIn(needle, HTML)
 
@@ -74,10 +73,21 @@ class TheLegendIsTheControlTests(unittest.TestCase):
     def test_it_is_focusable_visibly(self):
         self.assertIn(".legend-chip:focus-visible", HTML)
 
-    def test_the_network_group_hides_itself_when_there_is_one_network(self):
-        """One network is not a choice, and the channel chips already say
-        which network they are on."""
-        self.assertIn("legendNetworkGroup.hidden = networkNames.length < 2", JS)
+    def test_there_is_no_separate_network_control(self):
+        """A channel key is already network-qualified, so selecting channels
+        selects networks by implication. A second control for it would be a
+        slower way to say the same thing, and another row of vertical space
+        on a page whose point is the feed below it."""
+        for needle in ("legend-networks", "legend-network-group",
+                       "selected.networks", "anySelected(\"networks\")"):
+            with self.subTest(needle=needle):
+                self.assertNotIn(needle, HTML)
+                self.assertNotIn(needle, JS)
+
+    def test_the_network_is_still_visible_on_every_channel_chip(self):
+        """Removing the control must not remove the information."""
+        self.assertRegex(
+            JS, r"function channelLabel[\s\S]*?entry\.network")
 
     def test_clearing_is_offered_only_while_something_is_selected(self):
         self.assertIn("clearButton.hidden = !filtering()", JS)
@@ -85,6 +95,53 @@ class TheLegendIsTheControlTests(unittest.TestCase):
 
     def test_the_page_says_how_to_use_it(self):
         self.assertIn("Click to filter", HTML)
+
+
+class LayoutTests(unittest.TestCase):
+    """The legend is a control, so it belongs with the controls -- and the
+    page exists to show the feed, so the controls must not eat the screen
+    above it."""
+
+    def controls_block(self):
+        start = HTML.index('<section class="chatter-controls"')
+        return HTML[start:HTML.index("</section>", HTML.index(
+            '<section class="chatter-legend"'))]
+
+    def test_the_legend_sits_in_the_controls_row(self):
+        self.assertIn('id="chatter-legend"', self.controls_block())
+
+    def test_it_comes_after_the_search_box(self):
+        block = self.controls_block()
+        self.assertLess(block.index('id="chatter-search"'),
+                        block.index('id="chatter-legend"'))
+
+    def test_it_is_no_longer_in_the_header(self):
+        header = HTML[HTML.index('<header class="chatter-header">'):
+                      HTML.index("</header>")]
+        self.assertNotIn("chatter-legend", header)
+
+    def test_the_legend_never_scrolls(self):
+        """A scrollbar hides exactly the chip you were looking for, and the
+        whole point of the block is to be readable at a glance."""
+        style = HTML[HTML.index("<style>"):HTML.index("</style>")]
+        legend = style[style.index(".chatter-legend {"):]
+        legend = legend[:legend.index("}")]
+        self.assertNotIn("overflow", legend)
+        self.assertNotIn("max-height", legend)
+
+    def test_the_history_presets_sit_beside_the_input(self):
+        """Under it, they cost the row a second line for nothing."""
+        self.assertIn('<div class="history-row">', HTML)
+        self.assertRegex(HTML, r"\.history-row \{ display:flex")
+
+    def test_the_controls_are_one_row_of_three(self):
+        self.assertRegex(
+            HTML, r"\.chatter-controls \{[^}]*grid-template-columns:auto auto minmax\(0,1fr\)")
+
+    def test_it_stacks_rather_than_squeezing_on_a_narrow_screen(self):
+        self.assertRegex(
+            HTML, r"@media \(max-width:720px\)[\s\S]*?"
+                  r"\.chatter-controls \{ grid-template-columns:1fr; \}")
 
 
 class SelectionSemanticsTests(unittest.TestCase):
@@ -98,14 +155,13 @@ class SelectionSemanticsTests(unittest.TestCase):
         """Guarded by anySelected before every membership test, so the feed
         starts full rather than empty."""
         body = self.matches_body()
-        for group in ("networks", "channels", "nodes"):
+        for group in ("channels", "nodes"):
             with self.subTest(group=group):
                 self.assertIn('anySelected("%s")' % group, body)
 
     def test_a_selected_group_is_a_membership_test(self):
         """Membership is OR within the group."""
         body = self.matches_body()
-        self.assertIn("selected.networks[networkKey(entry)]", body)
         self.assertIn("selected.channels[channelKey(entry)]", body)
         self.assertIn("selected.nodes[key]", body)
 
@@ -114,7 +170,7 @@ class SelectionSemanticsTests(unittest.TestCase):
         matching any single group through, so picking a channel AND a node
         would widen the feed instead of narrowing it."""
         body = self.matches_body()
-        self.assertEqual(body.count("return false"), 3,
+        self.assertEqual(body.count("return false"), 2,
                          "expected one bail-out per dimension")
         self.assertTrue(body.rstrip().endswith("return true;"))
 
@@ -130,13 +186,13 @@ class SelectionSemanticsTests(unittest.TestCase):
         selected, because a plain object inherits that name as truthy."""
         selected_init = JS[JS.index("var selected = {"):]
         selected_init = selected_init[:selected_init.index("};")]
-        for group in ("networks", "channels", "nodes"):
+        for group in ("channels", "nodes"):
             with self.subTest(group=group, where="initial"):
                 self.assertRegex(
                     selected_init, group + r":\s*Object\.create\(null\)")
         cleared = JS[JS.index("function clearFilters()"):]
         cleared = cleared[:cleared.index("\n  }")]
-        for group in ("networks", "channels", "nodes"):
+        for group in ("channels", "nodes"):
             with self.subTest(group=group, where="cleared"):
                 self.assertIn(
                     "selected.%s = Object.create(null)" % group, cleared)

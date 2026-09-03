@@ -4,10 +4,17 @@
   .chatter-shell { max-width: 980px; margin: 0 auto; padding: 24px 0 48px; }
   .chatter-header { display:flex; justify-content:space-between; gap:16px; align-items:end; margin-bottom:20px; }
   .chatter-header h1 { margin:0; font-size:28px; }
-  /* Takes the space the legend does not, so the strapline wraps instead of
-     shouldering the legend off the row. */
-  .chatter-header > div:first-child { flex:1 1 auto; min-width:0; }
-  .chatter-controls { display:grid; grid-template-columns:repeat(2,minmax(160px,1fr)); gap:12px; margin-bottom:18px; max-width:520px; }
+
+  /* One row for everything: history, search, and the legend that replaced
+     the two dropdowns. The legend takes whatever is left. */
+  .chatter-controls { display:grid; align-items:start; gap:12px 16px;
+                      grid-template-columns:auto auto minmax(0,1fr);
+                      margin-bottom:16px; }
+  /* Presets beside the number rather than under it, which costs the row its
+     second line for nothing. */
+  .history-row { display:flex; align-items:center; gap:6px; }
+  .history-row .form-control { width:72px; flex:0 0 auto; }
+  .chatter-search-group { min-width:170px; }
   .chatter-controls .form-group { margin:0; }
   .chatter-feed { display:grid; gap:10px; }
   /* Every colour resolves through one custom property, --cc, set by a cc-N
@@ -34,20 +41,19 @@
      gap; the whole block shrinks before the heading does, and caps its
      height so an unusually long list scrolls instead of pushing the feed
      down the page. */
-  .chatter-legend { display:grid;
-                    grid-template-columns:repeat(auto-fit, minmax(130px, auto));
-                    gap:10px 20px; padding:10px 12px;
+  /* A label column, a chips column that wraps, and the clear button beside
+     both. No height cap and no overflow: the point of this block is to be
+     readable at a glance, and a scrollbar hides exactly the chip you were
+     looking for. */
+  .chatter-legend { display:grid; align-items:center;
+                    grid-template-columns:auto minmax(0,1fr) auto;
+                    gap:4px 10px; padding:6px 10px; min-width:0;
                     border:1px solid var(--border, #2b3645);
                     border-radius:var(--radius-md, 8px);
-                    background:var(--surface, #161d27);
-                    flex:0 1 auto; min-width:0;
-                    max-width:620px; max-height:210px; overflow-y:auto; }
-  .legend-foot { grid-column:1 / -1; display:flex; align-items:center;
-                 justify-content:space-between; gap:12px;
-                 border-top:1px solid var(--border, #2b3645); padding-top:8px; }
-  .legend-hint { font-size:11px; color:var(--text-faint, #6b7a8d); }
-  .legend-title { font-size:11px; letter-spacing:.06em; text-transform:uppercase;
-                  color:var(--text-faint, #6b7a8d); margin:0 0 7px; }
+                    background:var(--surface, #161d27); }
+  .legend-title { font-size:10px; letter-spacing:.06em; text-transform:uppercase;
+                  color:var(--text-faint, #6b7a8d); margin:0; white-space:nowrap; }
+  #legend-clear { grid-column:3; grid-row:1 / span 2; align-self:center; }
   .legend-items { display:flex; flex-wrap:wrap; gap:4px; }
   /* Inline tag inside a message row -- looks like the legend chip but is
      not interactive. */
@@ -98,12 +104,17 @@
   @media (max-width:720px) {
     .chatter-shell { padding-top:14px; }
     .chatter-header { align-items:start; flex-direction:column; }
-    .chatter-controls { grid-template-columns:1fr 1fr; }
-    /* Stacked under the title, so it may use the full width again. */
-    .chatter-legend { grid-template-columns:1fr; max-width:none;
-                      width:100%; max-height:none; }
+    /* Stacked: each control gets the full width rather than being
+       squeezed into a third of a narrow screen. */
+    .chatter-controls { grid-template-columns:1fr; }
+    .chatter-presets { flex-wrap:wrap; }
   }
-  @media (max-width:430px) { .chatter-controls { grid-template-columns:1fr; } }
+  @media (max-width:430px) {
+    /* The label column would leave almost nothing for the chips. */
+    .chatter-legend { grid-template-columns:minmax(0,1fr) auto; }
+    .legend-title { grid-column:1 / -1; }
+    #legend-clear { grid-row:auto; grid-column:2; }
+  }
 </style>
 {% endblock %}
 {% block content %}
@@ -113,41 +124,34 @@
       <h1>Public Chatter</h1>
       <p class="text-muted">Meshtastic and MeshCore public channels heard by participating Bacon BBS nodes.</p>
     </div>
-    <section class="chatter-legend" id="chatter-legend"
-             aria-label="Colour legend and filters" hidden>
-      <div id="legend-network-group" hidden>
-        <h2 class="legend-title">Networks</h2>
-        <div class="legend-items" id="legend-networks"></div>
-      </div>
-      <div>
-        <h2 class="legend-title">Channels</h2>
-        <div class="legend-items" id="legend-channels"></div>
-      </div>
-      <div>
-        <h2 class="legend-title">Heard by</h2>
-        <div class="legend-items" id="legend-nodes"></div>
-      </div>
-      <div class="legend-foot">
-        <span class="legend-hint">Click to filter. Pick several to combine.</span>
-        <button type="button" class="btn btn-sm" id="legend-clear" hidden>Clear filters</button>
-      </div>
-    </section>
   </header>
 
   <section class="chatter-controls" aria-label="Chatter filters">
     <div class="form-group">
       <label for="chatter-hours">History (hours)</label>
-      <input class="form-control" id="chatter-hours" type="number" min="1" max="168" value="24">
-      <div class="chatter-presets" aria-label="History presets">
-        {% for value, label in [(1,'1h'),(6,'6h'),(24,'24h'),(72,'3d'),(168,'7d')] %}
-        <button class="btn btn-sm" type="button" data-hours="{{ value }}">{{ label }}</button>
-        {% endfor %}
+      <div class="history-row">
+        <input class="form-control" id="chatter-hours" type="number" min="1" max="168" value="24">
+        <div class="chatter-presets" aria-label="History presets">
+          {% for value, label in [(1,'1h'),(6,'6h'),(24,'24h'),(72,'3d'),(168,'7d')] %}
+          <button class="btn btn-sm" type="button" data-hours="{{ value }}">{{ label }}</button>
+          {% endfor %}
+        </div>
       </div>
     </div>
-    <div class="form-group">
+    <div class="form-group chatter-search-group">
       <label for="chatter-search">Search</label>
       <input class="form-control" id="chatter-search" type="search" placeholder="Message or sender">
     </div>
+
+    <section class="chatter-legend" id="chatter-legend"
+             title="Click to filter; pick several to combine"
+             aria-label="Colour legend and filters" hidden>
+      <h2 class="legend-title">Channels</h2>
+      <div class="legend-items" id="legend-channels"></div>
+      <h2 class="legend-title">Heard by</h2>
+      <div class="legend-items" id="legend-nodes"></div>
+      <button type="button" class="btn btn-sm" id="legend-clear" hidden>Clear</button>
+    </section>
   </section>
 
   <div id="chatter-state" class="chatter-state" role="status">Loading messages...</div>
