@@ -2071,7 +2071,7 @@ UPDATED_FLOWCHART_CONTENT = """
     <li><strong>Run web admin:</strong> <code>./run_web_admin.sh</code>, <code>run_web_admin.bat</code>, or <code>python web_admin.py</code> (defaults to <code>127.0.0.1:8081</code>).</li>
     <li><strong>systemd:</strong> <code>bash install_services.sh</code> installs <code>mesh-bbs.service</code> and <code>bacon-web-admin.service</code>. Use <code>--yes --user $USER --dir $HOME/TC2-BaconBS-mesh</code> for non-interactive installs.</li>
     <li><strong>Zork dependency:</strong> <code>sudo apt install frotz</code> and ensure <code>BBS_ZORK_INTERPRETER=/usr/games/dfrotz</code> is exported in the service environment.</li>
-    <li><strong>Two-node remote update:</strong> from Windows, <code>scripts/update-two-nodes.ps1</code> uses Posh-SSH and <code>scripts/node-update-config.json</code> to <code>git pull</code> + restart both services on each node. Pass <code>-ResetCredential</code> to re-prompt.</li>
+    <li><strong>Fleet deployment:</strong> define named nodes in <code>scripts/node-update-config.json</code>, validate with <code>scripts/deploy-fleet.ps1 -ValidateOnly</code>, then run <code>scripts/deploy-fleet.ps1</code>. Use <code>-Node NAME</code> for one node and <code>-ResetCredential</code> to re-prompt.</li>
     <li><strong>Smoke test:</strong> <code>python tests/smoke_test.py</code> exercises sync parsing and menu input without a radio.</li>
     <li><strong>Logs:</strong> <code>journalctl -u mesh-bbs.service -u bacon-web-admin.service -f</code>.</li>
   </ul>

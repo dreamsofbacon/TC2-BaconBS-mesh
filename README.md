@@ -580,19 +580,27 @@ Environment="BBS_ZORK_INTERPRETER=/usr/games/dfrotz"
 
 ---
 
-## Remote Update (Windows → Linux Nodes)
+## Fleet Deployment (Windows to Linux Nodes)
 
-For operators managing Linux nodes from a Windows machine:
-
-- `scripts/update-two-nodes.ps1` — local orchestrator (requires Posh-SSH)
-- `scripts/remote-node-update.sh` — runs on each node via SSH
-- `scripts/node-update-config.json.example` — configuration template
+Define the fleet once in `scripts/node-update-config.json` (copy the example
+to start), then deploy every enabled node with one command:
 
 ```powershell
-.\scripts\update-two-nodes.ps1
+Copy-Item .\scripts\node-update-config.json.example .\scripts\node-update-config.json
+.\scripts\deploy-fleet.ps1 -ValidateOnly
+.\scripts\deploy-fleet.ps1
 ```
 
-Credentials are stored securely in `%APPDATA%\TC2-BaconBS\node-update-cred.xml` on first run. Use `-ResetCredential` to update them.
+Use `-Node node-2` to deploy one named node, `-Reboot` to pull and reboot,
+and `-StopOnError` to stop at the first failure. Top-level `repoPath`,
+`branch`, and `services` are defaults; any node can override them or set
+`enabled` to `false`. The helper runs directly from each node's repository,
+so no separate script installation is needed.
+
+The command installs Posh-SSH if needed. Credentials are stored securely in
+`%APPDATA%\TC2-BaconBS\node-update-cred.xml` on first run; use
+`-ResetCredential` to replace them. The older `update-two-nodes.ps1` command
+remains as a compatibility wrapper.
 
 ---
 

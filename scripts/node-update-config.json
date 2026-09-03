@@ -1,17 +1,18 @@
 {
   "repoPath": "/home/bacon/TC2-BaconBS-mesh",
   "branch": "main",
-  "remoteScriptPath": "/home/bacon/remote-node-update.sh",
   "services": [
     "mesh-bbs.service",
     "bacon-web-admin.service"
   ],
   "nodes": [
     {
+      "name": "node-2",
       "host": "bbs.local",
       "port": 22
     },
     {
+      "name": "node-4",
       "host": "forgecam.local",
       "port": 22
     }
