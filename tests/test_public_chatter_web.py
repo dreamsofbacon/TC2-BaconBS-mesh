@@ -93,6 +93,7 @@ class PublicChatterWebTests(unittest.TestCase):
         self.assertNotIn("innerHTML", script)
         self.assertNotIn("chatter-more", script)
         self.assertNotIn("next_cursor", script)
+        self.assertNotIn('state.textContent = "Loading messages..."', script)
 
 
 if __name__ == "__main__":

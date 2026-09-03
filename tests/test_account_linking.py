@@ -102,6 +102,15 @@ class AccountMenuTests(unittest.TestCase):
         self.assertTrue(any("Invalid" in m for m in _sent(sm)))
         self.assertIsNone(db_operations.get_account_id_for_node("!aaa11111"))
 
+    def test_zero_cancels_code_entry_and_preserves_parent(self):
+        command_handlers.update_user_state(
+            1, {"command": "ACCOUNT", "step": 2, "return_to": "main"})
+        with mock.patch.object(command_handlers, "send_message") as sm:
+            command_handlers.handle_account_steps(
+                1, "0", self.interface, sender_node_id="!aaa11111")
+        self.assertIn("Linked Devices", _sent(sm)[0])
+        self.assertEqual(command_handlers.get_user_state(1).get("return_to"), "main")
+
     def test_request_code_rate_limited(self):
         for _ in range(3):
             command_handlers.update_user_state(1, {"command": "ACCOUNT", "step": 1})
@@ -185,13 +194,13 @@ class AccountMenuTests(unittest.TestCase):
         self.assertTrue(any("Cancelled" in m for m in _sent(sm)))
         self.assertEqual(db_operations.get_account_id_for_node("7e18ca9d30a1"), account_id)
 
-    def test_profile_menu_offers_linked_devices_entry(self):
+    def test_profile_menu_does_not_duplicate_linked_devices_entry(self):
         with mock.patch.object(command_handlers, "get_user_profile", return_value=(
             "1", "CALL", "Caller", "2026-01-01", "2026-01-01", 3, "",
         )):
             with mock.patch.object(command_handlers, "send_message") as sm:
                 command_handlers.handle_profile_command(1, self.interface)
-        self.assertIn("Linked Devices", _sent(sm)[0])
+        self.assertNotIn("Linked Devices", _sent(sm)[0])
 
     def test_profile_step_2_routes_into_account_menu(self):
         command_handlers.update_user_state(1, {"command": "PROFILE", "step": 1})

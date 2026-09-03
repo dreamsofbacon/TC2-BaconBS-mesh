@@ -46,7 +46,8 @@ class AccountsSchemaTests(unittest.TestCase):
         # account holds the choice, and the timestamp resolves which of two
         # nodes' updates wins when the preference syncs.
         self.assertEqual(cols, {"account_id", "alias", "alias_normalized", "created_at",
-                                "mail_relay_enabled", "mail_relay_updated_at"})
+                    "mail_relay_enabled", "mail_relay_updated_at",
+                    "password_hash", "password_salt", "password_created_at"})
         cols = {row[1] for row in conn.execute("PRAGMA table_info(linked_nodes)")}
         self.assertEqual(cols, {"node_id", "account_id", "network", "linked_at"})
 

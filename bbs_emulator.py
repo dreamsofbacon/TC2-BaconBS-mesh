@@ -371,6 +371,49 @@ def start_session(node_id=None, short_name=None,
     return session
 
 
+def start_ssh_session(account_id, alias, max_text_bytes=8192):
+    """Open a session whose identity is derived only from an account id."""
+    global _synthetic_counter
+
+    clean_account_id = str(account_id or '').strip()
+    if len(clean_account_id) != 32 or any(
+            char not in '0123456789abcdef'
+            for char in clean_account_id.casefold()):
+        raise ValueError("Invalid SSH account id")
+
+    sweep_idle()
+    with _registry_lock:
+        _synthetic_counter += 1
+        sender_id = _SYNTHETIC_NUM_BASE + _synthetic_counter
+    sender_node_id = f"ssh:{clean_account_id}"
+    label = str(alias or '').strip()[:20] or "ssh-user"
+    nodes = _roster_nodes()
+    nodes[sender_node_id] = {
+        "num": sender_id,
+        "user": {
+            "id": sender_node_id,
+            "shortName": label,
+            "longName": label,
+        },
+    }
+    interface = EmulatorInterface(
+        nodes, allowed_nodes=[], max_text_bytes=max_text_bytes)
+    token = secrets.token_urlsafe(24)
+    session = EmulatorSession(
+        token, sender_id, sender_node_id, interface, label, False)
+    with _registry_lock:
+        if len(_sessions) >= MAX_SESSIONS:
+            oldest = min(_sessions.values(), key=lambda item: item.last_used)
+            _sessions.pop(oldest.token, None)
+            evicted = oldest
+        else:
+            evicted = None
+        _sessions[token] = session
+    if evicted is not None:
+        evicted.close()
+    return session
+
+
 def get_session(token) -> Optional[EmulatorSession]:
     with _registry_lock:
         return _sessions.get(str(token or ""))

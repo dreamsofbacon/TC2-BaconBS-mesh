@@ -807,11 +807,23 @@ for confirmation first.
 
 ## SSH access
 
-Reaching the BBS over SSH, with self-registered accounts, is designed in
-[docs/SSH-ACCESS.md](docs/SSH-ACCESS.md) and **not implemented**. Read it
-before building any of it: mail is authorized by nothing but the node id a
-session presents, so the design turns on keeping SSH identities inside a
-namespace they cannot leave.
+The optional `bacon-ssh.service` exposes the real BBS command interface over
+SSH using password-authenticated accounts. It is installed disabled and the
+sample configuration binds to localhost, so it cannot listen merely because
+the code was installed.
+
+Enable and configure `[ssh]` in `config.ini`, then start it with:
+
+```bash
+sudo systemctl enable --now bacon-ssh.service
+ssh -p 2222 new:YourAlias@bbs-host  # register once
+ssh -p 2222 YourAlias@bbs-host      # return later
+```
+
+Read [docs/SSH-ACCESS.md](docs/SSH-ACCESS.md) before exposing the port. In
+particular, secure the separately exposed web admin, retain and back up
+`data/ssh_host_key`, and add firewall/fail2ban policy. SSH identities are
+server-derived as `ssh:<account_id>` and cannot claim a radio node id.
 
 ---
 

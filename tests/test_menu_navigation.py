@@ -1,9 +1,7 @@
-"""Tests for main-menu discoverability of Settings and the API Gateway.
+"""Tests for discoverable main-menu actions and consistent navigation.
 
-Account linking existed but was effectively unreachable: it sat under
-Profile > Linked Devices with nothing on the main menu hinting at it. The
-API Gateway had a handler wired up but never rendered, because an existing
-config.ini lists utilities_menu_items explicitly and predates that entry.
+Account linking and web fetches are direct main-menu actions even when an
+existing config.ini predates those entries.
 """
 import sqlite3
 import sys
@@ -29,24 +27,25 @@ class MainMenuContentsTests(unittest.TestCase):
         """The exact reason these were invisible: config.ini pins the item
         list, so a new entry would never show up on an upgraded node."""
         rendered = ch.build_menu(["Q", "B", "U", "P", "N", "X"], self.MAIN)
-        self.assertIn("API Gateway", rendered)
-        self.assertIn("Settings", rendered)
+        self.assertIn("Web Fetch", rendered)
+        self.assertIn("Linked Devices", rendered)
 
     def test_existing_entries_keep_their_numbers(self):
         """Renumbering would break muscle memory and every doc reference."""
         rendered = ch.build_menu(["Q", "B", "U", "P", "N", "X"], self.MAIN)
         for expected in ("[1] Quick Commands", "[2] BBS", "[3] Utilities",
-                         "[4] Profile", "[5] Ask Nomad", "[0] Exit"):
+                         "[4] Profile", "[5] Ask Nomad"):
             self.assertIn(expected, rendered)
+        self.assertNotIn("[0] Exit", rendered)
 
     def test_new_entries_are_inserted_before_exit(self):
         lines = [l for l in ch.build_menu(["Q", "X"], self.MAIN).splitlines() if l.strip()]
-        self.assertTrue(lines[-1].startswith("[0]"), f"Exit should stay last: {lines}")
+        self.assertFalse(any(line.startswith("[0]") for line in lines))
 
     def test_no_duplicates_when_config_already_lists_them(self):
         rendered = ch.build_menu(["Q", "A", "S", "X"], self.MAIN)
-        self.assertEqual(rendered.count("API Gateway"), 1)
-        self.assertEqual(rendered.count("Settings"), 1)
+        self.assertEqual(rendered.count("Web Fetch"), 1)
+        self.assertEqual(rendered.count("Linked Devices"), 1)
 
     def test_api_gateway_no_longer_rendered_under_utilities(self):
         """It moved to the main menu; showing it in both would be confusing."""
@@ -54,7 +53,17 @@ class MainMenuContentsTests(unittest.TestCase):
             ["S", "F", "W", "G", "A", "X"], "\U0001F6E0\uFE0FUtilities Menu\U0001F6E0\uFE0F")
         self.assertNotIn("API Gateway", rendered)
         self.assertIn("[1] Stats", rendered)
-        self.assertIn("[6] Public Chatter", rendered)
+        self.assertIn("[5] Public Chatter", rendered)
+
+    def test_js8call_is_hidden_when_not_configured(self):
+        with mock.patch.object(ch, "_js8call_configured", return_value=False):
+            rendered = ch.build_menu(["M", "B", "C", "J", "X"], "📰BBS Menu📰")
+        self.assertNotIn("JS8CALL", rendered)
+
+    def test_js8call_is_shown_when_configured(self):
+        with mock.patch.object(ch, "_js8call_configured", return_value=True):
+            rendered = ch.build_menu(["M", "B", "C", "J", "X"], "📰BBS Menu📰")
+        self.assertIn("JS8CALL", rendered)
 
 
 class SettingsNavigationTests(unittest.TestCase):
@@ -73,10 +82,11 @@ class SettingsNavigationTests(unittest.TestCase):
             conn.close()
             del db_operations.thread_local.connection
 
-    def test_settings_menu_offers_linked_devices(self):
+    def test_settings_shortcut_opens_linked_devices(self):
         ch.handle_settings_command(1234, self.iface)
         self.assertIn("Linked Devices", self.sent[-1])
-        self.assertEqual(ch.get_user_state(1234).get("command"), "SETTINGS")
+        self.assertEqual(ch.get_user_state(1234).get("command"), "ACCOUNT")
+        self.assertEqual(ch.get_user_state(1234).get("return_to"), "main")
 
     def test_choice_one_opens_account_linking(self):
         ch.handle_settings_command(1234, self.iface)
@@ -84,6 +94,13 @@ class SettingsNavigationTests(unittest.TestCase):
         ch.handle_settings_steps(1234, "1", self.iface, "!abc")
         self.assertIn("Request link code", self.sent[-1])
         self.assertEqual(ch.get_user_state(1234).get("command"), "ACCOUNT")
+        self.assertEqual(ch.get_user_state(1234).get("return_to"), "settings")
+
+    def test_linked_devices_back_returns_to_main(self):
+        ch.handle_settings_command(1234, self.iface)
+        self.sent.clear()
+        ch.handle_account_steps(1234, "0", self.iface, "!abc")
+        self.assertIn("Bacon BBS", self.sent[-1])
 
     def test_zero_returns_to_the_main_menu(self):
         ch.handle_settings_command(1234, self.iface)
@@ -96,6 +113,58 @@ class SettingsNavigationTests(unittest.TestCase):
         self.sent.clear()
         ch.handle_settings_steps(1234, "9", self.iface, "!abc")
         self.assertIn("Settings", self.sent[-1])
+
+
+class ChannelDirectoryNavigationTests(unittest.TestCase):
+    def setUp(self):
+        self.sent = []
+        self.send_patch = mock.patch.object(
+            ch, "send_message", side_effect=lambda text, *_args: self.sent.append(text))
+        self.send_patch.start()
+        self.addCleanup(self.send_patch.stop)
+        self.iface = _FakeInterface()
+
+    def test_categories_are_one_based_and_offer_back(self):
+        with mock.patch.object(ch, "get_channel_categories", return_value=[("General", 1)]):
+            ch._send_channel_categories(1234, self.iface)
+        self.assertIn("[1] General", self.sent[-1])
+        self.assertIn("[0] Back", self.sent[-1])
+        self.assertNotIn("[0] General", self.sent[-1])
+
+    def test_zero_from_categories_returns_to_directory_menu(self):
+        ch.handle_channel_directory_steps(
+            1234, "0", 2, {"categories": [("General", 1)]}, self.iface)
+        self.assertIn("CHANNEL DIRECTORY", self.sent[-1])
+
+
+class ApiGatewayNavigationTests(unittest.TestCase):
+    def test_main_action_opens_web_fetch_prompt(self):
+        sent = []
+        with mock.patch.object(ch, "_apigw_authorized", return_value=True), \
+                mock.patch.object(ch, "send_message", side_effect=lambda text, *_args: sent.append(text)):
+            ch.handle_apigw_command(1234, _FakeInterface())
+        self.assertIn("URL to fetch", sent[-1])
+        self.assertEqual(ch.get_user_state(1234), {
+            'command': 'APIGW', 'step': 2, 'mode': 'http',
+        })
+
+    def test_cancel_returns_to_main_menu(self):
+        sent = []
+        with mock.patch.object(ch, "send_message", side_effect=lambda text, *_args: sent.append(text)):
+            ch.update_user_state(1234, {'command': 'APIGW', 'step': 2, 'mode': 'ai'})
+            ch.handle_apigw_steps(1234, "0", _FakeInterface())
+        self.assertIn("Bacon BBS", sent[-1])
+
+
+class MenuFeedbackTests(unittest.TestCase):
+    def test_invalid_bbs_choice_stays_in_bbs_menu(self):
+        import message_processing as mp
+        iface = types.SimpleNamespace(bbs_nodes=[], nodes={})
+        ch.update_user_state(1234, {'command': 'MENU', 'menu': 'bbs', 'step': 1})
+        with mock.patch.object(mp, 'handle_help_command') as help_menu:
+            mp.process_message(1234, 'wat', iface)
+        help_menu.assert_called_once_with(
+            1234, iface, 'bbs', notice="Invalid choice.")
 
 
 class MenuHandlerWiringTests(unittest.TestCase):
@@ -148,12 +217,11 @@ class MenuNumberAliasTests(unittest.TestCase):
         self.assertEqual(mp._MAIN_NUMBER_ALIAS["6"], "a")
         self.assertEqual(mp._MAIN_NUMBER_ALIAS["7"], "s")
 
-    def test_utilities_5_still_reaches_the_api_gateway(self):
-        """It moved to the main menu, but 5 meant that here for a long time."""
+    def test_utilities_5_opens_public_chatter(self):
         import message_processing as mp
-        self.assertEqual(mp._UTILITIES_NUMBER_ALIAS["5"], "a")
+        self.assertEqual(mp._UTILITIES_NUMBER_ALIAS["5"], "h")
 
-    def test_utilities_6_opens_public_chatter(self):
+    def test_legacy_utilities_6_still_opens_public_chatter(self):
         import message_processing as mp
         self.assertEqual(mp._UTILITIES_NUMBER_ALIAS["6"], "h")
 

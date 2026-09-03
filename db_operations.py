@@ -1204,6 +1204,12 @@ def _ensure_accounts_tables(cursor) -> None:
         cursor.execute("ALTER TABLE accounts ADD COLUMN mail_relay_enabled INTEGER NOT NULL DEFAULT 0")
     if 'mail_relay_updated_at' not in _account_cols:
         cursor.execute("ALTER TABLE accounts ADD COLUMN mail_relay_updated_at TEXT NOT NULL DEFAULT ''")
+    if 'password_hash' not in _account_cols:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN password_hash TEXT")
+    if 'password_salt' not in _account_cols:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN password_salt TEXT")
+    if 'password_created_at' not in _account_cols:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN password_created_at TEXT")
     _dedupe_account_aliases(cursor)
     # Partial index so the '' default (every account starts with no alias)
     # is exempt -- SQLite treats '' as a real value, unlike NULL, so a plain
@@ -4884,6 +4890,77 @@ def alias_owner(alias: str) -> Optional[str]:
     c.execute("SELECT account_id FROM accounts WHERE alias_normalized = ?", (normalized,))
     row = c.fetchone()
     return row[0] if row else None
+
+
+def alias_conflicts_with_roster(alias: str) -> bool:
+    """True when an alias could impersonate a known mesh client."""
+    def roster_key(value):
+        return ''.join(
+            character for character in normalize_alias(value)
+            if character.isalnum()
+        )
+
+    normalized = roster_key(alias)
+    if not normalized:
+        return True
+    conn = get_db_connection()
+    rows = conn.execute(
+        "SELECT short_name, long_name FROM mesh_clients"
+    ).fetchall()
+    return any(
+        roster_key(name) == normalized
+        for row in rows for name in row if name
+    )
+
+
+def create_ssh_account(alias: str, password_hash: str,
+                       password_salt: str) -> Optional[str]:
+    """Atomically create an SSH account and its server-owned identity."""
+    clean_alias = str(alias or '').strip()[:20]
+    normalized = normalize_alias(clean_alias)
+    if not normalized or alias_owner(clean_alias) is not None:
+        return None
+    if alias_conflicts_with_roster(clean_alias):
+        return None
+
+    conn = get_db_connection()
+    account_id = uuid.uuid4().hex
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        conn.execute(
+            """INSERT INTO accounts
+               (account_id, alias, alias_normalized, created_at,
+                password_hash, password_salt, password_created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (account_id, clean_alias, normalized, now,
+             str(password_hash), str(password_salt), now),
+        )
+        conn.execute(
+            """INSERT INTO linked_nodes (node_id, account_id, network, linked_at)
+               VALUES (?, ?, 'ssh', ?)""",
+            (f"ssh:{account_id}", account_id, now),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return None
+    return account_id
+
+
+def get_ssh_credentials(alias: str) -> Optional[tuple[str, str, str]]:
+    """Return (account_id, password_hash, password_salt) for an SSH user."""
+    normalized = normalize_alias(alias)
+    if not normalized:
+        return None
+    conn = get_db_connection()
+    row = conn.execute(
+        """SELECT account_id, password_hash, password_salt
+           FROM accounts WHERE alias_normalized = ?""",
+        (normalized,),
+    ).fetchone()
+    if not row or not row[1] or not row[2]:
+        return None
+    return str(row[0]), str(row[1]), str(row[2])
 
 
 def set_account_alias(account_id: str, alias: str) -> bool:

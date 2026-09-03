@@ -1,12 +1,13 @@
-# SSH access — a design, not a feature
+# SSH access
 
 Reaching the BBS over SSH instead of a radio, with accounts anyone can
 register for themselves.
 
-**Nothing in this document is implemented.** It exists to be argued with
-before any of it is built, because the hard part is not the SSH server — it
-is that this BBS has never had to answer "who is this, really" and its
-existing answer does not survive contact with the open internet.
+The first implementation follows this design in `ssh_server.py` and
+`ssh_auth.py`. It is disabled by default, uses password authentication and
+explicit `new:<alias>` registration, and runs as the separate
+`bacon-ssh.service`. Public-key authentication and moderation controls remain
+future work.
 
 ---
 

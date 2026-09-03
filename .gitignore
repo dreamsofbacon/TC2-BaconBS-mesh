@@ -21,6 +21,11 @@ bbs-recent.log
 # Nodes are updated by `git pull`, so a tracked key would propagate.
 data/mqtt-certs/
 
+# Generated once by the SSH service. Back it up outside Git; it is the server
+# identity clients trust and must never be propagated as a shared private key.
+data/ssh_host_key
+data/ssh_host_key.pub
+
 # Runtime IPC trigger files written by the web admin for server.py to
 # consume (manual sync, reconnect, links reload). Transient, never source.
 *.trigger
