@@ -23,6 +23,7 @@ from db_operations import (
     record_link_attempt, link_rate_limit_ok, account_authorized,
     queue_delayed_link_code,
     get_mail_relay_directory, get_mail_relay_preference, set_mail_relay_for_node,
+    get_public_chatter_filters,
     get_public_chatter_history,
 )
 from utils import (
@@ -292,96 +293,273 @@ def handle_active_users_command(sender_id, interface):
     })
 
 
+# Public chatter over the radio.
+#
+# Three things shaped this. Typing "168" on a phone keypad to mean a week is
+# worse than pressing one key, so the window is picked from the same six
+# presets the web feed offers. One message per reply made reading a busy
+# channel a chore of pressing N, so a reply carries as many entries as the
+# airtime budget allows. And there was no way to narrow by source at all,
+# which on a node bridged to several others is most of what you want.
+#
+# Both filter dimensions live in one numbered list rather than a menu per
+# dimension: one screen and one interaction is simpler than two, and it is
+# the combination -- this channel, heard by that node -- that is worth
+# selecting.
+CHATTER_WINDOWS = ((1, '1h'), (3, '3h'), (6, '6h'),
+                   (24, '24h'), (72, '3d'), (168, '7d'))
+
+# How many entries one reply may carry, and the byte ceiling that actually
+# decides it. send_message splits at the transport's limit and paces each
+# chunk, so an unbounded batch would hold the radio for a long time and bury
+# the reader. Whichever runs out first wins, and at least one entry always
+# goes out so a reply is never empty.
+CHATTER_BATCH = 6
+CHATTER_BATCH_BYTES = 700
+
+
+def _chatter_windows_text() -> str:
+    keys = [f"[{n}]{label}" for n, (_, label) in enumerate(CHATTER_WINDOWS, 1)]
+    return LINE_BREAK.join([
+        "Public Chatter",
+        "Show the last:",
+        ' '.join(keys[:3]),
+        ' '.join(keys[3:]),
+        "[0] Exit",
+    ])
+
+
 def handle_public_chatter_command(sender_id, interface):
-    send_message(
-        "Public Chatter\nEnter history hours (1-168).\n[0] Exit",
-        sender_id,
-        interface,
-    )
-    update_user_state(sender_id, {'command': 'PUBLIC_CHATTER', 'step': 1})
+    send_message(_chatter_windows_text(), sender_id, interface)
+    update_user_state(sender_id, {
+        'command': 'PUBLIC_CHATTER', 'step': 1,
+        'channels': [], 'nodes': [],
+    })
 
 
-def _public_chatter_entry_text(entry: dict, hours: int, has_more: bool) -> str:
-    network = str(entry.get('network') or 'Unknown').title()
-    channel = str(entry.get('channel_name') or f"Channel {entry.get('channel_index', 0)}")
-    sender = str(entry.get('sender_name') or entry.get('sender_node_id') or 'Unknown sender')
-    timestamp = str(entry.get('message_timestamp') or '').replace('T', ' ')[:16]
-    lines = [
-        f"Public Chatter ({hours}h)",
-        f"{network} / {channel}",
-        f"{timestamp} {sender}",
-        str(entry.get('content') or ''),
-    ]
-    controls = []
-    if has_more:
-        controls.append('[N]ext older')
-    controls.extend(['[T]ime', '[0] Exit'])
-    lines.append(' '.join(controls))
+# "meshcore" and "meshtastic" both truncate to "me", which would make the
+# two networks indistinguishable in exactly the place the distinction
+# matters -- channel 2 on one is unrelated to channel 2 on the other.
+_NETWORK_TAGS = {'meshcore': 'MC', 'meshtastic': 'MT', 'mqtt': 'MQ'}
+
+
+def _network_tag(network: str) -> str:
+    text = str(network or '').strip().casefold()
+    return _NETWORK_TAGS.get(text, (text[:2] or '??').upper())
+
+
+def _short_node(node_id: str) -> str:
+    """A capture id is up to 64 hex characters; a line has about 30."""
+    text = str(node_id or '')
+    return text if len(text) <= 14 else f"{text[:8]}..{text[-4:]}"
+
+
+def _chatter_filter_options(state: dict) -> list:
+    """Both dimensions as one numbered list.
+
+    Reuses get_public_chatter_filters, which already reports exactly what is
+    present in the window -- offering a channel with nothing in it would be
+    a filter that can only ever empty the screen.
+    """
+    filters = get_public_chatter_filters(int(state.get('hours', 24)))
+    options = []
+    for channel in filters.get('channels', []):
+        network = str(channel.get('network') or '')
+        index = int(channel.get('channel_index') or 0)
+        name = str(channel.get('channel_name') or '') or f"Channel {index}"
+        options.append({
+            'kind': 'channel',
+            'value': f"{network}/{index}",
+            'label': f"{_network_tag(network)}/{name}"[:22],
+        })
+    for node_id in filters.get('capture_nodes', []):
+        options.append({
+            'kind': 'node',
+            'value': str(node_id),
+            'label': _short_node(node_id),
+        })
+    return options
+
+
+def _chatter_filter_text(state: dict) -> str:
+    options = state.get('filter_options') or []
+    if not options:
+        return LINE_BREAK.join([
+            "Nothing heard in this window to filter.",
+            "[T]ime [0] Exit",
+        ])
+    chosen = set(state.get('channels') or []) | set(state.get('nodes') or [])
+    lines = ["Filter  (* = shown)"]
+    kind = None
+    for number, option in enumerate(options, 1):
+        if option['kind'] != kind:
+            kind = option['kind']
+            lines.append("Channels:" if kind == 'channel' else "Heard by:")
+        mark = '*' if option['value'] in chosen else ' '
+        lines.append(f"[{number}]{mark}{option['label']}")
+    # Nothing selected means no constraint, the same as the web feed: the
+    # first press narrows to one thing rather than needing the rest turned
+    # off first.
+    lines.append("Pick numbers to toggle.")
+    lines.append("[A]ll [D]one")
     return LINE_BREAK.join(lines)
 
 
-def _send_public_chatter_entry(sender_id, interface, state: dict, *, older: bool) -> None:
+def _send_chatter_filter(sender_id, interface, state: dict) -> None:
+    state['filter_options'] = _chatter_filter_options(state)
+    state['step'] = 3
+    send_message(_chatter_filter_text(state), sender_id, interface)
+    update_user_state(sender_id, state)
+
+
+def _chatter_entry_lines(entry: dict) -> str:
+    when = str(entry.get('message_timestamp') or '').replace('T', ' ')[11:16]
+    sender = str(entry.get('sender_long_name') or entry.get('sender_name')
+                 or entry.get('sender_node_id') or '?')
+    channel = (str(entry.get('channel_name') or '')
+               or f"Ch{entry.get('channel_index', 0)}")
+    head = f"{when} {sender} {_network_tag(entry.get('network'))}/{channel}"
+    hops = entry.get('hops')
+    if hops is not None:
+        head += " direct" if hops == 0 else f" {hops}h"
+    return f"{head}{LINE_BREAK}{entry.get('content') or ''}"
+
+
+def _chatter_controls(state: dict, has_more: bool) -> str:
+    controls = ['[M]ore'] if has_more else []
+    if state.get('channels') or state.get('nodes'):
+        controls.append('[F]ilter*')
+    else:
+        controls.append('[F]ilter')
+    controls.extend(['[T]ime', '[0] Exit'])
+    return ' '.join(controls)
+
+
+def _send_chatter_batch(sender_id, interface, state: dict, *, older: bool) -> None:
     result = get_public_chatter_history(
         hours=int(state['hours']),
-        limit=1,
+        limit=CHATTER_BATCH,
+        channel_keys=list(state.get('channels') or []),
+        capture_node_ids=list(state.get('nodes') or []),
         before_time=state.get('before_time', '') if older else '',
         before_id=int(state.get('before_id', 0)) if older else 0,
     )
     entries = result.get('entries', [])
+    state['step'] = 2
+
     if not entries:
-        message = (
-            "No older public chatter in this time window.\n[T]ime [0] Exit"
-            if older
-            else "No public chatter in this time window.\n[T]ime [0] Exit"
-        )
-        send_message(message, sender_id, interface)
-        state['step'] = 2
         state['has_more'] = False
+        send_message(
+            LINE_BREAK.join([
+                "No older chatter." if older else "Nothing heard in this window.",
+                _chatter_controls(state, False),
+            ]),
+            sender_id, interface)
         update_user_state(sender_id, state)
         return
-    entry = entries[0]
-    state.update({
-        'step': 2,
-        'before_time': entry['message_timestamp'],
-        'before_id': entry['id'],
-        'has_more': bool(result.get('has_more')),
-    })
-    send_message(
-        _public_chatter_entry_text(entry, int(state['hours']), state['has_more']),
-        sender_id,
-        interface,
-    )
+
+    # Fill to the byte ceiling rather than the entry count, so one very long
+    # message does not turn a batch into a broadcast. The cursor follows what
+    # was actually sent, so nothing is skipped on the next More.
+    header = f"Public Chatter {state['hours']}h"
+    included = []
+    used = len(header.encode('utf-8'))
+    for entry in entries:
+        block = _chatter_entry_lines(entry)
+        cost = len(block.encode('utf-8')) + 2
+        if included and used + cost > CHATTER_BATCH_BYTES:
+            break
+        included.append((entry, block))
+        used += cost
+
+    last = included[-1][0]
+    state['before_time'] = last['message_timestamp']
+    state['before_id'] = last['id']
+    # More is offered when the query had another page, or when the byte
+    # ceiling stopped this one short of what was already fetched.
+    state['has_more'] = bool(result.get('has_more')) or len(included) < len(entries)
+
+    body = [header]
+    body.extend(block for _, block in included)
+    body.append(_chatter_controls(state, state['has_more']))
+    send_message(LINE_BREAK.join(body), sender_id, interface)
     update_user_state(sender_id, state)
+
+
+def _toggle_chatter_filter(state: dict, number: int) -> bool:
+    options = state.get('filter_options') or []
+    if not 1 <= number <= len(options):
+        return False
+    option = options[number - 1]
+    key = 'channels' if option['kind'] == 'channel' else 'nodes'
+    chosen = list(state.get(key) or [])
+    if option['value'] in chosen:
+        chosen.remove(option['value'])
+    else:
+        chosen.append(option['value'])
+    state[key] = chosen
+    return True
 
 
 def handle_public_chatter_steps(sender_id, message, interface, state):
     choice = str(message or '').strip().lower()
+    step = int(state.get('step', 1))
+
     if choice in ('0', 'x', 'exit'):
         handle_help_command(sender_id, interface, 'utilities')
         return
     if choice in ('t', 'time'):
-        handle_public_chatter_command(sender_id, interface)
+        state.update({'step': 1, 'before_time': '', 'before_id': 0})
+        send_message(_chatter_windows_text(), sender_id, interface)
+        update_user_state(sender_id, state)
         return
-    if int(state.get('step', 1)) == 1:
-        try:
-            hours = int(choice)
-        except ValueError:
-            hours = 0
-        if not 1 <= hours <= 168:
-            send_message("Enter a whole number from 1 to 168, or 0 to exit.", sender_id, interface)
+
+    if step == 1:
+        if not choice.isdigit() or not 1 <= int(choice) <= len(CHATTER_WINDOWS):
+            send_message(
+                f"Reply 1-{len(CHATTER_WINDOWS)} to pick a window, or 0 to exit.",
+                sender_id, interface)
             return
-        state = {'command': 'PUBLIC_CHATTER', 'step': 2, 'hours': hours}
-        _send_public_chatter_entry(sender_id, interface, state, older=False)
+        state['hours'] = CHATTER_WINDOWS[int(choice) - 1][0]
+        state['before_time'] = ''
+        state['before_id'] = 0
+        _send_chatter_batch(sender_id, interface, state, older=False)
         return
-    if choice in ('n', 'next') and state.get('has_more'):
-        _send_public_chatter_entry(sender_id, interface, state, older=True)
+
+    if step == 3:
+        if choice in ('d', 'done'):
+            state['before_time'] = ''
+            state['before_id'] = 0
+            _send_chatter_batch(sender_id, interface, state, older=False)
+            return
+        if choice in ('a', 'all'):
+            state['channels'] = []
+            state['nodes'] = []
+            send_message(_chatter_filter_text(state), sender_id, interface)
+            update_user_state(sender_id, state)
+            return
+        # Several numbers at once, so a combination is one reply rather than
+        # one round trip per choice -- which over LoRa is the difference
+        # between a filter and a chore.
+        numbers = [part for part in re.split(r'[\s,]+', choice) if part.isdigit()]
+        if numbers and all(_toggle_chatter_filter(state, int(n)) for n in numbers):
+            send_message(_chatter_filter_text(state), sender_id, interface)
+            update_user_state(sender_id, state)
+            return
+        send_message(
+            "Reply with option numbers to toggle, A for all, or D when done.",
+            sender_id, interface)
         return
-    guidance = (
-        "Reply N for next older, T to change time, or 0 to exit."
-        if state.get('has_more')
-        else "Reply T to change time, or 0 to exit."
-    )
-    send_message(guidance, sender_id, interface)
+
+    if choice in ('f', 'filter'):
+        _send_chatter_filter(sender_id, interface, state)
+        return
+    if choice in ('m', 'more', 'n', 'next') and state.get('has_more'):
+        _send_chatter_batch(sender_id, interface, state, older=True)
+        return
+    send_message(
+        LINE_BREAK.join(["Reply:", _chatter_controls(state, bool(state.get('has_more')))]),
+        sender_id, interface)
 
 
 def _start_mail_recipient_selection(sender_id, interface) -> None:

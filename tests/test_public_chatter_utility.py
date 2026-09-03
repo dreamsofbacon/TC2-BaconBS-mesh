@@ -38,35 +38,56 @@ class PublicChatterUtilityTests(unittest.TestCase):
             sync_received=True,
         )
 
-    def test_prompts_for_user_defined_window(self):
+    # The window used to be typed as a number of hours and results came one
+    # message at a time. Both changed: the window is picked from presets, and
+    # a reply carries as many entries as the airtime budget allows. The wider
+    # behaviour lives in tests/test_radio_chatter_menu.py; these keep this
+    # file's own ground -- that the utility opens, bounds its window, and
+    # pages oldest-ward without losing anything.
+
+    def test_offers_preset_windows_rather_than_a_typed_number(self):
         command_handlers.handle_public_chatter_command(1234, self.interface)
-        self.assertIn("1-168", self.sent[-1])
+        self.assertIn("1h", self.sent[-1])
+        self.assertIn("7d", self.sent[-1])
+        self.assertNotIn("1-168", self.sent[-1])
         self.assertEqual(utils.get_user_state(1234)["command"], "PUBLIC_CHATTER")
 
-    def test_hours_show_newest_then_next_older(self):
+    def test_one_reply_carries_the_whole_window(self):
+        """Both messages arrive together; before, the second needed another
+        round trip."""
         self.add_message("pch:new", 1, "newest message")
         self.add_message("pch:old", 2, "older message")
         command_handlers.handle_public_chatter_command(1234, self.interface)
-        state = utils.get_user_state(1234)
-        command_handlers.handle_public_chatter_steps(1234, "24", self.interface, state)
+        command_handlers.handle_public_chatter_steps(
+            1234, "4", self.interface, utils.get_user_state(1234))
         self.assertIn("newest message", self.sent[-1])
-        self.assertIn("[N]ext older", self.sent[-1])
-
-        state = utils.get_user_state(1234)
-        command_handlers.handle_public_chatter_steps(1234, "n", self.interface, state)
         self.assertIn("older message", self.sent[-1])
-        self.assertNotIn("newest message", self.sent[-1])
 
-        state = utils.get_user_state(1234)
-        command_handlers.handle_public_chatter_steps(1234, "n", self.interface, state)
-        self.assertNotIn("next older", self.sent[-1].lower())
-
-    def test_rejects_window_over_one_week(self):
+    def test_newest_comes_first(self):
+        self.add_message("pch:new", 1, "newest message")
+        self.add_message("pch:old", 2, "older message")
         command_handlers.handle_public_chatter_command(1234, self.interface)
         command_handlers.handle_public_chatter_steps(
-            1234, "169", self.interface, utils.get_user_state(1234)
-        )
-        self.assertIn("1 to 168", self.sent[-1])
+            1234, "4", self.interface, utils.get_user_state(1234))
+        body = self.sent[-1]
+        self.assertLess(body.index("newest message"), body.index("older message"))
+
+    def test_nothing_more_is_offered_once_the_window_is_shown(self):
+        self.add_message("pch:new", 1, "newest message")
+        command_handlers.handle_public_chatter_command(1234, self.interface)
+        command_handlers.handle_public_chatter_steps(
+            1234, "4", self.interface, utils.get_user_state(1234))
+        self.assertNotIn("[M]ore", self.sent[-1])
+
+    def test_a_week_is_still_the_longest_window(self):
+        """Retention is a week, so a longer window could only ever return the
+        same rows -- and there is now no way to ask for one."""
+        self.assertEqual(max(h for h, _ in command_handlers.CHATTER_WINDOWS), 168)
+        command_handlers.handle_public_chatter_command(1234, self.interface)
+        command_handlers.handle_public_chatter_steps(
+            1234, "9", self.interface, utils.get_user_state(1234))
+        self.assertIn("1-6", self.sent[-1])
+        self.assertEqual(utils.get_user_state(1234)["step"], 1)
 
 
 if __name__ == "__main__":
