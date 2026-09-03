@@ -914,6 +914,8 @@ def get_public_chatter_history(
     network: str = '',
     channel_index: Optional[int] = None,
     capture_node_id: str = '',
+    channel_keys: Optional[list] = None,
+    capture_node_ids: Optional[list] = None,
     search_query: str = '',
     before_time: str = '',
     before_id: int = 0,
@@ -937,6 +939,41 @@ def get_public_chatter_history(
     if normalized_capture:
         clauses.append('p.capture_node_id = ?')
         params.append(normalized_capture)
+
+    # Plural forms, for picking several at once. A channel key is
+    # network-qualified ('meshcore/2') exactly as the web feed keys them,
+    # because meshcore channel 2 and meshtastic channel 2 are unrelated and
+    # filtering on the bare index would silently mix them.
+    requested_channels = [
+        str(key).strip() for key in (channel_keys or []) if str(key).strip()
+    ]
+    if requested_channels:
+        pairs = []
+        for key in requested_channels:
+            network_part, separator, index_part = key.rpartition('/')
+            if not separator:
+                continue
+            try:
+                pairs.append((network_part.strip().casefold(), int(index_part)))
+            except (TypeError, ValueError):
+                continue
+        if pairs:
+            clauses.append('(' + ' OR '.join(
+                '(p.network = ? AND p.channel_index = ?)' for _ in pairs) + ')')
+            for network_part, index_value in pairs:
+                params.extend([network_part, index_value])
+        else:
+            # Every key was malformed. Returning everything would be a
+            # filter that silently does the opposite of what was asked.
+            clauses.append('0')
+
+    requested_nodes = [
+        str(value).strip() for value in (capture_node_ids or []) if str(value).strip()
+    ]
+    if requested_nodes:
+        clauses.append(
+            'p.capture_node_id IN (' + ','.join('?' * len(requested_nodes)) + ')')
+        params.extend(requested_nodes)
     normalized_search = str(search_query or '').strip()
     if normalized_search:
         clauses.append(
