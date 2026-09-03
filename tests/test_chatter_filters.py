@@ -103,17 +103,31 @@ class LayoutTests(unittest.TestCase):
     above it."""
 
     def controls_block(self):
+        """The controls section, whole.
+
+        Sliced up to the element that follows it rather than to the next
+        closing tag: the legend is a nested <section>, so the first
+        </section> after the start is the legend's own, not the row's.
+        """
         start = HTML.index('<section class="chatter-controls"')
-        return HTML[start:HTML.index("</section>", HTML.index(
-            '<section class="chatter-legend"'))]
+        return HTML[start:HTML.index('id="chatter-state"')]
 
     def test_the_legend_sits_in_the_controls_row(self):
         self.assertIn('id="chatter-legend"', self.controls_block())
 
-    def test_it_comes_after_the_search_box(self):
-        block = self.controls_block()
-        self.assertLess(block.index('id="chatter-search"'),
-                        block.index('id="chatter-legend"'))
+    def test_search_is_in_the_header_not_the_controls(self):
+        """Top right of the page, opposite the title."""
+        header = HTML[HTML.index('<header class="chatter-header">'):
+                      HTML.index("</header>")]
+        self.assertIn('id="chatter-search"', header)
+        self.assertNotIn('id="chatter-search"', self.controls_block())
+
+    def test_search_comes_after_the_title_in_the_markup(self):
+        """So it lands on the right of a space-between header, and reads in
+        the order it appears."""
+        header = HTML[HTML.index('<header class="chatter-header">'):
+                      HTML.index("</header>")]
+        self.assertLess(header.index("<h1>"), header.index('id="chatter-search"'))
 
     def test_it_is_no_longer_in_the_header(self):
         header = HTML[HTML.index('<header class="chatter-header">'):
@@ -136,25 +150,17 @@ class LayoutTests(unittest.TestCase):
 
     def test_the_legend_gets_three_quarters_of_the_width(self):
         """It holds every channel and node, which is what a person reads;
-        the two controls beside it need far less."""
+        the time filter beside it needs far less."""
         self.assertRegex(
             HTML,
             r"\.chatter-controls \{[^}]*grid-template-columns:"
-            r"minmax\(0,1fr\) minmax\(0,3fr\)")
-        self.assertRegex(HTML, r"\.chatter-legend\s+\{ grid-column:2;")
+            r"minmax\(0,3fr\) minmax\(0,1fr\)")
 
-    def test_search_sits_above_the_time_filter(self):
-        """Both in the left quarter, search first -- in the markup too, so
-        tab order and screen-reader order match what is on screen."""
-        self.assertLess(HTML.index('id="chatter-search"'),
-                        HTML.index('id="chatter-hours"'))
-        self.assertRegex(HTML, r"\.chatter-search-group\s+\{ grid-column:1;")
-        self.assertRegex(HTML, r"\.chatter-history-group \{ grid-column:1;")
-
-    def test_the_legend_spans_both_control_rows(self):
-        """Otherwise it would sit beside search only and leave a hole under
-        itself."""
-        self.assertIn("grid-row:1 / span 2", HTML)
+    def test_the_legend_is_left_of_the_time_filter(self):
+        self.assertRegex(HTML, r"\.chatter-legend\s+\{ grid-column:1;")
+        self.assertRegex(HTML, r"\.chatter-history-group \{ grid-column:2;")
+        self.assertLess(self.controls_block().index('id="chatter-legend"'),
+                        self.controls_block().index('id="chatter-hours"'))
 
     def test_it_stacks_rather_than_squeezing_on_a_narrow_screen(self):
         self.assertRegex(
