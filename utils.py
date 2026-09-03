@@ -442,6 +442,7 @@ def select_syncstate_peers_to_notify(peer_node_ids, counts, sent_cache, now=None
         for key in (
             "bulletins", "mail", "channels", "zork_saves", "profiles", "game_scores",
             "bulletins_hash", "mail_hash", "channels_hash", "zork_saves_hash", "profiles_hash", "game_scores_hash",
+            "public_chatter", "public_chatter_hash",
         )
     )
     destinations = []
@@ -1096,7 +1097,8 @@ def send_sync_state_to_bbs_nodes(counts, bbs_nodes, interface):
         f"{str(counts.get('channels_hash', ''))}|{str(counts.get('zork_saves_hash', ''))}|"
         f"{str(counts.get('profiles_hash', ''))}|{str(counts.get('game_scores_hash', ''))}|"
         f"{int(counts.get('tombstones', 0))}|"
-        f"{local_capabilities_token()}"
+        f"{local_capabilities_token()}|"
+        f"{int(counts.get('public_chatter', 0))}|{str(counts.get('public_chatter_hash', ''))}"
     )
     for node_id in bbs_nodes:
         _send_one_sync(message, node_id, interface)

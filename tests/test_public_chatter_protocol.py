@@ -81,6 +81,36 @@ class PublicChatterProtocolTests(unittest.TestCase):
             utils.send_public_chatter_to_bbs_nodes(self.record(), ["!legacy"], self.interface)
         self.assertEqual(frames, [])
 
+    def test_new_mqtt_chatter_is_relayed_once_without_echoing_sender(self):
+        row = self.record()
+        frames = []
+        with mock.patch.object(db_operations, "peer_supports", return_value=True), mock.patch.object(
+            utils, "_send_one_sync", side_effect=lambda frame, *_args, **_kwargs: frames.append(frame)
+        ):
+            utils.send_public_chatter_to_bbs_nodes(row, ["mqtt:group:source"], self.interface)
+
+        conn = db_operations.get_db_connection()
+        conn.execute("DELETE FROM public_chatter")
+        conn.commit()
+        self.interface.protocol_name = "MQTT:test"
+        self.interface.bbs_nodes = ["mqtt:group:source", "mqtt:group:peer"]
+
+        with mock.patch.object(message_processing, "send_public_chatter_to_bbs_nodes") as relay:
+            for frame in frames:
+                message_processing.process_message(
+                    1, frame, self.interface, is_sync_message=True,
+                    sender_node_id="mqtt:group:source",
+                )
+            relay.assert_called_once()
+            self.assertEqual(relay.call_args.args[1], ["mqtt:group:peer"])
+
+            for frame in frames:
+                message_processing.process_message(
+                    1, frame, self.interface, is_sync_message=True,
+                    sender_node_id="mqtt:group:source",
+                )
+            relay.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

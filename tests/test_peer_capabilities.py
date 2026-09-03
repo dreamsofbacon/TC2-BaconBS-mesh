@@ -60,8 +60,10 @@ class SyncStateFramingTests(unittest.TestCase):
         counts = {
             'bulletins': 1, 'mail': 2, 'channels': 3, 'zork_saves': 4,
             'profiles': 5, 'game_scores': 6, 'tombstones': 7,
+            'public_chatter': 8,
             'bulletins_hash': 'b', 'mail_hash': 'm', 'channels_hash': 'c',
             'zork_saves_hash': 'z', 'profiles_hash': 'p', 'game_scores_hash': 'g',
+            'public_chatter_hash': 'pc',
         }
         with patch.object(utils, "_send_one_sync", side_effect=fake_send):
             utils.send_sync_state_to_bbs_nodes(counts, ["!04059140"], interface=None)
@@ -70,8 +72,9 @@ class SyncStateFramingTests(unittest.TestCase):
         msg = captured[0][0]
         parts = msg.split("|")
         self.assertEqual(parts[0], "SYNCSTATE")
-        self.assertEqual(len(parts), 15)
+        self.assertEqual(len(parts), 17)
         self.assertEqual(parts[14], utils.local_capabilities_token())
+        self.assertEqual(parts[15:], ['8', 'pc'])
 
     def test_relay_preference_only_sends_to_capable_peers(self):
         captured = []
