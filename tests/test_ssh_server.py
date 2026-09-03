@@ -27,11 +27,14 @@ class SSHConfigTests(unittest.TestCase):
             with open(config_path, "w", encoding="utf-8") as config_file:
                 config_file.write(
                     "[ssh]\nenabled = true\nhost = 0.0.0.0\nport = 2200\n"
+                    "username = bbs\npassword = access-pass\n"
                     "max_sessions = 8\nmax_sessions_per_account = 1\n")
             config = load_config(config_path)
         self.assertTrue(config.enabled)
         self.assertEqual(config.host, "0.0.0.0")
         self.assertEqual(config.port, 2200)
+        self.assertEqual(config.username, "bbs")
+        self.assertEqual(config.password, "access-pass")
         self.assertEqual(config.max_sessions, 8)
         self.assertEqual(config.max_sessions_per_account, 1)
 
@@ -45,6 +48,16 @@ class SessionLimiterTests(unittest.TestCase):
         self.assertFalse(limiter.reserve("account-c"))
         limiter.release("account-a")
         self.assertTrue(limiter.reserve("account-c"))
+
+    def test_pending_session_can_be_promoted_to_an_account(self):
+        limiter = SessionLimiter(total_limit=1, account_limit=1)
+        self.assertTrue(limiter.reserve_pending())
+        self.assertFalse(limiter.reserve_pending())
+        self.assertTrue(limiter.promote_pending("account-a"))
+        self.assertFalse(limiter.promote_pending("account-a"))
+        limiter.release("account-a")
+        self.assertTrue(limiter.reserve_pending())
+        limiter.release_pending()
 
 
 class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -112,6 +125,56 @@ class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await asyncssh.connect(
                 "127.0.0.1", port=self.port, username="TypoUser",
                 password="long-enough-password", known_hosts=None)
+
+    async def test_shared_access_requires_account_auth_after_connection(self):
+        self.listener.close()
+        await self.listener.wait_closed()
+        self.config = SSHConfig(
+            enabled=True,
+            host="127.0.0.1",
+            port=0,
+            host_key=os.path.join(self.temp_dir.name, "gated_host_key"),
+            username="bbs",
+            password="shared-access-password",
+            max_sessions=3,
+            max_sessions_per_account=1,
+            idle_timeout_seconds=30,
+        )
+        self.listener = await start_server(self.config)
+        self.port = self.listener.get_port()
+
+        with self.assertRaises(asyncssh.PermissionDenied):
+            await asyncssh.connect(
+                "127.0.0.1", port=self.port, username="bbs",
+                password="wrong-access-password", known_hosts=None)
+
+        connection, process = await self._open("bbs", "shared-access-password")
+        prompt = await process.stdout.readuntil("BBS username: ")
+        self.assertIn("Register or log in", prompt)
+        process.stdin.write("new:GatedCaller\n")
+        await process.stdout.readuntil("BBS password: ")
+        process.stdin.write("account-password\n")
+        welcome = await process.stdout.readuntil("> ")
+        self.assertNotIn("account-password", welcome)
+        self.assertIn("Account GatedCaller created", welcome)
+        self.assertIn("Bacon BBS", welcome)
+        process.stdin.write_eof()
+        await process.wait_closed()
+        connection.close()
+        await connection.wait_closed()
+
+        connection, process = await self._open("bbs", "shared-access-password")
+        await process.stdout.readuntil("BBS username: ")
+        process.stdin.write("gatedcaller\n")
+        await process.stdout.readuntil("BBS password: ")
+        process.stdin.write("account-password\n")
+        welcome = await process.stdout.readuntil("> ")
+        self.assertNotIn("Account GatedCaller created", welcome)
+        self.assertIn("Bacon BBS", welcome)
+        process.stdin.write_eof()
+        await process.wait_closed()
+        connection.close()
+        await connection.wait_closed()
 
 
 if __name__ == "__main__":

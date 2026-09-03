@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import configparser
+import hmac
 import logging
 import os
 import threading
@@ -23,6 +24,8 @@ class SSHConfig:
     host: str = "127.0.0.1"
     port: int = 2222
     host_key: str = "data/ssh_host_key"
+    username: str = ""
+    password: str = ""
     registration_enabled: bool = True
     registration_limit_per_hour: int = 5
     login_limit_per_hour: int = 20
@@ -55,6 +58,8 @@ def load_config(path: Optional[str] = None) -> SSHConfig:
         port=integer("port", 2222),
         host_key=str(section.get("host_key", "data/ssh_host_key")).strip()
         or "data/ssh_host_key",
+        username=str(section.get("username", "")).strip(),
+        password=str(section.get("password", "")),
         registration_enabled=boolean("registration_enabled", True),
         registration_limit_per_hour=integer(
             "registration_limit_per_hour", 5, minimum=0),
@@ -83,6 +88,26 @@ class SessionLimiter:
             self._by_account[account_id] = account_count + 1
             return True
 
+    def reserve_pending(self) -> bool:
+        with self._lock:
+            if self._total >= self.total_limit:
+                return False
+            self._total += 1
+            return True
+
+    def promote_pending(self, account_id: str) -> bool:
+        with self._lock:
+            account_count = self._by_account.get(account_id, 0)
+            if account_count >= self.account_limit:
+                return False
+            self._by_account[account_id] = account_count + 1
+            return True
+
+    def release_pending(self) -> None:
+        with self._lock:
+            if self._total:
+                self._total -= 1
+
     def release(self, account_id: str) -> None:
         with self._lock:
             count = self._by_account.get(account_id, 0)
@@ -95,11 +120,16 @@ class SessionLimiter:
 
 
 class BBSClientSession(asyncssh.SSHServerSession):
-    def __init__(self, auth: AuthResult, config: SSHConfig,
-                 limiter: SessionLimiter):
+    def __init__(self, auth: Optional[AuthResult], config: SSHConfig,
+                 limiter: SessionLimiter, source_address: str,
+                 pending: bool = False):
         self.auth = auth
         self.config = config
         self.limiter = limiter
+        self.source_address = source_address
+        self._pending = pending
+        self._account_username = ""
+        self._auth_stage = "bbs" if auth else "account_username"
         self.channel = None
         self.session = None
         self._line = []
@@ -111,6 +141,17 @@ class BBSClientSession(asyncssh.SSHServerSession):
         self.channel = channel
 
     def shell_requested(self):
+        if self.auth is None:
+            self.channel.write(
+                "SSH access accepted. Register or log in to your BBS account.\r\n"
+                "Use new:YourAlias the first time.\r\n"
+                "BBS username: ")
+            self._reset_idle_timer()
+            return True
+        self._start_bbs()
+        return True
+
+    def _start_bbs(self) -> None:
         self.session = bbs_emulator.start_ssh_session(
             self.auth.account_id, self.auth.alias,
             max_text_bytes=self.config.max_text_bytes)
@@ -121,7 +162,6 @@ class BBSClientSession(asyncssh.SSHServerSession):
         self.channel.write("Connected to Bacon BBS. Type 0 to go back.\r\n")
         self._send_to_bbs("?")
         self._reset_idle_timer()
-        return True
 
     def data_received(self, data, datatype):
         for character in data:
@@ -134,7 +174,8 @@ class BBSClientSession(asyncssh.SSHServerSession):
             if character in {"\x08", "\x7f"}:
                 if self._line:
                     self._line.pop()
-                    self.channel.write("\b \b")
+                    if self._auth_stage != "account_password":
+                        self.channel.write("\b \b")
                 continue
             if character in {"\r", "\n"}:
                 if character == "\n" and self._last_was_cr:
@@ -142,9 +183,12 @@ class BBSClientSession(asyncssh.SSHServerSession):
                     continue
                 self._last_was_cr = character == "\r"
                 self.channel.write("\r\n")
-                line = "".join(self._line).strip()
+                raw_line = "".join(self._line)
+                line = raw_line if self._auth_stage == "account_password" else raw_line.strip()
                 self._line.clear()
-                if line:
+                if self._auth_stage != "bbs":
+                    self._handle_account_auth(line)
+                elif line:
                     self._send_to_bbs(line)
                 else:
                     self._write_prompt()
@@ -152,8 +196,39 @@ class BBSClientSession(asyncssh.SSHServerSession):
             self._last_was_cr = False
             if character.isprintable() and len(self._line) < 4096:
                 self._line.append(character)
-                self.channel.write(character)
+                if self._auth_stage != "account_password":
+                    self.channel.write(character)
         self._reset_idle_timer()
+
+    def _handle_account_auth(self, line: str) -> None:
+        if self._auth_stage == "account_username":
+            if not line:
+                self.channel.write("BBS username: ")
+                return
+            self._account_username = line
+            self._auth_stage = "account_password"
+            self.channel.write("BBS password: ")
+            return
+
+        auth = authenticate(
+            self._account_username, line, self.source_address,
+            registration_enabled=self.config.registration_enabled,
+            registration_limit_per_hour=self.config.registration_limit_per_hour,
+            login_limit_per_hour=self.config.login_limit_per_hour,
+        )
+        if auth is None:
+            self._account_username = ""
+            self._auth_stage = "account_username"
+            self.channel.write("BBS authentication failed.\r\nBBS username: ")
+            return
+        if not self.limiter.promote_pending(auth.account_id):
+            self.channel.write("Too many sessions for this account.\r\n")
+            self.channel.exit(1)
+            return
+        self.auth = auth
+        self._pending = False
+        self._auth_stage = "bbs"
+        self._start_bbs()
 
     def eof_received(self):
         if self.channel:
@@ -200,7 +275,10 @@ class BBSClientSession(asyncssh.SSHServerSession):
             self._idle_handle.cancel()
         if self.session:
             bbs_emulator.end_session(self.session.token)
-        self.limiter.release(self.auth.account_id)
+        if self._pending:
+            self.limiter.release_pending()
+        elif self.auth:
+            self.limiter.release(self.auth.account_id)
 
 
 class BBSSSHServer(asyncssh.SSHServer):
@@ -224,6 +302,10 @@ class BBSSSHServer(asyncssh.SSHServer):
         return True
 
     def validate_password(self, username, password):
+        if self.config.username and self.config.password:
+            self.auth = None
+            return hmac.compare_digest(username, self.config.username) and hmac.compare_digest(
+                password, self.config.password)
         self.auth = authenticate(
             username, password, self.source_address,
             registration_enabled=self.config.registration_enabled,
@@ -234,9 +316,16 @@ class BBSSSHServer(asyncssh.SSHServer):
         return self.auth is not None
 
     def session_requested(self):
+        if self.config.username and self.config.password:
+            if not self.limiter.reserve_pending():
+                return False
+            return BBSClientSession(
+                None, self.config, self.limiter, self.source_address,
+                pending=True)
         if self.auth is None or not self.limiter.reserve(self.auth.account_id):
             return False
-        return BBSClientSession(self.auth, self.config, self.limiter)
+        return BBSClientSession(
+            self.auth, self.config, self.limiter, self.source_address)
 
 
 def ensure_host_key(path: str) -> str:
@@ -268,13 +357,29 @@ async def start_server(config: SSHConfig):
     )
 
 
-async def run(config: SSHConfig) -> None:
-    if not config.enabled:
-        raise RuntimeError("SSH service is disabled in config.ini")
+async def run(config_path: Optional[str] = None) -> None:
     db_operations.initialize_database()
-    listener = await start_server(config)
-    logging.info("SSH BBS listening on %s:%s", config.host, config.port)
-    await listener.wait_closed()
+    active_config = None
+    listener = None
+    try:
+        while True:
+            config = load_config(config_path)
+            if config != active_config:
+                if listener is not None:
+                    listener.close()
+                    await listener.wait_closed()
+                    listener = None
+                if config.enabled:
+                    listener = await start_server(config)
+                    logging.info("SSH BBS listening on %s:%s", config.host, config.port)
+                else:
+                    logging.info("SSH BBS listener disabled")
+                active_config = config
+            await asyncio.sleep(2)
+    finally:
+        if listener is not None:
+            listener.close()
+            await listener.wait_closed()
 
 
 def main() -> None:
@@ -286,7 +391,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     try:
-        asyncio.run(run(load_config(arguments.config)))
+        asyncio.run(run(arguments.config))
     except (OSError, RuntimeError, asyncssh.Error) as exc:
         logging.error("SSH service could not start: %s", exc)
         raise SystemExit(1) from exc

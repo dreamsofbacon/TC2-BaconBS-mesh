@@ -1086,7 +1086,7 @@
 
 <section class="card settings-panel" id="ssh" data-settings-panel="ssh" style="max-width:700px">
   <h2>SSH Access</h2>
-  <p class="text-muted">Configure the standalone interactive SSH listener. Saving does not restart the service; run <code>sudo systemctl restart bacon-ssh.service</code> to apply changes.</p>
+  <p class="text-muted">Configure the standalone interactive SSH listener. The service applies saved changes within a few seconds.</p>
   <form method="post" action="{{ url_for('settings_page') }}#ssh">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="settings_section" value="ssh">
@@ -1106,6 +1106,15 @@
       <label for="ssh_host_key">Host key path</label>
       <input type="text" id="ssh_host_key" name="ssh_host_key" class="form-control" value="{{ ssh.host_key }}" required>
       <p class="text-muted">Back up this key after it is generated. Replacing it causes host-key warnings for returning clients.</p>
+    </div>
+    <div class="form-group">
+      <label for="ssh_username">SSH access username</label>
+      <input type="text" id="ssh_username" name="ssh_username" class="form-control" value="{{ ssh.username }}" autocomplete="username" maxlength="32">
+    </div>
+    <div class="form-group">
+      <label for="ssh_password">SSH access password</label>
+      <input type="password" id="ssh_password" name="ssh_password" class="form-control" value="{{ ssh.password }}" autocomplete="new-password" minlength="10" maxlength="128">
+      <p class="text-muted">These shared credentials open the SSH connection. Each user must then register or log in to a separate BBS account. The access password is stored in plain text in <code>config.ini</code>.</p>
     </div>
     <div class="form-group">
       <label><input type="checkbox" name="ssh_registration_enabled" value="true" {% if ssh.registration_enabled %}checked{% endif %}> Allow new account registration</label>

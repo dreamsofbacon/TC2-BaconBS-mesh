@@ -328,6 +328,8 @@ def load_ssh_settings(config_path: str) -> dict:
     "host": config.get("ssh", "host", fallback="127.0.0.1").strip() or "127.0.0.1",
     "port": config.get("ssh", "port", fallback="2222").strip() or "2222",
     "host_key": config.get("ssh", "host_key", fallback="data/ssh_host_key").strip() or "data/ssh_host_key",
+    "username": config.get("ssh", "username", fallback="").strip(),
+    "password": config.get("ssh", "password", fallback=""),
     "registration_enabled": config.getboolean("ssh", "registration_enabled", fallback=True),
     "registration_limit_per_hour": config.get("ssh", "registration_limit_per_hour", fallback="5").strip() or "5",
     "login_limit_per_hour": config.get("ssh", "login_limit_per_hour", fallback="20").strip() or "20",
@@ -3807,6 +3809,14 @@ def create_app(runtime_interface=None) -> Flask:
         errors.append("SSH bind address is required.")
       if not host_key:
         errors.append("SSH host key path is required.")
+      username = form.get("ssh_username", "").strip()
+      password = form.get("ssh_password", "")
+      if bool(username) != bool(password):
+        errors.append("SSH access username and password must both be set or both be blank.")
+      if username and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,31}", username):
+        errors.append("SSH access username must be 1-32 letters, numbers, dots, underscores, or hyphens.")
+      if password and not 10 <= len(password) <= 128:
+        errors.append("SSH access password must be 10-128 characters.")
 
       integer_values = {}
       for key, label, default, minimum, maximum in (
@@ -3838,6 +3848,8 @@ def create_app(runtime_interface=None) -> Flask:
       config.set("ssh", "enabled", "true" if _parse_bool_setting(form.get("ssh_enabled", "")) else "false")
       config.set("ssh", "host", host)
       config.set("ssh", "host_key", host_key)
+      config.set("ssh", "username", username)
+      config.set("ssh", "password", password)
       config.set(
         "ssh", "registration_enabled",
         "true" if _parse_bool_setting(form.get("ssh_registration_enabled", "")) else "false",
@@ -5736,7 +5748,7 @@ def create_app(runtime_interface=None) -> Flask:
           for error in errors:
             flash(error, "error")
           if not errors:
-            flash("SSH settings saved. Restart bacon-ssh.service for the change to take effect.", "success")
+            flash("SSH settings saved and will be applied by bacon-ssh.service shortly.", "success")
           return redirect(url_for("settings_page") + "#ssh")
 
         if section == "admin":
