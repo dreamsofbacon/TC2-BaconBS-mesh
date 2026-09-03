@@ -18,9 +18,9 @@
   /* Presets beside the number rather than under it, which costs the row its
      second line for nothing. */
   .history-row { display:flex; align-items:center; gap:6px; }
-  .history-row .form-control { width:72px; flex:0 0 auto; }
-  /* Presets wrap rather than overflow: the column is a quarter wide now. */
-  .chatter-presets { flex-wrap:wrap; }
+  .history-row .form-control { width:58px; flex:0 0 auto; }
+  .history-row .chatter-presets { flex:1 1 auto; min-width:0; }
+
   .chatter-controls .form-group { margin:0; }
   .chatter-feed { display:grid; gap:10px; }
   /* Every colour resolves through one custom property, --cc, set by a cc-N
@@ -100,7 +100,12 @@
   [data-theme="light"] .cc-9 { --cc:#3f45c4; }
 
   .chatter-message { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.45; }
-  .chatter-presets { display:flex; flex-wrap:wrap; gap:6px; }
+  /* Two rows of three, always. Wrapping to whatever fits made the same
+     six buttons rearrange with the window, so the one you were reaching
+     for moved. Equal columns keep them scannable in a narrow column. */
+  .chatter-presets { display:grid; grid-template-columns:repeat(3, minmax(0,1fr));
+                     gap:4px; }
+  .chatter-presets .btn { padding-left:4px; padding-right:4px; text-align:center; }
   .chatter-state { padding:32px; text-align:center; color:var(--text-muted, #9ca3af); }
   @media (max-width:720px) {
     .chatter-shell { padding-top:14px; }
@@ -151,7 +156,7 @@
       <div class="history-row">
         <input class="form-control" id="chatter-hours" type="number" min="1" max="168" value="24">
         <div class="chatter-presets" aria-label="History presets">
-          {% for value, label in [(1,'1h'),(6,'6h'),(24,'24h'),(72,'3d'),(168,'7d')] %}
+          {% for value, label in [(1,'1h'),(3,'3h'),(6,'6h'),(24,'24h'),(72,'3d'),(168,'7d')] %}
           <button class="btn btn-sm" type="button" data-hours="{{ value }}">{{ label }}</button>
           {% endfor %}
         </div>

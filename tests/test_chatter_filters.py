@@ -162,6 +162,49 @@ class LayoutTests(unittest.TestCase):
         self.assertLess(self.controls_block().index('id="chatter-legend"'),
                         self.controls_block().index('id="chatter-hours"'))
 
+    def test_the_time_filter_offers_six_presets(self):
+        presets = re.search(r"for value, label in \[(.*?)\]", HTML).group(1)
+        pairs = re.findall(r"\((\d+),'([^']+)'\)", presets)
+        self.assertEqual(
+            pairs,
+            [("1", "1h"), ("3", "3h"), ("6", "6h"),
+             ("24", "24h"), ("72", "3d"), ("168", "7d")])
+
+    def test_the_presets_are_two_rows_of_three(self):
+        """A fixed three-wide grid, not wrapping. Reflowing to whatever fits
+        made the same six buttons rearrange with the window, so the one you
+        were reaching for moved."""
+        self.assertRegex(
+            HTML,
+            r"\.chatter-presets \{ display:grid; "
+            r"grid-template-columns:repeat\(3, minmax\(0,1fr\)\)")
+        self.assertNotIn(".chatter-presets { display:flex", HTML)
+
+    def test_nothing_re_wraps_them_at_a_narrow_width(self):
+        """A stray flex-wrap in a media query would undo the fixed grid."""
+        for query in ("720px", "430px"):
+            block = HTML[HTML.index("@media (max-width:%s)" % query):]
+            block = block[:block.index("\n  }")]
+            with self.subTest(query=query):
+                self.assertNotIn("chatter-presets", block)
+
+    def test_each_preset_maps_to_the_hours_it_names(self):
+        """3d and 7d are the odd ones: the control is in hours."""
+        presets = re.search(r"for value, label in \[(.*?)\]", HTML).group(1)
+        pairs = dict((b, int(a)) for a, b in
+                     re.findall(r"\((\d+),'([^']+)'\)", presets))
+        self.assertEqual(pairs["3h"], 3)
+        self.assertEqual(pairs["3d"], 72)
+        self.assertEqual(pairs["7d"], 168)
+
+    def test_every_preset_is_within_the_inputs_own_range(self):
+        """The number box caps at 168, and the server clamps there too, so a
+        preset beyond it would silently do nothing."""
+        presets = re.search(r"for value, label in \[(.*?)\]", HTML).group(1)
+        values = [int(v) for v, _ in re.findall(r"\((\d+),'([^']+)'\)", presets)]
+        self.assertTrue(all(1 <= v <= 168 for v in values), values)
+        self.assertIn('min="1" max="168"', HTML)
+
     def test_it_stacks_rather_than_squeezing_on_a_narrow_screen(self):
         self.assertRegex(
             HTML, r"@media \(max-width:720px\)[\s\S]*?"
