@@ -131,6 +131,61 @@ class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
         connection.close()
         await connection.wait_closed()
 
+    async def test_shared_access_registration_reprompts_on_password_mismatch(self):
+        self.listener.close()
+        await self.listener.wait_closed()
+        self.config = SSHConfig(
+            enabled=True,
+            host="127.0.0.1",
+            port=0,
+            host_key=os.path.join(self.temp_dir.name, "gated_mismatch_key"),
+            username="bbs",
+            password="shared-access-password",
+            idle_timeout_seconds=30,
+        )
+        self.listener = await start_server(self.config)
+        self.port = self.listener.get_port()
+
+        connection, process = await self._open("bbs", "shared-access-password")
+        await process.stdout.readuntil("BBS username: ")
+        process.stdin.write("MismatchUser\n")
+        await process.stdout.readuntil("Create password: ")
+        process.stdin.write("first-password\n")
+        await process.stdout.readuntil("Confirm password: ")
+        process.stdin.write("second-password\n")
+        retry = await process.stdout.readuntil("Create password: ")
+        self.assertIn("Passwords do not match", retry)
+        process.stdin.write_eof()
+        await process.wait_closed()
+        connection.close()
+        await connection.wait_closed()
+
+    async def test_shared_access_unknown_user_respects_disabled_registration(self):
+        self.listener.close()
+        await self.listener.wait_closed()
+        self.config = SSHConfig(
+            enabled=True,
+            host="127.0.0.1",
+            port=0,
+            host_key=os.path.join(self.temp_dir.name, "gated_disabled_key"),
+            username="bbs",
+            password="shared-access-password",
+            registration_enabled=False,
+            idle_timeout_seconds=30,
+        )
+        self.listener = await start_server(self.config)
+        self.port = self.listener.get_port()
+
+        connection, process = await self._open("bbs", "shared-access-password")
+        await process.stdout.readuntil("BBS username: ")
+        process.stdin.write("UnknownUser\n")
+        response = await process.stdout.readuntil("BBS username: ")
+        self.assertIn("registration is disabled", response)
+        process.stdin.write_eof()
+        await process.wait_closed()
+        connection.close()
+        await connection.wait_closed()
+
     async def test_unknown_alias_cannot_register_without_new_prefix(self):
         with self.assertRaises(asyncssh.PermissionDenied):
             await asyncssh.connect(
@@ -162,8 +217,11 @@ class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
         connection, process = await self._open("bbs", "shared-access-password")
         prompt = await process.stdout.readuntil("BBS username: ")
         self.assertIn("Register or log in", prompt)
-        process.stdin.write("new:GatedCaller\n")
-        await process.stdout.readuntil("BBS password: ")
+        process.stdin.write("GatedCaller\n")
+        registration = await process.stdout.readuntil("Create password: ")
+        self.assertIn("New account", registration)
+        process.stdin.write("account-password\n")
+        await process.stdout.readuntil("Confirm password: ")
         process.stdin.write("account-password\n")
         welcome = await process.stdout.readuntil("> ")
         self.assertNotIn("account-password", welcome)
@@ -177,7 +235,8 @@ class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
         connection, process = await self._open("bbs", "shared-access-password")
         await process.stdout.readuntil("BBS username: ")
         process.stdin.write("gatedcaller\n")
-        await process.stdout.readuntil("BBS password: ")
+        login_prompt = await process.stdout.readuntil("BBS password: ")
+        self.assertNotIn("New account", login_prompt)
         process.stdin.write("account-password\n")
         welcome = await process.stdout.readuntil("> ")
         self.assertNotIn("Account GatedCaller created", welcome)

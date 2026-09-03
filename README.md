@@ -828,9 +828,10 @@ ssh -p 2222 YourAlias@bbs-host      # return later
 ```
 
 When a shared SSH access username/password is configured, connect with that
-credential first. The session then prompts each user to register or log in to
-their separate BBS account. Saved SSH settings are applied by the running
-service within a few seconds.
+credential first. The session then asks for a BBS username. A known username
+gets a password prompt; an unknown username starts new-account password and
+confirmation prompts. Each user receives a separate BBS account. Saved SSH
+settings are applied by the running service within a few seconds.
 
 Read [docs/SSH-ACCESS.md](docs/SSH-ACCESS.md) before exposing the port. In
 particular, secure the separately exposed web admin, retain and back up

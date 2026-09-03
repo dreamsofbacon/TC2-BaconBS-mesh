@@ -15,7 +15,7 @@ import asyncssh
 import bbs_emulator
 import db_operations
 from app_paths import resolve_app_path
-from ssh_auth import AuthResult, authenticate
+from ssh_auth import AuthResult, authenticate, valid_alias, valid_password
 
 
 @dataclass(frozen=True)
@@ -129,6 +129,7 @@ class BBSClientSession(asyncssh.SSHServerSession):
         self.source_address = source_address
         self._pending = pending
         self._account_username = ""
+        self._registration_password = ""
         self._auth_stage = "bbs" if auth else "account_username"
         self.channel = None
         self.session = None
@@ -144,7 +145,6 @@ class BBSClientSession(asyncssh.SSHServerSession):
         if self.auth is None:
             self.channel.write(
                 "SSH access accepted. Register or log in to your BBS account.\r\n"
-                "Use new:YourAlias the first time.\r\n"
                 "BBS username: ")
             self._reset_idle_timer()
             return True
@@ -174,7 +174,7 @@ class BBSClientSession(asyncssh.SSHServerSession):
             if character in {"\x08", "\x7f"}:
                 if self._line:
                     self._line.pop()
-                    if self._auth_stage != "account_password":
+                    if not self._auth_stage.endswith("password") and self._auth_stage != "registration_confirm":
                         self.channel.write("\b \b")
                 continue
             if character in {"\r", "\n"}:
@@ -184,7 +184,8 @@ class BBSClientSession(asyncssh.SSHServerSession):
                 self._last_was_cr = character == "\r"
                 self.channel.write("\r\n")
                 raw_line = "".join(self._line)
-                line = raw_line if self._auth_stage == "account_password" else raw_line.strip()
+                hidden_input = self._auth_stage.endswith("password") or self._auth_stage == "registration_confirm"
+                line = raw_line if hidden_input else raw_line.strip()
                 self._line.clear()
                 if self._auth_stage != "bbs":
                     self._handle_account_auth(line)
@@ -196,7 +197,7 @@ class BBSClientSession(asyncssh.SSHServerSession):
             self._last_was_cr = False
             if character.isprintable() and len(self._line) < 4096:
                 self._line.append(character)
-                if self._auth_stage != "account_password":
+                if not self._auth_stage.endswith("password") and self._auth_stage != "registration_confirm":
                     self.channel.write(character)
         self._reset_idle_timer()
 
@@ -205,13 +206,49 @@ class BBSClientSession(asyncssh.SSHServerSession):
             if not line:
                 self.channel.write("BBS username: ")
                 return
+            if not valid_alias(line):
+                self.channel.write(
+                    "Username must be 3-20 characters using letters, numbers, dots, underscores, or hyphens.\r\n"
+                    "BBS username: ")
+                return
             self._account_username = line
-            self._auth_stage = "account_password"
-            self.channel.write("BBS password: ")
+            if db_operations.alias_owner(line) is not None:
+                self._auth_stage = "login_password"
+                self.channel.write("BBS password: ")
+            elif not self.config.registration_enabled:
+                self._account_username = ""
+                self.channel.write("That account does not exist and registration is disabled.\r\nBBS username: ")
+            elif db_operations.alias_conflicts_with_roster(line):
+                self._account_username = ""
+                self.channel.write("That username is unavailable.\r\nBBS username: ")
+            else:
+                self._auth_stage = "registration_password"
+                self.channel.write("New account. Create password: ")
             return
 
+        if self._auth_stage == "registration_password":
+            if not valid_password(line):
+                self.channel.write("Password must be 10-128 characters.\r\nCreate password: ")
+                return
+            self._registration_password = line
+            self._auth_stage = "registration_confirm"
+            self.channel.write("Confirm password: ")
+            return
+
+        if self._auth_stage == "registration_confirm":
+            if not hmac.compare_digest(line, self._registration_password):
+                self._registration_password = ""
+                self._auth_stage = "registration_password"
+                self.channel.write("Passwords do not match.\r\nCreate password: ")
+                return
+            line = self._registration_password
+            self._registration_password = ""
+            auth_username = f"new:{self._account_username}"
+        else:
+            auth_username = self._account_username
+
         auth = authenticate(
-            self._account_username, line, self.source_address,
+            auth_username, line, self.source_address,
             registration_enabled=self.config.registration_enabled,
             registration_limit_per_hour=self.config.registration_limit_per_hour,
             login_limit_per_hour=self.config.login_limit_per_hour,

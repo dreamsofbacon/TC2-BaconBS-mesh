@@ -112,11 +112,13 @@ password.
 
 The optional `[ssh] username` and `password` add a shared transport gate. When
 both are configured, clients use those credentials to establish SSH, then the
-session prompts for `new:<alias>` plus an account password on first use, or the
-existing alias and account password on later visits. The shared gate never
-becomes a BBS identity: every user still receives a separate server-derived
-`ssh:<account_id>` identity and mailbox. The shared access password is stored
-in plain text in `config.ini`; account passwords remain scrypt hashes.
+session asks for a BBS username. A known username gets a password prompt. An
+unknown valid username automatically enters new-account password and
+confirmation prompts; no `new:` prefix is needed in this mode. The shared gate
+never becomes a BBS identity: every user still receives a separate
+server-derived `ssh:<account_id>` identity and mailbox. The shared access
+password is stored in plain text in `config.ini`; account passwords remain
+scrypt hashes.
 
 When the shared fields are blank, clients authenticate directly with
 `new:<alias>` or their existing alias at the SSH handshake. The running
