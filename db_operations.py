@@ -2457,8 +2457,8 @@ def get_local_record_counts() -> dict:
         "SELECT user_id, game_id, short_name, score, max_score, moves, achieved_at FROM game_scores ORDER BY user_id, game_id"
     )
     public_chatter_hash = _hash_rows(
-        "SELECT unique_id, network, channel_index, channel_name, sender_node_id, sender_name, content, "
-        "message_timestamp, captured_at, capture_node_id, expires_at FROM public_chatter "
+        "SELECT unique_id, network, channel_index, sender_node_id, content, "
+        "message_timestamp, expires_at FROM public_chatter "
         "WHERE expires_at > ? ORDER BY unique_id",
         (now,),
     )
@@ -2529,8 +2529,14 @@ def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channel
                proto_v=CASE WHEN excluded.proto_v > 0 THEN excluded.proto_v ELSE peer_sync_state.proto_v END,
                caps=CASE WHEN excluded.proto_v > 0 THEN excluded.caps ELSE peer_sync_state.caps END,
                caps_observed_at=CASE WHEN excluded.proto_v > 0 THEN excluded.caps_observed_at ELSE peer_sync_state.caps_observed_at END,
-               public_chatter=CASE WHEN excluded.public_chatter >= 0 THEN excluded.public_chatter ELSE peer_sync_state.public_chatter END,
-               public_chatter_hash=CASE WHEN excluded.public_chatter >= 0 THEN excluded.public_chatter_hash ELSE peer_sync_state.public_chatter_hash END''',
+               public_chatter=CASE
+                   WHEN excluded.proto_v > 0 THEN excluded.public_chatter
+                   WHEN excluded.public_chatter >= 0 THEN excluded.public_chatter
+                   ELSE peer_sync_state.public_chatter END,
+               public_chatter_hash=CASE
+                   WHEN excluded.proto_v > 0 THEN excluded.public_chatter_hash
+                   WHEN excluded.public_chatter >= 0 THEN excluded.public_chatter_hash
+                   ELSE peer_sync_state.public_chatter_hash END''',
         (
             peer_node_id,
             int(bulletins),
@@ -2914,6 +2920,7 @@ def get_mismatched_peer_nodes(expected_peer_nodes=None) -> set:
         # never close, since the peer drops those frames on arrival.
         compare_zork = zork_save_sync_enabled and not peer_opts_out_of_zork_saves(phz)
         compare_chatter = peer_supports(peer, 'pchat') and len(row) > 16 and int(row[15]) >= 0
+        compare_chatter_hash = compare_chatter and peer_supports(peer, 'pch2')
         if (
             pb != int(local.get('bulletins', 0))
             or pm != int(local.get('mail', 0))
@@ -2928,7 +2935,7 @@ def get_mismatched_peer_nodes(expected_peer_nodes=None) -> set:
             or (php and php != str(local.get('profiles_hash', '')))
             or (phs and phs != str(local.get('game_scores_hash', '')))
             or (compare_chatter and int(row[15]) != int(local.get('public_chatter', 0)))
-            or (compare_chatter and row[16] and str(row[16]) != str(local.get('public_chatter_hash', '')))
+            or (compare_chatter_hash and row[16] and str(row[16]) != str(local.get('public_chatter_hash', '')))
         ):
             mismatched.add(peer)
     return mismatched
@@ -2969,9 +2976,12 @@ def get_mismatched_peer_scopes(expected_peer_nodes=None) -> dict:
             scopes.append('profiles')
         if ps != int(local.get('game_scores', 0)) or (phs and phs != str(local.get('game_scores_hash', ''))):
             scopes.append('game_scores')
-        if (peer_supports(peer, 'pchat') and len(row) > 16 and int(row[15]) >= 0
-                and (int(row[15]) != int(local.get('public_chatter', 0))
-                     or (row[16] and str(row[16]) != str(local.get('public_chatter_hash', ''))))):
+        compare_chatter = peer_supports(peer, 'pchat') and len(row) > 16 and int(row[15]) >= 0
+        compare_chatter_hash = compare_chatter and peer_supports(peer, 'pch2')
+        if (compare_chatter
+            and (int(row[15]) != int(local.get('public_chatter', 0))
+                 or (compare_chatter_hash and row[16]
+                 and str(row[16]) != str(local.get('public_chatter_hash', ''))))):
             scopes.append('public_chatter')
 
         if scopes:
@@ -5206,9 +5216,8 @@ def get_record_hash_manifest(scope: str) -> dict:
     elif scope == 'public_chatter':
         now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
         for row in c.execute(
-            '''SELECT unique_id, network, channel_index, channel_name,
-                      sender_node_id, sender_name, content, message_timestamp,
-                      captured_at, capture_node_id, expires_at
+            '''SELECT unique_id, network, channel_index, sender_node_id,
+                      content, message_timestamp, expires_at
                FROM public_chatter WHERE expires_at > ?''',
             (now,),
         ):

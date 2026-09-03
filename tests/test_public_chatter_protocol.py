@@ -25,6 +25,7 @@ class PublicChatterProtocolTests(unittest.TestCase):
         )
 
     def tearDown(self):
+        message_processing.set_public_chatter_cross_link_relay(None)
         db_operations.set_local_node_id(None)
         db_operations.thread_local.connection.close()
         del db_operations.thread_local.connection
@@ -81,35 +82,87 @@ class PublicChatterProtocolTests(unittest.TestCase):
             utils.send_public_chatter_to_bbs_nodes(self.record(), ["!legacy"], self.interface)
         self.assertEqual(frames, [])
 
-    def test_new_mqtt_chatter_is_relayed_once_without_echoing_sender(self):
+    def test_mqtt_chatter_is_published_once_for_all_capable_peers(self):
+        row = self.record()
+        frames = []
+        self.interface.protocol_name = "MQTT:test"
+        self.interface.max_text_bytes = 32768
+        with mock.patch.object(db_operations, "peer_supports", return_value=True), mock.patch.object(
+            utils, "_send_one_sync", side_effect=lambda frame, destination, *_args, **_kwargs: frames.append((frame, destination))
+        ):
+            utils.send_public_chatter_to_bbs_nodes(
+                row, ["mqtt:group:one", "mqtt:group:two"], self.interface)
+
+        self.assertEqual(len(frames), 1)
+        self.assertTrue(frames[0][0].startswith("PCHAT|pch:test|"))
+        self.assertEqual(frames[0][1], 0)
+
+    def test_new_mqtt_chatter_invokes_only_cross_link_relay(self):
         row = self.record()
         frames = []
         with mock.patch.object(db_operations, "peer_supports", return_value=True), mock.patch.object(
             utils, "_send_one_sync", side_effect=lambda frame, *_args, **_kwargs: frames.append(frame)
         ):
             utils.send_public_chatter_to_bbs_nodes(row, ["mqtt:group:source"], self.interface)
-
         conn = db_operations.get_db_connection()
         conn.execute("DELETE FROM public_chatter")
         conn.commit()
         self.interface.protocol_name = "MQTT:test"
-        self.interface.bbs_nodes = ["mqtt:group:source", "mqtt:group:peer"]
+        relayed = []
+        message_processing.set_public_chatter_cross_link_relay(
+            lambda stored, origin: relayed.append((stored[0], origin)))
 
-        with mock.patch.object(message_processing, "send_public_chatter_to_bbs_nodes") as relay:
-            for frame in frames:
-                message_processing.process_message(
-                    1, frame, self.interface, is_sync_message=True,
-                    sender_node_id="mqtt:group:source",
-                )
-            relay.assert_called_once()
-            self.assertEqual(relay.call_args.args[1], ["mqtt:group:peer"])
+        for frame in frames:
+            message_processing.process_message(
+                1, frame, self.interface, is_sync_message=True,
+                sender_node_id="mqtt:group:source",
+            )
+        self.assertEqual(relayed, [("pch:test", self.interface)])
 
-            for frame in frames:
-                message_processing.process_message(
-                    1, frame, self.interface, is_sync_message=True,
-                    sender_node_id="mqtt:group:source",
-                )
-            relay.assert_called_once()
+        for frame in frames:
+            message_processing.process_message(
+                1, frame, self.interface, is_sync_message=True,
+                sender_node_id="mqtt:group:source",
+            )
+        self.assertEqual(relayed, [("pch:test", self.interface)])
+
+    def test_partial_chunks_are_isolated_by_sender_and_expire(self):
+        self.assertFalse(message_processing._add_public_chatter_chunk(
+            "!peer-a", "pch:shared", 0, "abc", expected_length=6))
+        self.assertFalse(message_processing._add_public_chatter_chunk(
+            "!peer-b", "pch:shared", 0, "xyz", expected_length=6))
+        self.assertEqual(
+            set(message_processing._pending_public_chatter),
+            {("!peer-a", "pch:shared"), ("!peer-b", "pch:shared")},
+        )
+
+        for entry in message_processing._pending_public_chatter.values():
+            entry["updated_at"] = 1.0
+        message_processing._prune_stale_public_chatter_buffers(
+            now=1.0 + message_processing._PUBLIC_CHATTER_BUFFER_TTL_SECONDS + 1)
+        self.assertEqual(message_processing._pending_public_chatter, {})
+
+    def test_public_chatter_chunks_can_arrive_out_of_order(self):
+        with mock.patch.object(message_processing, "_store_public_chatter_payload", return_value=True) as store:
+            self.assertFalse(message_processing._add_public_chatter_chunk(
+                "!peer", "pch:ordered", 3, "def"))
+            self.assertTrue(message_processing._add_public_chatter_chunk(
+                "!peer", "pch:ordered", 0, "abc", expected_length=6))
+        store.assert_called_once_with("pch:ordered", "abcdef")
+
+    def test_conflicting_duplicate_chunk_discards_buffer(self):
+        self.assertFalse(message_processing._add_public_chatter_chunk(
+            "!peer", "pch:conflict", 3, "def"))
+        self.assertFalse(message_processing._add_public_chatter_chunk(
+            "!peer", "pch:conflict", 3, "xyz"))
+        self.assertNotIn(("!peer", "pch:conflict"), message_processing._pending_public_chatter)
+
+    def test_oversized_public_chatter_payload_is_rejected_without_buffering(self):
+        self.assertFalse(message_processing._add_public_chatter_chunk(
+            "!peer", "pch:large", 0, "x",
+            expected_length=message_processing._PUBLIC_CHATTER_MAX_PAYLOAD_LENGTH + 1,
+        ))
+        self.assertEqual(message_processing._pending_public_chatter, {})
 
 
 if __name__ == "__main__":

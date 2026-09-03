@@ -13,12 +13,12 @@ Keeping this state per-link rather than as module globals is what lets one
 radio's outage or reconnect-retry cycle proceed without blocking the other
 radio's sync cycle -- see server.py's _run_link_tick / _reconnect_link.
 
-Content itself is never routed/relayed between links directly. Both links
-read and write the same shared SQLite database; a record synced in via one
-radio's interface is picked up by the other radio's own independent sync
-loop the next time its mismatch check runs (see db_operations.add_bulletin
-and the PHASE 2 discussion in the project plan). RadioLink only tracks the
-bookkeeping needed to run that per-interface sync loop concurrently.
+Most content is not routed between links directly. Both links read and write
+the same shared SQLite database; a record synced in via one radio's interface
+is picked up by the other radio's independent sync loop the next time its
+mismatch check runs. Public chatter is the exception: server.py immediately
+fans a newly stored observation out to the other active MQTT links. RadioLink
+only tracks the bookkeeping needed to run each interface concurrently.
 """
 
 from dataclasses import dataclass, field

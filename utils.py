@@ -44,7 +44,7 @@ def get_max_text_bytes(interface=None) -> int:
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'fver', 'fstat')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state, 'pchat'=public chatter history
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state
 
 # Single-char scope codes used by the 'scc' wire capability.  Senders gate
 # encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
@@ -1058,10 +1058,13 @@ def send_public_chatter_to_bbs_nodes(row, bbs_nodes, interface):
         json.dumps(fields, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
     ).decode('ascii')
     unique_id = str(row[0])
+    destinations = capable_peers
+    if str(getattr(interface, 'protocol_name', '')).casefold().startswith('mqtt'):
+        destinations = [0]
     _send_sync_with_cont(
         f'PCHAT|{unique_id}|{len(payload)}|', '', payload, unique_id,
         cont_prefix=f'PCHATCONT|{unique_id}|',
-        bbs_nodes=capable_peers,
+        bbs_nodes=destinations,
         interface=interface,
         pause_seconds=get_sync_pause_seconds(interface),
     )

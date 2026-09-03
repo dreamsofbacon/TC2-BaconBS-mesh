@@ -67,6 +67,7 @@ from db_operations import (
 from js8call_integration import JS8CallClient
 from message_processing import (
     on_receive,
+    set_public_chatter_cross_link_relay,
     is_hashreq_pending_for_peer_scope,
     start_zork_save_best_candidate_resolution,
     process_pending_candidate_resolutions,
@@ -74,7 +75,7 @@ from message_processing import (
     get_candidate_resolution_snapshot,
 )
 from pubsub import pub
-from utils import send_hash_request_to_bbs_nodes, send_sync_state_to_bbs_nodes, send_have_to_bbs_nodes, send_peer_gossip_to_bbs_nodes, send_fleet_target_to_bbs_nodes, send_node_version_to_bbs_nodes, send_fleet_status_to_bbs_nodes, select_syncstate_peers_to_notify, home_network
+from utils import send_hash_request_to_bbs_nodes, send_sync_state_to_bbs_nodes, send_have_to_bbs_nodes, send_peer_gossip_to_bbs_nodes, send_fleet_target_to_bbs_nodes, send_node_version_to_bbs_nodes, send_fleet_status_to_bbs_nodes, send_public_chatter_to_bbs_nodes, select_syncstate_peers_to_notify, home_network
 
 # Per-link tick cadence constants (module-level so both main() and
 # _run_link_tick, which runs once per active RadioLink, can share them).
@@ -142,6 +143,19 @@ def link_for_interface(interface):
         if link.interface is interface:
             return link
     return None
+
+
+def relay_public_chatter_to_mqtt_links(row, origin_interface) -> None:
+    """Publish a first-seen chatter record once on every other MQTT link."""
+    for link in _active_links:
+        interface = getattr(link, 'interface', None)
+        if interface is None or interface is origin_interface:
+            continue
+        if not str(getattr(interface, 'protocol_name', '')).casefold().startswith('mqtt'):
+            continue
+        if not getattr(link, 'enabled', True) or getattr(link, 'reconnecting', False):
+            continue
+        send_public_chatter_to_bbs_nodes(row, link.bbs_nodes, interface)
 
 
 def signal_reconnect(interface) -> None:
@@ -1999,6 +2013,7 @@ def main():
 
     global _active_links
     _active_links = links
+    set_public_chatter_cross_link_relay(relay_public_chatter_to_mqtt_links)
     # Publish every identity this node answers to, so the "is this me?"
     # checks do not have to import server (see local_node_identities).
     try:

@@ -2,6 +2,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import db_operations
@@ -77,13 +78,60 @@ class SyncStateHashingTests(unittest.TestCase):
             bulletins_hash=counts["bulletins_hash"], mail_hash=counts["mail_hash"],
             channels_hash=counts["channels_hash"], zork_saves_hash=counts["zork_saves_hash"],
             profiles_hash=counts["profiles_hash"], game_scores_hash=counts["game_scores_hash"],
-            proto_v=2, caps="pchat", public_chatter=counts["public_chatter"] + 1,
+            proto_v=2, caps="pchat,pch2", public_chatter=counts["public_chatter"] + 1,
             public_chatter_hash="different",
         )
 
         self.assertEqual(
             db_operations.get_mismatched_peer_scopes({"!peer1"})["!peer1"],
             ["public_chatter"],
+        )
+
+    def test_legacy_chatter_hash_is_ignored_when_counts_match(self):
+        counts = db_operations.get_local_record_counts()
+        common = dict(
+            peer_node_id="!peer1",
+            bulletins=counts["bulletins"], mail=counts["mail"],
+            channels=counts["channels"], zork_saves=counts["zork_saves"],
+            profiles=counts["profiles"], game_scores=counts["game_scores"],
+            bulletins_hash=counts["bulletins_hash"], mail_hash=counts["mail_hash"],
+            channels_hash=counts["channels_hash"], zork_saves_hash=counts["zork_saves_hash"],
+            profiles_hash=counts["profiles_hash"], game_scores_hash=counts["game_scores_hash"],
+            proto_v=2, public_chatter=counts["public_chatter"],
+            public_chatter_hash="legacy-hash",
+        )
+        db_operations.upsert_peer_sync_state(caps="pchat", **common)
+        self.assertNotIn("!peer1", db_operations.get_mismatched_peer_scopes({"!peer1"}))
+
+        db_operations.upsert_peer_sync_state(caps="pchat,pch2", **common)
+        self.assertEqual(
+            db_operations.get_mismatched_peer_scopes({"!peer1"})["!peer1"],
+            ["public_chatter"],
+        )
+
+    def test_public_chatter_hash_ignores_observer_local_metadata(self):
+        now = datetime.now(timezone.utc)
+        timestamp = now.isoformat().replace("+00:00", "Z")
+        expires_at = (now + timedelta(days=7)).isoformat().replace("+00:00", "Z")
+        db_operations.add_public_chatter(
+            "pch:shared", "meshtastic", 0, "LongFast", "!sender", "CALL",
+            "Same RF packet", timestamp, timestamp, "!capture-a", expires_at,
+            hops=1,
+        )
+        before = db_operations.get_local_record_counts()["public_chatter_hash"]
+        before_record = db_operations.get_record_hash_manifest("public_chatter")["pch:shared"]
+
+        conn = db_operations.get_db_connection()
+        conn.execute(
+            "UPDATE public_chatter SET channel_name=?, sender_name=?, captured_at=?, capture_node_id=?, hops=?",
+            ("Primary", "Different local name", expires_at, "!capture-b", 4),
+        )
+        conn.commit()
+
+        self.assertEqual(before, db_operations.get_local_record_counts()["public_chatter_hash"])
+        self.assertEqual(
+            before_record,
+            db_operations.get_record_hash_manifest("public_chatter")["pch:shared"],
         )
 
     def test_mismatch_scopes_reports_only_affected_scope(self):
