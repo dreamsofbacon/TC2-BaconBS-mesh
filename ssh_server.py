@@ -348,9 +348,10 @@ async def start_server(config: SSHConfig):
     limiter = SessionLimiter(
         config.max_sessions, config.max_sessions_per_account)
     host_key = ensure_host_key(config.host_key)
+    listen_hosts = [host.strip() for host in config.host.split(",") if host.strip()]
     return await asyncssh.create_server(
         lambda: BBSSSHServer(config, limiter),
-        config.host, config.port,
+        listen_hosts if len(listen_hosts) > 1 else listen_hosts[0], config.port,
         server_host_keys=[host_key],
         encoding="utf-8",
         line_editor=False,
@@ -371,7 +372,7 @@ async def run(config_path: Optional[str] = None) -> None:
                     listener = None
                 if config.enabled:
                     listener = await start_server(config)
-                    logging.info("SSH BBS listening on %s:%s", config.host, config.port)
+                    logging.info("SSH BBS listening on %s port %s", config.host, config.port)
                 else:
                     logging.info("SSH BBS listener disabled")
                 active_config = config
