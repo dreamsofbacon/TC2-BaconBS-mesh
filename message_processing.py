@@ -1621,7 +1621,7 @@ def _add_fleet_instruction_chunk(message: str, sender_node_id, interface) -> Non
     _apply_fleet_instruction(assembled, sender_node_id, interface)
 
 
-def _store_public_chatter_payload(unique_id: str, encoded_payload: str) -> None:
+def _store_public_chatter_payload(unique_id: str, encoded_payload: str) -> bool:
     try:
         raw = base64.urlsafe_b64decode(encoded_payload.encode('ascii'))
         fields = json.loads(raw.decode('utf-8'))
@@ -1632,8 +1632,8 @@ def _store_public_chatter_payload(unique_id: str, encoded_payload: str) -> None:
         if expires.tzinfo is None:
             expires = expires.replace(tzinfo=timezone.utc)
         if expires <= datetime.now(timezone.utc):
-            return
-        add_public_chatter(
+            return False
+        return add_public_chatter(
             unique_id=str(unique_id),
             network=str(fields['n']),
             channel_index=int(fields['c']),
@@ -1651,11 +1651,12 @@ def _store_public_chatter_payload(unique_id: str, encoded_payload: str) -> None:
     except Exception:
         rollback_db_connection()
         logging.warning("Malformed PCHAT payload ignored for %s", unique_id)
+        return False
 
 
 def _add_public_chatter_chunk(
     unique_id: str, offset: int, chunk: str, expected_length=None
-) -> None:
+) -> bool:
     complete_payload = None
     with _pending_public_chatter_lock:
         entry = _pending_public_chatter.setdefault(
@@ -1666,20 +1667,30 @@ def _add_public_chatter_chunk(
         entry['parts'].setdefault(int(offset), str(chunk))
         expected = entry.get('expected')
         if expected is None or expected < 1:
-            return
+            return False
         cursor = 0
         assembled = []
         for part_offset, part in sorted(entry['parts'].items()):
             if part_offset != cursor:
-                return
+                return False
             assembled.append(part)
             cursor += len(part)
         if cursor < expected:
-            return
+            return False
         complete_payload = ''.join(assembled)[:expected]
         _pending_public_chatter.pop(str(unique_id), None)
     if complete_payload is not None:
-        _store_public_chatter_payload(str(unique_id), complete_payload)
+        return _store_public_chatter_payload(str(unique_id), complete_payload)
+    return False
+
+
+def _relay_public_chatter_if_new(unique_id: str, inserted: bool, sender_node_id: str, interface) -> None:
+    if not inserted or not str(getattr(interface, 'protocol_name', '')).casefold().startswith('mqtt'):
+        return
+    peers = [node_id for node_id in interface.bbs_nodes if node_id != sender_node_id]
+    if peers:
+        send_public_chatter_to_bbs_nodes(
+            get_public_chatter_by_unique_id(unique_id), peers, interface)
 
 def process_message(sender_id, message, interface, is_sync_message=False, sender_node_id=None):
     state = get_user_state(sender_id)
@@ -1707,7 +1718,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             except ValueError:
                 logging.warning(f"Malformed PCHAT length ignored: {message}")
                 return
-            _add_public_chatter_chunk(parts[1], 0, parts[3], expected_length)
+            inserted = _add_public_chatter_chunk(parts[1], 0, parts[3], expected_length)
+            _relay_public_chatter_if_new(parts[1], inserted, sender_node_id, interface)
         elif message.startswith("PCHATCONT|"):
             parts = message.split("|", 3)
             if len(parts) != 4 or not parts[1]:
@@ -1718,7 +1730,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             except ValueError:
                 logging.warning(f"Malformed PCHATCONT offset ignored: {message}")
                 return
-            _add_public_chatter_chunk(parts[1], offset, parts[3])
+            inserted = _add_public_chatter_chunk(parts[1], offset, parts[3])
+            _relay_public_chatter_if_new(parts[1], inserted, sender_node_id, interface)
         elif message.startswith("BULLETIN|"):
             # Use rsplit from the right so content with embedded '|' is handled correctly.
             # Wire format: BULLETIN|board|sender|subject|content|unique_id[|date[|source_node_id|source_timestamp]]
@@ -1993,6 +2006,14 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             if len(parts) >= 15:
                 from utils import parse_capabilities_token
                 peer_proto_v, peer_caps_csv = parse_capabilities_token(parts[14])
+            peer_public_chatter = -1
+            peer_public_chatter_hash = ''
+            if len(parts) >= 17 and 'pchat' in peer_caps_csv.split(','):
+                try:
+                    peer_public_chatter = int(parts[15])
+                    peer_public_chatter_hash = parts[16]
+                except ValueError:
+                    pass
             if sender_node_id:
                 upsert_peer_sync_state(
                     sender_node_id,
@@ -2011,6 +2032,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     tombstones_peer,
                     proto_v=peer_proto_v,
                     caps=peer_caps_csv,
+                    public_chatter=peer_public_chatter,
+                    public_chatter_hash=peer_public_chatter_hash,
                 )
                 logging.info(
                     f"SYNCSTATE recv from {sender_node_id}: "
@@ -2818,13 +2841,18 @@ def on_receive(packet, interface):
             from public_chatter import BROADCAST_ADDRESSES
             if packet.get('to') in BROADCAST_ADDRESSES:
                 try:
-                    from public_chatter import capture_broadcast
+                    from public_chatter import capture_broadcast, normalize_broadcast
                     capture_packet = dict(packet)
                     sender_node_id = packet.get('fromId')
                     if sender_node_id:
                         capture_packet['sender_name'] = resolve_display_name(
                             sender_node_id, interface)
-                    capture_broadcast(capture_packet, interface)
+                    if capture_broadcast(capture_packet, interface):
+                        observation = normalize_broadcast(capture_packet, interface)
+                        if observation:
+                            row = get_public_chatter_by_unique_id(observation['unique_id'])
+                            send_public_chatter_to_bbs_nodes(
+                                row, interface.bbs_nodes, interface)
                 except Exception:
                     rollback_db_connection()
                     logging.exception("Unable to capture public channel message")

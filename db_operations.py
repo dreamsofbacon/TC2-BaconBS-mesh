@@ -780,7 +780,9 @@ def initialize_database():
                     tombstones INTEGER NOT NULL DEFAULT -1,
                     proto_v INTEGER NOT NULL DEFAULT 0,
                     caps TEXT NOT NULL DEFAULT '',
-                    caps_observed_at TEXT NOT NULL DEFAULT ''
+                    caps_observed_at TEXT NOT NULL DEFAULT '',
+                    public_chatter INTEGER NOT NULL DEFAULT -1,
+                    public_chatter_hash TEXT NOT NULL DEFAULT ''
                 );''')
     # Forward-compat migration: ensure newer columns exist on legacy DBs.
     c.execute("PRAGMA table_info(peer_sync_state)")
@@ -791,6 +793,10 @@ def initialize_database():
         c.execute("ALTER TABLE peer_sync_state ADD COLUMN caps TEXT NOT NULL DEFAULT ''")
     if 'caps_observed_at' not in _pss_cols:
         c.execute("ALTER TABLE peer_sync_state ADD COLUMN caps_observed_at TEXT NOT NULL DEFAULT ''")
+    if 'public_chatter' not in _pss_cols:
+        c.execute("ALTER TABLE peer_sync_state ADD COLUMN public_chatter INTEGER NOT NULL DEFAULT -1")
+    if 'public_chatter_hash' not in _pss_cols:
+        c.execute("ALTER TABLE peer_sync_state ADD COLUMN public_chatter_hash TEXT NOT NULL DEFAULT ''")
     c.execute('''CREATE TABLE IF NOT EXISTS deleted_sync_tombstones (
                     tombstone_key TEXT PRIMARY KEY,
                     deleted_at TEXT NOT NULL,
@@ -2391,6 +2397,9 @@ def get_local_record_counts() -> dict:
     profiles = int(c.fetchone()[0])
     c.execute("SELECT COUNT(*) FROM game_scores")
     game_scores = int(c.fetchone()[0])
+    now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    c.execute("SELECT COUNT(*) FROM public_chatter WHERE expires_at > ?", (now,))
+    public_chatter = int(c.fetchone()[0])
 
     def _hash_rows(query: str, params: tuple = ()) -> str:
         digest = hashlib.blake2b(digest_size=8)
@@ -2447,6 +2456,12 @@ def get_local_record_counts() -> dict:
     game_scores_hash = _hash_rows(
         "SELECT user_id, game_id, short_name, score, max_score, moves, achieved_at FROM game_scores ORDER BY user_id, game_id"
     )
+    public_chatter_hash = _hash_rows(
+        "SELECT unique_id, network, channel_index, channel_name, sender_node_id, sender_name, content, "
+        "message_timestamp, captured_at, capture_node_id, expires_at FROM public_chatter "
+        "WHERE expires_at > ? ORDER BY unique_id",
+        (now,),
+    )
     c.execute("SELECT COUNT(*) FROM deleted_sync_tombstones")
     tombstones = int(c.fetchone()[0])
 
@@ -2457,6 +2472,7 @@ def get_local_record_counts() -> dict:
         'zork_saves': zork_saves,
         'profiles': profiles,
         'game_scores': game_scores,
+        'public_chatter': public_chatter,
         'tombstones': tombstones,
         'bulletins_hash': bulletins_hash,
         'mail_hash': mail_hash,
@@ -2464,6 +2480,7 @@ def get_local_record_counts() -> dict:
         'zork_saves_hash': zork_saves_hash,
         'profiles_hash': profiles_hash,
         'game_scores_hash': game_scores_hash,
+        'public_chatter_hash': public_chatter_hash,
     }
 
 
@@ -2472,7 +2489,8 @@ def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channel
                            bulletins_hash: str = '', mail_hash: str = '', channels_hash: str = '',
                            zork_saves_hash: str = '', profiles_hash: str = '', game_scores_hash: str = '',
                            tombstones: int = -1,
-                           proto_v: int = 0, caps: str = '') -> None:
+                           proto_v: int = 0, caps: str = '',
+                           public_chatter: int = -1, public_chatter_hash: str = '') -> None:
     """Store the latest advertised SYNCSTATE counts for a peer node.
 
     ``proto_v`` and ``caps`` carry the peer's wire-protocol version and
@@ -2489,9 +2507,10 @@ def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channel
         '''INSERT INTO peer_sync_state (
                peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores,
                bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, game_scores_hash,
-               reported_at, tombstones, proto_v, caps, caps_observed_at
+               reported_at, tombstones, proto_v, caps, caps_observed_at,
+               public_chatter, public_chatter_hash
            )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(peer_node_id) DO UPDATE SET
                bulletins=excluded.bulletins,
                mail=excluded.mail,
@@ -2509,7 +2528,9 @@ def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channel
                tombstones=excluded.tombstones,
                proto_v=CASE WHEN excluded.proto_v > 0 THEN excluded.proto_v ELSE peer_sync_state.proto_v END,
                caps=CASE WHEN excluded.proto_v > 0 THEN excluded.caps ELSE peer_sync_state.caps END,
-               caps_observed_at=CASE WHEN excluded.proto_v > 0 THEN excluded.caps_observed_at ELSE peer_sync_state.caps_observed_at END''',
+               caps_observed_at=CASE WHEN excluded.proto_v > 0 THEN excluded.caps_observed_at ELSE peer_sync_state.caps_observed_at END,
+               public_chatter=CASE WHEN excluded.public_chatter >= 0 THEN excluded.public_chatter ELSE peer_sync_state.public_chatter END,
+               public_chatter_hash=CASE WHEN excluded.public_chatter >= 0 THEN excluded.public_chatter_hash ELSE peer_sync_state.public_chatter_hash END''',
         (
             peer_node_id,
             int(bulletins),
@@ -2529,6 +2550,8 @@ def upsert_peer_sync_state(peer_node_id: str, bulletins: int, mail: int, channel
             int(proto_v or 0),
             str(caps or ''),
             datetime.now().strftime('%Y-%m-%d %H:%M:%S') if int(proto_v or 0) > 0 else '',
+            int(public_chatter),
+            str(public_chatter_hash or ''),
         ),
     )
     conn.commit()
@@ -2684,6 +2707,7 @@ def get_peer_sync_states() -> list:
     c.execute(
         "SELECT peer_node_id, bulletins, mail, channels, zork_saves, profiles, game_scores, "
         "bulletins_hash, mail_hash, channels_hash, zork_saves_hash, profiles_hash, game_scores_hash, reported_at, tombstones "
+        ", public_chatter, public_chatter_hash "
         "FROM peer_sync_state ORDER BY peer_node_id"
     )
     return c.fetchall()
@@ -2889,6 +2913,7 @@ def get_mismatched_peer_nodes(expected_peer_nodes=None) -> set:
         # them; it has opted out. Comparing anyway reports a gap that can
         # never close, since the peer drops those frames on arrival.
         compare_zork = zork_save_sync_enabled and not peer_opts_out_of_zork_saves(phz)
+        compare_chatter = peer_supports(peer, 'pchat') and len(row) > 16 and int(row[15]) >= 0
         if (
             pb != int(local.get('bulletins', 0))
             or pm != int(local.get('mail', 0))
@@ -2902,6 +2927,8 @@ def get_mismatched_peer_nodes(expected_peer_nodes=None) -> set:
             or (compare_zork and phz and phz != str(local.get('zork_saves_hash', '')))
             or (php and php != str(local.get('profiles_hash', '')))
             or (phs and phs != str(local.get('game_scores_hash', '')))
+            or (compare_chatter and int(row[15]) != int(local.get('public_chatter', 0)))
+            or (compare_chatter and row[16] and str(row[16]) != str(local.get('public_chatter_hash', '')))
         ):
             mismatched.add(peer)
     return mismatched
@@ -2942,6 +2969,10 @@ def get_mismatched_peer_scopes(expected_peer_nodes=None) -> dict:
             scopes.append('profiles')
         if ps != int(local.get('game_scores', 0)) or (phs and phs != str(local.get('game_scores_hash', ''))):
             scopes.append('game_scores')
+        if (peer_supports(peer, 'pchat') and len(row) > 16 and int(row[15]) >= 0
+                and (int(row[15]) != int(local.get('public_chatter', 0))
+                     or (row[16] and str(row[16]) != str(local.get('public_chatter_hash', ''))))):
+            scopes.append('public_chatter')
 
         if scopes:
             # Tombstones are only relevant for content scopes where deletion drift exists.
@@ -2975,7 +3006,7 @@ def get_scopes_to_request_repair(peer_node_id: str, candidate_scopes: list) -> l
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT bulletins, mail, channels, zork_saves, profiles, game_scores "
+        "SELECT bulletins, mail, channels, zork_saves, profiles, game_scores, public_chatter "
         "FROM peer_sync_state WHERE peer_node_id = ?",
         (peer_node_id,),
     )
@@ -2991,6 +3022,7 @@ def get_scopes_to_request_repair(peer_node_id: str, candidate_scopes: list) -> l
         'zork_saves': int(row[3]),
         'profiles':  int(row[4]),
         'game_scores': int(row[5]),
+        'public_chatter': int(row[6]),
     }
     result = []
     for scope in candidate_scopes:

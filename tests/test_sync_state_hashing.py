@@ -31,6 +31,7 @@ class SyncStateHashingTests(unittest.TestCase):
             "zork_saves_hash",
             "profiles_hash",
             "game_scores_hash",
+            "public_chatter_hash",
         ]:
             self.assertIn(key, counts)
             self.assertIsInstance(counts[key], str)
@@ -65,6 +66,25 @@ class SyncStateHashingTests(unittest.TestCase):
 
         self.assertEqual(updated["channels"], baseline["channels"] + 1)
         self.assertNotEqual(updated["channels_hash"], baseline["channels_hash"])
+
+    def test_public_chatter_mismatch_requests_repair_for_capable_peer(self):
+        counts = db_operations.get_local_record_counts()
+        db_operations.upsert_peer_sync_state(
+            peer_node_id="!peer1",
+            bulletins=counts["bulletins"], mail=counts["mail"],
+            channels=counts["channels"], zork_saves=counts["zork_saves"],
+            profiles=counts["profiles"], game_scores=counts["game_scores"],
+            bulletins_hash=counts["bulletins_hash"], mail_hash=counts["mail_hash"],
+            channels_hash=counts["channels_hash"], zork_saves_hash=counts["zork_saves_hash"],
+            profiles_hash=counts["profiles_hash"], game_scores_hash=counts["game_scores_hash"],
+            proto_v=2, caps="pchat", public_chatter=counts["public_chatter"] + 1,
+            public_chatter_hash="different",
+        )
+
+        self.assertEqual(
+            db_operations.get_mismatched_peer_scopes({"!peer1"})["!peer1"],
+            ["public_chatter"],
+        )
 
     def test_mismatch_scopes_reports_only_affected_scope(self):
         counts = db_operations.get_local_record_counts()
@@ -250,10 +270,16 @@ class SyncStateHashingTests(unittest.TestCase):
         third = utils.select_syncstate_peers_to_notify(["!peer1"], changed_counts, cache, now=300.0, heartbeat_seconds=1800)
         fourth = utils.select_syncstate_peers_to_notify(["!peer1"], changed_counts, cache, now=2200.0, heartbeat_seconds=1800)
 
+        chatter_counts = dict(changed_counts)
+        chatter_counts["public_chatter"] = counts["public_chatter"] + 1
+        chatter_counts["public_chatter_hash"] = "new-chatter-hash"
+        fifth = utils.select_syncstate_peers_to_notify(["!peer1"], chatter_counts, cache, now=2201.0, heartbeat_seconds=1800)
+
         self.assertEqual(first, ["!peer1"])
         self.assertEqual(second, [])
         self.assertEqual(third, ["!peer1"])
         self.assertEqual(fourth, ["!peer1"])
+        self.assertEqual(fifth, ["!peer1"])
 
 
 if __name__ == "__main__":
