@@ -267,6 +267,7 @@ def public_key_entry(public_raw: bytes) -> str:
 # code. Nothing has to be added to sudoers.
 # ---------------------------------------------------------------------------
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -406,6 +407,29 @@ def install_requirements() -> tuple:
     return True, "dependencies up to date"
 
 
+def restart_companion_services() -> tuple:
+    """Refresh processes that do not exit with the mesh server."""
+    configured = os.getenv("BBS_FLEET_COMPANION_RESTART_COMMAND")
+    if configured is not None:
+        command = shlex.split(configured)
+    elif os.name == "posix" and shutil.which("systemctl"):
+        command = ["systemctl", "restart", "bacon-web-admin.service"]
+        if os.geteuid() != 0 and shutil.which("sudo"):
+            command[0:0] = ["sudo", "-n"]
+    else:
+        return True, "no companion restart command configured"
+    if not command:
+        return True, "companion restart disabled"
+    try:
+        result = subprocess.run(
+            command, capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout or "restart failed").strip()[:300]
+    return True, "companion services refreshed"
+
+
 def apply_target(commit: str, version: str = "") -> tuple:
     """Fetch, smoke-test, switch, and arm the rollback guard.
 
@@ -457,9 +481,17 @@ def apply_target(commit: str, version: str = "") -> tuple:
                       previous[:12], install_detail)
         return False, f"dependency install failed: {install_detail}"
 
+    refreshed, refresh_detail = restart_companion_services()
+    if not refreshed:
+        logging.error("Fleet update applied, but companion refresh failed: %s",
+                      refresh_detail)
+
     logging.warning("Fleet update: switched %s -> %s; exiting so systemd "
                     "restarts on the new code", previous[:12], str(commit)[:12])
-    return True, f"applied {str(commit)[:12]}"
+    detail = f"applied {str(commit)[:12]}"
+    if not refreshed:
+        detail += f"; companion refresh failed: {refresh_detail}"
+    return True, detail
 
 def read_fleet_settings(config) -> dict:
     """Read [fleet] from a ConfigParser, refusing anything misconfigured.
