@@ -70,6 +70,12 @@
       {% else %}
         <p class="text-warning">This node is <strong>not</strong> on the target commit.</p>
       {% endif %}
+      <p>
+        <strong>Local state:</strong> <code>{{ fleet.local_state }}</code>
+        &nbsp; <strong>Peers:</strong>
+        <span class="text-success">{{ fleet.healthy_peers }} on target</span>,
+        <span class="text-warning">{{ fleet.pending_peers }} pending</span>
+      </p>
     {% else %}
       <p class="text-muted">No target has been set for this group.</p>
     {% endif %}
@@ -80,52 +86,25 @@
   <div class="card-header"><h2>Set up fleet signing</h2></div>
   <div class="card-body">
     <ol>
-      <li>Choose a group and update mode under <strong>Configuration</strong>,
-        then save them.</li>
-      <li>Generate a signing key below. On HTTPS or localhost it is created
-        entirely in your browser. On plain HTTP the node creates it in memory
-        and returns it once. The private key is never stored by the node.</li>
-      <li>Move the downloaded file to
-        <code>%APPDATA%\TC2-BaconBS\fleet-key</code> on Windows or
-        <code>~/.config/bacon-bbs/fleet-key</code> on Linux, and keep an
-        offline backup.</li>
-      <li>On every other node, open its Fleet tab and paste the displayed
-        public entry under <strong>Trust a new key</strong>.</li>
-      <li>Push the commit, run
-        <code>python scripts/fleet_sign.py --group {{ fleet.group or 'baconbbs' }} sign HEAD</code>,
-        then paste the signed instruction into any fleet node below.</li>
+      <li>On the admin machine, from this repository, run
+        <code>python scripts/fleet_sign.py --group {{ fleet.group or 'baconbbs' }} init</code>.
+        It creates the private key in the correct protected user directory for
+        Windows, Linux, or macOS. No downloaded file needs to be moved.</li>
+      <li>Keep an offline backup of the path printed by <code>init</code>.</li>
+      <li>On each node, paste the public entry printed by <code>init</code>
+        under <strong>Trust a new key</strong>, or run
+        <code>python scripts/fleet_sign.py --group {{ fleet.group or 'baconbbs' }} enroll 'fk...:...'</code>
+        in that node's repository.</li>
+      <li>Run <code>python scripts/fleet_sign.py token</code>, then add the
+        printed <code>api_token_hash</code> to this seed node's fleet config.</li>
+      <li>Push the commit, then run
+        <code>python scripts/fleet_sign.py --group {{ fleet.group or 'baconbbs' }} deploy HEAD --seed http://this-node:8081</code>.</li>
     </ol>
 
     <div class="alert alert-warning">
-      The downloaded private key can command every node that trusts it. It is
-      never stored by this BBS. Generate it from a browser and network you
-      trust, then store it like an SSH private key.
-    </div>
-    <div class="alert alert-danger" id="fleet-key-http-warning" hidden>
-      This page is using plain HTTP, so the node must generate the key and
-      return it over this connection. Anyone able to intercept this admin
-      session could capture it. Use a trusted local network or HTTPS.
-    </div>
-    <div id="fleet-key-generator">
-      <div class="form-group">
-        <label>
-          <input type="checkbox" id="fleet-key-confirm">
-          I understand that losing this private key requires installing a new
-          public key on every node.
-        </label>
-      </div>
-      <button type="button" class="btn btn-primary" id="fleet-key-generate">
-        Generate and download key
-      </button>
-      <p id="fleet-key-status" class="text-muted" role="status" aria-live="polite"></p>
-      <div id="fleet-key-result" hidden>
-        <div class="form-group">
-          <label for="fleet-generated-public">Public key entry</label>
-          <textarea class="form-control" id="fleet-generated-public" rows="2" readonly></textarea>
-        </div>
-        <button type="button" class="btn" id="fleet-key-copy">Copy public key</button>
-      </div>
-      <noscript><p class="text-danger">JavaScript is required to generate a key in the browser.</p></noscript>
+      The private key can command every node that trusts it. It stays on the
+      admin machine and is never generated, uploaded, or downloaded by this
+      BBS.
     </div>
   </div>
 </div>
@@ -230,10 +209,11 @@
 </div>
 
 <div class="card">
-  <div class="card-header"><h2>Apply a signed instruction</h2></div>
+  <div class="card-header"><h2>Signed instruction fallback</h2></div>
   <div class="card-body">
     <p class="text-muted">
-      Produced on the admin machine with
+      Routine releases use the <code>deploy</code> command. For recovery, a
+      blob can still be produced on the admin machine with
       <code>scripts/fleet_sign.py sign &lt;ref&gt;</code>. The blob is not secret:
       it authorises one commit for one group and cannot be edited without
       breaking its signature. It is verified here before anything is stored,
@@ -273,10 +253,12 @@
             <td>{{ peer.reported_at | relative_age }}</td>
             <td>
               {% if not fleet.target %}<span class="text-muted">&mdash;</span>
-              {% elif peer.commit_hash and peer.commit_hash.startswith(fleet.target.commit[:12]) %}
-                <span class="text-success">on target</span>
+              {% elif peer.fleet_state == 'healthy' %}
+                <span class="text-success">healthy</span>
+              {% elif peer.fleet_state in ('failed', 'rolled_back', 'rollback_failed') %}
+                <span class="text-danger">{{ peer.fleet_state }}</span>
               {% else %}
-                <span class="text-warning">drifted</span>
+                <span class="text-warning">{{ peer.fleet_state }}</span>
               {% endif %}
             </td>
           </tr>
@@ -290,7 +272,5 @@
   </div>
 </div>
 {% endblock %}
+{% block extra_scripts %}{% endblock %}
 
-{% block extra_scripts %}
-<script src="{{ url_for('static', filename='js/fleet.js', v=asset_version) }}"></script>
-{% endblock %}

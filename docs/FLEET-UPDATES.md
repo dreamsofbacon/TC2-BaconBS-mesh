@@ -49,15 +49,17 @@ On your admin machine, in the repo:
 python scripts/fleet_sign.py --group baconbbsvt init
 ```
 
-It writes the private key (`%APPDATA%\TC2-BaconBS\fleet-key` on Windows,
-`~/.config/bacon-bbs/fleet-key` on Linux) and prints the block to paste into
-each node:
+It writes the private key to the platform's protected per-user configuration
+directory, prints the exact path, and prints an `enroll` command for each node.
+No downloaded file or manual key placement is involved. It also prints the
+equivalent configuration block for recovery:
 
 ```ini
 [fleet]
 group = baconbbsvt
 trusted_keys = fk15a23a:Z26fdWpjkQTHQCmKIUfvFOT3HoXuPZ1jGe-g2KBTolI
 updates = auto
+api_token_hash =
 ```
 
 **Back that key up now, somewhere offline.** It cannot be recovered. Losing
@@ -70,8 +72,17 @@ topic prefix keeps it memorable.
 
 ### 2. Configure each node
 
-Paste that block into `config.ini` on the node and restart, or paste it into
-the file directly. Then restart the services:
+Copy the public `fk...:...` entry from `show-pubkey --entry-only` to each node,
+then run this in the node's repository:
+
+```sh
+python scripts/fleet_sign.py --group baconbbsvt enroll "fk...:..." --config config.ini --updates auto
+```
+
+The command validates the key, preserves existing trusted keys, writes
+atomically, and creates `config.ini.fleet-backup` before the first change.
+Alternatively, use the Fleet web page to enroll the public key. Then restart
+the services:
 
 ```sh
 sudo systemctl restart mesh-bbs.service bacon-web-admin.service
@@ -93,17 +104,43 @@ Add `pin_commit = <sha>` to freeze a node on one commit while you debug it.
 Targets are still recorded, just not applied — useful when you do not want
 to remove the key.
 
-### 3. Check it before you rely on it
+### 3. Configure one seed node
+
+Generate a scoped API token on the admin machine:
+
+```sh
+python scripts/fleet_sign.py token
+```
+
+Add the printed `api_token_hash` to the seed node's `[fleet]` section and
+restart its web admin. Keep the raw token on the admin machine only. Set these
+environment variables to avoid repeating it on the command line:
+
+```sh
+BBS_FLEET_SEED=http://seed-node:8081
+BBS_FLEET_API_TOKEN=the-raw-token
+```
+
+Use the platform's normal persistent environment mechanism if desired. The
+same variables and commands work on Windows and Linux.
+
+Before the first release, verify the key, pushed commit, seed API, group,
+update mode, and trusted signer in one pass:
+
+```sh
+python scripts/fleet_sign.py --group baconbbsvt doctor HEAD
+```
+
+### 4. Check it before you rely on it
 
 On the admin machine, sign the commit the nodes are already on:
 
 ```sh
-python scripts/fleet_sign.py --group baconbbsvt sign origin/main
+python scripts/fleet_sign.py --group baconbbsvt deploy origin/main
 ```
 
-Paste the blob into **Fleet → Apply a signed instruction** on one node. It
-should say the target was accepted, and the page should show *This node is
-on the target commit*. Nothing restarts, because there is nothing to change.
+The seed should accept it, and the Fleet page should show *This node is on the
+target commit*. Nothing restarts, because there is nothing to change.
 
 That proves the whole path — signing, verification, storage — with no risk.
 
@@ -113,11 +150,24 @@ That proves the whole path — signing, verification, storage — with no risk.
 
 ```sh
 git push                                                  # nodes fetch from the remote
-python scripts/fleet_sign.py --group baconbbsvt sign HEAD
+python scripts/fleet_sign.py --group baconbbsvt deploy HEAD
 ```
 
-Paste the blob into the Fleet page of **any one node**. It verifies, stores,
-and relays to its peers, so you do not need to visit each one.
+The seed verifies and stores the instruction, advertises it before applying,
+and relays it during normal sync heartbeats. Nodes that reconnect later receive
+the newest signed target because it remains durable until superseded.
+
+The raw signed-instruction box remains on the Fleet page as a recovery path.
+
+Check convergence from the same admin machine:
+
+```sh
+python scripts/fleet_sign.py --group baconbbsvt status
+```
+
+The local row includes probation or rollback-guard state. Peer rows are
+self-reported and advisory; `healthy` means their reported commit matches the
+signed target, while `pending` includes drifted, stale, or not-yet-updated peers.
 
 `sign` refuses a commit that is not on a remote branch, because nodes fetch
 from the remote and a local-only commit converges nowhere — a failure that
@@ -161,11 +211,18 @@ commit failed and which was restored. The journal has the reason:
 sudo journalctl -u mesh-bbs.service | grep update_guard
 ```
 
-**Roll the fleet back deliberately.** Sign the older commit and publish it,
-the same as any other update. Nothing distinguishes going backwards from
-going forwards, other than the replay check — which compares *when the
-instruction was issued*, not which commit it names, so a newly signed
-instruction for an old commit is accepted.
+**Roll the fleet back deliberately.** Name the known-good commit or tag:
+
+```sh
+python scripts/fleet_sign.py --group baconbbsvt rollback
+```
+
+With no ref, the CLI selects the previous distinct signed target from history.
+Pass an explicit known-good commit or tag to override it. Confirm the prompt
+(or use `--yes` in automation). Rollback uses the normal signed deployment
+path. Nothing distinguishes going backwards from going forwards, other than
+the replay check, which compares when the instruction was issued rather than
+which commit it names.
 
 **Freeze one node.** Set `pin_commit` on it, or `updates = off`.
 

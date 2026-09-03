@@ -1237,12 +1237,36 @@ def _ensure_fleet_tables(cursor) -> None:
                     received_at TEXT NOT NULL,
                     applied_at TEXT
                 );''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS fleet_target_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_name TEXT NOT NULL,
+                    target_commit TEXT NOT NULL,
+                    target_version TEXT NOT NULL DEFAULT '',
+                    issued_at TEXT NOT NULL,
+                    signer_key_id TEXT NOT NULL DEFAULT '',
+                    nonce TEXT NOT NULL DEFAULT '',
+                    instruction TEXT NOT NULL,
+                    received_at TEXT NOT NULL,
+                    UNIQUE(group_name, issued_at, nonce)
+                );''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_fleet_history_group_issued
+                      ON fleet_target_history(group_name, issued_at DESC);''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS node_versions (
                     node_id TEXT PRIMARY KEY,
                     app_version TEXT NOT NULL DEFAULT '',
                     commit_hash TEXT NOT NULL DEFAULT '',
+                    target_commit TEXT NOT NULL DEFAULT '',
+                    rollout_state TEXT NOT NULL DEFAULT '',
                     reported_at TEXT NOT NULL
                 );''')
+    cursor.execute("PRAGMA table_info(node_versions)")
+    node_version_columns = {row[1] for row in cursor.fetchall()}
+    if 'target_commit' not in node_version_columns:
+        cursor.execute(
+            "ALTER TABLE node_versions ADD COLUMN target_commit TEXT NOT NULL DEFAULT ''")
+    if 'rollout_state' not in node_version_columns:
+        cursor.execute(
+            "ALTER TABLE node_versions ADD COLUMN rollout_state TEXT NOT NULL DEFAULT ''")
 
 
 def _ensure_mail_dm_delivery_table(cursor) -> None:
@@ -5695,6 +5719,15 @@ def store_fleet_target(payload: dict, instruction: str) -> bool:
     if existing and str(existing['issued_at']) >= issued_at:
         return False
     conn = get_db_connection()
+    received_at = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT OR IGNORE INTO fleet_target_history
+               (group_name, target_commit, target_version, issued_at,
+                signer_key_id, nonce, instruction, received_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (group, str(payload.get('c', '')), str(payload.get('v', '')),
+         issued_at, str(payload.get('k', '')), str(payload.get('n', '')),
+         str(instruction), received_at))
     conn.execute(
         """INSERT INTO fleet_target
                (group_name, target_commit, target_version, issued_at,
@@ -5711,9 +5744,23 @@ def store_fleet_target(payload: dict, instruction: str) -> bool:
                applied_at = NULL""",
         (group, str(payload.get('c', '')), str(payload.get('v', '')),
          issued_at, str(payload.get('k', '')), str(payload.get('n', '')),
-         str(instruction), datetime.now(timezone.utc).isoformat()))
+         str(instruction), received_at))
     conn.commit()
     return True
+
+
+def get_fleet_target_history(group: str, limit: int = 20) -> list:
+    """Newest accepted signed targets for operator rollback selection."""
+    conn = get_db_connection()
+    rows = conn.execute(
+        """SELECT target_commit, target_version, issued_at, signer_key_id,
+                  received_at
+           FROM fleet_target_history
+           WHERE group_name = ?
+           ORDER BY issued_at DESC, id DESC LIMIT ?""",
+        (str(group), max(1, min(int(limit), 100)))).fetchall()
+    keys = ('commit', 'version', 'issued_at', 'signer_key_id', 'received_at')
+    return [dict(zip(keys, row)) for row in rows]
 
 
 def mark_fleet_target_applied(group: str) -> None:
@@ -5729,19 +5776,27 @@ def last_fleet_issued_at(group: str) -> str:
     return str(target['issued_at']) if target else ''
 
 
-def record_node_version(node_id: str, app_version: str, commit_hash: str) -> None:
+def record_node_version(node_id: str, app_version: str, commit_hash: str,
+                        target_commit: str = '', rollout_state: str = '') -> None:
     """Remember what a peer says it is running. Advisory only."""
     if not str(node_id or '').strip():
         return
     conn = get_db_connection()
     conn.execute(
-        """INSERT INTO node_versions (node_id, app_version, commit_hash, reported_at)
-           VALUES (?, ?, ?, ?)
+        """INSERT INTO node_versions
+               (node_id, app_version, commit_hash, target_commit,
+                rollout_state, reported_at)
+           VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT(node_id) DO UPDATE SET
                app_version = excluded.app_version,
                commit_hash = excluded.commit_hash,
+               target_commit = CASE WHEN excluded.target_commit != ''
+                   THEN excluded.target_commit ELSE node_versions.target_commit END,
+               rollout_state = CASE WHEN excluded.rollout_state != ''
+                   THEN excluded.rollout_state ELSE node_versions.rollout_state END,
                reported_at = excluded.reported_at""",
         (str(node_id).strip(), str(app_version or ''), str(commit_hash or ''),
+         str(target_commit or ''), str(rollout_state or ''),
          datetime.now(timezone.utc).isoformat()))
     conn.commit()
 
@@ -5750,7 +5805,9 @@ def get_node_versions() -> list:
     """Every peer's self-reported version, newest report first."""
     conn = get_db_connection()
     rows = conn.execute(
-        """SELECT node_id, app_version, commit_hash, reported_at
+        """SELECT node_id, app_version, commit_hash, target_commit,
+              rollout_state, reported_at
            FROM node_versions ORDER BY reported_at DESC""").fetchall()
-    return [dict(zip(('node_id', 'app_version', 'commit_hash', 'reported_at'), r))
+    return [dict(zip(('node_id', 'app_version', 'commit_hash', 'target_commit',
+                      'rollout_state', 'reported_at'), r))
             for r in rows]

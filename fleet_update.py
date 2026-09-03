@@ -445,8 +445,17 @@ def apply_target(commit: str, version: str = "") -> tuple:
 
     installed, install_detail = install_requirements()
     if not installed:
-        logging.warning("Fleet update: %s (continuing; the guard will catch a "
-                        "failure to start)", install_detail)
+        restored = _git("checkout", "--quiet", "--force", "--detach", previous)
+        clear_update_state()
+        if restored.returncode != 0:
+            logging.error(
+                "Fleet update dependency install failed and checkout restore "
+                "also failed: %s", restored.stderr.strip())
+            return False, (f"dependency install failed: {install_detail}; "
+                           "manual checkout restore required")
+        logging.error("Fleet update dependency install failed; restored %s: %s",
+                      previous[:12], install_detail)
+        return False, f"dependency install failed: {install_detail}"
 
     logging.warning("Fleet update: switched %s -> %s; exiting so systemd "
                     "restarts on the new code", previous[:12], str(commit)[:12])

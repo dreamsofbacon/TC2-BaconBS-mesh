@@ -580,27 +580,27 @@ Environment="BBS_ZORK_INTERPRETER=/usr/games/dfrotz"
 
 ---
 
-## Fleet Deployment (Windows to Linux Nodes)
+## Fleet Deployment
 
-Define the fleet once in `scripts/node-update-config.json` (copy the example
-to start), then deploy every enabled node with one command:
+Routine deployment is platform-neutral and travels through the mesh. After
+one-time key enrollment, push the commit and submit one signed instruction to
+one seed node:
 
-```powershell
-Copy-Item .\scripts\node-update-config.json.example .\scripts\node-update-config.json
-.\scripts\deploy-fleet.ps1 -ValidateOnly
-.\scripts\deploy-fleet.ps1
+```sh
+python scripts/fleet_sign.py token
+# Add the printed api_token_hash to the seed node's [fleet] section.
+
+git push
+python scripts/fleet_sign.py --group baconbbs doctor HEAD \
+  --seed http://seed-node:8081 --token YOUR_ONE_TIME_TOKEN
+python scripts/fleet_sign.py --group baconbbs deploy HEAD \
+  --seed http://seed-node:8081 --token YOUR_ONE_TIME_TOKEN
 ```
 
-Use `-Node node-2` to deploy one named node, `-Reboot` to pull and reboot,
-and `-StopOnError` to stop at the first failure. Top-level `repoPath`,
-`branch`, and `services` are defaults; any node can override them or set
-`enabled` to `false`. The helper runs directly from each node's repository,
-so no separate script installation is needed.
-
-The command installs Posh-SSH if needed. Credentials are stored securely in
-`%APPDATA%\TC2-BaconBS\node-update-cred.xml` on first run; use
-`-ResetCredential` to replace them. The older `update-two-nodes.ps1` command
-remains as a compatibility wrapper.
+Set `BBS_FLEET_SEED` and `BBS_FLEET_API_TOKEN` on the admin machine to omit
+the last two options and keep the token out of shell history. The seed verifies
+the Ed25519 signature, stores the target, and relays it to capable peers. The
+PowerShell SSH deployment scripts are retained only for break-glass recovery.
 
 ---
 
@@ -774,6 +774,16 @@ back if it will not run.
 
 A node ignores every instruction unless its `config.ini` lists your public
 key, so sharing an MQTT broker with someone is not joining their fleet.
+
+Once enrolled, routine releases are one command on Windows or Linux:
+
+```sh
+python scripts/fleet_sign.py --group baconbbs deploy HEAD --seed http://seed-node:8081
+```
+
+Use `enroll` for the one-time public-key setup on each node. Run `doctor`
+before the first release, use `status` to inspect convergence, and use
+`rollback` to issue a fresh signed target for the previous accepted release.
 
 See [docs/FLEET-UPDATES.md](docs/FLEET-UPDATES.md) for setup, and read the
 threat model there before arming it &mdash; an update instruction is remote

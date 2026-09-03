@@ -6,7 +6,7 @@ config.ini and defaults to "change-me". So the paste is NOT trusted because
 it arrived through an authenticated session: it is verified exactly as if it
 had come off the air. This endpoint can relay authority, never mint it.
 """
-import base64
+import hashlib
 import os
 import sqlite3
 import sys
@@ -26,6 +26,7 @@ import web_admin
 
 GROUP = "baconbbsvt"
 COMMIT = "1234abcd" * 5
+API_TOKEN = "test-fleet-token"
 
 
 class _Node:
@@ -41,7 +42,8 @@ class _Node:
             handle.write(
                 "[admin]\nusername = admin\npassword = pw\n\n"
                 f"[fleet]\ngroup = {GROUP}\ntrusted_keys = {self.entry}\n"
-                "updates = auto\n")
+                "updates = auto\n"
+                f"api_token_hash = {hashlib.sha256(API_TOKEN.encode()).hexdigest()}\n")
         self.env = mock.patch.dict(os.environ, {
             "BBS_FLEET_APPLY_TRIGGER_PATH": self.trigger,
             "BBS_CONFIG_PATH": self.config,
@@ -100,15 +102,15 @@ class PageTests(unittest.TestCase):
             self.assertIn("Fleet", body)
             self.assertIn(node.key_id, body)
 
-    def test_page_shows_key_generator_and_setup_directions(self):
+    def test_page_shows_platform_neutral_cli_setup_directions(self):
         with _Node() as node:
             page = node.client.get("/fleet")
             body = page.get_data(as_text=True)
-            self.assertIn("Generate and download key", body)
-            self.assertIn("fleet-key", body)
             self.assertIn("scripts/fleet_sign.py", body)
-            self.assertIn("js/fleet.js", body)
-            self.assertIn("plain HTTP", body)
+            self.assertIn(" init</code>", body)
+            self.assertIn("No downloaded file needs to be moved", body)
+            self.assertNotIn("Generate and download key", body)
+            self.assertNotIn("js/fleet.js", body)
 
     def test_it_requires_a_login(self):
         with _Node() as node:
@@ -178,6 +180,73 @@ class PasteBoxTests(unittest.TestCase):
                 "/fleet/apply", data={"instruction": node.instruction()})
             self.assertEqual(response.status_code, 403)
             self.assertIsNone(db_operations.get_fleet_target(GROUP))
+
+
+class FleetApiTests(unittest.TestCase):
+    def test_api_accepts_a_signed_instruction(self):
+        with _Node() as node:
+            response = node.client.post(
+                "/api/fleet/apply", json={"instruction": node.instruction()},
+                headers={"Authorization": f"Bearer {API_TOKEN}"})
+
+            self.assertEqual(response.status_code, 202)
+            self.assertEqual(response.get_json()["code"], "accepted")
+            self.assertEqual(db_operations.get_fleet_target(GROUP)["commit"], COMMIT)
+
+    def test_api_rejects_a_missing_token(self):
+        with _Node() as node:
+            response = node.client.post(
+                "/api/fleet/apply", json={"instruction": node.instruction()})
+
+            self.assertEqual(response.status_code, 401)
+            self.assertIsNone(db_operations.get_fleet_target(GROUP))
+
+    def test_api_rejects_a_forged_instruction_even_with_a_valid_token(self):
+        with _Node() as node:
+            attacker, _, _ = fleet_update.generate_keypair()
+            response = node.client.post(
+                "/api/fleet/apply",
+                json={"instruction": node.instruction(private=attacker)},
+                headers={"Authorization": f"Bearer {API_TOKEN}"})
+
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.get_json()["code"], "rejected")
+            self.assertIsNone(db_operations.get_fleet_target(GROUP))
+
+    def test_status_api_reports_target_local_state_and_peers(self):
+        with _Node() as node:
+            node.paste(node.instruction())
+            db_operations.record_node_version("!peer1", "0.1.999", COMMIT[:7])
+            response = node.client.get(
+                "/api/fleet/status",
+                headers={"Authorization": f"Bearer {API_TOKEN}"})
+
+            self.assertEqual(response.status_code, 200)
+            body = response.get_json()
+            self.assertTrue(body["ok"])
+            self.assertEqual(body["target"]["commit"], COMMIT)
+            self.assertEqual(body["history"][0]["commit"], COMMIT)
+            self.assertEqual(body["nodes"][0]["node_id"], "!peer1")
+            self.assertIn("update_state", body["local"])
+            self.assertGreaterEqual(body["summary"]["healthy"], 1)
+
+    def test_explicit_peer_failure_is_not_hidden_by_a_matching_commit(self):
+        with _Node() as node:
+            node.paste(node.instruction())
+            db_operations.record_node_version(
+                "!peer1", "0.1.999", COMMIT[:7], COMMIT, "failed")
+            response = node.client.get(
+                "/api/fleet/status",
+                headers={"Authorization": f"Bearer {API_TOKEN}"})
+
+            peer = response.get_json()["nodes"][0]
+            self.assertEqual(peer["fleet_state"], "failed")
+
+    def test_status_api_requires_the_fleet_token(self):
+        with _Node() as node:
+            response = node.client.get("/api/fleet/status")
+
+            self.assertEqual(response.status_code, 401)
 
 
 class LocalOptOutTests(unittest.TestCase):
@@ -347,96 +416,9 @@ class TrustedKeyFormTests(unittest.TestCase):
             self.assertNotIn(new_id, self._trusted(node))
 
 
-class GeneratedKeyTests(unittest.TestCase):
-    def _post(self, node, public_raw, *, confirm=True, csrf=True):
-        page = node.client.get("/fleet")
-        headers = {}
-        if csrf:
-            headers["X-CSRF-Token"] = node._token(page.get_data(as_text=True))
-        encoded = base64.urlsafe_b64encode(public_raw).decode("ascii").rstrip("=")
-        return node.client.post("/api/fleet/keys/generated", json={
-            "public_key": encoded,
-            "confirm": confirm,
-        }, headers=headers)
-
-    def _trusted(self, node):
-        import configparser
-        parser = configparser.ConfigParser()
-        parser.read(node.config)
-        return fleet_update.parse_trusted_keys(
-            parser.get("fleet", "trusted_keys", fallback=""))
-
-    def test_browser_generated_public_key_is_trusted(self):
+class GeneratedKeyEndpointTests(unittest.TestCase):
+    def test_private_key_generation_endpoints_do_not_exist(self):
         with _Node() as node:
-            _, public_raw, key_id = fleet_update.generate_keypair()
-            response = self._post(node, public_raw)
-            self.assertEqual(response.status_code, 200)
-            self.assertTrue(response.get_json()["ok"])
-            self.assertEqual(response.get_json()["key_id"], key_id)
-            self.assertIn(key_id, self._trusted(node))
-            self.assertIn(node.key_id, self._trusted(node))
-
-    def test_response_contains_only_the_public_entry(self):
-        with _Node() as node:
-            _, public_raw, _ = fleet_update.generate_keypair()
-            payload = self._post(node, public_raw).get_json()
-            self.assertIn("public_entry", payload)
-            self.assertNotIn("private_key", payload)
-
-    def test_invalid_public_key_is_refused(self):
-        with _Node() as node:
-            response = self._post(node, b"too short")
-            self.assertEqual(response.status_code, 400)
-            self.assertEqual(list(self._trusted(node)), [node.key_id])
-
-    def test_generation_requires_confirmation(self):
-        with _Node() as node:
-            _, public_raw, key_id = fleet_update.generate_keypair()
-            response = self._post(node, public_raw, confirm=False)
-            self.assertEqual(response.status_code, 400)
-            self.assertNotIn(key_id, self._trusted(node))
-
-    def test_generation_requires_csrf(self):
-        with _Node() as node:
-            _, public_raw, key_id = fleet_update.generate_keypair()
-            response = self._post(node, public_raw, csrf=False)
-            self.assertEqual(response.status_code, 403)
-            self.assertNotIn(key_id, self._trusted(node))
-
-    def test_http_fallback_returns_matching_private_key_without_storing_it(self):
-        from cryptography.hazmat.primitives import serialization
-
-        with _Node() as node:
-            page = node.client.get("/fleet")
-            response = node.client.post("/api/fleet/keys/create", json={
-                "confirm": True,
-            }, headers={
-                "X-CSRF-Token": node._token(page.get_data(as_text=True)),
-            })
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.headers["Cache-Control"], "no-store")
-            payload = response.get_json()
-            private_key = serialization.load_pem_private_key(
-                payload["private_key"].encode("ascii"), password=None)
-            public_raw = private_key.public_key().public_bytes(
-                encoding=serialization.Encoding.Raw,
-                format=serialization.PublicFormat.Raw)
-            self.assertEqual(
-                fleet_update.public_key_entry(public_raw),
-                payload["public_entry"])
-            self.assertIn(payload["key_id"], self._trusted(node))
-            with open(node.config, "r", encoding="utf-8") as handle:
-                self.assertNotIn("PRIVATE KEY", handle.read())
-
-    def test_http_fallback_requires_confirmation_and_csrf(self):
-        with _Node() as node:
-            page = node.client.get("/fleet")
-            token = node._token(page.get_data(as_text=True))
-            response = node.client.post("/api/fleet/keys/create",
-                                        json={"confirm": False},
-                                        headers={"X-CSRF-Token": token})
-            self.assertEqual(response.status_code, 400)
-            response = node.client.post("/api/fleet/keys/create",
-                                        json={"confirm": True})
-            self.assertEqual(response.status_code, 403)
-            self.assertEqual(list(self._trusted(node)), [node.key_id])
+            paths = {rule.rule for rule in node.app.url_map.iter_rules()}
+            self.assertNotIn("/api/fleet/keys/generated", paths)
+            self.assertNotIn("/api/fleet/keys/create", paths)

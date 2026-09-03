@@ -74,11 +74,12 @@ from message_processing import (
     get_candidate_resolution_snapshot,
 )
 from pubsub import pub
-from utils import send_hash_request_to_bbs_nodes, send_sync_state_to_bbs_nodes, send_have_to_bbs_nodes, send_peer_gossip_to_bbs_nodes, select_syncstate_peers_to_notify, home_network
+from utils import send_hash_request_to_bbs_nodes, send_sync_state_to_bbs_nodes, send_have_to_bbs_nodes, send_peer_gossip_to_bbs_nodes, send_fleet_target_to_bbs_nodes, send_node_version_to_bbs_nodes, send_fleet_status_to_bbs_nodes, select_syncstate_peers_to_notify, home_network
 
 # Per-link tick cadence constants (module-level so both main() and
 # _run_link_tick, which runs once per active RadioLink, can share them).
 _API_POLL_INTERVAL: float = 300.0
+_FLEET_APPLY_POLL_INTERVAL: float = 60.0
 # Per-record incomplete-repair attempt counts. After several failed repair
 # cycles a record's partial content is reset so a fresh, self-consistent
 # resend can rebuild it (breaks the misaligned-chunk-boundary deadlock).
@@ -1179,16 +1180,83 @@ def _apply_fleet_target_if_due(system_config: dict) -> bool:
 
     commit = str(target.get('commit', ''))
     if pinned:
+        fleet_update.write_update_state({
+            'state': 'pinned', 'target_commit': commit,
+            'pinned_commit': pinned,
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        })
         logging.warning("Fleet: target %s recorded but this node is pinned to "
                         "%s; not applying.", commit[:12], pinned[:12])
         return False
 
+    fleet_update.write_update_state({
+        'state': 'applying', 'target_commit': commit,
+        'target_version': target.get('version', ''),
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+    })
     applied, detail = fleet_update.apply_target(commit, target.get('version', ''))
     if applied:
         mark_fleet_target_applied(group)
         return True
+    state = 'healthy' if detail == 'already on the target commit' else 'failed'
+    fleet_update.write_update_state({
+        'state': state, 'target_commit': commit,
+        'target_version': target.get('version', ''), 'detail': detail,
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+    })
     logging.info("Fleet: not applying %s: %s", commit[:12], detail)
     return False
+
+
+def _advertise_fleet_state(system_config: dict, bbs_nodes, interface) -> int:
+    """Send this node's durable fleet target and running version to peers."""
+    fleet = (system_config or {}).get('fleet') or {}
+    group = str(fleet.get('group', '')).strip()
+    if str(fleet.get('updates', 'off')).lower() == 'off' or not group:
+        return 0
+
+    try:
+        import fleet_update
+        from db_operations import get_fleet_target
+        from version_info import get_app_version, get_git_commit_short
+        target = get_fleet_target(group)
+        peers = list(bbs_nodes or [])
+        sent = 0
+        if target:
+            sent += send_fleet_target_to_bbs_nodes(
+                target.get('instruction', ''), peers, interface)
+        node_id = get_local_node_id()
+        app_version = get_app_version()
+        commit = get_git_commit_short()
+        sent += send_node_version_to_bbs_nodes(
+            node_id, app_version, commit, peers, interface)
+        update_state = fleet_update.read_update_state()
+        rollout_state = str(update_state.get('state') or (
+            'healthy' if target and str(target.get('commit', '')).startswith(commit)
+            else 'pending'))
+        sent += send_fleet_status_to_bbs_nodes(
+            node_id, app_version, commit,
+            str((target or {}).get('commit') or ''), rollout_state,
+            peers, interface)
+        return sent
+    except Exception:
+        logging.debug("Fleet state advertisement failed", exc_info=True)
+        return 0
+
+
+def _advertise_fleet_state_to_links(system_config: dict, links) -> int:
+    sent = 0
+    for link in links or []:
+        if getattr(link, 'enabled', True) and link.interface is not None:
+            sent += _advertise_fleet_state(
+                system_config, link.bbs_nodes, link.interface)
+    return sent
+
+
+def _process_fleet_target(system_config: dict, links) -> bool:
+    """Advertise the durable target before an apply can exit the process."""
+    _advertise_fleet_state_to_links(system_config, links)
+    return _apply_fleet_target_if_due(system_config)
 
 
 def persist_mesh_clients(links) -> None:
@@ -1714,6 +1782,7 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
                 send_sync_state_to_bbs_nodes(local_counts, destinations, interface)
                 send_have_to_bbs_nodes(get_local_node_id(), list(destinations), interface)
                 send_peer_gossip_to_bbs_nodes(get_local_node_id(), list(destinations), interface)
+                _advertise_fleet_state(system_config, destinations, interface)
             # Manual sync clears all phase sets so every phase reruns from scratch.
             link.mail_synced_nodes.clear()
             link.bulletins_synced_nodes.clear()
@@ -1737,6 +1806,7 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
                 send_sync_state_to_bbs_nodes(local_counts, destinations, interface)
                 send_have_to_bbs_nodes(get_local_node_id(), list(destinations), interface)
                 send_peer_gossip_to_bbs_nodes(get_local_node_id(), list(destinations), interface)
+                _advertise_fleet_state(system_config, destinations, interface)
                 logging.info(
                     f"[{link.name}] Scheduled sync interval reached ({link_sync_interval:.0f}s); "
                     f"sent SYNCSTATE to {len(destinations)} peer(s)"
@@ -1769,6 +1839,7 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
                         send_sync_state_to_bbs_nodes(local_counts, _forced, interface)
                         send_have_to_bbs_nodes(get_local_node_id(), _forced, interface)
                         send_peer_gossip_to_bbs_nodes(get_local_node_id(), list(_forced), interface)
+                        _advertise_fleet_state(system_config, _forced, interface)
                         logging.info(
                             f"[{link.name}] Scheduled sync interval reached ({link_sync_interval:.0f}s); "
                             f"state unchanged but {len(behind_peers)} peer(s) behind — "
@@ -2003,6 +2074,7 @@ def main():
         last_link_reconnect_trigger_mtime = 0.0
         last_links_reload_trigger_mtime = 0.0
         last_fleet_apply_trigger_mtime = 0.0
+        next_fleet_apply_check = 0.0
         fleet_probation_confirmed = False
         fleet_started_at = time.time()
         system_config['sync_last_trigger_reason'] = 'scheduled'
@@ -2222,7 +2294,8 @@ def main():
                     if trigger_mtime > last_fleet_apply_trigger_mtime:
                         last_fleet_apply_trigger_mtime = trigger_mtime
                         os.remove(fleet_apply_trigger_path)
-                        if _apply_fleet_target_if_due(system_config):
+                        next_fleet_apply_check = now + _FLEET_APPLY_POLL_INTERVAL
+                        if _process_fleet_target(system_config, links):
                             # The working tree is now the new version. Exit so
                             # systemd (Restart=always) starts us on it.
                             logging.warning("Fleet update applied; exiting to "
@@ -2230,6 +2303,19 @@ def main():
                             return
             except Exception as exc:
                 logging.debug(f"Unable to process fleet apply trigger: {exc}")
+
+            # The database is authoritative; the trigger only reduces latency.
+            # Polling closes the crash window between storing a verified target
+            # and the main loop observing/removing its trigger file.
+            if now >= next_fleet_apply_check:
+                next_fleet_apply_check = now + _FLEET_APPLY_POLL_INTERVAL
+                try:
+                    if _process_fleet_target(system_config, links):
+                        logging.warning("Fleet update applied; exiting to "
+                                        "restart on the new version.")
+                        return
+                except Exception as exc:
+                    logging.debug(f"Unable to process stored fleet target: {exc}")
 
             # End probation once this node has demonstrably been serving for
             # a while. Until then every restart counts against the rollback
