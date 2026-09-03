@@ -13,8 +13,16 @@
                       margin-bottom:16px; }
   .chatter-legend        { grid-column:1; }
   .chatter-history-group { grid-column:2; }
-  /* Top right of the page, opposite the title. */
-  .chatter-search-group { flex:0 0 auto; width:min(260px, 40vw); margin:0; }
+  /* The upper right corner, on one line. align-self overrides the header's
+     align-items:end, which would otherwise sit it level with the bottom of
+     the strapline rather than in the corner; margin-left:auto pins it right
+     whatever the title's width. The label goes inline -- it is display:block
+     globally, which is what stacked it onto a second line. */
+  .chatter-search-group { display:flex; align-items:center; gap:8px;
+                          align-self:flex-start; margin:0 0 0 auto;
+                          flex:0 0 auto; }
+  .chatter-search-group label { display:inline; margin:0; white-space:nowrap; }
+  .chatter-search-group .form-control { width:min(240px, 42vw); }
   /* Presets beside the number rather than under it, which costs the row its
      second line for nothing. */
   .history-row { display:flex; align-items:center; gap:6px; }
@@ -117,7 +125,8 @@
     .chatter-legend { grid-column:1; grid-row:auto; }
     /* The header stacks here too, so search is under the title rather than
        beside it and has the whole width to use. */
-    .chatter-search-group { width:100%; }
+    .chatter-search-group { width:100%; margin-left:0; }
+    .chatter-search-group .form-control { width:auto; flex:1 1 auto; }
   }
   @media (max-width:430px) {
     /* The label column would leave almost nothing for the chips. */

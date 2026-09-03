@@ -162,6 +162,32 @@ class LayoutTests(unittest.TestCase):
         self.assertLess(self.controls_block().index('id="chatter-legend"'),
                         self.controls_block().index('id="chatter-hours"'))
 
+    def test_search_is_one_line(self):
+        """Label beside the box, not above it. Labels are display:block
+        globally, so this has to say otherwise explicitly."""
+        self.assertRegex(HTML, r"\.chatter-search-group \{[^}]*display:flex")
+        self.assertRegex(
+            HTML, r"\.chatter-search-group label \{[^}]*display:inline")
+        self.assertRegex(
+            HTML, r"\.chatter-search-group label \{[^}]*margin:0")
+
+    def test_search_sits_in_the_corner_not_level_with_the_strapline(self):
+        """The header is align-items:end, which would drop it to the bottom
+        of the title block; the corner needs that overridden."""
+        self.assertRegex(HTML, r"\.chatter-header \{[^}]*align-items:end")
+        self.assertRegex(
+            HTML, r"\.chatter-search-group \{[^}]*align-self:flex-start")
+
+    def test_search_is_pushed_to_the_right(self):
+        """Whatever width the title takes."""
+        self.assertRegex(
+            HTML, r"\.chatter-search-group \{[^}]*margin:0 0 0 auto")
+
+    def test_it_gives_the_width_back_when_the_header_stacks(self):
+        block = HTML[HTML.index("@media (max-width:720px)"):]
+        block = block[:block.index("\n  }")]
+        self.assertIn("margin-left:0", block)
+
     def test_the_time_filter_offers_six_presets(self):
         presets = re.search(r"for value, label in \[(.*?)\]", HTML).group(1)
         pairs = re.findall(r"\((\d+),'([^']+)'\)", presets)
