@@ -6,10 +6,8 @@
   var hours = document.getElementById("chatter-hours");
   var search = document.getElementById("chatter-search");
   var legend = document.getElementById("chatter-legend");
-  var legendNetworks = document.getElementById("legend-networks");
   var legendChannels = document.getElementById("legend-channels");
   var legendNodes = document.getElementById("legend-nodes");
-  var legendNetworkGroup = document.getElementById("legend-network-group");
   var clearButton = document.getElementById("legend-clear");
   var searchTimer = null;
 
@@ -25,7 +23,6 @@
   // starts unfiltered and one click narrows to one thing rather than
   // needing every other option switched off.
   var selected = {
-    networks: Object.create(null),
     channels: Object.create(null),
     nodes: Object.create(null)
   };
@@ -35,8 +32,7 @@
   }
 
   function filtering() {
-    return anySelected("networks") || anySelected("channels")
-      || anySelected("nodes");
+    return anySelected("channels") || anySelected("nodes");
   }
 
   function appendText(parent, tag, text, className) {
@@ -132,9 +128,9 @@
   }
 
   function matches(entry) {
-    if (anySelected("networks") && !selected.networks[networkKey(entry)]) {
-      return false;
-    }
+    // No separate network test: a channel key is already network-qualified,
+    // so selecting channels selects networks by implication and a second
+    // control for it would only be a slower way to say the same thing.
     if (anySelected("channels") && !selected.channels[channelKey(entry)]) {
       return false;
     }
@@ -246,14 +242,12 @@
   // an entry you have just filtered out is exactly the one you need to click
   // again to bring back.
   function renderLegend(entries, palette) {
-    legendNetworks.replaceChildren();
     legendChannels.replaceChildren();
     legendNodes.replaceChildren();
 
     // Null-prototype: keys here are node ids and channel names straight off
     // the air, and one calling itself "__proto__" or "constructor" would
     // otherwise collide with Object.prototype instead of getting its own row.
-    var networks = Object.create(null);
     var channels = Object.create(null);
     var nodes = Object.create(null);
     // Counted on its own rather than under a sentinel key, so no string can
@@ -261,9 +255,6 @@
     var unattributed = 0;
 
     entries.forEach(function (entry) {
-      var nwk = networkKey(entry);
-      networks[nwk] = (networks[nwk] || 0) + 1;
-
       var ck = channelKey(entry);
       if (!channels[ck]) channels[ck] = { label: channelLabel(entry), count: 0 };
       channels[ck].count++;
@@ -277,17 +268,6 @@
         nodes[nk] = { label: shortNodeId(nk), full: nk, count: 0 };
       }
       nodes[nk].count++;
-    });
-
-    var networkNames = Object.keys(networks).sort();
-    // One network is not a choice, so the group would only take up room
-    // beside the channels that already say which network they are on.
-    legendNetworkGroup.hidden = networkNames.length < 2;
-    networkNames.forEach(function (key) {
-      addLegendItem(legendNetworks, {
-        group: "networks", value: key, label: key,
-        index: null, round: false, count: networks[key]
-      });
     });
 
     Object.keys(channels).sort().forEach(function (key) {
@@ -337,7 +317,6 @@
   }
 
   function clearFilters() {
-    selected.networks = Object.create(null);
     selected.channels = Object.create(null);
     selected.nodes = Object.create(null);
     render();
