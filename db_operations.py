@@ -523,13 +523,42 @@ def _configure_db_connection(conn, busy_timeout_ms: int = DB_BUSY_TIMEOUT_MS) ->
 
 
 def get_db_connection():
-    if not hasattr(thread_local, 'connection'):
-        thread_local.connection = sqlite3.connect(
-            get_database_path(),
-            timeout=DB_TIMEOUT_SECONDS,
-        )
-        _configure_db_connection(thread_local.connection)
-    return thread_local.connection
+    """This thread's connection, reopened if the database path has changed.
+
+    The cached connection has to remember which file it opened. Without
+    that, the first connection a thread ever makes wins forever -- a later
+    BBS_DB_PATH is silently ignored and every query keeps going to the
+    previous database.
+
+    In production the path never changes, so this costs a string compare.
+    It matters under test, where each case gets its own temporary database:
+    a connection one test file left open was answering the next file's
+    queries, against a directory that had already been cleaned up. That is
+    the mechanism behind the roaming tests/test_web_admin.py failures --
+    which is why they moved between runs and vanished in isolation, and why
+    they were mistaken for a Windows file-lock artifact.
+    """
+    path = os.path.normcase(get_database_path())
+    conn = getattr(thread_local, 'connection', None)
+    if conn is not None:
+        opened_conn, opened_path = getattr(thread_local, 'connection_origin', (None, None))
+        # Only ever second-guess a connection this function opened. Tests
+        # assign an in-memory connection here directly, and that assignment
+        # is a deliberate override -- closing it would be the same bug in
+        # the opposite direction.
+        if conn is not opened_conn or opened_path == path:
+            return conn
+        # Closing rather than abandoning it: on Windows an open handle is
+        # what stops the old temporary directory from being removed.
+        try:
+            conn.close()
+        except sqlite3.Error:
+            logging.debug("Discarding a database connection that would not close cleanly.")
+    connection = sqlite3.connect(get_database_path(), timeout=DB_TIMEOUT_SECONDS)
+    thread_local.connection = connection
+    thread_local.connection_origin = (connection, path)
+    _configure_db_connection(connection)
+    return connection
 
 
 def rollback_db_connection() -> bool:
@@ -4870,6 +4899,130 @@ def unlink_node(node_id: str) -> bool:
     c.execute("DELETE FROM linked_nodes WHERE node_id = ?", (str(node_id),))
     conn.commit()
     return True
+
+
+SSH_NODE_PREFIX = 'ssh:'
+
+
+def account_deletion_blockers(account_id: str) -> list:
+    """Reasons this account must not be deleted; empty means it is safe.
+
+    Deletion stays inside the ``ssh:`` namespace, for the same reason
+    authentication does (docs/SSH-ACCESS.md). A node id is not a credential
+    -- it is the only thing mail authorization checks -- so an account
+    holding a real radio's id belongs to whoever holds that radio, and no
+    admin button should be able to dissolve it out from under them. Unlink
+    the device first and what remains is ordinary SSH state.
+    """
+    normalized = str(account_id or '').strip()
+    if not normalized:
+        return ['No account was named.']
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM accounts WHERE account_id = ?", (normalized,))
+    if c.fetchone() is None:
+        return ['No such account.']
+    c.execute(
+        "SELECT node_id FROM linked_nodes WHERE account_id = ? ORDER BY node_id",
+        (normalized,),
+    )
+    return [
+        f'{node_id} is a mesh device, not an SSH identity. Unlink it first.'
+        for node_id in (str(row[0]) for row in c.fetchall())
+        if not node_id.startswith(SSH_NODE_PREFIX)
+    ]
+
+
+def delete_account(account_id: str, bbs_nodes=None, interface=None):
+    """Delete an SSH account and the rows keyed to its identity.
+
+    Returns a count of what was removed, or None when
+    ``account_deletion_blockers`` refused.
+
+    Three things here are not ordinary row deletion:
+
+    **Mail leaves through delete_mail, one message at a time**, rather than
+    a single DELETE. That is what writes the tombstone and tells the peers.
+    A bare DELETE is undone by the next sync pass -- which is exactly why
+    removing these rows by hand was unsafe. Only mail addressed *to* the
+    account is touched; what it sent sits in other people's mailboxes and
+    is theirs, not the sender's, to destroy.
+
+    **The mail_relay_preferences row is kept and disabled, not deleted.**
+    It is the nearest thing this scope has to a tombstone.
+    ``get_mail_relay_directory`` lists any node id with ``enabled = 1``
+    whether or not an account still backs it, and
+    ``apply_synced_mail_relay_preference`` accepts a peer's value whenever
+    nothing local is newer. Deleting the row would let a stale RELAYPREF
+    from a peer put a dead mailbox back in the directory; a disabled row
+    carrying a fresh timestamp cannot.
+
+    **link_attempts is left intact.** It is the audit trail, and erasing
+    an account's history at the moment you delete it defeats the point of
+    keeping one.
+
+    Not covered, deliberately rather than by oversight: ``user_profiles``,
+    ``game_scores`` and ``zork_saves`` are keyed by the numeric sender id,
+    not the node id, and ``bbs_emulator.start_ssh_session`` mints a fresh
+    number for every connection. Those rows are therefore not reachable
+    from an account at all. They hold no mail and no credential, and what
+    stops the account being used again is the ``accounts`` row, which never
+    syncs anywhere.
+    """
+    if account_deletion_blockers(account_id):
+        return None
+
+    normalized = str(account_id).strip()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT node_id FROM linked_nodes WHERE account_id = ? ORDER BY node_id",
+        (normalized,),
+    )
+    node_ids = [str(row[0]) for row in c.fetchall()]
+    removed = {'node_ids': list(node_ids), 'mail': 0}
+
+    # Retire the relay entry first: set_account_mail_relay finds the node
+    # ids through linked_nodes, which is about to go.
+    timestamp = datetime.now(timezone.utc).isoformat(timespec='microseconds')
+    set_account_mail_relay(normalized, False, timestamp)
+    if node_ids and bbs_nodes and interface:
+        try:
+            from utils import send_mail_relay_preference_to_bbs_nodes
+            for node_id in node_ids:
+                send_mail_relay_preference_to_bbs_nodes(
+                    node_id, False, timestamp, bbs_nodes, interface)
+        except Exception:
+            logging.warning(
+                "Could not tell peers that %s no longer relays mail.",
+                normalized, exc_info=True)
+
+    if node_ids:
+        marks = ','.join('?' for _ in node_ids)
+        c.execute(
+            f"SELECT unique_id FROM mail WHERE recipient IN ({marks})", node_ids)
+        for unique_id in [str(row[0]) for row in c.fetchall()]:
+            delete_mail(unique_id, None, bbs_nodes, interface)
+            removed['mail'] += 1
+        c.execute(
+            f"DELETE FROM mail_dm_deliveries WHERE target_node_id IN ({marks})",
+            node_ids)
+        removed['mail_dm_deliveries'] = c.rowcount
+
+    c.execute(
+        "DELETE FROM mail_dm_deliveries WHERE recipient_account_id = ?",
+        (normalized,))
+    removed['mail_dm_deliveries'] = removed.get('mail_dm_deliveries', 0) + c.rowcount
+    c.execute("DELETE FROM link_codes WHERE account_id = ?", (normalized,))
+    removed['link_codes'] = c.rowcount
+    c.execute("DELETE FROM linked_nodes WHERE account_id = ?", (normalized,))
+    removed['linked_nodes'] = c.rowcount
+    c.execute("DELETE FROM accounts WHERE account_id = ?", (normalized,))
+    removed['accounts'] = c.rowcount
+    conn.commit()
+    logging.info("Deleted account %s (%s).", normalized,
+                 ', '.join(f'{key}={value}' for key, value in removed.items()))
+    return removed
 
 
 def get_account_alias(account_id: str) -> str:

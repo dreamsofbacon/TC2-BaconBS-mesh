@@ -6250,6 +6250,7 @@ def create_app(runtime_interface=None) -> Flask:
       from db_operations import (
         get_account, get_linked_nodes_detail, set_account_alias,
         unlink_node, link_node_to_account, get_account_id_for_node,
+        account_deletion_blockers, delete_account,
       )
       from utils import home_network
 
@@ -6281,6 +6282,31 @@ def create_app(runtime_interface=None) -> Flask:
           else:
             link_node_to_account(node_id, account_id, home_network(node_id))
             flash(f"Linked {node_id}.", "success")
+        elif action == "delete_account":
+          # Typing the alias is the confirmation. A dialog is one careless
+          # Enter away, and this removes the account's mail for good --
+          # tombstoned, so the peers delete their copies too.
+          typed = request.form.get("confirm_alias", "").strip()
+          expected = (account[1] or "").strip() or account_id
+          blockers = account_deletion_blockers(account_id)
+          if blockers:
+            for reason in blockers:
+              flash(reason, "error")
+          elif typed != expected:
+            flash(f'Type "{expected}" to confirm deleting this account.', "error")
+          else:
+            # No radio here: the web admin is a separate process from
+            # server.py. The tombstones delete_account writes are what
+            # carry this to the peers on the next reconcile pass.
+            removed = delete_account(account_id)
+            if removed is None:
+              flash("That account could not be deleted.", "error")
+            else:
+              flash(
+                f'Deleted "{expected}" and {removed["mail"]} message(s) '
+                "addressed to it. Peers drop their copies on the next sync.",
+                "success")
+              return redirect(url_for("accounts_list"))
         else:
           flash("Unknown action.", "error")
         return redirect(url_for("account_detail", account_id=account_id))
@@ -6294,6 +6320,7 @@ def create_app(runtime_interface=None) -> Flask:
         alias=account[1],
         created_at=account[2],
         devices=detail,
+        deletion_blockers=account_deletion_blockers(account_id),
       )
 
     def _describe_configured_device(config, section: str, label: str, runtime_interface_for_hostname=None) -> dict:

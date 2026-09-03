@@ -56,6 +56,34 @@
     </div>
   </form>
 
+  <h3>Delete this account</h3>
+  {% if deletion_blockers %}
+  <p class="text-muted">This account cannot be deleted:</p>
+  <ul class="text-muted">
+    {% for reason in deletion_blockers %}<li>{{ reason }}</li>{% endfor %}
+  </ul>
+  <p class="text-muted">Deletion is limited to SSH identities. A mesh device's node ID
+    is the only thing mail authorization checks, so an account holding one belongs to
+    whoever holds that radio &mdash; unlink the device first.</p>
+  {% else %}
+  <p class="text-muted">Removes the account, its login, and every message addressed to
+    it. The deletions are tombstoned, so peers drop their copies on the next sync and
+    cannot send them back. This cannot be undone.</p>
+  <p class="text-muted">Not removed: mail this account <em>sent</em>, which sits in its
+    recipients' mailboxes, and board posts, which are stored under a short name rather
+    than an account. Delete those from the Bulletins page if you want them gone.</p>
+  <form method="post" action="{{ url_for('account_detail', account_id=account_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="action" value="delete_account">
+    <div class="form-group">
+      <label for="confirm_alias">Type <code>{{ alias or account_id }}</code> to confirm</label>
+      <input type="text" id="confirm_alias" name="confirm_alias" class="form-control"
+             autocomplete="off" style="max-width:320px;display:inline-block">
+      <button class="btn btn-danger" type="submit">Delete Account</button>
+    </div>
+  </form>
+  {% endif %}
+
   <p style="margin-top:1rem"><a href="{{ url_for('accounts_list') }}">&larr; Back to Accounts</a></p>
 </div>
 {% endblock %}
