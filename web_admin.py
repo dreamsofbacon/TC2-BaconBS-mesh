@@ -1,3 +1,5 @@
+import base64
+import binascii
 import os
 import json
 import logging
@@ -5041,6 +5043,25 @@ def create_app(runtime_interface=None) -> Flask:
       mutate(config)
       write_config_file(config, app.config["CONFIG_PATH"])
 
+    def _store_fleet_trusted_keys(parsed: dict) -> set[str]:
+      from fleet_update import parse_trusted_keys, public_key_entry
+
+      settings = load_fleet_settings(app.config["CONFIG_PATH"])
+      existing = parse_trusted_keys(settings.get("trusted_keys", ""))
+      added = {key_id: raw for key_id, raw in parsed.items()
+               if key_id not in existing}
+      if not added:
+        return set()
+
+      merged = {**existing, **added}
+      canonical = ",".join(public_key_entry(raw) for raw in merged.values())
+
+      def mutate(config):
+        config.set("fleet", "trusted_keys", canonical)
+
+      _save_fleet_config(mutate)
+      return set(added)
+
     @app.post("/fleet/config")
     @login_required
     def fleet_config():
@@ -5091,7 +5112,7 @@ def create_app(runtime_interface=None) -> Flask:
         return redirect(url_for("fleet_page"))
 
       try:
-        from fleet_update import parse_trusted_keys, public_key_entry
+        from fleet_update import parse_trusted_keys
       except Exception:
         flash("This node cannot validate keys (the cryptography package is "
               "missing).", "error")
@@ -5103,28 +5124,104 @@ def create_app(runtime_interface=None) -> Flask:
               "fkabc123:<base64>, from `fleet_sign.py --show-pubkey`.", "error")
         return redirect(url_for("fleet_page"))
 
-      settings = load_fleet_settings(app.config["CONFIG_PATH"])
-      existing = parse_trusted_keys(settings.get("trusted_keys", ""))
-      added = {k: v for k, v in parsed.items() if k not in existing}
+      added = _store_fleet_trusted_keys(parsed)
       if not added:
         flash("That key is already trusted.", "success")
         return redirect(url_for("fleet_page"))
-
-      merged = {**existing, **added}
-      # Rebuilt from the parsed keys, so a hand-edited id cannot end up
-      # stored: the entry written is always derived from the key itself.
-      canonical = ",".join(public_key_entry(raw) for raw in merged.values())
-
-      def mutate(config):
-        config.set("fleet", "trusted_keys", canonical)
-
-      _save_fleet_config(mutate)
       for key_id in added:
         logging.warning("Fleet: trusted key %s ADDED via web admin. Its holder "
                         "can now direct this node to run any commit.", key_id)
       flash(f"Now trusting {', '.join(sorted(added))}. Restart the BBS service "
             "for it to take effect.", "success")
       return redirect(url_for("fleet_page"))
+
+    @app.post("/api/fleet/keys/generated")
+    @login_required
+    def fleet_generated_key_add():
+      """Trust the public half of a key generated inside the browser.
+
+      The private half is downloaded by JavaScript and never reaches this
+      process. Keeping that boundary means compromising a BBS node still
+      does not grant authority over every other node in the fleet.
+      """
+      data = request.get_json(silent=True) or {}
+      if data.get("confirm") is not True:
+        return jsonify({"ok": False, "error":
+                        "Confirm that the downloaded private key controls the fleet."}), 400
+
+      encoded = str(data.get("public_key") or "").strip()
+      try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        public_raw = base64.b64decode(
+          padded, altchars=b"-_", validate=True)
+      except (binascii.Error, ValueError):
+        public_raw = b""
+      if len(public_raw) != 32:
+        return jsonify({"ok": False,
+                        "error": "The generated Ed25519 public key is invalid."}), 400
+
+      try:
+        from fleet_update import parse_trusted_keys, public_key_entry
+        entry = public_key_entry(public_raw)
+        parsed = parse_trusted_keys(entry)
+      except Exception:
+        return jsonify({"ok": False,
+                        "error": "This node cannot validate fleet keys."}), 503
+
+      added = _store_fleet_trusted_keys(parsed)
+      key_id = next(iter(parsed))
+      if added:
+        logging.warning("Fleet: trusted key %s generated in the web admin. "
+                        "The private half was downloaded by the browser and "
+                        "was not sent to this node.", key_id)
+      return jsonify({
+        "ok": True,
+        "key_id": key_id,
+        "public_entry": entry,
+        "already_trusted": not bool(added),
+      })
+
+    @app.post("/api/fleet/keys/create")
+    @login_required
+    def fleet_key_create():
+      """Create and return a fleet key for browsers served over plain HTTP.
+
+      Web Crypto refuses Ed25519 outside a secure context. The private key
+      therefore exists briefly in this process for this fallback, but is
+      returned once, never written to disk, and excluded from caches.
+      """
+      data = request.get_json(silent=True) or {}
+      if data.get("confirm") is not True:
+        return jsonify({"ok": False, "error":
+                        "Confirm the private-key handling warning first."}), 400
+      try:
+        from cryptography.hazmat.primitives import serialization
+        from fleet_update import generate_keypair, parse_trusted_keys, public_key_entry
+        private_key, public_raw, key_id = generate_keypair()
+        private_pem = private_key.private_bytes(
+          encoding=serialization.Encoding.PEM,
+          format=serialization.PrivateFormat.PKCS8,
+          encryption_algorithm=serialization.NoEncryption(),
+        ).decode("ascii")
+        entry = public_key_entry(public_raw)
+        added = _store_fleet_trusted_keys(parse_trusted_keys(entry))
+      except Exception:
+        logging.exception("Fleet: web key generation failed")
+        return jsonify({"ok": False,
+                        "error": "This node could not generate a fleet key."}), 503
+
+      logging.warning("Fleet: trusted key %s generated by the web admin. The "
+                      "private half was returned once and was not stored.", key_id)
+      response = jsonify({
+        "ok": True,
+        "key_id": key_id,
+        "public_entry": entry,
+        "private_key": private_pem,
+        "already_trusted": not bool(added),
+      })
+      response.headers["Cache-Control"] = "no-store"
+      response.headers["Pragma"] = "no-cache"
+      return response
 
     @app.post("/fleet/keys/remove")
     @login_required
