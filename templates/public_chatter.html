@@ -5,15 +5,16 @@
   .chatter-header { display:flex; justify-content:space-between; gap:16px; align-items:end; margin-bottom:20px; }
   .chatter-header h1 { margin:0; font-size:28px; }
 
-  /* A quarter for the controls, three quarters for the legend -- it holds
-     every channel and node, and they are what a person actually reads. The
-     two controls stack in that quarter, search first. */
+  /* Three quarters for the legend -- it holds every channel and node, and
+     they are what a person actually reads -- and the last quarter for the
+     time filter beside it. */
   .chatter-controls { display:grid; align-items:start; gap:10px 16px;
-                      grid-template-columns:minmax(0,1fr) minmax(0,3fr);
+                      grid-template-columns:minmax(0,3fr) minmax(0,1fr);
                       margin-bottom:16px; }
-  .chatter-search-group  { grid-column:1; }
-  .chatter-history-group { grid-column:1; }
-  .chatter-legend        { grid-column:2; grid-row:1 / span 2; }
+  .chatter-legend        { grid-column:1; }
+  .chatter-history-group { grid-column:2; }
+  /* Top right of the page, opposite the title. */
+  .chatter-search-group { flex:0 0 auto; width:min(260px, 40vw); margin:0; }
   /* Presets beside the number rather than under it, which costs the row its
      second line for nothing. */
   .history-row { display:flex; align-items:center; gap:6px; }
@@ -107,9 +108,11 @@
     /* Stacked: each control gets the full width rather than being
        squeezed into a quarter of a narrow screen. */
     .chatter-controls { grid-template-columns:1fr; }
-    .chatter-search-group,
     .chatter-history-group,
     .chatter-legend { grid-column:1; grid-row:auto; }
+    /* The header stacks here too, so search is under the title rather than
+       beside it and has the whole width to use. */
+    .chatter-search-group { width:100%; }
   }
   @media (max-width:430px) {
     /* The label column would leave almost nothing for the chips. */
@@ -126,13 +129,23 @@
       <h1>Public Chatter</h1>
       <p class="text-muted">Meshtastic and MeshCore public channels heard by participating Bacon BBS nodes.</p>
     </div>
-  </header>
-
-  <section class="chatter-controls" aria-label="Chatter filters">
     <div class="form-group chatter-search-group">
       <label for="chatter-search">Search</label>
       <input class="form-control" id="chatter-search" type="search" placeholder="Message or sender">
     </div>
+  </header>
+
+  <section class="chatter-controls" aria-label="Chatter filters">
+    <section class="chatter-legend" id="chatter-legend"
+             title="Click to filter; pick several to combine"
+             aria-label="Colour legend and filters" hidden>
+      <h2 class="legend-title">Channels</h2>
+      <div class="legend-items" id="legend-channels"></div>
+      <h2 class="legend-title">Heard by</h2>
+      <div class="legend-items" id="legend-nodes"></div>
+      <button type="button" class="btn btn-sm" id="legend-clear" hidden>Clear</button>
+    </section>
+
     <div class="form-group chatter-history-group">
       <label for="chatter-hours">History (hours)</label>
       <div class="history-row">
@@ -144,16 +157,6 @@
         </div>
       </div>
     </div>
-
-    <section class="chatter-legend" id="chatter-legend"
-             title="Click to filter; pick several to combine"
-             aria-label="Colour legend and filters" hidden>
-      <h2 class="legend-title">Channels</h2>
-      <div class="legend-items" id="legend-channels"></div>
-      <h2 class="legend-title">Heard by</h2>
-      <div class="legend-items" id="legend-nodes"></div>
-      <button type="button" class="btn btn-sm" id="legend-clear" hidden>Clear</button>
-    </section>
   </section>
 
   <div id="chatter-state" class="chatter-state" role="status">Loading messages...</div>
