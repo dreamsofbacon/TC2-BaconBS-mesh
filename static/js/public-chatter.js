@@ -4,15 +4,40 @@
   var feed = document.getElementById("chatter-feed");
   var state = document.getElementById("chatter-state");
   var hours = document.getElementById("chatter-hours");
-  var network = document.getElementById("chatter-network");
-  var channel = document.getElementById("chatter-channel");
   var search = document.getElementById("chatter-search");
   var legend = document.getElementById("chatter-legend");
+  var legendNetworks = document.getElementById("legend-networks");
   var legendChannels = document.getElementById("legend-channels");
   var legendNodes = document.getElementById("legend-nodes");
+  var legendNetworkGroup = document.getElementById("legend-network-group");
+  var clearButton = document.getElementById("legend-clear");
   var searchTimer = null;
 
   var PALETTE_SIZE = 10;
+
+  // Everything the last fetch returned. Filtering happens here rather than
+  // server-side because the endpoint already returns the whole time window
+  // in one go -- so a filter is instant, and the legend can go on showing
+  // what exists rather than only what survived the filter.
+  var allEntries = [];
+
+  // An empty set means "no constraint", not "nothing selected", so the feed
+  // starts unfiltered and one click narrows to one thing rather than
+  // needing every other option switched off.
+  var selected = {
+    networks: Object.create(null),
+    channels: Object.create(null),
+    nodes: Object.create(null)
+  };
+
+  function anySelected(group) {
+    return Object.keys(selected[group]).length > 0;
+  }
+
+  function filtering() {
+    return anySelected("networks") || anySelected("channels")
+      || anySelected("nodes");
+  }
 
   function appendText(parent, tag, text, className) {
     var element = document.createElement(tag);
@@ -54,6 +79,8 @@
   }
 
   // Both dimensions of what is currently on screen, coloured together.
+  // Built from every entry rather than the visible ones, so a station does
+  // not change colour when a filter is applied.
   function buildPalette(entries) {
     var nodes = Object.create(null);
     var channels = Object.create(null);
@@ -89,15 +116,33 @@
       || "Unknown sender";
   }
 
+  function networkKey(entry) {
+    return entry.network || "unknown";
+  }
+
   function channelKey(entry) {
     // Network-qualified: meshcore channel 2 and meshtastic channel 2 are
-    // unrelated and must never share a colour.
-    return (entry.network || "unknown") + "/" + entry.channel_index;
+    // unrelated and must never share a colour or a filter.
+    return networkKey(entry) + "/" + entry.channel_index;
   }
 
   function channelLabel(entry) {
     return (entry.network || "Unknown") + " / "
       + (entry.channel_name || "Channel " + entry.channel_index);
+  }
+
+  function matches(entry) {
+    if (anySelected("networks") && !selected.networks[networkKey(entry)]) {
+      return false;
+    }
+    if (anySelected("channels") && !selected.channels[channelKey(entry)]) {
+      return false;
+    }
+    if (anySelected("nodes")) {
+      var key = captureKey(entry);
+      if (key === null || !selected.nodes[key]) return false;
+    }
+    return true;
   }
 
   function swatch(className, round, title) {
@@ -133,7 +178,7 @@
     }
 
     var channelWrap = document.createElement("span");
-    channelWrap.className = "legend-item";
+    channelWrap.className = "chatter-tag";
     channelWrap.appendChild(
       swatch("cc-" + palette.channels[channelKey(entry)], false));
     appendText(channelWrap, "span", channelLabel(entry));
@@ -149,7 +194,7 @@
 
     if (capture !== null) {
       var captureWrap = document.createElement("span");
-      captureWrap.className = "legend-item chatter-node";
+      captureWrap.className = "chatter-tag chatter-node";
       captureWrap.appendChild(
         swatch("cc-" + palette.nodes[capture], true, capture));
       var label = document.createElement("span");
@@ -164,30 +209,51 @@
     feed.appendChild(article);
   }
 
-  function addLegendItem(container, label, index, round, count, title) {
-    var item = document.createElement("span");
-    item.className = "legend-item";
+  // A legend entry is also the filter control for what it describes, so it
+  // is a real button: keyboard reachable, and its selected state announced
+  // rather than only coloured in.
+  function addLegendItem(container, options) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "legend-chip";
+    var on = !!selected[options.group][options.value];
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+
     var mark = document.createElement("span");
-    mark.className = "legend-swatch" + (round ? " is-round" : "")
-      + " " + (index === null ? "cc-none" : "cc-" + index);
-    item.appendChild(mark);
+    mark.className = "legend-swatch" + (options.round ? " is-round" : "")
+      + " " + (options.index === null ? "cc-none" : "cc-" + options.index);
+    mark.setAttribute("aria-hidden", "true");
+    button.appendChild(mark);
+
     var text = document.createElement("span");
-    text.textContent = label;
-    if (title) text.title = title;
-    item.appendChild(text);
-    appendText(item, "span", "(" + count + ")", "legend-count");
-    container.appendChild(item);
+    text.textContent = options.label;
+    if (options.title) text.title = options.title;
+    button.appendChild(text);
+    appendText(button, "span", "(" + options.count + ")", "legend-count");
+
+    button.addEventListener("click", function () {
+      if (selected[options.group][options.value]) {
+        delete selected[options.group][options.value];
+      } else {
+        selected[options.group][options.value] = true;
+      }
+      render();
+    });
+    container.appendChild(button);
   }
 
-  // Built from what is actually on screen. A legend of every channel that
-  // ever existed would be noise; this one answers "what am I looking at".
+  // Built from everything in the window, not from what survived the filter:
+  // an entry you have just filtered out is exactly the one you need to click
+  // again to bring back.
   function renderLegend(entries, palette) {
+    legendNetworks.replaceChildren();
     legendChannels.replaceChildren();
     legendNodes.replaceChildren();
 
     // Null-prototype: keys here are node ids and channel names straight off
     // the air, and one calling itself "__proto__" or "constructor" would
     // otherwise collide with Object.prototype instead of getting its own row.
+    var networks = Object.create(null);
     var channels = Object.create(null);
     var nodes = Object.create(null);
     // Counted on its own rather than under a sentinel key, so no string can
@@ -195,6 +261,9 @@
     var unattributed = 0;
 
     entries.forEach(function (entry) {
+      var nwk = networkKey(entry);
+      networks[nwk] = (networks[nwk] || 0) + 1;
+
       var ck = channelKey(entry);
       if (!channels[ck]) channels[ck] = { label: channelLabel(entry), count: 0 };
       channels[ck].count++;
@@ -210,9 +279,22 @@
       nodes[nk].count++;
     });
 
+    var networkNames = Object.keys(networks).sort();
+    // One network is not a choice, so the group would only take up room
+    // beside the channels that already say which network they are on.
+    legendNetworkGroup.hidden = networkNames.length < 2;
+    networkNames.forEach(function (key) {
+      addLegendItem(legendNetworks, {
+        group: "networks", value: key, label: key,
+        index: null, round: false, count: networks[key]
+      });
+    });
+
     Object.keys(channels).sort().forEach(function (key) {
-      addLegendItem(legendChannels, channels[key].label,
-        palette.channels[key], false, channels[key].count);
+      addLegendItem(legendChannels, {
+        group: "channels", value: key, label: channels[key].label,
+        index: palette.channels[key], round: false, count: channels[key].count
+      });
     });
 
     // Busiest first: the node hearing most of the traffic is the one you
@@ -223,13 +305,25 @@
       return b.count - a.count || a.label.localeCompare(b.label);
     });
     ranked.forEach(function (node) {
-      addLegendItem(legendNodes, node.label, palette.nodes[node.full], true,
-        node.count, node.full);
+      addLegendItem(legendNodes, {
+        group: "nodes", value: node.full, label: node.label,
+        index: palette.nodes[node.full], round: true, count: node.count,
+        title: node.full
+      });
     });
     // Rows that recorded no capture node. Neutral, and counted rather than
-    // named, because they are not one node.
+    // named, because they are not one node. Not selectable: "not recorded"
+    // is an absence, not a station you could ask to see.
     if (unattributed) {
-      addLegendItem(legendNodes, "Not recorded", null, true, unattributed);
+      var note = document.createElement("span");
+      note.className = "legend-chip is-static";
+      var mark = document.createElement("span");
+      mark.className = "legend-swatch is-round cc-none";
+      mark.setAttribute("aria-hidden", "true");
+      note.appendChild(mark);
+      appendText(note, "span", "Not recorded");
+      appendText(note, "span", "(" + unattributed + ")", "legend-count");
+      legendNodes.appendChild(note);
     }
 
     if (!Object.keys(channels).length) {
@@ -238,15 +332,40 @@
     if (!ranked.length && !unattributed) {
       appendText(legendNodes, "span", "None in view", "legend-empty");
     }
+    clearButton.hidden = !filtering();
     legend.hidden = entries.length === 0;
+  }
+
+  function clearFilters() {
+    selected.networks = Object.create(null);
+    selected.channels = Object.create(null);
+    selected.nodes = Object.create(null);
+    render();
+  }
+
+  function render() {
+    // Colours come from every entry, so filtering never repaints the feed.
+    var palette = buildPalette(allEntries);
+    var visible = allEntries.filter(matches);
+
+    feed.replaceChildren();
+    visible.forEach(function (entry) { renderEntry(entry, palette); });
+    renderLegend(allEntries, palette);
+
+    if (visible.length) {
+      state.hidden = true;
+    } else {
+      state.hidden = false;
+      state.textContent = allEntries.length
+        ? "No messages match the selected filters."
+        : "No public messages in this time window.";
+    }
   }
 
   function params() {
     var result = new URLSearchParams({
       hours: String(Math.max(1, Math.min(168, Number(hours.value) || 24)))
     });
-    if (network.value) result.set("network", network.value);
-    if (channel.value) result.set("channel", channel.value);
     if (search.value.trim()) result.set("q", search.value.trim());
     return result;
   }
@@ -258,13 +377,11 @@
       var response = await fetch("/api/public/chatter?" + params());
       if (!response.ok) throw new Error("Request failed");
       var data = await response.json();
-      feed.replaceChildren();
-      var palette = buildPalette(data.entries);
-      data.entries.forEach(function (entry) { renderEntry(entry, palette); });
-      renderLegend(data.entries, palette);
-      state.hidden = feed.children.length > 0;
-      state.textContent = "No public messages in this time window.";
+      allEntries = data.entries || [];
+      render();
     } catch (error) {
+      allEntries = [];
+      feed.replaceChildren();
       state.hidden = false;
       state.textContent = "Public chatter is temporarily unavailable.";
       legend.hidden = true;
@@ -277,13 +394,13 @@
       load();
     });
   });
-  [hours, network, channel].forEach(function (control) {
-    control.addEventListener("change", function () { load(); });
-  });
+  hours.addEventListener("change", function () { load(); });
   search.addEventListener("input", function () {
     window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(function () { load(); }, 300);
   });
+  clearButton.addEventListener("click", clearFilters);
+
   load();
   window.setInterval(function () { load(); }, 30000);
 }());
