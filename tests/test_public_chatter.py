@@ -71,6 +71,13 @@ class PublicChatterTests(unittest.TestCase):
         packet["decoded"]["payload"] = b"SYNCSTATE|1|2|3"
         self.assertIsNone(normalize_broadcast(packet, self.interface, captured_at=self.now))
 
+    def test_rejects_fleet_status_control_frames(self):
+        packet = self.packet()
+        packet["decoded"]["payload"] = (
+            b"FLEETSTATUS|!node|0.1.533|164b52f|164b52f|healthy|1788452817")
+        self.assertIsNone(
+            normalize_broadcast(packet, self.interface, captured_at=self.now))
+
     def test_meshtastic_channel_zero_defaults_to_longfast(self):
         observation = normalize_broadcast(
             self.packet(channel_name=""), self.interface, captured_at=self.now
