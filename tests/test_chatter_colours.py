@@ -104,7 +104,14 @@ class NeutralWhenUnattributedTests(unittest.TestCase):
 
     def test_the_legend_counts_them_rather_than_naming_one(self):
         """They are not one node, so they must not read as one."""
-        self.assertIn('addLegendItem(legendNodes, "Not recorded", null', JS)
+        self.assertIn('appendText(note, "span", "Not recorded")', JS)
+        self.assertIn('"(" + unattributed + ")"', JS)
+
+    def test_they_are_not_offered_as_a_filter(self):
+        """"Not recorded" is an absence, not a station you could ask to see,
+        so it renders as a static chip rather than a button."""
+        self.assertIn('note.className = "legend-chip is-static"', JS)
+        self.assertIn(".legend-chip.is-static { cursor:default", HTML)
 
 
 class IdentityKeyTests(unittest.TestCase):

@@ -18,7 +18,6 @@ from flask import Flask, flash, jsonify, redirect, render_template, render_templ
 from db_operations import (
     install_connection_log_handler,
     initialize_database,
-  get_public_chatter_filters,
   get_public_chatter_history,
     get_peer_sync_states,
 )
@@ -4967,7 +4966,6 @@ def create_app(runtime_interface=None) -> Flask:
         title="Public Chatter",
         title_suffix="Bacon BBS",
         show_nav=True,
-        filters=get_public_chatter_filters(),
       )
 
     @app.get("/fleet")

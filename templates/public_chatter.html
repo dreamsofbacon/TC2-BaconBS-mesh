@@ -7,7 +7,7 @@
   /* Takes the space the legend does not, so the strapline wraps instead of
      shouldering the legend off the row. */
   .chatter-header > div:first-child { flex:1 1 auto; min-width:0; }
-  .chatter-controls { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:12px; margin-bottom:18px; }
+  .chatter-controls { display:grid; grid-template-columns:repeat(2,minmax(160px,1fr)); gap:12px; margin-bottom:18px; max-width:520px; }
   .chatter-controls .form-group { margin:0; }
   .chatter-feed { display:grid; gap:10px; }
   /* Every colour resolves through one custom property, --cc, set by a cc-N
@@ -34,17 +34,39 @@
      gap; the whole block shrinks before the heading does, and caps its
      height so an unusually long list scrolls instead of pushing the feed
      down the page. */
-  .chatter-legend { display:grid; grid-template-columns:auto auto;
+  .chatter-legend { display:grid;
+                    grid-template-columns:repeat(auto-fit, minmax(130px, auto));
                     gap:10px 20px; padding:10px 12px;
                     border:1px solid var(--border, #2b3645);
                     border-radius:var(--radius-md, 8px);
                     background:var(--surface, #161d27);
                     flex:0 1 auto; min-width:0;
-                    max-width:520px; max-height:148px; overflow-y:auto; }
+                    max-width:620px; max-height:210px; overflow-y:auto; }
+  .legend-foot { grid-column:1 / -1; display:flex; align-items:center;
+                 justify-content:space-between; gap:12px;
+                 border-top:1px solid var(--border, #2b3645); padding-top:8px; }
+  .legend-hint { font-size:11px; color:var(--text-faint, #6b7a8d); }
   .legend-title { font-size:11px; letter-spacing:.06em; text-transform:uppercase;
                   color:var(--text-faint, #6b7a8d); margin:0 0 7px; }
-  .legend-items { display:flex; flex-wrap:wrap; gap:6px 12px; }
-  .legend-item { display:flex; align-items:center; gap:6px; font-size:12px; }
+  .legend-items { display:flex; flex-wrap:wrap; gap:4px; }
+  /* Inline tag inside a message row -- looks like the legend chip but is
+     not interactive. */
+  .chatter-tag { display:flex; align-items:center; gap:6px; }
+  /* A legend entry is also the filter control for what it describes. */
+  .legend-chip { display:flex; align-items:center; gap:6px; font-size:12px;
+                 font-family:inherit; color:inherit; text-align:left;
+                 background:none; cursor:pointer;
+                 border:1px solid transparent;
+                 border-radius:var(--radius-pill, 999px);
+                 padding:2px 8px; transition:background var(--transition, .15s ease),
+                                             border-color var(--transition, .15s ease); }
+  .legend-chip:hover { border-color:var(--border, #2b3645); }
+  .legend-chip:focus-visible { outline:2px solid var(--border-focus, #5b8def);
+                               outline-offset:1px; }
+  .legend-chip[aria-pressed="true"] { background:var(--surface-3, #243044);
+                                      border-color:var(--cc, var(--border-focus, #5b8def)); }
+  /* Not a choice, so not a button. */
+  .legend-chip.is-static { cursor:default; padding-left:6px; }
   .legend-swatch { width:10px; height:10px; border-radius:2px; flex:0 0 auto;
                    background:var(--cc, var(--text-faint, #6b7a8d)); }
   .legend-swatch.is-round { border-radius:50%; }
@@ -91,7 +113,12 @@
       <h1>Public Chatter</h1>
       <p class="text-muted">Meshtastic and MeshCore public channels heard by participating Bacon BBS nodes.</p>
     </div>
-    <section class="chatter-legend" id="chatter-legend" aria-label="Colour legend" hidden>
+    <section class="chatter-legend" id="chatter-legend"
+             aria-label="Colour legend and filters" hidden>
+      <div id="legend-network-group" hidden>
+        <h2 class="legend-title">Networks</h2>
+        <div class="legend-items" id="legend-networks"></div>
+      </div>
       <div>
         <h2 class="legend-title">Channels</h2>
         <div class="legend-items" id="legend-channels"></div>
@@ -99,6 +126,10 @@
       <div>
         <h2 class="legend-title">Heard by</h2>
         <div class="legend-items" id="legend-nodes"></div>
+      </div>
+      <div class="legend-foot">
+        <span class="legend-hint">Click to filter. Pick several to combine.</span>
+        <button type="button" class="btn btn-sm" id="legend-clear" hidden>Clear filters</button>
       </div>
     </section>
   </header>
@@ -112,24 +143,6 @@
         <button class="btn btn-sm" type="button" data-hours="{{ value }}">{{ label }}</button>
         {% endfor %}
       </div>
-    </div>
-    <div class="form-group">
-      <label for="chatter-network">Network</label>
-      <select class="form-control" id="chatter-network">
-        <option value="">All networks</option>
-        {% for network in filters.networks %}<option value="{{ network }}">{{ network|title }}</option>{% endfor %}
-      </select>
-    </div>
-    <div class="form-group">
-      <label for="chatter-channel">Channel</label>
-      <select class="form-control" id="chatter-channel">
-        <option value="">All channels</option>
-        {% for channel in filters.channels %}
-        <option value="{{ channel.channel_index }}" data-network="{{ channel.network }}">
-          {{ channel.channel_name or ('Channel ' ~ channel.channel_index) }}
-        </option>
-        {% endfor %}
-      </select>
     </div>
     <div class="form-group">
       <label for="chatter-search">Search</label>
