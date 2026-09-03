@@ -200,6 +200,11 @@ That is a prerequisite, not a recommendation.
   onto the mesh. They read boards, play games, and mail other accounts.
   Whether that is enough is the question worth settling before building.
 - **Open registration means moderation becomes a real job.** There is no
-  ban list, no rate limit on posting, and no way to remove a user's content
-  in bulk. None of that matters at three friends on a LAN; all of it matters
-  on day two of a public port.
+  ban list and no rate limit on posting. An account can now be deleted from
+  the Accounts page — `db_operations.delete_account`, refusing anything
+  holding a node id outside the `ssh:` namespace, so the namespace rule
+  governs deletion the same way it governs authentication. But that takes
+  the login and the account's incoming mail, not its board posts: bulletins
+  are stored under a short name, not an account id, so removing a user's
+  content is still one post at a time. None of that matters at three
+  friends on a LAN; all of it matters on day two of a public port.
