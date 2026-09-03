@@ -224,6 +224,29 @@ class KeyIdTests(unittest.TestCase):
 
 
 class ApplyLifecycleTests(unittest.TestCase):
+    def test_successful_apply_refreshes_companion_services(self):
+        previous = "a" * 40
+        target = "b" * 40
+        git_result = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch.object(fleet_update, "current_commit", return_value=previous), \
+                mock.patch.object(
+                    fleet_update, "fetch_commit", return_value=(True, "fetched")), \
+                mock.patch.object(
+                    fleet_update, "smoke_test_commit", return_value=(True, "passes")), \
+                mock.patch.object(fleet_update, "write_update_state"), \
+                mock.patch.object(
+                    fleet_update, "install_requirements",
+                    return_value=(True, "dependencies up to date")), \
+                mock.patch.object(
+                    fleet_update, "restart_companion_services",
+                    return_value=(True, "refreshed")) as restart, \
+                mock.patch.object(fleet_update, "_git", return_value=git_result):
+            applied, detail = fleet_update.apply_target(target, "0.1.999")
+
+        self.assertTrue(applied)
+        self.assertIn(target[:12], detail)
+        restart.assert_called_once_with()
+
     def test_dependency_failure_restores_previous_commit_without_restart(self):
         previous = "a" * 40
         target = "b" * 40
@@ -238,6 +261,8 @@ class ApplyLifecycleTests(unittest.TestCase):
                 mock.patch.object(
                     fleet_update, "install_requirements",
                     return_value=(False, "pip failed")), \
+                mock.patch.object(
+                    fleet_update, "restart_companion_services") as restart, \
                 mock.patch.object(fleet_update, "clear_update_state") as clear, \
                 mock.patch.object(
                     fleet_update, "_git", return_value=git_result) as git:
@@ -249,6 +274,7 @@ class ApplyLifecycleTests(unittest.TestCase):
         git.assert_any_call(
             "checkout", "--quiet", "--force", "--detach", previous)
         clear.assert_called_once_with()
+        restart.assert_not_called()
 
 
 if __name__ == "__main__":
