@@ -812,13 +812,23 @@ SSH using password-authenticated accounts. It is installed disabled and the
 sample configuration binds to localhost, so it cannot listen merely because
 the code was installed.
 
-Enable and configure `[ssh]` in `config.ini`, then start it with:
+Enable and configure `[ssh]` from the web Settings page or `config.ini`, then
+start the service. Use a high alternate port such as 2222 so the listener does
+not conflict with the host's administrative SSH service on port 22.
+
+With no shared access username/password configured, the SSH credentials are
+the user's BBS account credentials:
 
 ```bash
 sudo systemctl enable --now bacon-ssh.service
 ssh -p 2222 new:YourAlias@bbs-host  # register once
 ssh -p 2222 YourAlias@bbs-host      # return later
 ```
+
+When a shared SSH access username/password is configured, connect with that
+credential first. The session then prompts each user to register or log in to
+their separate BBS account. Saved SSH settings are applied by the running
+service within a few seconds.
 
 Read [docs/SSH-ACCESS.md](docs/SSH-ACCESS.md) before exposing the port. In
 particular, secure the separately exposed web admin, retain and back up

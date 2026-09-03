@@ -3,11 +3,12 @@
 Reaching the BBS over SSH instead of a radio, with accounts anyone can
 register for themselves.
 
-The first implementation follows this design in `ssh_server.py` and
-`ssh_auth.py`. It is disabled by default, uses password authentication and
-explicit `new:<alias>` registration, and runs as the separate
-`bacon-ssh.service`. Public-key authentication and moderation controls remain
-future work.
+The implementation follows this design in `ssh_server.py` and `ssh_auth.py`.
+It is disabled by default, uses password authentication and explicit
+`new:<alias>` registration, and runs as the separate `bacon-ssh.service`.
+Its port is independent of the host's administrative SSH service; 2222 is the
+default specifically to avoid port 22. Public-key authentication and
+moderation controls remain future work.
 
 ---
 
@@ -108,6 +109,19 @@ radio that is not there.
 
 Open self-registration: anyone who can reach the port picks a name and a
 password.
+
+The optional `[ssh] username` and `password` add a shared transport gate. When
+both are configured, clients use those credentials to establish SSH, then the
+session prompts for `new:<alias>` plus an account password on first use, or the
+existing alias and account password on later visits. The shared gate never
+becomes a BBS identity: every user still receives a separate server-derived
+`ssh:<account_id>` identity and mailbox. The shared access password is stored
+in plain text in `config.ini`; account passwords remain scrypt hashes.
+
+When the shared fields are blank, clients authenticate directly with
+`new:<alias>` or their existing alias at the SSH handshake. The running
+service watches `config.ini`, so enablement, port, bind address, and credential
+changes saved in the web Settings page apply within a few seconds.
 
 This is the widest exposure of the options, and it is a legitimate choice for
 a hobbyist BBS — it is how essentially every dial-up board worked, and the

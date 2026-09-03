@@ -1104,6 +1104,8 @@ class WebAdminSettingsTests(unittest.TestCase):
                 "ssh_host": "0.0.0.0",
                 "ssh_port": "2200",
                 "ssh_host_key": "data/custom_ssh_host_key",
+                "ssh_username": "baconbbs",
+                "ssh_password": "shared-access-password",
                 "ssh_registration_enabled": "true",
                 "ssh_registration_limit_per_hour": "3",
                 "ssh_login_limit_per_hour": "12",
@@ -1122,6 +1124,8 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertTrue(config.getboolean("ssh", "registration_enabled"))
         self.assertEqual(config.get("ssh", "host"), "0.0.0.0")
         self.assertEqual(config.getint("ssh", "port"), 2200)
+        self.assertEqual(config.get("ssh", "username"), "baconbbs")
+        self.assertEqual(config.get("ssh", "password"), "shared-access-password")
         self.assertEqual(config.getint("ssh", "max_text_bytes"), 4096)
 
     def test_invalid_ssh_settings_do_not_modify_config(self):
@@ -1156,6 +1160,36 @@ class WebAdminSettingsTests(unittest.TestCase):
         config.read(self.config_path)
         self.assertFalse(config.getboolean("ssh", "enabled"))
         self.assertEqual(config.getint("ssh", "port"), 2222)
+
+    def test_ssh_settings_require_both_shared_credentials(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+        response = self.post_with_csrf(
+            client, "/settings",
+            data={
+                "settings_section": "ssh",
+                "ssh_host": "127.0.0.1",
+                "ssh_port": "2222",
+                "ssh_host_key": "data/ssh_host_key",
+                "ssh_username": "baconbbs",
+                "ssh_password": "",
+                "ssh_registration_limit_per_hour": "5",
+                "ssh_login_limit_per_hour": "20",
+                "ssh_max_sessions": "20",
+                "ssh_max_sessions_per_account": "2",
+                "ssh_idle_timeout_seconds": "1800",
+                "ssh_max_text_bytes": "8192",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(
+            "SSH access username and password must both be set",
+            response.get_data(as_text=True),
+        )
+        config = configparser.ConfigParser()
+        config.read(self.config_path)
+        self.assertFalse(config.has_section("ssh"))
 
     def test_create_app_initializes_schema_without_a_prior_initialize_database_call(self):
         """Regression test: bacon-web-admin.service is a separate process
