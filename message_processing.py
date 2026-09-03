@@ -185,6 +185,10 @@ _hash_buffer_lock = threading.RLock()
 _SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "channel_comments", "public_chatter", "profiles", "game_scores", "zork_saves", "tombstones"]
 _pending_public_chatter = {}
 _pending_public_chatter_lock = threading.Lock()
+_PUBLIC_CHATTER_BUFFER_TTL_SECONDS = 120.0
+_PUBLIC_CHATTER_MAX_PENDING = 256
+_PUBLIC_CHATTER_MAX_PAYLOAD_LENGTH = 65536
+_public_chatter_cross_link_relay = None
 _HASH_BUFFER_MAX_AGE_SECONDS = 600
 # After this many seconds with no new chunk for a HASHZ manifest, drop the
 # partial buffer and re-issue HASHREQ. Without this, a single dropped chunk
@@ -664,6 +668,7 @@ def process_stale_sync_buffers(interface) -> None:
         _retry_stale_zork_save_buffers(interface)
     except Exception as exc:
         logging.debug(f"process_stale_sync_buffers: zork retry tick failed: {exc}")
+    _prune_stale_public_chatter_buffers()
 
 
 def process_pending_candidate_resolutions(interface) -> None:
@@ -1623,7 +1628,7 @@ def _add_fleet_instruction_chunk(message: str, sender_node_id, interface) -> Non
 
 def _store_public_chatter_payload(unique_id: str, encoded_payload: str) -> bool:
     try:
-        raw = base64.urlsafe_b64decode(encoded_payload.encode('ascii'))
+        raw = base64.b64decode(encoded_payload.encode('ascii'), altchars=b'-_', validate=True)
         fields = json.loads(raw.decode('utf-8'))
         required = {'n', 'c', 'm', 't', 'r', 'o', 'e'}
         if not isinstance(fields, dict) or not required.issubset(fields):
@@ -1654,18 +1659,63 @@ def _store_public_chatter_payload(unique_id: str, encoded_payload: str) -> bool:
         return False
 
 
+def _prune_stale_public_chatter_buffers(now=None) -> None:
+    current = time.time() if now is None else float(now)
+    with _pending_public_chatter_lock:
+        stale = [
+            key for key, entry in _pending_public_chatter.items()
+            if current - float(entry.get('updated_at', current)) > _PUBLIC_CHATTER_BUFFER_TTL_SECONDS
+        ]
+        for key in stale:
+            _pending_public_chatter.pop(key, None)
+
+
 def _add_public_chatter_chunk(
-    unique_id: str, offset: int, chunk: str, expected_length=None
+    sender_node_id: str, unique_id: str, offset: int, chunk: str, expected_length=None
 ) -> bool:
     complete_payload = None
+    try:
+        offset = int(offset)
+        expected_length = int(expected_length) if expected_length is not None else None
+    except (TypeError, ValueError):
+        return False
+    if offset < 0 or (expected_length is not None and not 1 <= expected_length <= _PUBLIC_CHATTER_MAX_PAYLOAD_LENGTH):
+        return False
+    if offset + len(str(chunk)) > _PUBLIC_CHATTER_MAX_PAYLOAD_LENGTH:
+        return False
+    key = (str(sender_node_id or ''), str(unique_id))
+    now = time.time()
     with _pending_public_chatter_lock:
+        stale = [
+            pending_key for pending_key, pending in _pending_public_chatter.items()
+            if now - float(pending.get('updated_at', now)) > _PUBLIC_CHATTER_BUFFER_TTL_SECONDS
+        ]
+        for pending_key in stale:
+            _pending_public_chatter.pop(pending_key, None)
+        if key not in _pending_public_chatter and len(_pending_public_chatter) >= _PUBLIC_CHATTER_MAX_PENDING:
+            oldest = min(
+                _pending_public_chatter,
+                key=lambda pending_key: float(_pending_public_chatter[pending_key].get('updated_at', 0.0)),
+            )
+            _pending_public_chatter.pop(oldest, None)
         entry = _pending_public_chatter.setdefault(
-            str(unique_id), {'expected': None, 'parts': {}}
+            key, {'expected': None, 'parts': {}, 'updated_at': now}
         )
         if expected_length is not None:
-            entry['expected'] = int(expected_length)
-        entry['parts'].setdefault(int(offset), str(chunk))
+            if entry.get('expected') not in (None, expected_length):
+                _pending_public_chatter.pop(key, None)
+                return False
+            entry['expected'] = expected_length
         expected = entry.get('expected')
+        if expected is not None and offset + len(str(chunk)) > expected:
+            _pending_public_chatter.pop(key, None)
+            return False
+        chunk = str(chunk)
+        if offset in entry['parts'] and entry['parts'][offset] != chunk:
+            _pending_public_chatter.pop(key, None)
+            return False
+        entry['parts'][offset] = chunk
+        entry['updated_at'] = now
         if expected is None or expected < 1:
             return False
         cursor = 0
@@ -1677,20 +1727,27 @@ def _add_public_chatter_chunk(
             cursor += len(part)
         if cursor < expected:
             return False
-        complete_payload = ''.join(assembled)[:expected]
-        _pending_public_chatter.pop(str(unique_id), None)
+        if cursor != expected:
+            _pending_public_chatter.pop(key, None)
+            return False
+        complete_payload = ''.join(assembled)
+        _pending_public_chatter.pop(key, None)
     if complete_payload is not None:
         return _store_public_chatter_payload(str(unique_id), complete_payload)
     return False
 
 
-def _relay_public_chatter_if_new(unique_id: str, inserted: bool, sender_node_id: str, interface) -> None:
-    if not inserted or not str(getattr(interface, 'protocol_name', '')).casefold().startswith('mqtt'):
+def set_public_chatter_cross_link_relay(callback) -> None:
+    global _public_chatter_cross_link_relay
+    _public_chatter_cross_link_relay = callback
+
+
+def _relay_public_chatter_if_new(unique_id: str, inserted: bool, interface) -> None:
+    if not inserted or _public_chatter_cross_link_relay is None:
         return
-    peers = [node_id for node_id in interface.bbs_nodes if node_id != sender_node_id]
-    if peers:
-        send_public_chatter_to_bbs_nodes(
-            get_public_chatter_by_unique_id(unique_id), peers, interface)
+    row = get_public_chatter_by_unique_id(unique_id)
+    if row:
+        _public_chatter_cross_link_relay(row, interface)
 
 def process_message(sender_id, message, interface, is_sync_message=False, sender_node_id=None):
     state = get_user_state(sender_id)
@@ -1718,8 +1775,9 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             except ValueError:
                 logging.warning(f"Malformed PCHAT length ignored: {message}")
                 return
-            inserted = _add_public_chatter_chunk(parts[1], 0, parts[3], expected_length)
-            _relay_public_chatter_if_new(parts[1], inserted, sender_node_id, interface)
+            inserted = _add_public_chatter_chunk(
+                sender_node_id, parts[1], 0, parts[3], expected_length)
+            _relay_public_chatter_if_new(parts[1], inserted, interface)
         elif message.startswith("PCHATCONT|"):
             parts = message.split("|", 3)
             if len(parts) != 4 or not parts[1]:
@@ -1730,8 +1788,9 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             except ValueError:
                 logging.warning(f"Malformed PCHATCONT offset ignored: {message}")
                 return
-            inserted = _add_public_chatter_chunk(parts[1], offset, parts[3])
-            _relay_public_chatter_if_new(parts[1], inserted, sender_node_id, interface)
+            inserted = _add_public_chatter_chunk(
+                sender_node_id, parts[1], offset, parts[3])
+            _relay_public_chatter_if_new(parts[1], inserted, interface)
         elif message.startswith("BULLETIN|"):
             # Use rsplit from the right so content with embedded '|' is handled correctly.
             # Wire format: BULLETIN|board|sender|subject|content|unique_id[|date[|source_node_id|source_timestamp]]
@@ -2841,18 +2900,19 @@ def on_receive(packet, interface):
             from public_chatter import BROADCAST_ADDRESSES
             if packet.get('to') in BROADCAST_ADDRESSES:
                 try:
-                    from public_chatter import capture_broadcast, normalize_broadcast
+                    from public_chatter import capture_broadcast_observation
                     capture_packet = dict(packet)
                     sender_node_id = packet.get('fromId')
                     if sender_node_id:
                         capture_packet['sender_name'] = resolve_display_name(
                             sender_node_id, interface)
-                    if capture_broadcast(capture_packet, interface):
-                        observation = normalize_broadcast(capture_packet, interface)
-                        if observation:
-                            row = get_public_chatter_by_unique_id(observation['unique_id'])
-                            send_public_chatter_to_bbs_nodes(
-                                row, interface.bbs_nodes, interface)
+                    observation = capture_broadcast_observation(capture_packet, interface)
+                    if observation:
+                        row = get_public_chatter_by_unique_id(observation['unique_id'])
+                        send_public_chatter_to_bbs_nodes(
+                            row, interface.bbs_nodes, interface)
+                        _relay_public_chatter_if_new(
+                            observation['unique_id'], True, interface)
                 except Exception:
                     rollback_db_connection()
                     logging.exception("Unable to capture public channel message")

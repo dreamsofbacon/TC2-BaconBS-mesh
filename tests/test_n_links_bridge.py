@@ -9,6 +9,7 @@ import sqlite3
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 if "meshtastic" not in sys.modules:
     sys.modules["meshtastic"] = types.SimpleNamespace(BROADCAST_NUM=0)
@@ -103,6 +104,29 @@ class MqttPublicChatterCaptureTests(_FreshServerCase):
         )
 
         self.assertEqual(interface.public_chatter_channels, [])
+
+    def test_live_chatter_relays_to_other_mqtt_links_only(self):
+        primary = self.RadioLink("primary", _FakeInterface(protocol_name="Meshtastic"))
+        mqtt1 = self.RadioLink("mqtt1", _FakeInterface(protocol_name="MQTT:mqtt1"))
+        mqtt2 = self.RadioLink("mqtt2", _FakeInterface(protocol_name="MQTT:mqtt2"))
+        mqtt1.interface.bbs_nodes = ["mqtt:one:peer"]
+        mqtt2.interface.bbs_nodes = ["mqtt:two:peer"]
+        self.server._active_links = [primary, mqtt1, mqtt2]
+
+        with patch.object(self.server, "send_public_chatter_to_bbs_nodes") as send:
+            self.server.relay_public_chatter_to_mqtt_links(("pch:test",), primary.interface)
+            self.assertEqual(
+                [(call.args[1], call.args[2]) for call in send.call_args_list],
+                [
+                    (["mqtt:one:peer"], mqtt1.interface),
+                    (["mqtt:two:peer"], mqtt2.interface),
+                ],
+            )
+
+            send.reset_mock()
+            self.server.relay_public_chatter_to_mqtt_links(("pch:test",), mqtt1.interface)
+            send.assert_called_once_with(
+                ("pch:test",), ["mqtt:two:peer"], mqtt2.interface)
 
     def test_config_refresh_keeps_mqtt_chatter_capture_disabled(self):
         import os

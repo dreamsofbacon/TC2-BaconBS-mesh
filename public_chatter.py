@@ -253,10 +253,15 @@ def normalize_broadcast(
     }
 
 
-def capture_broadcast(packet: dict, interface) -> bool:
+def capture_broadcast_observation(packet: dict, interface) -> Optional[dict]:
+    """Store a broadcast and return its normalized observation when newly inserted."""
     observation = normalize_broadcast(packet, interface)
     if observation is None:
-        return False
+        return None
     from db_operations import add_public_chatter
 
-    return add_public_chatter(**observation)
+    return observation if add_public_chatter(**observation) else None
+
+
+def capture_broadcast(packet: dict, interface) -> bool:
+    return capture_broadcast_observation(packet, interface) is not None
