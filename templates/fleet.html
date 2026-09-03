@@ -83,28 +83,21 @@
 </div>
 
 <div class="card">
-  <div class="card-header"><h2>Set up fleet signing</h2></div>
+  <div class="card-header"><h2>Fleet enrollment</h2></div>
   <div class="card-body">
     <ol>
-      <li>On the admin machine, from this repository, run
-        <code>python scripts/fleet_sign.py --group {{ fleet.group or 'baconbbs' }} init</code>.
-        It creates the private key in the correct protected user directory for
-        Windows, Linux, or macOS. No downloaded file needs to be moved.</li>
-      <li>Keep an offline backup of the path printed by <code>init</code>.</li>
-      <li>On each node, paste the public entry printed by <code>init</code>
-        under <strong>Trust a new key</strong>, or run
-        <code>python scripts/fleet_sign.py --group {{ fleet.group or 'baconbbs' }} enroll 'fk...:...'</code>
-        in that node's repository.</li>
-      <li>Run <code>python scripts/fleet_sign.py token</code>, then add the
-        printed <code>api_token_hash</code> to this seed node's fleet config.</li>
-      <li>Push the commit, then run
-        <code>python scripts/fleet_sign.py --group {{ fleet.group or 'baconbbs' }} deploy HEAD --seed http://this-node:8081</code>.</li>
+      <li>Choose the fleet group and set updates to <strong>auto</strong> under
+        <strong>Configuration</strong>.</li>
+      <li>Paste the public key supplied by your fleet administrator under
+        <strong>Trust a new key</strong>.</li>
+      <li>Restart the BBS service after changing fleet configuration.</li>
+      <li>Once enrolled, signed releases arrive through the mesh and are
+        fetched, tested, applied, and rolled back automatically.</li>
     </ol>
 
     <div class="alert alert-warning">
-      The private key can command every node that trusts it. It stays on the
-      admin machine and is never generated, uploaded, or downloaded by this
-      BBS.
+      A trusted key can direct this node to run code. Only enroll a public key
+      from the administrator responsible for this fleet.
     </div>
   </div>
 </div>
@@ -192,10 +185,8 @@
         <label for="trusted_key">Public key entry</label>
         <input class="form-control" id="trusted_key" name="trusted_key"
                placeholder="fkabc123:base64publickey">
-        <small class="text-muted">From
-          <code>fleet_sign.py --show-pubkey --entry-only</code> on the admin
-          machine. Public keys only &mdash; a private key here would let anyone
-          who can read config.ini command the whole fleet.</small>
+        <small class="text-muted">Use the public key entry supplied by your
+          fleet administrator. Never paste a private key here.</small>
       </div>
       <div class="form-group">
         <label>
@@ -212,12 +203,10 @@
   <div class="card-header"><h2>Signed instruction fallback</h2></div>
   <div class="card-body">
     <p class="text-muted">
-      Routine releases use the <code>deploy</code> command. For recovery, a
-      blob can still be produced on the admin machine with
-      <code>scripts/fleet_sign.py sign &lt;ref&gt;</code>. The blob is not secret:
-      it authorises one commit for one group and cannot be edited without
-      breaking its signature. It is verified here before anything is stored,
-      and rejected if it was not signed by a key this node trusts.
+      Routine releases arrive automatically through the mesh. For recovery,
+      paste a signed instruction supplied by your fleet administrator. It
+      authorises one commit for one group, is verified before anything is
+      stored, and is rejected unless a key trusted by this node signed it.
     </p>
     <form method="post" action="{{ url_for('fleet_apply') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

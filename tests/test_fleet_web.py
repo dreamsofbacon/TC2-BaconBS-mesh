@@ -102,13 +102,15 @@ class PageTests(unittest.TestCase):
             self.assertIn("Fleet", body)
             self.assertIn(node.key_id, body)
 
-    def test_page_shows_platform_neutral_cli_setup_directions(self):
+    def test_page_shows_web_first_fleet_enrollment(self):
         with _Node() as node:
             page = node.client.get("/fleet")
             body = page.get_data(as_text=True)
-            self.assertIn("scripts/fleet_sign.py", body)
-            self.assertIn(" init</code>", body)
-            self.assertIn("No downloaded file needs to be moved", body)
+            self.assertIn("Fleet enrollment", body)
+            self.assertIn("signed releases arrive through the mesh", body)
+            self.assertIn("supplied by your fleet administrator", body)
+            self.assertNotIn("scripts/fleet_sign.py", body)
+            self.assertNotIn("python ", body.lower())
             self.assertNotIn("Generate and download key", body)
             self.assertNotIn("js/fleet.js", body)
 
