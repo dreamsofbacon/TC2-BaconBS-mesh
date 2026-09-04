@@ -2103,6 +2103,7 @@ UPDATED_FLOWCHART_CONTENT = """
       <tr><td><a href=\"{{ url_for('table_list', table='bulletins') }}\">Bulletins</a></td><td>Moderate bulletins; create new posts; edit/delete; per-board filter; tombstone deletes propagate via sync.</td></tr>
       <tr><td><a href=\"{{ url_for('table_list', table='channels') }}\">Channels</a></td><td>Moderate channel directory entries and per-channel comments.</td></tr>
       <tr><td><a href=\"{{ url_for('clients_summary') }}\">Clients</a></td><td>Connected mesh clients, last-seen, hardware, role, battery, recent activity.</td></tr>
+      <tr><td><a href=\"{{ url_for('scores_page') }}\">Game Scores</a></td><td>Every Hall of Fame / Wall of Shame score; delete one through its own delete function so the tombstone stops a peer restoring it.</td></tr>
       <tr><td><a href=\"{{ url_for('settings_page') }}\">Settings</a></td><td>Boards, Sync (peers, allow-list, interval, pacing, manual triggers, force resync, save resolver), Diagnostics (peer hash graph, mismatch attempts), Admin credentials.</td></tr>
       <tr><td>Documentation (this page)</td><td>Project reference, runtime sync flowchart, protocol frames, commands, configuration, schema, and live snapshot.</td></tr>
       <tr><td><a href=\"{{ url_for('system_transmissions') }}\">Transmission Stats</a></td><td>Recent <code>sync_transmissions</code> rows: timestamp, frame type, destination, direction, frame size, continuation flag.</td></tr>
@@ -6195,6 +6196,25 @@ def create_app(runtime_interface=None) -> Flask:
         linked_account_id=account_id,
       )
 
+    @app.post("/clients/<path:node_id>/profile/delete")
+    @login_required
+    def client_profile_delete(node_id):
+      """Remove one profile through the scope's own delete function.
+
+      Same rule as scores: a bare DELETE leaves no tombstone and the record
+      comes straight back from a peer. Deleting a profile does not delete
+      what the person posted -- bulletins and mail are separate scopes, and
+      the profile re-appears on its own if they are seen again.
+      """
+      from db_operations import delete_user_profile
+      delete_user_profile(node_id)
+      nudge_sync_after_content_change()
+      flash(
+        f"Deleted the profile for {node_id}. Peers drop their copies on the "
+        "next sync, and it can be restored from Deleted Content.",
+        "success")
+      return redirect(url_for("clients_summary"))
+
     @app.get("/api/connection-events")
     @login_required
     def api_connection_events():
@@ -6224,6 +6244,46 @@ def create_app(runtime_interface=None) -> Flask:
       from db_operations import list_accounts
       rows = list_accounts()
       return render_template("accounts.html", title="Accounts", show_nav=True, rows=rows)
+
+    @app.get("/scores")
+    @login_required
+    def scores_page():
+      with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+          "SELECT user_id, game_id, short_name, score, max_score, moves, achieved_at "
+          "FROM game_scores ORDER BY game_id ASC, score DESC, achieved_at ASC"
+        )
+        rows = cursor.fetchall()
+      return render_template("scores.html", title="Game Scores", show_nav=True,
+                             rows=rows)
+
+    @app.post("/scores/delete")
+    @login_required
+    def scores_delete():
+      """Remove one score through the scope's own delete function.
+
+      Never `DELETE FROM game_scores` here. A bare delete leaves no
+      tombstone, so the first peer that still holds the row hands it back on
+      the next reconcile pass and the deletion silently undoes itself --
+      which is exactly what happened to an exploited Trivia score.
+      """
+      from db_operations import delete_game_score
+      user_id = request.form.get("user_id", "").strip()
+      game_id = request.form.get("game_id", "").strip()
+      if not user_id or not game_id:
+        flash("No score selected.", "error")
+        return redirect(url_for("scores_page"))
+
+      # No radio here: the web admin is a separate process from server.py,
+      # so the tombstone is what carries this to the peers.
+      delete_game_score(user_id, game_id)
+      nudge_sync_after_content_change()
+      flash(
+        f"Deleted the {game_id} score for {user_id}. Peers drop their copies "
+        "on the next sync, and it can be restored from Deleted Content.",
+        "success")
+      return redirect(url_for("scores_page"))
 
     @app.route("/deleted")
     @login_required
@@ -7128,6 +7188,11 @@ def create_app(runtime_interface=None) -> Flask:
           else:
             execute_write(f"DELETE FROM {table} WHERE id = ?", (row_id,))
         else:
+          # Reachable only for a table with no delete function of its own.
+          # Anything that SYNCS must never land here: a bare DELETE leaves no
+          # tombstone, so the next reconcile pass sees a record the peer has
+          # and this node does not, and puts it back. Adding a synced table to
+          # TABLE_CONFIG means giving it a branch above, not relying on this.
           execute_write(f"DELETE FROM {table} WHERE id = ?", (row_id,))
 
         nudge_sync_after_content_change()

@@ -279,10 +279,15 @@ through `_normalize_sync_timestamp`, because a `T`-form tombstone compared
 raw sorts above every space-form timestamp on the same date and would
 silently refuse the rest of that day's legitimate records.
 
-There is no button for scores or profiles: the generic table browser covers
-only bulletins and channels. Deleting one means calling the function on the
-node. Everything deleted this way is restorable from its snapshot through the
-tombstone view.
+Scores have their own page under **Tools -> Game Scores**, and a profile is
+deleted from its client page under **Clients**. Both go through the functions
+above, never SQL. Everything deleted this way is restorable from its snapshot
+through the tombstone view.
+
+The one trap left is `table_delete` in `web_admin.py`: its final `else` runs a
+bare `DELETE FROM <table> WHERE id = ?`. That is fine for a local-only table
+and wrong for every synced one, so a synced table added to `TABLE_CONFIG`
+needs its own branch rather than that fallback.
 
 ---
 
