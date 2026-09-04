@@ -14,7 +14,7 @@ class PublicChatterWebTests(unittest.TestCase):
         if connection is not None:
             connection.close()
             del db_operations.thread_local.connection
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.db_path = os.path.join(self.temp_dir.name, "chatter.db")
         self.config_path = os.path.join(self.temp_dir.name, "config.ini")
         with open(self.config_path, "w", encoding="utf-8") as config_file:

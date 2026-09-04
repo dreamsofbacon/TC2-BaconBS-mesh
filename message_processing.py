@@ -33,6 +33,7 @@ from command_handlers import (
     deliver_ask_nomad_reply,
     handle_exit_command, send_board_action_menu,
     menu_items_for, menu_layout, menu_number_alias,
+    is_cancel,
 )
 from db_operations import (
     add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel,
@@ -97,6 +98,28 @@ from utils import (
     send_fleet_target_to_bbs_nodes,
     _send_one_sync, get_max_text_bytes,
 )
+
+# Prompts where the BBS is asking for content rather than a menu choice.
+# A cancel word has to reach these handlers rather than being taken as a
+# global command -- "!x" otherwise resolves to main_menu_handlers['x'] and
+# would drop the connection halfway through writing a bulletin.
+#
+# MAIL is absent on purpose: process_message hands its steps off before the
+# global-prefix branch is reached, so its cancel words already arrive.
+_TEXT_PROMPTS = {
+    'PROFILE': (2,),
+    'ACCOUNT': (2, 4),
+    'BULLETIN_POST': (4,),
+    'BULLETIN_POST_CONTENT': (5,),
+    'CHANNEL_DIRECTORY': (3, 4),
+    'APIGW': (2,),
+}
+
+
+def _in_text_prompt(state) -> bool:
+    steps = _TEXT_PROMPTS.get((state or {}).get('command'))
+    return bool(steps) and (state or {}).get('step') in steps
+
 
 def _menu_input(kind, message_lower):
     """Resolve one keypress against the menu the user is actually looking at.
@@ -2769,7 +2792,10 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             handle_mail_steps(sender_id, message, state['step'], state, interface, bbs_nodes)
             return
 
-        if message_lower.startswith('!'):
+        # A cancel word at a content prompt belongs to that prompt, not to
+        # the global command table.
+        if message_lower.startswith('!') and not (
+                is_cancel(message_lower) and _in_text_prompt(state)):
             global_lower = message_lower[1:]
             global_message = message_strip[1:]
             if global_lower.startswith("sm,,"):

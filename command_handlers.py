@@ -112,6 +112,24 @@ def get_bulletin_boards() -> list[str]:
 LINE_BREAK = chr(10)
 
 
+# Backing out of a prompt takes the global prefix, because at these prompts
+# the BBS is asking for content and every plausible cancel word is also
+# plausible content. A bare "Exit" typed at the channel-name prompt was read
+# as a name: the live directory holds a channel called Exit whose URL field
+# is a user's complaint about the prompt that trapped them. "0" and "x" have
+# the same problem inside a bulletin body or a bio.
+#
+# Menus are different and keep their bare keys -- there [0] is a line on the
+# screen, not something the user composed.
+CANCEL_WORDS = ('!exit', '!cancel', '!x', '!0')
+CANCEL_HINT = '!cancel'
+
+
+def is_cancel(message) -> bool:
+    """True when the user typed a prefixed cancel word at a content prompt."""
+    return str(message or '').strip().casefold() in CANCEL_WORDS
+
+
 UTILITIES_MENU_TITLE = "🛠️Utilities Menu🛠️"
 BBS_MENU_TITLE = "📰BBS Menu📰"
 
@@ -825,7 +843,7 @@ def handle_apigw_command(sender_id, interface):
         send_message("API gateway: your node is not on the allow-list.", sender_id, interface)
         handle_help_command(sender_id, interface)
         return
-    send_message("Enter the URL to fetch (must be an allowed host), or 0 to cancel:", sender_id, interface)
+    send_message(f"Enter the URL to fetch (must be an allowed host), or {CANCEL_HINT} to stop:", sender_id, interface)
     update_user_state(sender_id, {'command': 'APIGW', 'step': 2, 'mode': 'http'})
 
 
@@ -932,7 +950,7 @@ def handle_apigw_steps(sender_id, message, interface):
     choice = message.strip()
     state = get_user_state(sender_id) or {}
     step = state.get('step', 1)
-    if choice.lower() in ('x', '0', 'exit'):
+    if is_cancel(choice) or (step == 1 and choice.lower() in ('x', '0', 'exit')):
         handle_help_command(sender_id, interface)
         return
 
@@ -1112,7 +1130,7 @@ def handle_profile_steps(sender_id, message, interface, sender_node_id=None):
     state = get_user_state(sender_id) or {}
     choice = message.strip()
     if state.get('step') == 2:
-        if choice.lower() in ('0', 'x', 'cancel'):
+        if is_cancel(choice):
             handle_profile_command(sender_id, interface)
             return
         bio = choice[:100]
@@ -1144,7 +1162,7 @@ def handle_profile_steps(sender_id, message, interface, sender_node_id=None):
         handle_help_command(sender_id, interface)
         return
     if choice.lower() in ('e', '1'):
-        send_message("Enter your bio (max 100 chars), or 0 to cancel:", sender_id, interface)
+        send_message(f"Enter your bio (max 100 chars), or {CANCEL_HINT} to stop:", sender_id, interface)
         update_user_state(sender_id, {'command': 'PROFILE', 'step': 2})
         return
     if choice.lower() in ('d', '2'):
@@ -1260,7 +1278,7 @@ def handle_account_steps(sender_id, message, interface, sender_node_id=None):
             _handle_request_link_code(sender_id, interface, sender_node_id)
             return
         if choice == '2':
-            send_message("Enter the 6-digit code from your other device, or 0 to cancel:", sender_id, interface)
+            send_message(f"Enter the 6-digit code from your other device, or {CANCEL_HINT} to stop:", sender_id, interface)
             _account_state(sender_id, 2)
             return
         if choice == '3':
@@ -1270,7 +1288,7 @@ def handle_account_steps(sender_id, message, interface, sender_node_id=None):
             send_message(
                 "Enter a shared alias (max 20 chars). Shown instead of this "
                 "device's short name on your posts once you have at least "
-                "one linked device. Send 0 to cancel:",
+                f"one linked device. Send {CANCEL_HINT} to stop:",
                 sender_id, interface,
             )
             _account_state(sender_id, 4)
@@ -1285,14 +1303,14 @@ def handle_account_steps(sender_id, message, interface, sender_node_id=None):
         return
 
     if step == 2:
-        if choice_lower in ('0', 'x', 'cancel'):
+        if is_cancel(choice):
             handle_account_command(sender_id, interface)
             return
         _handle_submit_link_code(sender_id, interface, sender_node_id, choice)
         return
 
     if step == 4:
-        if choice_lower in ('0', 'x', 'cancel'):
+        if is_cancel(choice):
             handle_account_command(sender_id, interface)
             return
         _handle_set_alias(sender_id, interface, sender_node_id, choice)
@@ -1471,7 +1489,7 @@ def handle_zork_steps(sender_id, message, interface):
     state = get_user_state(sender_id) or {}
     game_id = state.get('game_id', 'zork1')
     choice = message.strip()
-    if len(choice) == 2 and choice[1].lower() == 'x':
+    if not choice.startswith('!') and len(choice) == 2 and choice[1].lower() == 'x':
         choice = choice[0]
 
     if choice.lower() in ('save', 'restore'):
@@ -1515,7 +1533,7 @@ def handle_trivia_steps(sender_id, message, interface):
 
 def handle_stats_steps(sender_id, message, step, interface):
     message = message.lower().strip()
-    if len(message) == 2 and message[1] == 'x':
+    if not message.startswith('!') and len(message) == 2 and message[1] == 'x':
         message = message[0]
 
     if step == 1:
@@ -1619,7 +1637,7 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
                     send_message("You don't have permission to post to this board.", sender_id, interface)
                     handle_bb_steps(sender_id, 'e', 1, state, interface, bbs_nodes)
                     return
-            send_message("What is the subject of your bulletin? Keep it short. [0] Cancel", sender_id, interface)
+            send_message(f"What is the subject of your bulletin? Keep it short. {CANCEL_HINT} to stop", sender_id, interface)
             update_user_state(sender_id, {'command': 'BULLETIN_POST', 'step': 4, 'board': board_name})
 
     elif step == 3:
@@ -1639,16 +1657,16 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
         handle_bb_steps(sender_id, 'e', 1, state, interface, bbs_nodes)
 
     elif step == 4:
-        if message.lower() in ('0', 'x', 'cancel'):
+        if is_cancel(message):
             send_message("Bulletin cancelled.", sender_id, interface)
             handle_bulletin_command(sender_id, interface)
             return
         subject = message
-        send_message("Send the contents of your bulletin. Send END when finished, or 0 to cancel.", sender_id, interface)
+        send_message(f"Send the contents of your bulletin. Send END when finished, or {CANCEL_HINT} to stop.", sender_id, interface)
         update_user_state(sender_id, {'command': 'BULLETIN_POST_CONTENT', 'step': 5, 'board': state['board'], 'subject': subject, 'content': ''})
 
     elif step == 5:
-        if message.lower() in ('0', 'cancel'):
+        if is_cancel(message):
             send_message("Bulletin cancelled.", sender_id, interface)
             handle_bulletin_command(sender_id, interface)
             return
@@ -1673,9 +1691,10 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
 
 def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
     message = message.strip()
-    if len(message) == 2 and message[1] == 'x':
+    # "!x" is a cancel word, not the NX-style trailing-x shorthand.
+    if not message.startswith('!') and len(message) == 2 and message[1] == 'x':
         message = message[0]
-    if step in (3, 5, 7) and message.lower() in ('0', 'cancel'):
+    if step in (3, 5, 7) and is_cancel(message):
         send_message("Mail cancelled.", sender_id, interface)
         handle_mail_command(sender_id, interface)
         return
@@ -1730,7 +1749,7 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             send_message("That relay user was not found, is ambiguous, or has not opted in.", sender_id, interface)
             handle_mail_command(sender_id, interface)
         else:
-            send_message(f"What is the subject of your message to {recipient['display_name']}?\nKeep it short. [0] Cancel", sender_id, interface)
+            send_message(f"What is the subject of your message to {recipient['display_name']}?\nKeep it short. {CANCEL_HINT} to stop", sender_id, interface)
             update_user_state(sender_id, {
                 'command': 'MAIL', 'step': 5,
                 'recipient_id': recipient['recipient_node_id'],
@@ -1756,7 +1775,7 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
 
     elif step == 5:
         subject = message
-        send_message("Send your message in one or more parts. Send END when done, or 0 to cancel.", sender_id, interface)
+        send_message(f"Send your message in one or more parts. Send END when done, or {CANCEL_HINT} to stop.", sender_id, interface)
         update_user_state(sender_id, {
             'command': 'MAIL', 'step': 7,
             'recipient_id': state['recipient_id'],
@@ -1900,7 +1919,7 @@ def _send_channel_categories(sender_id, interface):
 
 def handle_channel_directory_steps(sender_id, message, step, state, interface):
     message = message.strip()
-    if len(message) == 2 and message[1] == 'x':
+    if not message.startswith('!') and len(message) == 2 and message[1] == 'x':
         message = message[0]
 
     if step == 1:
@@ -2026,15 +2045,15 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
             update_user_state(sender_id, state)
 
     elif step == 3:
-        if message.lower() in ('0', 'x', 'cancel'):
+        if is_cancel(message):
             handle_channel_directory_command(sender_id, interface)
             return
         channel_name = message
-        send_message("Send the channel URL or PSK, or 0 to cancel:", sender_id, interface)
+        send_message(f"Send the channel URL or PSK, or {CANCEL_HINT} to stop:", sender_id, interface)
         update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 4, 'channel_name': channel_name})
 
     elif step == 4:
-        if message.lower() in ('0', 'x', 'cancel'):
+        if is_cancel(message):
             handle_channel_directory_command(sender_id, interface)
             return
         channel_url = message
@@ -2123,7 +2142,7 @@ def handle_read_mail_command(sender_id, message, state, interface):
 def handle_delete_mail_confirmation(sender_id, message, state, interface, bbs_nodes):
     try:
         choice = message.lower().strip()
-        if len(choice) == 2 and choice[1] == 'x':
+        if not choice.startswith('!') and len(choice) == 2 and choice[1] == 'x':
             choice = choice[0]
         _kdr_alias = {'2': 'd', '3': 'r', '1': 'k'}
         choice = _kdr_alias.get(choice, choice)

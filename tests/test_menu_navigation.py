@@ -197,8 +197,17 @@ class ApiGatewayNavigationTests(unittest.TestCase):
         sent = []
         with mock.patch.object(ch, "send_message", side_effect=lambda text, *_args: sent.append(text)):
             ch.update_user_state(1234, {'command': 'APIGW', 'step': 2, 'mode': 'ai'})
-            ch.handle_apigw_steps(1234, "0", _FakeInterface())
+            ch.handle_apigw_steps(1234, "!cancel", _FakeInterface())
         self.assertIn("Bacon BBS", sent[-1])
+
+    def test_a_bare_zero_is_now_part_of_the_question(self):
+        """Step 2 is free text, so "0" is something the user typed, not a
+        command. The menu step above still takes bare keys."""
+        sent = []
+        with mock.patch.object(ch, "send_message", side_effect=lambda text, *_args: sent.append(text)):
+            ch.update_user_state(1234, {'command': 'APIGW', 'step': 2, 'mode': 'ai'})
+            ch.handle_apigw_steps(1234, "0", _FakeInterface())
+        self.assertNotIn("Bacon BBS", sent[-1])
 
 
 class MenuFeedbackTests(unittest.TestCase):
@@ -590,3 +599,96 @@ class GlobalCommandPrefixTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CancelWordTests(unittest.TestCase):
+    """Cancelling a content prompt takes the global prefix.
+
+    A bare "Exit" typed at the channel-name prompt was read as a name: the
+    live directory holds a channel called Exit whose URL field is a user's
+    complaint about the prompt that trapped them. Menus are unaffected --
+    there [0] is a line on the screen, not something the user composed.
+    """
+
+    def setUp(self):
+        self.iface = types.SimpleNamespace(bbs_nodes=[], nodes={}, session_ended=False)
+
+    def test_the_prefixed_words_cancel(self):
+        for word in ("!exit", "!cancel", "!x", "!0"):
+            with self.subTest(word=word):
+                self.assertTrue(ch.is_cancel(word))
+                self.assertTrue(ch.is_cancel(f"  {word.upper()}  "))
+
+    def test_the_bare_words_are_content(self):
+        for word in ("exit", "cancel", "x", "0", "Exit", "", "!", "!exit now"):
+            with self.subTest(word=word):
+                self.assertFalse(ch.is_cancel(word))
+
+    def test_exit_is_accepted_as_a_channel_name(self):
+        """The trap, from the other side: the user meant it, so honour it."""
+        sent = []
+        with mock.patch.object(ch, "send_message",
+                               side_effect=lambda text, *_a, **_k: sent.append(text)):
+            ch.update_user_state(1234, {'command': 'CHANNEL_DIRECTORY', 'step': 3})
+            ch.handle_channel_directory_steps(
+                1234, "Exit", 3, {'command': 'CHANNEL_DIRECTORY', 'step': 3}, self.iface)
+        self.assertIn("channel URL or PSK", sent[-1])
+        self.assertEqual(ch.get_user_state(1234).get('channel_name'), "Exit")
+
+    def test_a_prefixed_cancel_backs_out_of_the_name_prompt(self):
+        sent = []
+        with mock.patch.object(ch, "send_message",
+                               side_effect=lambda text, *_a, **_k: sent.append(text)):
+            ch.update_user_state(1234, {'command': 'CHANNEL_DIRECTORY', 'step': 3})
+            ch.handle_channel_directory_steps(
+                1234, "!cancel", 3, {'command': 'CHANNEL_DIRECTORY', 'step': 3}, self.iface)
+        self.assertIn("CHANNEL DIRECTORY", sent[-1])
+
+    def test_the_content_prompts_advertise_the_prefixed_form(self):
+        """Only the prompts that changed. The relay directory keeps its
+        "[0] Cancel" because that is a menu line, not a content prompt."""
+        import inspect
+        source = inspect.getsource(ch)
+        self.assertNotIn("to cancel:", source)
+        self.assertNotIn("or 0 to cancel", source)
+        self.assertNotIn("Keep it short. [0] Cancel", source)
+        self.assertIn("{CANCEL_HINT} to stop", source)
+
+    def test_exclamation_x_survives_the_trailing_x_shorthand(self):
+        """NX-style shorthand collapses a two-character reply to its first
+        letter, and "!x" fits that shape. Every site has to skip it or the
+        cancel word arrives as a bare "!"."""
+        import message_processing as mp
+        for module_source in (ch, mp):
+            import inspect
+            for line in inspect.getsource(module_source).splitlines():
+                if "== 2 and" in line and "'x'" in line:
+                    with self.subTest(line=line.strip()):
+                        self.assertIn("startswith('!')", line)
+
+    def test_a_cancel_word_reaches_the_prompt_not_the_global_table(self):
+        """!x resolves to main_menu_handlers['x'], which exits the BBS. It
+        must not do that halfway through writing a bulletin."""
+        import message_processing as mp
+        self.assertTrue(mp._in_text_prompt({'command': 'BULLETIN_POST', 'step': 4}))
+        self.assertTrue(mp._in_text_prompt({'command': 'CHANNEL_DIRECTORY', 'step': 3}))
+        self.assertFalse(mp._in_text_prompt({'command': 'MAIN_MENU', 'step': 1}))
+        self.assertFalse(mp._in_text_prompt(None))
+
+    def test_prefixed_cancel_does_not_end_the_session(self):
+        import message_processing as mp
+        ch.update_user_state(1234, {'command': 'BULLETIN_POST', 'step': 4,
+                                    'board': 'General', 'boards': ['General']})
+        with mock.patch.object(mp, 'handle_exit_command') as leave, \
+                mock.patch.object(ch, 'send_message'):
+            mp.process_message(1234, '!x', self.iface)
+        leave.assert_not_called()
+        self.assertFalse(self.iface.session_ended)
+
+    def test_menus_still_take_bare_keys(self):
+        import message_processing as mp
+        quick = mock.Mock()
+        with mock.patch.dict(mp.main_menu_handlers, {"q": quick}, clear=False):
+            ch.update_user_state(1234, {'command': 'MAIN_MENU', 'step': 1})
+            mp.process_message(1234, '1', self.iface)
+        quick.assert_called_once_with(1234, self.iface)

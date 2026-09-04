@@ -34,7 +34,7 @@ class FakeInterface:
 
 class WebAdminSettingsTests(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.root = Path(self.temp_dir.name)
         self.config_path = self.root / "config.ini"
         self.db_path = self.root / "bulletins.db"
@@ -2134,7 +2134,7 @@ class _WebAdminHarness(unittest.TestCase):
     """
 
     def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         root = Path(self.temp_dir.name)
         self.config_path = root / "config.ini"
         self.runtime_diag_path = root / "runtime_diagnostics.json"
@@ -2237,7 +2237,7 @@ class SyncPeerInventoryTests(unittest.TestCase):
     node stays configured for months."""
 
     def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.config_path = Path(self.temp_dir.name) / "config.ini"
 
     def tearDown(self):
@@ -2699,7 +2699,7 @@ class ClientsTableWidthTests(unittest.TestCase):
     """
 
     def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.db_path = os.path.join(self.temp_dir.name, "bulletins.db")
         os.environ["BBS_DB_PATH"] = self.db_path
         self.app = create_app()
@@ -2824,7 +2824,7 @@ class ClientsFilterMarkupTests(ClientsTableWidthTests):
 
 class TemplateFilterTests(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         os.environ["BBS_DB_PATH"] = os.path.join(self.temp_dir.name, "bulletins.db")
         self.app = create_app()
 
