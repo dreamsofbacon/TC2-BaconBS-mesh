@@ -21,6 +21,7 @@ from db_operations import (
     get_linked_nodes_detail, link_node_to_account, unlink_node,
     get_account_alias, set_account_alias, create_link_code, redeem_link_code,
     record_link_attempt, link_rate_limit_ok, account_authorized,
+    SSH_NODE_PREFIX,
     queue_delayed_link_code,
     get_mail_relay_directory, get_mail_relay_preference, set_mail_relay_for_node,
     get_public_chatter_filters,
@@ -304,6 +305,40 @@ def menu_items_for(kind):
     if kind == 'utilities':
         return utilities_menu_items, UTILITIES_MENU_TITLE
     return main_menu_items, "💾Bacon BBS💾"
+
+
+def urgent_board_permitted(node_id, allow_lists) -> bool:
+    """Whether this identity may post to the Urgent board.
+
+    Posting here broadcasts to every node in range and syncs to peers we do
+    not run, so it is the one board with a gate on it.
+
+    An empty allow list means "no restriction configured", which is the right
+    default for radio: possession of a radio is the credential, and a
+    stranger cannot cheaply become your neighbour's node. It stopped being
+    the right default the moment a self-registration port opened. An SSH
+    identity is issued by this node to anyone who asks, so an empty list must
+    not hand it the Urgent board -- docs/SSH-ACCESS.md already states that a
+    new account gets no urgent access, and until now that was only true when
+    an allow list happened to be populated.
+
+    An SSH account CAN reach it, by linking a real device through the
+    one-time code flow and having that device allow-listed. That is the same
+    proof of radio possession every other poster gives, offered through the
+    only mechanism this system has ever accepted it from.
+    """
+    if str(node_id or '').startswith(SSH_NODE_PREFIX):
+        return bool(any(allow_lists)) and account_authorized(node_id, allow_lists)
+    # Radio and MQTT identities keep the original behaviour exactly.
+    return not any(allow_lists) or account_authorized(node_id, allow_lists)
+
+
+def _urgent_refusal(node_id) -> str:
+    """Say which rule was hit, so it does not read as a malfunction."""
+    if str(node_id or '').startswith(SSH_NODE_PREFIX):
+        return ("The Urgent board is radio-only. Link a device under "
+                "Linked Devices and ask the operator to allow-list it.")
+    return "You don't have permission to post to this board."
 
 
 def send_board_action_menu(sender_id, interface, board_name, boards, notice=None):
@@ -1631,10 +1666,8 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
                 node_id = get_node_id_from_num(sender_id, interface)
                 allow_lists = _urgent_board_allow_lists(interface)
                 logging.info(f"Checking permissions for node_id: {node_id} with allowed_nodes: {allow_lists}")  # Debug statement
-                # Empty everywhere = no restriction configured = open to all
-                # (matches the original single-list behavior exactly).
-                if any(allow_lists) and not account_authorized(node_id, allow_lists):
-                    send_message("You don't have permission to post to this board.", sender_id, interface)
+                if not urgent_board_permitted(node_id, allow_lists):
+                    send_message(_urgent_refusal(node_id), sender_id, interface)
                     handle_bb_steps(sender_id, 'e', 1, state, interface, bbs_nodes)
                     return
             send_message(f"What is the subject of your bulletin? Keep it short. {CANCEL_HINT} to stop", sender_id, interface)

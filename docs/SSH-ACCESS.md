@@ -149,8 +149,16 @@ precedent to copy.
 **A new account gets nothing but its own mail.** Spelled out explicitly
 because each of these is a decision, not an accident:
 
-- Not in `allowed_nodes`, so the Urgent board stays radio-gated
-  (`db_operations.py:4868`)
+- No Urgent board. `command_handlers.urgent_board_permitted` refuses any
+  `ssh:` identity outright, and does not fall back to "no allow list
+  configured means open to all" the way a radio does. That default is right
+  for radio -- holding the radio is the credential -- and wrong the moment
+  identities are handed out to anyone who registers. This document claimed
+  the property before the code enforced it: every allow list on the live
+  node was empty, and a field-test account created minutes earlier posted to
+  Urgent and had it broadcast to the mesh and synced onward. An SSH account
+  reaches the board only by linking a real device through the one-time code
+  flow and having that device allow-listed
 - No fleet authority — that is Ed25519-signed and unreachable from a session
 - No web admin access — a different credential entirely
 - No `bbs_nodes` membership, so it cannot inject sync frames
