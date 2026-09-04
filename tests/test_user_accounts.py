@@ -45,9 +45,16 @@ class AccountsSchemaTests(unittest.TestCase):
         # mail_relay_* were added when the mail DM relay became opt-in: the
         # account holds the choice, and the timestamp resolves which of two
         # nodes' updates wins when the preference syncs.
+        #
+        # sender_num is the account's stable local number. user_profiles,
+        # game_scores and zork_saves key on the numeric sender id, and SSH
+        # sessions used to mint a fresh one per connection -- so a save was
+        # written under a number nothing would present again. Stored rather
+        # than derived on the fly so it survives a change of derivation.
         self.assertEqual(cols, {"account_id", "alias", "alias_normalized", "created_at",
                     "mail_relay_enabled", "mail_relay_updated_at",
-                    "password_hash", "password_salt", "password_created_at"})
+                    "password_hash", "password_salt", "password_created_at",
+                    "sender_num"})
         cols = {row[1] for row in conn.execute("PRAGMA table_info(linked_nodes)")}
         self.assertEqual(cols, {"node_id", "account_id", "network", "linked_at"})
 
