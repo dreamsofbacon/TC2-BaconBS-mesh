@@ -1473,22 +1473,39 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
             send_delete_zork_save_to_bbs_nodes(user_id, game_id, deleted_at, [destination_node_id], interface)
 
 
-def _looks_like_source_node_id(value: str) -> bool:
-    """True if this trailing wire field is a node id, not record content.
+def _split_source_fields(body: str, min_header_pipes: int):
+    """Peel the optional |source_node_id|source_timestamp pair off a frame.
 
-    The optional source_node_id was matched on a leading '!' -- a Meshtastic
-    radio id. An MQTT node is mqtt:<topic>:<name> and a MeshCore node is a
-    bare hex key, so a record originating on either was never stripped: the
-    parse shifted by one field and the SOURCE NODE ID was written into
-    unique_id. Two nodes then disagreed about that record's manifest key
-    forever, which is a drift no amount of repair can close.
+    Returns (body, source_node_id, source_timestamp), consuming nothing when
+    the pair is absent.
 
-    MeshCore's bare-hex ids are deliberately NOT matched here: they have no
-    distinguishing prefix, so accepting them would mean treating ordinary
-    content as a node id. Those still fall through, exactly as before.
+    The two fields are written together or not at all -- see the
+    `if source_node_id and source_timestamp:` in utils.send_mail_to_bbs_nodes
+    and its siblings -- and content is always followed by |unique_id, so the
+    final field of a well-formed frame is never content. A trailing field
+    matching the second-precision timestamp pattern is therefore proof that
+    the field before it is the node id, and no guess about that id's shape is
+    needed.
+
+    Guessing is what broke records. The id was matched on a leading '!' or
+    'mqtt:', but a MeshCore key is bare hex with no prefix to recognise, so
+    for those the guess failed while the timestamp had already been consumed
+    -- the parse shifted by one field and wrote the NODE ID into unique_id.
+    Two nodes then held one record under two identities and could never
+    converge; a mail message and a channel comment both had to be deleted by
+    hand on the live mesh.
+
+    min_header_pipes is the back-out. If peeling the pair would leave too few
+    fields for this frame's fixed header, the frame is malformed or truncated
+    and nothing is consumed, rather than eating into the record.
     """
-    text = str(value or "")
-    return text.startswith('!') or text.startswith('mqtt:')
+    tail = str(body).rsplit("|", 1)
+    if len(tail) != 2 or not _SYNC_ISO_TIMESTAMP_PATTERN.match(tail[1]):
+        return body, None, None
+    pair = tail[0].rsplit("|", 1)
+    if len(pair) != 2 or pair[0].count("|") < min_header_pipes:
+        return body, None, None
+    return pair[0], pair[1], decode_ts_second(tail[1])
 
 
 def _push_delete_to_peer(tomb_scope: str, tomb_key: str, peer_id: str, interface) -> None:
@@ -1870,18 +1887,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             # Use rsplit from the right so content with embedded '|' is handled correctly.
             # Wire format: BULLETIN|board|sender|subject|content|unique_id[|date[|source_node_id|source_timestamp]]
             body = message[len("BULLETIN|"):]
-            source_timestamp = None
-            source_node_id = None
-            # Strip optional ISO source_timestamp from far right
-            _tmp = body.rsplit("|", 1)
-            if len(_tmp) == 2 and _SYNC_ISO_TIMESTAMP_PATTERN.match(_tmp[1]):
-                source_timestamp = decode_ts_second(_tmp[1])
-                body = _tmp[0]
-                # Strip optional source_node_id (starts with '!')
-                _tmp2 = body.rsplit("|", 1)
-                if len(_tmp2) == 2 and _looks_like_source_node_id(_tmp2[1]):
-                    source_node_id = _tmp2[1]
-                    body = _tmp2[0]
+            # board|short|subject|content|unique_id
+            body, source_node_id, source_timestamp = _split_source_fields(body, 4)
             # Try to strip optional date from the far right.
             tail = body.rsplit("|", 2)
             if len(tail) == 3 and _SYNC_DATE_PATTERN.match(tail[2]):
@@ -1906,17 +1913,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
         elif message.startswith("MAIL|"):
             # Wire format: MAIL|sender_id|sender_short|recipient_id|subject|content|unique_id[|date[|source_node_id|source_timestamp]]
             body = message[len("MAIL|"):]
-            source_timestamp = None
-            source_node_id = None
-            # Strip optional ISO source_timestamp from far right
-            _tmp = body.rsplit("|", 1)
-            if len(_tmp) == 2 and _SYNC_ISO_TIMESTAMP_PATTERN.match(_tmp[1]):
-                source_timestamp = decode_ts_second(_tmp[1])
-                body = _tmp[0]
-                _tmp2 = body.rsplit("|", 1)
-                if len(_tmp2) == 2 and _looks_like_source_node_id(_tmp2[1]):
-                    source_node_id = _tmp2[1]
-                    body = _tmp2[0]
+            # sender|short|recipient|subject|content|unique_id
+            body, source_node_id, source_timestamp = _split_source_fields(body, 5)
             tail = body.rsplit("|", 2)
             if len(tail) == 3 and _SYNC_DATE_PATTERN.match(tail[2]):
                 original_date, unique_id = decode_ts_minute(tail[2]), tail[1]
@@ -2000,17 +1998,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             # Wire format: CHANNELCOMMENT|{manifest_key}|{b64_sender}|{date}|{content}|{unique_id}[|source_node_id|source_timestamp]
             # Use rsplit from the right so content with embedded '|' is handled correctly.
             body = message[len("CHANNELCOMMENT|"):]
-            source_timestamp = None
-            source_node_id = None
-            # Strip optional ISO source_timestamp from far right
-            _tmp = body.rsplit("|", 1)
-            if len(_tmp) == 2 and _SYNC_ISO_TIMESTAMP_PATTERN.match(_tmp[1]):
-                source_timestamp = decode_ts_second(_tmp[1])
-                body = _tmp[0]
-                _tmp2 = body.rsplit("|", 1)
-                if len(_tmp2) == 2 and _looks_like_source_node_id(_tmp2[1]):
-                    source_node_id = _tmp2[1]
-                    body = _tmp2[0]
+            # channel_key|sender|date|content|unique_id
+            body, source_node_id, source_timestamp = _split_source_fields(body, 4)
             tail = body.rsplit("|", 1)
             if len(tail) != 2 or not tail[1]:
                 logging.warning(f"Malformed CHANNELCOMMENT sync message ignored: {message}")
