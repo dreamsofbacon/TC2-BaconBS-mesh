@@ -246,6 +246,8 @@
                 <span class="text-success">healthy</span>
               {% elif peer.fleet_state in ('failed', 'rolled_back', 'rollback_failed') %}
                 <span class="text-danger">{{ peer.fleet_state }}</span>
+              {% elif peer.fleet_state == 'not enrolled' %}
+                <span class="text-danger" title="This node is reachable and reports fleet support, but holds no signed target at all — so it is not accepting instructions from this key. Only its own [fleet] settings can change that: it needs updates set to auto or notify, and this group's public key in trusted_keys.">not enrolled</span>
               {% else %}
                 <span class="text-warning">{{ peer.fleet_state }}</span>
               {% endif %}

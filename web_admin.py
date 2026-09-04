@@ -277,11 +277,25 @@ def build_fleet_view(config_path: str) -> dict:
       stale = True
     reported_state = str(peer.get("rollout_state") or "").strip()
     commit = str(peer.get("commit_hash") or "").strip().lower()
+    reported_target = str(peer.get("target_commit") or "").strip()
     matches = bool(target_commit and commit and target_commit.startswith(commit))
     if stale:
       peer["fleet_state"] = "stale"
-    elif reported_state and reported_state not in ("healthy", "confirmed"):
+    elif reported_state and reported_state not in ("healthy", "confirmed", "pending"):
       peer["fleet_state"] = reported_state
+    elif target_commit and not reported_target and not matches:
+      # It is reachable and fleet-aware, we have a target to give it, it is
+      # not already on that commit, and it reports holding no target -- so it
+      # is not accepting our instructions at all, rather than working through
+      # one. A peer already ON the target is fine whether or not it says it
+      # holds one, which is what the `not matches` guard protects.
+      #
+      # Both used to read "pending", which is why a peer sat thirteen
+      # releases behind for a day without anything saying so: "pending" is
+      # also what a node looks like for the ninety seconds it takes to
+      # converge. Only a peer's own [fleet] settings can fix this, so it
+      # needs to be visible rather than merely true.
+      peer["fleet_state"] = "not enrolled"
     else:
       peer["fleet_state"] = "healthy" if matches else "pending"
     classified_peers.append(peer)
