@@ -1010,7 +1010,7 @@ _UNIMPORTANT_SYNC_FRAMES = {"BULLETINCONT", "MAILCONT", "HASHREC", "HASHZ"}
 
 def classify_sync_transmission_importance(frame_type: str, is_continuation: bool) -> bool:
   normalized = str(frame_type or "").strip().upper()
-  if normalized in {"SYNCSTATE", "HASHREQ", "HASHMISS", "HASHEND", "DELETE_BULLETIN", "DELETE_MAIL", "DELETE_CHANNELCOMMENT", "DELETE_ZORKSAVE", "BULLETIN", "MAIL", "CHANNEL", "CHANNELCOMMENT", "PROFILESYNC", "SCORESYNC", "ZORKSAVE", "CANDREQ", "CANDRSP"}:
+  if normalized in {"SYNCSTATE", "HASHREQ", "HASHMISS", "HASHEND", "DELETE_BULLETIN", "DELETE_MAIL", "DELETE_CHANNELCOMMENT", "DELETE_ZORKSAVE", "DELETE_SCORE", "DELETE_PROFILE", "BULLETIN", "MAIL", "CHANNEL", "CHANNELCOMMENT", "PROFILESYNC", "SCORESYNC", "ZORKSAVE", "CANDREQ", "CANDRSP"}:
     return True
   if bool(is_continuation):
     return False
@@ -6545,8 +6545,10 @@ def create_app(runtime_interface=None) -> Flask:
         'DELETE_BULLETIN': 'Content',
         'DELETE_MAIL':     'Content',
         'DELETE_CHANNELCOMMENT': 'Content',
+        'DELETE_SCORE':    'Content',
         # User profiles
         'PROFILESYNC':     'Profile',
+        'DELETE_PROFILE':  'Profile',
         # Sync protocol overhead
         'SYNCSTATE':       'Protocol',
         'HASHREQ':         'Protocol',

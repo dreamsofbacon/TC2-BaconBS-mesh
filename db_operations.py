@@ -21,7 +21,9 @@ from utils import (
     send_delete_bulletin_to_bbs_nodes,
     send_delete_channel_comment_to_bbs_nodes,
     send_delete_channel_to_bbs_nodes,
+    send_delete_game_score_to_bbs_nodes,
     send_delete_mail_to_bbs_nodes,
+    send_delete_user_profile_to_bbs_nodes,
     send_delete_zork_save_to_bbs_nodes,
     send_mail_to_bbs_nodes, send_message, send_channel_to_bbs_nodes,
     send_channel_comment_to_bbs_nodes,
@@ -3654,6 +3656,20 @@ def restore_sync_tombstone(tombstone_key: str) -> bool:
             (snapshot.get('sender'), snapshot.get('sender_short_name'), snapshot.get('recipient'),
              snapshot.get('date'), snapshot.get('subject'), snapshot.get('content'),
              snapshot.get('unique_id')))
+    elif scope == 'game_scores':
+        c.execute(
+            "INSERT OR IGNORE INTO game_scores (user_id, game_id, short_name, score, max_score, moves, achieved_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (snapshot.get('user_id'), snapshot.get('game_id'), snapshot.get('short_name'),
+             snapshot.get('score'), snapshot.get('max_score'), snapshot.get('moves'),
+             snapshot.get('achieved_at')))
+    elif scope == 'profiles':
+        c.execute(
+            "INSERT OR IGNORE INTO user_profiles (user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (snapshot.get('user_id'), snapshot.get('short_name'), snapshot.get('long_name'),
+             snapshot.get('first_seen'), snapshot.get('last_seen'),
+             snapshot.get('messages_sent'), snapshot.get('bio')))
     else:
         return False
 
@@ -3782,6 +3798,12 @@ def upsert_synced_user_profile(user_id: str, short_name: str, long_name: str,
                                first_seen: str, last_seen: str,
                                messages_sent: int, bio: str) -> None:
     """Apply profile metadata learned from a peer sync payload."""
+    normalized_last_seen = _normalize_sync_timestamp(last_seen)
+    tombstone_deleted_at = get_sync_tombstone_deleted_at('profiles', str(user_id))
+    if tombstone_deleted_at and _normalize_sync_timestamp(tombstone_deleted_at) >= normalized_last_seen:
+        logging.info(f"Ignoring PROFILESYNC for deleted profile {user_id} (tombstoned locally)")
+        return
+
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
@@ -3797,11 +3819,19 @@ def upsert_synced_user_profile(user_id: str, short_name: str, long_name: str,
         (str(user_id), short_name, long_name, first_seen, last_seen, int(messages_sent), bio[:100]),
     )
     conn.commit()
+    clear_sync_tombstone('profiles', str(user_id))
 
 
 def upsert_synced_game_score(user_id: str, game_id: str, short_name: str,
                              score: int, max_score: int, moves: int, achieved_at: str) -> None:
     """Apply game score metadata learned from a peer sync payload."""
+    key = f"{user_id}:{game_id}"
+    normalized_achieved_at = _normalize_sync_timestamp(achieved_at)
+    tombstone_deleted_at = get_sync_tombstone_deleted_at('game_scores', key)
+    if tombstone_deleted_at and _normalize_sync_timestamp(tombstone_deleted_at) >= normalized_achieved_at:
+        logging.info(f"Ignoring SCORESYNC for deleted score {key} (tombstoned locally)")
+        return
+
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
@@ -3835,6 +3865,103 @@ def upsert_synced_game_score(user_id: str, game_id: str, short_name: str,
         (str(user_id), game_id, short_name, int(score), int(max_score), int(moves), achieved_at),
     )
     conn.commit()
+    clear_sync_tombstone('game_scores', key)
+
+
+def apply_synced_game_score_delete(user_id: str, game_id: str, deleted_at: str) -> bool:
+    """Delete one score and remember the delete, whoever asked for it.
+
+    A score achieved *after* the delete is a different score that happens to
+    share the key, so it survives -- the tombstone is still recorded, and the
+    next sync of that newer row clears it.
+    """
+    key = f"{user_id}:{game_id}"
+    normalized_deleted_at = _normalize_sync_timestamp(
+        deleted_at or datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT user_id, game_id, short_name, score, max_score, moves, achieved_at "
+        "FROM game_scores WHERE user_id = ? AND game_id = ?",
+        (str(user_id), str(game_id)),
+    )
+    row = c.fetchone()
+    snapshot = None
+    if row is not None:
+        snapshot = {
+            'user_id': row[0], 'game_id': row[1], 'short_name': row[2],
+            'score': row[3], 'max_score': row[4], 'moves': row[5],
+            'achieved_at': row[6],
+        }
+    record_sync_tombstone_at('game_scores', key, normalized_deleted_at, payload=snapshot)
+
+    if row is not None and _normalize_sync_timestamp(row[6]) > normalized_deleted_at:
+        return False
+
+    c.execute("DELETE FROM game_scores WHERE user_id = ? AND game_id = ?",
+              (str(user_id), str(game_id)))
+    conn.commit()
+    return True
+
+
+def delete_game_score(user_id, game_id: str, bbs_nodes=None, interface=None,
+                      deleted_at: Optional[str] = None) -> bool:
+    """Delete a score locally and tell peers, so it cannot be pushed back."""
+    normalized_deleted_at = _normalize_sync_timestamp(
+        deleted_at or datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    removed = apply_synced_game_score_delete(str(user_id), str(game_id), normalized_deleted_at)
+    if bbs_nodes and interface:
+        send_delete_game_score_to_bbs_nodes(user_id, game_id, normalized_deleted_at,
+                                            bbs_nodes, interface)
+    return removed
+
+
+def apply_synced_user_profile_delete(user_id: str, deleted_at: str) -> bool:
+    """Delete one profile and remember the delete, whoever asked for it.
+
+    A profile seen again after the delete is a user who came back, not the
+    record we removed, so a newer ``last_seen`` survives.
+    """
+    key = str(user_id)
+    normalized_deleted_at = _normalize_sync_timestamp(
+        deleted_at or datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio "
+        "FROM user_profiles WHERE user_id = ?",
+        (key,),
+    )
+    row = c.fetchone()
+    snapshot = None
+    if row is not None:
+        snapshot = {
+            'user_id': row[0], 'short_name': row[1], 'long_name': row[2],
+            'first_seen': row[3], 'last_seen': row[4],
+            'messages_sent': row[5], 'bio': row[6],
+        }
+    record_sync_tombstone_at('profiles', key, normalized_deleted_at, payload=snapshot)
+
+    if row is not None and _normalize_sync_timestamp(row[4]) > normalized_deleted_at:
+        return False
+
+    c.execute("DELETE FROM user_profiles WHERE user_id = ?", (key,))
+    conn.commit()
+    return True
+
+
+def delete_user_profile(user_id, bbs_nodes=None, interface=None,
+                        deleted_at: Optional[str] = None) -> bool:
+    """Delete a profile locally and tell peers, so it cannot be pushed back."""
+    normalized_deleted_at = _normalize_sync_timestamp(
+        deleted_at or datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    removed = apply_synced_user_profile_delete(str(user_id), normalized_deleted_at)
+    if bbs_nodes and interface:
+        send_delete_user_profile_to_bbs_nodes(user_id, normalized_deleted_at,
+                                              bbs_nodes, interface)
+    return removed
 
 
 def get_bulletins(board):
@@ -4207,7 +4334,15 @@ def upsert_zork_save(user_id: int, save_data: bytes, game_id: str = 'zork1') -> 
 # The comparison below is string-based too, so with equal dates the
 # separator decided the winner: 'T' is 0x54 and ' ' is 0x20, which made an
 # older T-form save beat a newer space-form one.
-def _normalize_zork_timestamp(value) -> str:
+def _normalize_sync_timestamp(value) -> str:
+    """Collapse the spellings of one instant onto a single canonical form.
+
+    Peers write the same moment as '2026-09-03 14:00:00', with a 'T', or
+    with a trailing 'Z', and comparing those as strings makes identical
+    records look different -- which is how a deleted row came back wearing
+    a timestamp we had never seen. Anything unparseable is returned as-is
+    rather than guessed at.
+    """
     text = str(value or '').strip()
     if not text:
         return ''
@@ -4219,6 +4354,11 @@ def _normalize_zork_timestamp(value) -> str:
     except ValueError:
         return text
     return parsed.strftime('%Y-%m-%d %H:%M:%S')
+
+
+# The zork-specific name this started life under, kept so the save-sync call
+# sites and their tests keep reading naturally.
+_normalize_zork_timestamp = _normalize_sync_timestamp
 
 
 def _should_replace_zork_save(existing_updated_at: str, existing_save_data: bytes, incoming_updated_at: str, incoming_save_data: bytes) -> bool:

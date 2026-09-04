@@ -853,6 +853,27 @@ def send_delete_mail_to_bbs_nodes(unique_id, bbs_nodes, interface):
         _send_one_sync(message, node_id, interface)
 
 
+def send_delete_game_score_to_bbs_nodes(user_id, game_id, deleted_at, bbs_nodes, interface):
+    _use_epoch = peers_all_support(bbs_nodes, 'epoch')
+    _use_plain = peers_all_support(bbs_nodes, 'nob64')
+    deleted_at_wire = encode_ts_second(deleted_at, _use_epoch)
+    message = (f"DELETE_SCORE|{encode_text(str(user_id), _use_plain)}"
+               f"|{encode_text(str(game_id), _use_plain)}|{deleted_at_wire}")
+    logging.info(f"SERVER SYNC: Sending delete game score sync for user_id={user_id} game_id={game_id}")
+    for node_id in bbs_nodes:
+        _send_one_sync(message, node_id, interface)
+
+
+def send_delete_user_profile_to_bbs_nodes(user_id, deleted_at, bbs_nodes, interface):
+    _use_epoch = peers_all_support(bbs_nodes, 'epoch')
+    _use_plain = peers_all_support(bbs_nodes, 'nob64')
+    deleted_at_wire = encode_ts_second(deleted_at, _use_epoch)
+    message = f"DELETE_PROFILE|{encode_text(str(user_id), _use_plain)}|{deleted_at_wire}"
+    logging.info(f"SERVER SYNC: Sending delete profile sync for user_id={user_id}")
+    for node_id in bbs_nodes:
+        _send_one_sync(message, node_id, interface)
+
+
 def send_delete_zork_save_to_bbs_nodes(user_id, game_id, deleted_at, bbs_nodes, interface):
     if not is_zork_save_sync_enabled():
         return
