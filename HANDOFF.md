@@ -4,7 +4,7 @@ State of the deployment, the decisions behind it, and what is still open.
 For the feature backlog see [feature requests.txt](feature%20requests.txt);
 this file is about running the thing.
 
-Last updated 2026-09-03 at commit `0dc79ba` (`v0.1.542`).
+Last updated 2026-09-04 at commit `ccb238d` (`v0.1.560`).
 
 ---
 
@@ -19,7 +19,7 @@ Last updated 2026-09-03 at commit `0dc79ba` (`v0.1.542`).
 | Path | `/home/bacon/TC2-BaconBS-mesh` | same |
 | Services | `mesh-bbs.service`, `bacon-web-admin.service`, `bacon-ssh.service` | `mesh-bbs.service`, `bacon-web-admin.service` |
 | Bacon BBS SSH | Active, dual-stack port 2222 | Disabled/inactive |
-| Fleet state | Healthy on `0dc79ba` | Healthy on `0dc79ba` |
+| Fleet state | Healthy on `ccb238d` | Healthy on `ccb238d` |
 
 forgecam's Python 3.9 matters: `meshcore` and the supported AsyncSSH release
 require newer Python, so `requirements.txt` carries environment markers and
@@ -31,15 +31,48 @@ A third node, `mqtt:baconbbsvt:Chattanooga`, belongs to
 [materva](https://github.com/materva/TC2-BaconBS-mesh) and is reachable over
 the `baconbbsvt` broker. It is not ours to deploy to.
 
-Recent deployed release sequence:
+**It is not enrolled, and waiting will not change that.** It sits on
+`0.1.546` and has never stored a signed target. The transmission log settles
+where the fault is: 161 `FLEETVER` frames sent to it and none ever relayed
+back, against 161 sent and 160 returned for every peer that is enrolled,
+while it sends us 304 `FLEETSTATUS` frames over the same link. So the
+instruction reaches it and it declines to act -- its `[fleet] updates` is
+off, or our key `fkec622a` is not in its `trusted_keys`, or `cryptography`
+is missing. All three are on its side, and the second is a perfectly
+reasonable choice about a key somebody else holds.
+
+The Fleet page now reports this as **not enrolled** rather than `pending`,
+because `pending` also describes the ninety seconds a healthy node spends
+converging -- which is how this hid for a day. Enrolling it needs, on their
+node:
+
+```sh
+python scripts/fleet_sign.py --group baconbbsvt enroll   "fkec622a:0hGvExa6i9yRn-kdbW4Kn6FHMfurPdmYeTCoud4vbuc"   --config config.ini --updates auto
+sudo systemctl restart mesh-bbs.service bacon-web-admin.service
+```
+
+That is the public half; it verifies signatures and cannot create them.
+Until then it keeps its pre-fix copies of the timestamp drift and the
+source-field parse bug, which is why it stays on our mismatch list.
+
+Recent deployed release sequence (2026-09-04):
 
 | Commit | Change |
 | --- | --- |
-| `1e89a9a` | Secure standalone SSH BBS access and menu cleanup |
-| `e92f5a6` | SSH controls on the web Settings page |
-| `831e6a7` | Optional shared SSH transport gate and live config reload |
-| `d0ba506` | Simultaneous IPv4/IPv6 SSH binding |
-| `0dc79ba` | Username-first registration and login prompts |
+| `b5fe94c` | Bound the zork_saves repair deferral so it cannot starve |
+| `58a2347` | One stable sender number per SSH account, for life |
+| `8779c14` `f2d1337` | One timestamp spelling in both zork hashes |
+| `f48cd26` | A Trivia question pays out once |
+| `6e6183e` | Source-field parse anchored on the timestamp, not a guess |
+| `69309bd` | Self-registered SSH accounts kept off the Urgent board |
+| `4115cf9` | SSH delivers replies that arrive after the command |
+| `224d871` | "That is you" instead of "not found" when self-addressing |
+| `17afabf` | Fleet updates restart `bacon-ssh` too |
+| `ccb238d` | Fleet page distinguishes *not enrolled* from *pending* |
+
+Earlier the same day: `5174737` menu renumbering and a working `[0] Exit`,
+`0bd9178` prefixed cancel words, `75e6ac5` safe account deletion and the
+shared-connection test fix.
 
 ---
 
@@ -64,6 +97,28 @@ Use only the requested `.local` names:
 A duplicate submission may be rejected as a replay when MQTT delivered the
 same fresh timestamp first. Check the stored target and convergence before
 treating that as failure or signing another instruction.
+
+### Companion services, and how eight releases shipped nothing
+
+`mesh-bbs` refreshes itself: it exits on update and systemd restarts it under
+`Restart=always`. Everything else needs `fleet_update.restart_companion_services`
+to do it, and that list held only `bacon-web-admin`.
+
+Nothing restarted `bacon-ssh`. It ran the code it had started with for seven
+hours across eight releases while the file on disk carried every fix -- the
+stable sender number, `[0] Exit`, the prefixed cancel words, the renumbered
+menus. None were live over SSH, and every check made in that window read
+stale behaviour and passed.
+
+It surfaced only by driving a real terminal session: a fix for late Ask Nomad
+replies still showed the old symptom after shipping. `git rev-parse` was
+right, the file was right, the tests passed, and the service had never loaded
+any of it. **"Deployed" was being measured as "the file changed."**
+
+`COMPANION_UNITS` now covers both, restarted one at a time so forgecam --
+MQTT-only, no `bacon-ssh` installed -- is not failed by a missing unit.
+Confirmed working on `ccb238d`: `bacon-ssh` took a new PID with nobody
+touching it.
 
 After every deployment, confirm the commit, fleet state, services, HTTP, and
 recent exceptions:
@@ -129,7 +184,34 @@ Live SSH validation completed:
 
 The generated password for `Copilot09032216` was intentionally not retained,
 so the account cannot currently be used for another login. Earlier test
-accounts `DeployTest0903203111` and `bacon` also remain in the database.
+accounts `DeployTest0903203111` and `bacon` also remain in the database, plus
+`baconbot` from the field test. All four are `DELETABLE` from the Accounts
+page whenever wanted.
+
+**An account's sender number is stable for life.** `user_profiles`,
+`game_scores` and `zork_saves` key on the numeric sender id, and SSH used to
+mint a fresh one per connection -- so a save was written under a number
+nothing would ever present again. It replicated to every peer and could never
+be loaded by the person who made it. `accounts.sender_num` is now derived
+once with blake2b and stored, with a partial unique index so two accounts
+cannot share one. Verified live: `baconbot` holds `3781033626`, and a Zork
+save written in one SSH session was restored by a separate connection.
+
+The number is assigned lazily at first login, so an account that has not
+signed in since the change still shows `NULL`. That is expected, not missing.
+
+**One session per account.** `max_sessions_per_account` is 1, because
+`user_states` keys on that same number: two concurrent sessions would share a
+menu position and typing in one window would move the other. The old
+behaviour was not better, only incoherent -- two sessions shared mail, which
+keys on the node id, while having separate profiles and separate saves.
+
+**Late replies arrive on their own.** Ask Nomad answers from a worker thread
+up to a minute later, and nothing on this transport drained that buffer
+except a keystroke -- so the answer surfaced only when the user typed, and
+that keystroke was then eaten by the prompt the answer had just drawn.
+`_drain_late_replies` polls once a second. Verified live: an answer arrived
+unprompted about five seconds after the question.
 
 ### Deleting an account
 
@@ -193,17 +275,45 @@ processes sharing `bulletins.db`, so contention is structural. When it fires,
 inbound MQTT frames are dropped, which looks like intermittent sync gaps
 rather than an error.
 
-**An SSH session gets a new numeric identity on every connection.**
-`bbs_emulator.start_ssh_session` mints `_SYNTHETIC_NUM_BASE + counter` per
-connection, and `user_profiles`, `game_scores` and `zork_saves` are all keyed
-by that number rather than by the node id. So an SSH user's Zork save never
-resumes, their high scores never accumulate, and each login leaves another
-orphan `user_profiles` row. It is also why `delete_account` cannot reach
-those rows — they are not addressable from an account. Deriving the number
-from the account id would fix all of it at once, but it changes a live
-service's behaviour, so it is deliberately not bundled with the delete work.
-Nothing here leaks mail: the node id, which is what authorization checks, is
-still server-derived and stable.
+**A deleted `game_scores` row comes back from a peer.** `game_scores` and
+`user_profiles` are not in the tombstone-aware scope list
+(`message_processing.py:1170`), so deleting one locally only removes it until
+a peer offers it again. The Trivia exploit score was removed from both our
+nodes and returned within the hour from Chattanooga, which still runs the
+pre-fix code and holds its own copy. Note the returned row carries the
+`T`-form timestamp, so it came off the wire.
+
+The mistake worth not repeating: Chattanooga's `game_scores` hash differed
+from ours, and that was read as proof it held a *different* row. Hash
+differences also come from timestamp spelling -- the bug fixed earlier the
+same day -- so it proved nothing. Deleting a synced record needs a tombstone
+the local node will honour on receipt, and for these two scopes that does not
+exist yet.
+
+**Timestamp spelling drift, everywhere except zork.** The same instant is
+written `%Y-%m-%d %H:%M:%S` by a local write and `%Y-%m-%dT%H:%M:%S` by
+`utils.decode_ts_second` when a record arrives from a peer, and the record
+hash is built from that string -- so two nodes holding one identical record
+disagree about it permanently. Fixed for `zork_saves`; `channels`,
+`game_scores` and `public_chatter` still hash a timestamp in both hash
+functions, and `bulletins` and `mail` hash one in the per-record manifest but
+not the aggregate, which makes their drift *dormant* rather than absent.
+Scoped in full, not started:
+[docs/SYNC-HASH-TIMESTAMPS.md](docs/SYNC-HASH-TIMESTAMPS.md).
+
+**Web Fetch is inoperable and says so in config syntax.** `[gateway]
+allowed_hosts` is empty on the live node, so every fetch returns
+`[ERR] blocked: no allowed_hosts configured` -- an internal setting name
+shown to whoever tried to use the feature.
+
+**No version anywhere a user can see it.** `get_display_version` is never
+called outside the web admin, `version_info` and the Docker build, so a
+person on the radio or over SSH cannot say what they are talking to.
+
+**No post retraction.** `delete_bulletin` is never called from
+`command_handlers.py`, so nobody can withdraw their own bulletin or comment;
+it takes web-admin access. Bulletins are stored under a short name rather
+than an account, so removing one person's posts is one at a time.
 
 **Zork launches without an interpreter installed.** Trivia King degrades
 cleanly when its data is missing; `zork_port` still starts a session when
@@ -261,20 +371,42 @@ behalf, so the recipient chooses; the preference syncs between nodes via
 
 ## Testing
 
-Tests use stdlib `unittest`. The latest SSH work was validated with:
+Tests use stdlib `unittest`, run under pytest:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest tests.test_ssh_auth tests.test_ssh_server
-.\.venv\Scripts\python.exe -m unittest tests.test_web_admin
+.\.venv\Scripts\python.exe -m pytest tests\ -q
 ```
 
-Verified results during this release sequence:
+**1589 passing, 1 skipped** at `ccb238d`, with no known flakes.
 
-- 18 SSH authentication/transport tests passed after registration changes
-- 149 web-admin tests passed after shared credential/settings changes
-- 267 tests passed for the original SSH/menu release
-- editor diagnostics and `git diff --check` were clean before each commit
-- live IPv4, IPv6, shared-gate, unknown-user, known-user, and relay paths passed
+### Mutate the code, or the tests are telling you what you hoped
+
+Five times in one day a test written for a fix passed against code where that
+fix had been removed. Each was found by breaking the code on purpose and
+checking a test noticed, and none would have been found any other way:
+
+- a guard rescued an assertion, so the thing it named was never exercised
+- a mutation was anchored on the wrong line, and the pass was read as a result
+- a mechanism was covered thoroughly and *nothing tested that anything called
+  it* -- which was the bug
+- a resolver was checked instead of the message it produces
+- a database call was checked instead of the handler whose choice of argument
+  was the actual behaviour
+
+That last shape appeared twice: testing the thing underneath the decision
+rather than the decision.
+
+**Invalidate `__pycache__` between mutations.** A mutation that preserves file
+size can survive its own restore -- Python validates bytecode on source mtime
+and size, both of which matched -- so the mutated code keeps running while
+`inspect.getsource` shows the clean original. One mutation was reported
+"caught" against code that had never been restored.
+
+**Do not report a verification script's verdict without reading its
+transcript.** Two summary lines contradicted their own output, both times
+saying a working fix was broken, because the assertion was written from the
+wording expected rather than the wording the system emits ("Saved game
+restored", not "resumed").
 
 **The roaming `test_web_admin.py` failure is fixed, and it was not a flake.**
 Full runs used to fail one or two tests in that file, with *which* ones
