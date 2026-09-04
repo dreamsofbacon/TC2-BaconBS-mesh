@@ -51,6 +51,8 @@ from db_operations import (
     apply_synced_mail_relay_preference,
     upsert_synced_zork_save,
     apply_synced_zork_save_delete,
+    apply_synced_game_score_delete,
+    apply_synced_user_profile_delete,
     get_mismatched_peer_scopes,
     get_scopes_to_request_repair,
     get_record_hash_manifest,
@@ -82,6 +84,8 @@ from utils import (
     send_delete_channel_comment_to_bbs_nodes,
     send_delete_channel_to_bbs_nodes,
     send_delete_zork_save_to_bbs_nodes,
+    send_delete_game_score_to_bbs_nodes,
+    send_delete_user_profile_to_bbs_nodes,
     send_hash_request_to_bbs_nodes,
     send_sync_state_to_bbs_nodes,
     get_hash_repair_pause_seconds,
@@ -935,6 +939,16 @@ ZORK_DEFERRAL_LIMIT = 3
 _zork_deferrals = {}
 
 
+# Scopes where a local delete is remembered and honoured against peers.
+# A scope missing from here is one where deleting a record achieves nothing
+# lasting: the first peer that still holds it hands it straight back, which
+# is exactly how an exploited trivia score returned after being removed.
+TOMBSTONE_AWARE_SCOPES = (
+    'bulletins', 'mail', 'zork_saves', 'channels', 'channel_comments',
+    'game_scores', 'profiles',
+)
+
+
 def _should_defer_zork(peer_node_id: str, active_scopes: list) -> bool:
     """Hold zork_saves back for this peer, unless it has waited long enough.
 
@@ -1167,7 +1181,7 @@ def _do_striped_reconcile(scope: str, peer_manifests: dict, interface) -> None:
             _tomb_scope = 'channels'
             _tomb_key = f"comment:{key}"
 
-        if scope in ('bulletins', 'mail', 'zork_saves', 'channels', 'channel_comments') and key not in local and has_sync_tombstone(_tomb_scope, _tomb_key):
+        if scope in TOMBSTONE_AWARE_SCOPES and key not in local and has_sync_tombstone(_tomb_scope, _tomb_key):
             logging.info(f"Requesting tombstone replay from {assigned_peer} for {scope}:{key}")
             _send_one_sync(f"HASHMISS|{_tomb_wire}|{_scope_wire}:{wire_key}", assigned_peer, interface,
                            pause_seconds=get_hash_repair_pause_seconds(interface))
@@ -1273,7 +1287,7 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
         # Tombstone lookup: channel_comments stored under channels scope with 'comment:' prefix.
         _tomb_scope = 'channels' if scope == 'channel_comments' else scope
         _tomb_key = f"comment:{key}" if scope == 'channel_comments' else key
-        if scope in ('bulletins', 'mail', 'zork_saves', 'channels', 'channel_comments') and key not in local and has_sync_tombstone(_tomb_scope, _tomb_key):
+        if scope in TOMBSTONE_AWARE_SCOPES and key not in local and has_sync_tombstone(_tomb_scope, _tomb_key):
             logging.info(f"Requesting tombstone replay from {sender_node_id} for {scope}:{key}")
             _send_one_sync(f"HASHMISS|{_tomb_wire}|{_scope_wire}:{wire_key}", sender_node_id, interface, pause_seconds=get_hash_repair_pause_seconds(interface))
             _push_delete_to_peer(_tomb_scope, _tomb_key, sender_node_id, interface)
@@ -1537,6 +1551,20 @@ def _push_delete_to_peer(tomb_scope: str, tomb_key: str, peer_id: str, interface
             if not deleted_at:
                 return
             send_delete_zork_save_to_bbs_nodes(user_id, game_id, deleted_at, [peer_id], interface)
+        elif tomb_scope == 'game_scores':
+            remainder = str(tomb_key)
+            if ':' not in remainder:
+                return
+            user_id, game_id = remainder.split(':', 1)
+            deleted_at = get_sync_tombstone_deleted_at('game_scores', remainder)
+            if not deleted_at:
+                return
+            send_delete_game_score_to_bbs_nodes(user_id, game_id, deleted_at, [peer_id], interface)
+        elif tomb_scope == 'profiles':
+            deleted_at = get_sync_tombstone_deleted_at('profiles', str(tomb_key))
+            if not deleted_at:
+                return
+            send_delete_user_profile_to_bbs_nodes(str(tomb_key), deleted_at, [peer_id], interface)
         else:
             return
         logging.info(f"Pushed delete for {tomb_scope}:{tomb_key} to {peer_id}")
@@ -1979,6 +2007,29 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed DELETE_ZORKSAVE payload ignored: {message}")
                 return
             apply_synced_zork_save_delete(user_id, game_id, decode_ts_second(parts[3]))
+        elif message.startswith("DELETE_SCORE|"):
+            parts = message.split("|", 3)
+            if len(parts) != 4 or not parts[1] or not parts[2] or not parts[3]:
+                logging.warning(f"Malformed DELETE_SCORE sync message ignored: {message}")
+                return
+            try:
+                user_id = decode_text(parts[1])
+                game_id = decode_text(parts[2])
+            except Exception:
+                logging.warning(f"Malformed DELETE_SCORE payload ignored: {message}")
+                return
+            apply_synced_game_score_delete(user_id, game_id, decode_ts_second(parts[3]))
+        elif message.startswith("DELETE_PROFILE|"):
+            parts = message.split("|", 2)
+            if len(parts) != 3 or not parts[1] or not parts[2]:
+                logging.warning(f"Malformed DELETE_PROFILE sync message ignored: {message}")
+                return
+            try:
+                user_id = decode_text(parts[1])
+            except Exception:
+                logging.warning(f"Malformed DELETE_PROFILE payload ignored: {message}")
+                return
+            apply_synced_user_profile_delete(user_id, decode_ts_second(parts[2]))
         elif message.startswith("CHANNEL|"):
             parts = message.split("|", 2)
             if len(parts) != 3:
@@ -3019,6 +3070,7 @@ def on_receive(packet, interface):
             bbs_nodes = interface.bbs_nodes
             is_sync_message = any(message_string.startswith(prefix) for prefix in
                                   ["PCHAT|", "PCHATCONT|", "BULLETIN|", "MAIL|", "DELETE_BULLETIN|", "DELETE_MAIL|", "DELETE_ZORKSAVE|",
+                                   "DELETE_SCORE|", "DELETE_PROFILE|",
                                    "CHANNEL|", "DELETE_CHANNEL|", "CHANNELCOMMENT|", "CHANNELCOMMENTCONT|", "CHANNELCOMMENTMETA|", "DELETE_CHANNELCOMMENT|",
                                    "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
                                    "PROFILESYNC|", "RELAYPREF|", "SCORESYNC|",
