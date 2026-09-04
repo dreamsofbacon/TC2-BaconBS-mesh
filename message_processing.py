@@ -920,6 +920,44 @@ def is_hashreq_pending_for_peer_scope(peer_id: str, scope: str) -> bool:
     return _is_hashreq_pending(peer_id, scope)
 
 
+# How many repair cycles in a row zork_saves may be held back before it gets
+# a turn regardless of what else is out of sync.
+#
+# The deferral below assumes the other scopes converge "in a later cycle".
+# That holds for a transient backlog and fails completely for a peer that
+# never fully converges: Chattanooga sat with mail, channels and game_scores
+# permanently mismatched, so over six hours zork_saves was deferred on all
+# fourteen cycles and requested zero times, while its save stayed one record
+# behind. A bound keeps the intent -- zork goes last, because its payloads
+# are the largest and most chunk-loss-prone -- without letting last become
+# never.
+ZORK_DEFERRAL_LIMIT = 3
+_zork_deferrals = {}
+
+
+def _should_defer_zork(peer_node_id: str, active_scopes: list) -> bool:
+    """Hold zork_saves back for this peer, unless it has waited long enough.
+
+    Counting consecutive deferrals rather than elapsed time keeps this tied
+    to repair opportunities actually taken: a peer we rarely hear from does
+    not burn its allowance while nothing is happening.
+    """
+    waited = _zork_deferrals.get(str(peer_node_id), 0) + 1
+    if waited > ZORK_DEFERRAL_LIMIT:
+        _zork_deferrals.pop(str(peer_node_id), None)
+        logging.info(
+            f"zork_saves for {peer_node_id} has been deferred {waited - 1} cycles; "
+            f"requesting it now alongside {', '.join(active_scopes)}"
+        )
+        return False
+    _zork_deferrals[str(peer_node_id)] = waited
+    return True
+
+
+def _clear_zork_deferrals(peer_node_id: str) -> None:
+    _zork_deferrals.pop(str(peer_node_id), None)
+
+
 def _prune_recent_syncstate_repairs(interface=None) -> None:
     now = time.time()
     ttl = get_repair_cycle_seconds(interface)
@@ -987,11 +1025,14 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
     non_zork = [s for s in requested_scopes if s != 'zork_saves']
     data_non_zork = [s for s in non_zork if s not in ('tombstones', 'public_chatter')]
     if data_non_zork and len(non_zork) != len(requested_scopes):
-        logging.info(
-            f"Deferring zork_saves repair for {sender_node_id} until other scopes converge "
-            f"(active: {', '.join(data_non_zork)})"
-        )
-        requested_scopes = non_zork
+        if _should_defer_zork(sender_node_id, data_non_zork):
+            logging.info(
+                f"Deferring zork_saves repair for {sender_node_id} until other scopes converge "
+                f"(active: {', '.join(data_non_zork)})"
+            )
+            requested_scopes = non_zork
+    else:
+        _clear_zork_deferrals(sender_node_id)
     logging.info(f"SYNCSTATE mismatch from {sender_node_id}; requesting targeted repair for scopes: {', '.join(requested_scopes)}")
     for scope in requested_scopes:
         send_hash_request_to_bbs_nodes([sender_node_id], interface, scope=scope)
