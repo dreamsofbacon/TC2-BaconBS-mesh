@@ -105,6 +105,25 @@ class ManifestAgreementTests(unittest.TestCase):
         updated: whichever spelling it holds, the hashes now match."""
         self.assertEqual(self._store_raw(SPACE_FORM), self._store_raw(T_FORM))
 
+    def test_the_scope_hash_agrees_across_spellings_too(self):
+        """SYNCSTATE compares this aggregate to decide a scope is mismatched;
+        the manifest decides which records move. Normalising only one would
+        leave the repair cycle reporting a mismatch the record diff then
+        finds nothing to fix -- running forever, finding nothing."""
+        def scope_hash(updated_at):
+            self._store_raw(updated_at)
+            return db_operations.get_local_record_counts()['zork_saves_hash']
+        self.assertEqual(scope_hash(SPACE_FORM), scope_hash(T_FORM))
+
+    def test_the_two_hashes_move_together(self):
+        """Whatever they are, they must agree about what a row is."""
+        for form in (SPACE_FORM, T_FORM):
+            with self.subTest(form=form):
+                self._store_raw(form)
+                counts = db_operations.get_local_record_counts()
+                manifest = db_operations.get_record_hash_manifest('zork_saves')
+                self.assertEqual(counts['zork_saves'], len(manifest))
+
     def test_the_key_is_unchanged(self):
         self.assertEqual(list(self._store_raw(T_FORM)), ["67472072:hhgttg"])
 
