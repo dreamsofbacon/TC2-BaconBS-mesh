@@ -710,6 +710,25 @@ def _start_mail_recipient_selection(sender_id, interface) -> None:
     })
 
 
+def _mail_recipient_refusal(query: str, sender_node_id, prefix: str = "") -> str:
+    """Say which rule was actually hit.
+
+    "not found, is ambiguous, or has not opted in" names three causes, and
+    when the answer is "that is you" it is none of them. The Relay Directory
+    lists the reader -- get_mail_relay_directory only excludes the sender
+    when it is asked to, and the browse view does not ask -- so someone who
+    has just read their own name there is told it does not exist. That reads
+    as a broken lookup rather than a rule.
+    """
+    match = _resolve_mail_relay_recipient(query, None)
+    if match and sender_node_id and str(sender_node_id) in {
+            str(node_id) for node_id in match.get('node_ids', [])}:
+        return (f"{prefix}That is you. Mail is for reaching somebody else -- "
+                "anything you send yourself is already in your inbox.")
+    return (f"{prefix}That relay user was not found, is ambiguous, or has "
+            "not opted in.")
+
+
 def _resolve_mail_relay_recipient(recipient: str, sender_node_id=None):
     query = str(recipient or '').strip().casefold()
     entries = get_mail_relay_directory(sender_node_id)
@@ -1777,9 +1796,11 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             update_user_state(sender_id, None)
 
     elif step == 3:
-        recipient = _resolve_mail_relay_recipient(message, get_node_id_from_num(sender_id, interface))
+        sender_node_id = get_node_id_from_num(sender_id, interface)
+        recipient = _resolve_mail_relay_recipient(message, sender_node_id)
         if recipient is None:
-            send_message("That relay user was not found, is ambiguous, or has not opted in.", sender_id, interface)
+            send_message(_mail_recipient_refusal(message, sender_node_id),
+                         sender_id, interface)
             handle_mail_command(sender_id, interface)
         else:
             send_message(f"What is the subject of your message to {recipient['display_name']}?\nKeep it short. {CANCEL_HINT} to stop", sender_id, interface)
@@ -1903,7 +1924,10 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
         page_count = max(1, (len(entries) + _MAIL_DIRECTORY_PAGE_SIZE - 1) // _MAIL_DIRECTORY_PAGE_SIZE)
         page = max(0, min(int(state.get('directory_page', 0)), page_count - 1))
         choice = message.lower()
-        if choice == 'x':
+        # The page footer prints "[0] Back", and 0 is Back everywhere else in
+        # the BBS, but this handler only ever accepted 'x' -- so the one key
+        # the screen told you to press was the one that did nothing.
+        if choice in ('0', 'x'):
             handle_mail_command(sender_id, interface)
             return
         if choice in ('n', 'p'):
@@ -1912,7 +1936,8 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             update_user_state(sender_id, state)
             send_message(_mail_directory_page(entries, page, selecting=False), sender_id, interface)
             return
-        send_message("Reply N, P, or X.", sender_id, interface)
+        send_message(_mail_directory_page(entries, page, selecting=False),
+                     sender_id, interface)
 
 
 def handle_wall_of_shame_command(sender_id, interface):
@@ -2104,12 +2129,14 @@ def handle_send_mail_command(sender_id, message, interface, bbs_nodes):
             return
 
         _, recipient_query, subject, content = parts
-        recipient = _resolve_mail_relay_recipient(
-            recipient_query, get_node_id_from_num(sender_id, interface)
-        )
+        sender_node_id = get_node_id_from_num(sender_id, interface)
+        recipient = _resolve_mail_relay_recipient(recipient_query, sender_node_id)
         if recipient is None:
             send_message(
-                f"Relay user '{recipient_query}' was not found, is ambiguous, or has not opted in. Send !AU to browse.",
+                _mail_recipient_refusal(
+                    recipient_query, sender_node_id,
+                    prefix=f"Relay user '{recipient_query}': ")
+                + " Send !AU to browse.",
                 sender_id, interface,
             )
             return
