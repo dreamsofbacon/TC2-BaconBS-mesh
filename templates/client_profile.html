@@ -24,4 +24,24 @@
   {% endif %}
   <p style="margin-top:1rem"><a href="{{ url_for('clients_summary') }}">&larr; Back to Clients</a></p>
 </div>
+
+{% if profile %}
+<div class="card">
+  <h2>Delete this profile</h2>
+  <p class="text-muted">
+    Removes the short name, long name and bio, and tombstones them so peers
+    drop their copies rather than sending the profile back. Restorable from
+    <a href="{{ url_for('deleted_content') }}">Deleted Content</a>.
+  </p>
+  <p class="text-muted">
+    Bulletins and mail this device sent are separate records and are left
+    alone. If the device is seen again it gets a fresh profile.
+  </p>
+  <form method="post" action="{{ url_for('client_profile_delete', node_id=node_id) }}"
+        onsubmit="return confirm('Delete the profile for {{ profile['short_name'] or node_id }}? Peers drop their copies too.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="btn btn-danger" type="submit">Delete profile</button>
+  </form>
+</div>
+{% endif %}
 {% endblock %}

@@ -54,7 +54,7 @@
          role="listitem">Settings</a>
       <span class="nav-sep" aria-hidden="true"></span>
       <!-- Tools dropdown -->
-      {% set tools_active = request.endpoint in ['emulator_page', 'system_transmissions', 'system_flowchart', 'meshtastic_device'] %}
+      {% set tools_active = request.endpoint in ['emulator_page', 'system_transmissions', 'system_flowchart', 'meshtastic_device', 'scores_page', 'deleted_content'] %}
       <div class="nav-dropdown" id="tools-dropdown">
         <button class="nav-link nav-dropdown-toggle{% if tools_active %} active{% endif %}"
                 id="tools-dropdown-btn"
@@ -78,6 +78,9 @@
           <a href="{{ url_for('meshtastic_device') }}"
              class="nav-dropdown-item{% if request.endpoint == 'meshtastic_device' %} active{% endif %}"
              role="menuitem">Meshtastic</a>
+          <a href="{{ url_for('scores_page') }}"
+             class="nav-dropdown-item{% if request.endpoint == 'scores_page' %} active{% endif %}"
+             role="menuitem">Game Scores</a>
           <a href="{{ url_for('deleted_content') }}"
              class="nav-dropdown-item{% if request.endpoint in ['deleted_content'] %} active{% endif %}"
              role="menuitem">Deleted</a>

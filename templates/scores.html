@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Game Scores</h2>
+  <p class="text-muted">
+    Every score behind the Hall of Fame and the Wall of Shame. Deleting one
+    removes it here and tombstones it, so peers drop their copies on the next
+    sync instead of handing the score straight back.
+  </p>
+  <p class="text-muted">
+    A score earned <em>after</em> a delete is a new score, not the one
+    removed, so it syncs in normally. Anything deleted here can be brought
+    back from <a href="{{ url_for('deleted_content') }}">Deleted Content</a>.
+  </p>
+  <p class="text-muted">{{ rows|length }} score(s) on this node.</p>
+
+  {% if rows %}
+  <div class="table-scroll-container">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Game</th>
+          <th>Player</th>
+          <th>Node ID</th>
+          <th>Score</th>
+          <th>Max</th>
+          <th>Moves</th>
+          <th>Achieved</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ row['game_id'] }}</td>
+          <td>{{ row['short_name'] or '—' }}</td>
+          <td><code>{{ row['user_id'] }}</code></td>
+          <td>{{ row['score'] }}</td>
+          <td>{{ row['max_score'] or '—' }}</td>
+          <td>{{ row['moves'] }}</td>
+          <td class="text-muted">{{ row['achieved_at'] }}</td>
+          <td>
+            <form method="post" action="{{ url_for('scores_delete') }}" class="inline-form"
+                  onsubmit="return confirm('Delete the {{ row['game_id'] }} score of {{ row['score'] }} for {{ row['short_name'] or row['user_id'] }}? Peers drop their copies too.');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="user_id" value="{{ row['user_id'] }}">
+              <input type="hidden" name="game_id" value="{{ row['game_id'] }}">
+              <button class="btn btn-sm btn-danger" type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-muted">No scores recorded on this node yet.</p>
+  {% endif %}
+</div>
+{% endblock %}
