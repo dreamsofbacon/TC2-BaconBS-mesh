@@ -235,6 +235,55 @@ Two details are load-bearing rather than incidental:
 Mail an account *sent* stays in its recipients' mailboxes. Deleting the
 sender is not consent to reach into those.
 
+### Deleting a synced record, and why raw SQL is not deleting
+
+Every scope that syncs keeps a tombstone, and the tombstone is the delete.
+The row is incidental: remove it with `DELETE FROM` and the first peer that
+still holds a copy hands it straight back, because nothing local has any
+reason to refuse it.
+
+That is not hypothetical. A Trivia score of 2200, farmed through a scoring
+exploit, was deleted from both our nodes with raw SQL and was back within the
+hour from Chattanooga, which runs pre-fix code and holds its own copy. The
+returned row carried the `T`-form timestamp, so it plainly came off the wire.
+
+**The reasoning error is the part worth not repeating.** Chattanooga's
+`game_scores` hash differed from ours, and I read that as proof it held a
+*different* row -- when a differing hash is exactly what timestamp spelling
+produces, which I had proven hours earlier in another scope. Absence of a
+match is not evidence of difference in a system where matching is known to
+be unreliable.
+
+So use the scope's own delete function, never SQL:
+
+| Scope | Function |
+| --- | --- |
+| `bulletins` | `delete_bulletin` |
+| `mail` | `delete_mail` |
+| `channels` | `delete_channel` / `delete_channel_comment` |
+| `zork_saves` | `delete_zork_save` |
+| `game_scores` | `delete_game_score` |
+| `profiles` | `delete_user_profile` |
+
+Each removes the row, records a tombstone with a snapshot of it, and pushes
+a delete frame to peers. `TOMBSTONE_AWARE_SCOPES` in `message_processing.py`
+is the list reconciliation consults before pulling a record it lacks; a scope
+missing from it re-pulls whatever it deleted, and a scope in it without a
+delete frame suppresses forever while the peer re-offers forever. A test
+asserts every scope in the list can propagate.
+
+Deletes are ordered by timestamp, not arrival: a score achieved *after* the
+delete is a new score that happens to share a key, so it survives and clears
+the tombstone. Both hash-side and tombstone-side timestamps are compared
+through `_normalize_sync_timestamp`, because a `T`-form tombstone compared
+raw sorts above every space-form timestamp on the same date and would
+silently refuse the rest of that day's legitimate records.
+
+There is no button for scores or profiles: the generic table browser covers
+only bulletins and channels. Deleting one means calling the function on the
+node. Everything deleted this way is restorable from its snapshot through the
+tombstone view.
+
 ---
 
 ## Versioning, and the fork trap
@@ -274,21 +323,6 @@ Peaked at 103 occurrences in six hours on forgecam and has since fallen to
 processes sharing `bulletins.db`, so contention is structural. When it fires,
 inbound MQTT frames are dropped, which looks like intermittent sync gaps
 rather than an error.
-
-**A deleted `game_scores` row comes back from a peer.** `game_scores` and
-`user_profiles` are not in the tombstone-aware scope list
-(`message_processing.py:1170`), so deleting one locally only removes it until
-a peer offers it again. The Trivia exploit score was removed from both our
-nodes and returned within the hour from Chattanooga, which still runs the
-pre-fix code and holds its own copy. Note the returned row carries the
-`T`-form timestamp, so it came off the wire.
-
-The mistake worth not repeating: Chattanooga's `game_scores` hash differed
-from ours, and that was read as proof it held a *different* row. Hash
-differences also come from timestamp spelling -- the bug fixed earlier the
-same day -- so it proved nothing. Deleting a synced record needs a tombstone
-the local node will honour on receipt, and for these two scopes that does not
-exist yet.
 
 **Timestamp spelling drift, everywhere except zork.** The same instant is
 written `%Y-%m-%d %H:%M:%S` by a local write and `%Y-%m-%dT%H:%M:%S` by
