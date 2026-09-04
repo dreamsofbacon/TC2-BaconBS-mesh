@@ -2486,8 +2486,19 @@ def get_local_record_counts() -> dict:
     channels_digest.update(channels_row_count.to_bytes(8, 'big'))
     channels_hash = base64.urlsafe_b64encode(channels_digest.digest()).decode('ascii').rstrip('=')
     if zork_save_sync_enabled:
+        # Normalised here for the same reason as in get_record_hash_manifest,
+        # and it has to be BOTH: this aggregate is what SYNCSTATE compares to
+        # decide a scope is mismatched, while the manifest decides which
+        # records to move. If only one of them normalised, the pair would
+        # disagree about whether the same rows are the same rows -- the scope
+        # would report a mismatch that the record diff then found nothing to
+        # fix, and the repair cycle would run forever finding nothing.
         zork_saves_hash = _hash_rows(
-            "SELECT user_id, game_id, save_data, updated_at FROM zork_saves ORDER BY user_id, game_id"
+            "SELECT user_id, game_id, save_data,"
+            " CASE WHEN length(updated_at) > 10 AND substr(updated_at, 11, 1) = 'T'"
+            "      THEN substr(updated_at, 1, 10) || ' ' || substr(updated_at, 12)"
+            "      ELSE updated_at END"
+            " FROM zork_saves ORDER BY user_id, game_id"
         )
     else:
         zork_saves_hash = zork_saves_disabled_hash()
