@@ -18,6 +18,13 @@ from app_paths import resolve_app_path
 from ssh_auth import AuthResult, authenticate, valid_alias, valid_password
 
 
+# How often to look for replies that arrived after the command that asked
+# for them. Ask Nomad's slow ack is armed at 8 seconds, so a second here is
+# well inside the window a user would notice, and the check is a dict pop on
+# an empty buffer when there is nothing waiting.
+LATE_REPLY_POLL_SECONDS = 1.0
+
+
 @dataclass(frozen=True)
 class SSHConfig:
     enabled: bool = False
@@ -142,6 +149,7 @@ class BBSClientSession(asyncssh.SSHServerSession):
         self._line = []
         self._last_was_cr = False
         self._idle_handle = None
+        self._late_handle = None
         self._closed = False
 
     def connection_made(self, channel):
@@ -170,6 +178,7 @@ class BBSClientSession(asyncssh.SSHServerSession):
             "main menu.\r\n")
         self._send_to_bbs("?")
         self._reset_idle_timer()
+        self._schedule_drain()
 
     def data_received(self, data, datatype):
         for character in data:
@@ -284,11 +293,18 @@ class BBSClientSession(asyncssh.SSHServerSession):
     def connection_lost(self, exc):
         self._cleanup()
 
-    def _send_to_bbs(self, text: str) -> None:
-        chunks, error = self.session.send(text)
+    def _write_chunks(self, chunks) -> bool:
+        """Write captured reply chunks to the terminal. True if any were."""
+        wrote = False
         for chunk in chunks:
             body = str(chunk.get("text") or "").replace("\n", "\r\n")
             self.channel.write(body + "\r\n")
+            wrote = True
+        return wrote
+
+    def _send_to_bbs(self, text: str) -> None:
+        chunks, error = self.session.send(text)
+        self._write_chunks(chunks)
         if error:
             logging.error("SSH BBS handler error for %s: %s", self.auth.alias, error)
             self.channel.write("The BBS could not process that command.\r\n")
@@ -299,6 +315,41 @@ class BBSClientSession(asyncssh.SSHServerSession):
             self.channel.exit(0)
             return
         self._write_prompt()
+
+    def _drain_late_replies(self) -> None:
+        """Deliver replies that arrived after the command that asked for them.
+
+        Ask Nomad hands the question to a worker thread and answers through
+        the same interface up to a minute later; Web Fetch does the same.
+        Nothing else on this transport drains that buffer -- _send_to_bbs
+        runs only when the user types -- so the answer sat there until the
+        next keypress and was then printed alongside the reply to whatever
+        was just typed. That keypress was also consumed by the prompt the
+        answer had only now displayed, so the user lost both their input and
+        their place, and the feature looked hung.
+
+        The web Emulator page never had this: it polls for exactly this
+        reason. This is that poll, for a terminal.
+        """
+        self._late_handle = None
+        if self._closed or not self.channel:
+            return
+        try:
+            if self.session and self._auth_stage == "bbs":
+                if self._write_chunks(self.session.drain()):
+                    self._write_prompt()
+        except BrokenPipeError:
+            self._cleanup()
+            return
+        except Exception:
+            logging.exception("SSH late-reply drain failed")
+        self._schedule_drain()
+
+    def _schedule_drain(self) -> None:
+        if self._closed:
+            return
+        self._late_handle = asyncio.get_running_loop().call_later(
+            LATE_REPLY_POLL_SECONDS, self._drain_late_replies)
 
     def _write_prompt(self) -> None:
         if self.channel:
@@ -325,6 +376,8 @@ class BBSClientSession(asyncssh.SSHServerSession):
         self._closed = True
         if self._idle_handle:
             self._idle_handle.cancel()
+        if self._late_handle:
+            self._late_handle.cancel()
         if self.session:
             bbs_emulator.end_session(self.session.token)
         if self._pending:
