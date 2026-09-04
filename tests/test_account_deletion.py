@@ -19,7 +19,7 @@ import db_operations
 
 class AccountDeletionTests(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.db_path = Path(self.temp_dir.name) / "bulletins.db"
         self.env_patch = mock.patch.dict(
             os.environ, {"BBS_DB_PATH": str(self.db_path)}, clear=False)
@@ -212,7 +212,7 @@ class AccountDeletionWebTests(unittest.TestCase):
     def setUp(self):
         import configparser
 
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         root = Path(self.temp_dir.name)
         self.config_path = root / "config.ini"
         config = configparser.ConfigParser()

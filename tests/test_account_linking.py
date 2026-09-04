@@ -102,14 +102,24 @@ class AccountMenuTests(unittest.TestCase):
         self.assertTrue(any("Invalid" in m for m in _sent(sm)))
         self.assertIsNone(db_operations.get_account_id_for_node("!aaa11111"))
 
-    def test_zero_cancels_code_entry_and_preserves_parent(self):
+    def test_a_prefixed_cancel_leaves_code_entry_and_preserves_parent(self):
+        """Step 2 is a content prompt -- the code is typed, so a bare 0 is a
+        plausible keystroke in it and no longer cancels."""
+        command_handlers.update_user_state(
+            1, {"command": "ACCOUNT", "step": 2, "return_to": "main"})
+        with mock.patch.object(command_handlers, "send_message") as sm:
+            command_handlers.handle_account_steps(
+                1, "!cancel", self.interface, sender_node_id="!aaa11111")
+        self.assertIn("Linked Devices", _sent(sm)[0])
+        self.assertEqual(command_handlers.get_user_state(1).get("return_to"), "main")
+
+    def test_a_bare_zero_is_treated_as_a_typed_code(self):
         command_handlers.update_user_state(
             1, {"command": "ACCOUNT", "step": 2, "return_to": "main"})
         with mock.patch.object(command_handlers, "send_message") as sm:
             command_handlers.handle_account_steps(
                 1, "0", self.interface, sender_node_id="!aaa11111")
-        self.assertIn("Linked Devices", _sent(sm)[0])
-        self.assertEqual(command_handlers.get_user_state(1).get("return_to"), "main")
+        self.assertNotIn("Linked Devices", _sent(sm)[0])
 
     def test_request_code_rate_limited(self):
         for _ in range(3):
