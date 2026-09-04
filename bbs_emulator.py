@@ -378,7 +378,7 @@ def start_session(node_id=None, short_name=None,
 
 def start_ssh_session(account_id, alias, max_text_bytes=8192):
     """Open a session whose identity is derived only from an account id."""
-    global _synthetic_counter
+    from db_operations import get_account_sender_num
 
     clean_account_id = str(account_id or '').strip()
     if len(clean_account_id) != 32 or any(
@@ -387,9 +387,14 @@ def start_ssh_session(account_id, alias, max_text_bytes=8192):
         raise ValueError("Invalid SSH account id")
 
     sweep_idle()
-    with _registry_lock:
-        _synthetic_counter += 1
-        sender_id = _SYNTHETIC_NUM_BASE + _synthetic_counter
+    # Stable for the life of the account. This used to be a per-connection
+    # counter, and since user_profiles, game_scores and zork_saves are keyed
+    # by this number rather than the node id, a player's save was written
+    # under a number nothing would ever present again -- it synced to every
+    # peer and could never be resumed by the person who made it.
+    sender_id = get_account_sender_num(clean_account_id)
+    if sender_id is None:
+        raise ValueError(f"No sender number for account {clean_account_id}")
     sender_node_id = f"ssh:{clean_account_id}"
     label = str(alias or '').strip()[:20] or "ssh-user"
     nodes = _roster_nodes()

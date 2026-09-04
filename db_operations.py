@@ -1239,6 +1239,12 @@ def _ensure_accounts_tables(cursor) -> None:
         cursor.execute("ALTER TABLE accounts ADD COLUMN password_salt TEXT")
     if 'password_created_at' not in _account_cols:
         cursor.execute("ALTER TABLE accounts ADD COLUMN password_created_at TEXT")
+    if 'sender_num' not in _account_cols:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN sender_num INTEGER")
+    # Two accounts sharing a number would share their Zork saves and scores,
+    # so let the database refuse it rather than trusting the probe below.
+    cursor.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_sender_num
+                    ON accounts (sender_num) WHERE sender_num IS NOT NULL;''')
     _dedupe_account_aliases(cursor)
     # Partial index so the '' default (every account starts with no alias)
     # is exempt -- SQLite treats '' as a real value, unlike NULL, so a plain
@@ -4902,6 +4908,65 @@ def unlink_node(node_id: str) -> bool:
 
 
 SSH_NODE_PREFIX = 'ssh:'
+
+# Where an SSH account's local number lives.
+#
+# user_profiles, game_scores and zork_saves are keyed by the numeric sender
+# id, not the node id, and bbs_emulator used to mint a fresh number for every
+# SSH connection. So a player's Zork save was written under a number that
+# would never be seen again: it synced between nodes perfectly and could
+# never be resumed by the person who made it. A radio has one number for
+# life, and an SSH account needs the same.
+#
+# The band sits above the emulator's synthetic range (0xE0000000 plus a small
+# per-session counter) and far below the Meshtastic broadcast address, so it
+# cannot be mistaken for either.
+SSH_SENDER_NUM_BASE = 0xE1000000
+SSH_SENDER_NUM_SPAN = 0x00F00000
+
+
+def get_account_sender_num(account_id: str) -> Optional[int]:
+    """The stable local number for an account, assigning one on first use.
+
+    Derived from the account id rather than a counter so it survives a
+    restart, and stored so it survives a change of derivation. blake2b
+    rather than hash(): Python salts hash() per process, which would hand
+    the same account a different number on every boot -- the very bug this
+    replaces.
+    """
+    normalized = str(account_id or '').strip()
+    if not normalized:
+        return None
+    conn = get_db_connection()
+    row = conn.execute(
+        "SELECT sender_num FROM accounts WHERE account_id = ?", (normalized,)).fetchone()
+    if row is None:
+        return None
+    if row[0] is not None:
+        return int(row[0])
+
+    digest = hashlib.blake2b(normalized.encode('utf-8'), digest_size=8).digest()
+    start = int.from_bytes(digest, 'big') % SSH_SENDER_NUM_SPAN
+    taken = {
+        int(value[0]) for value in conn.execute(
+            "SELECT sender_num FROM accounts WHERE sender_num IS NOT NULL")
+    }
+    for step in range(SSH_SENDER_NUM_SPAN):
+        candidate = SSH_SENDER_NUM_BASE + ((start + step) % SSH_SENDER_NUM_SPAN)
+        if candidate in taken:
+            continue
+        try:
+            conn.execute(
+                "UPDATE accounts SET sender_num = ? WHERE account_id = ?",
+                (candidate, normalized))
+            conn.commit()
+            return candidate
+        except sqlite3.IntegrityError:
+            # Another session claimed it between the read and the write.
+            conn.rollback()
+            taken.add(candidate)
+    logging.error("No free sender number left for account %s.", normalized)
+    return None
 
 
 def account_deletion_blockers(account_id: str) -> list:

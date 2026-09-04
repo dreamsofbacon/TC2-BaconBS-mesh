@@ -30,7 +30,13 @@ class SSHConfig:
     registration_limit_per_hour: int = 5
     login_limit_per_hour: int = 20
     max_sessions: int = 20
-    max_sessions_per_account: int = 2
+    # One session per account, because an account now has one stable sender
+    # number and user_states is keyed by it: a second concurrent session for
+    # the same account would share its menu position, so typing in one window
+    # would move the other. A radio user has exactly one identity and one
+    # conversation, and an SSH account is the same thing over a different
+    # transport. Raising this trades that isolation away.
+    max_sessions_per_account: int = 1
     idle_timeout_seconds: int = 1800
     max_text_bytes: int = 8192
 
@@ -65,7 +71,7 @@ def load_config(path: Optional[str] = None) -> SSHConfig:
             "registration_limit_per_hour", 5, minimum=0),
         login_limit_per_hour=integer("login_limit_per_hour", 20, minimum=0),
         max_sessions=integer("max_sessions", 20),
-        max_sessions_per_account=integer("max_sessions_per_account", 2),
+        max_sessions_per_account=integer("max_sessions_per_account", 1),
         idle_timeout_seconds=integer("idle_timeout_seconds", 1800),
         max_text_bytes=integer("max_text_bytes", 8192, minimum=1024),
     )
@@ -261,7 +267,8 @@ class BBSClientSession(asyncssh.SSHServerSession):
             self.channel.write("BBS authentication failed.\r\nBBS username: ")
             return
         if not self.limiter.promote_pending(auth.account_id):
-            self.channel.write("Too many sessions for this account.\r\n")
+            self.channel.write(
+                "That account is already signed in somewhere else.\r\n")
             self.channel.exit(1)
             return
         self.auth = auth
