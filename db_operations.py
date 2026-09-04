@@ -4181,9 +4181,38 @@ def upsert_zork_save(user_id: int, save_data: bytes, game_id: str = 'zork1') -> 
     clear_sync_tombstone('zork_saves', f"{user_id}:{game_id}")
 
 
+# One textual form for a save's timestamp, whichever route it arrived by.
+#
+# A save made locally is written by upsert_zork_save as "%Y-%m-%d %H:%M:%S".
+# The same save received from a peer arrives epoch-encoded and comes back out
+# of utils.decode_ts_second as "%Y-%m-%dT%H:%M:%S" -- same instant, different
+# string. The record hash in get_record_hash_manifest is built from that
+# string, so the two nodes hash the same save differently, each sees the
+# other as missing it, and neither ever converges: the peer asks for the
+# record, we send it, its own timestamp compares equal so it keeps what it
+# had, and its manifest is unchanged. It asks again on the next cycle,
+# forever. One record was re-sent 116 times in three hours that way.
+#
+# The comparison below is string-based too, so with equal dates the
+# separator decided the winner: 'T' is 0x54 and ' ' is 0x20, which made an
+# older T-form save beat a newer space-form one.
+def _normalize_zork_timestamp(value) -> str:
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    candidate = text[:-1] if text.endswith('Z') else text
+    if len(candidate) > 10 and candidate[10] == ' ':
+        candidate = candidate[:10] + 'T' + candidate[11:]
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        return text
+    return parsed.strftime('%Y-%m-%d %H:%M:%S')
+
+
 def _should_replace_zork_save(existing_updated_at: str, existing_save_data: bytes, incoming_updated_at: str, incoming_save_data: bytes) -> bool:
-    existing_ts = str(existing_updated_at or '')
-    incoming_ts = str(incoming_updated_at or '')
+    existing_ts = _normalize_zork_timestamp(existing_updated_at)
+    incoming_ts = _normalize_zork_timestamp(incoming_updated_at)
     if incoming_ts > existing_ts:
         return True
     if incoming_ts < existing_ts:
@@ -4206,8 +4235,9 @@ def upsert_synced_zork_save(user_id: str, game_id: str, save_data: bytes, update
     """
     _ensure_zork_saves_table()
     key = f"{user_id}:{game_id}"
+    updated_at = _normalize_zork_timestamp(updated_at)
     tombstone_deleted_at = get_sync_tombstone_deleted_at('zork_saves', key)
-    if tombstone_deleted_at and tombstone_deleted_at >= str(updated_at or ''):
+    if tombstone_deleted_at and _normalize_zork_timestamp(tombstone_deleted_at) >= updated_at:
         return
 
     conn = get_db_connection()
@@ -4246,7 +4276,8 @@ def get_zork_save(user_id: int, game_id: str = 'zork1') -> Optional[bytes]:
 def apply_synced_zork_save_delete(user_id: str, game_id: str, deleted_at: str) -> bool:
     _ensure_zork_saves_table()
     key = f"{user_id}:{game_id}"
-    normalized_deleted_at = str(deleted_at or datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    normalized_deleted_at = _normalize_zork_timestamp(
+        deleted_at or datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
     record_sync_tombstone_at('zork_saves', key, normalized_deleted_at)
 
     conn = get_db_connection()
@@ -4256,7 +4287,7 @@ def apply_synced_zork_save_delete(user_id: str, game_id: str, deleted_at: str) -
         (str(user_id), str(game_id)),
     )
     row = c.fetchone()
-    if row and str(row[0] or '') > normalized_deleted_at:
+    if row and _normalize_zork_timestamp(row[0]) > normalized_deleted_at:
         return False
 
     c.execute("DELETE FROM zork_saves WHERE user_id = ? AND game_id = ?", (str(user_id), str(game_id)))
@@ -5537,7 +5568,11 @@ def get_record_hash_manifest(scope: str) -> dict:
             "SELECT user_id, game_id, save_data, updated_at FROM zork_saves"
         ):
             key = f"{row[0]}:{row[1]}"
-            manifest[key] = _compact_row_hash(row)
+            # Hash the canonical timestamp, so a peer still holding the other
+            # spelling of the same instant hashes identically and the
+            # mismatch clears without waiting for that peer to be updated.
+            manifest[key] = _compact_row_hash(
+                (row[0], row[1], row[2], _normalize_zork_timestamp(row[3])))
     elif scope == 'tombstones':
         _ensure_deleted_sync_tombstones_table()
         for row in c.execute(
