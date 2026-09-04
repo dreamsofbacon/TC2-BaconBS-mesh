@@ -479,6 +479,25 @@ def get_user_state(user_id):
     return user_states.get(user_id, None)
 
 
+def clear_user_state(user_id):
+    """Forget where this user was, so their next message starts at the top."""
+    user_states.pop(user_id, None)
+
+
+def request_session_end(interface):
+    """Ask a connected transport to hang up, if it is one that can.
+
+    A radio has no session to close, so this is a no-op there. The SSH front
+    end sets the attribute on its interface and checks it after each reply,
+    which keeps 'the user asked to leave' a fact about the transport rather
+    than something every command handler has to special-case.
+    """
+    if hasattr(interface, 'session_ended'):
+        interface.session_ended = True
+        return True
+    return False
+
+
 def _split_into_chunks(text, max_len=200):
     """Split text by UTF-8 bytes, preferring sentence and word boundaries."""
     # Collapse 3+ consecutive newlines to at most 2, and runs of spaces/tabs to one space

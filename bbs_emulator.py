@@ -80,6 +80,11 @@ class EmulatorInterface:
         self.bbs_nodes = []
         self.allowed_nodes = list(allowed_nodes or [])
         self.max_text_bytes = int(max_text_bytes)
+        # Set by utils.request_session_end when the user picks [0] Exit. A
+        # radio has no session to close, so only a connected front end reads
+        # this; its presence is what tells request_session_end that hanging
+        # up is even possible here.
+        self.session_ended = False
         self._buffer = deque(maxlen=MAX_BUFFERED_CHUNKS)
         self._lock = threading.Lock()
         self._seq = 0
