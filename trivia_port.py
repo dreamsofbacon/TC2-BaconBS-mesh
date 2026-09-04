@@ -108,6 +108,11 @@ def start(user_id):
         "options": options,
         "score": previous.get("score", 0) if previous else 0,
         "moves": previous.get("moves", 0) if previous else 0,
+        # A question pays out once. Without this the same one could be scored
+        # over and over: any unrecognised key reprinted it, and answering the
+        # reprint scored again. One player took a single question from 600 to
+        # 1000 that way and left 2200 on the public Hall of Fame.
+        "answered": False,
     }
     return _format(_sessions[user_id])
 
@@ -135,6 +140,13 @@ def command(user_id, text):
     if lowered in ("n", "next"):
         return start(user_id)
 
+    if session.get("answered"):
+        # Scored already. This has to come before the letter is parsed, or a
+        # second correct answer pays out again -- and before the reprint
+        # below, which is what kept offering the chance.
+        return ("You have already answered that one.\n"
+                "Reply N for another question, or X to exit.")
+
     options = session["options"]
     index = CHOICE_LETTERS.find(lowered.upper()) if len(lowered) == 1 else -1
     if index < 0 or index >= len(options):
@@ -143,6 +155,7 @@ def command(user_id, text):
         return ("Answer with one of the listed letters.\n\n"
                 + _format(session))
 
+    session["answered"] = True
     session["moves"] += 1
     chosen = options[index]
     correct = chosen == session["answer"]

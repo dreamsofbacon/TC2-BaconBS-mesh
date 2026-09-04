@@ -210,3 +210,74 @@ class WiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScoreFarmingTests(_WithDatabase):
+    """A question pays out once.
+
+    Found by an agent playing the live BBS: after answering, an unrecognised
+    key reprinted the same question in full, and answering the reprint scored
+    it again. Repeating that took one question from 600 to 1000 and put 2200
+    on the public Hall of Fame.
+    """
+
+    def test_the_same_question_cannot_be_scored_twice(self):
+        trivia_port.start(USER)
+        letter = self._letter_of("Quito")
+        self.assertIn("Correct!", trivia_port.command(USER, letter))
+        self.assertEqual(trivia_port.finish_score(USER)[0], 200)
+
+        trivia_port.command(USER, letter)
+        self.assertEqual(trivia_port.finish_score(USER)[0], 200)
+
+    def test_the_exploit_loop_itself_pays_nothing(self):
+        """The exact sequence: answer, send a junk key to reprint it, answer
+        the reprint. Ten times."""
+        trivia_port.start(USER)
+        letter = self._letter_of("Quito")
+        trivia_port.command(USER, letter)
+        for _ in range(10):
+            trivia_port.command(USER, "?")
+            trivia_port.command(USER, letter)
+        self.assertEqual(trivia_port.finish_score(USER)[0], 200)
+
+    def test_a_wrong_answer_cannot_be_retried_for_the_points(self):
+        trivia_port.start(USER)
+        trivia_port.command(USER, self._letter_of("Bogota"))
+        trivia_port.command(USER, self._letter_of("Quito"))
+        self.assertEqual(trivia_port.finish_score(USER)[0], 0)
+
+    def test_the_question_count_is_not_inflated_either(self):
+        trivia_port.start(USER)
+        letter = self._letter_of("Quito")
+        for _ in range(5):
+            trivia_port.command(USER, letter)
+        self.assertEqual(trivia_port.finish_score(USER)[1], 1)
+
+    def test_answering_again_says_so_rather_than_going_quiet(self):
+        trivia_port.start(USER)
+        letter = self._letter_of("Quito")
+        trivia_port.command(USER, letter)
+        reply = trivia_port.command(USER, letter)
+        self.assertIn("already answered", reply.lower())
+        self.assertIn("N for another question", reply)
+
+    def test_a_junk_key_after_answering_does_not_reprint_the_question(self):
+        """Reprinting is what kept offering the second payout."""
+        trivia_port.start(USER)
+        trivia_port.command(USER, self._letter_of("Quito"))
+        self.assertNotIn("Capital of Ecuador?", trivia_port.command(USER, "?"))
+
+    def test_the_next_question_is_answerable_again(self):
+        trivia_port.start(USER)
+        trivia_port.command(USER, self._letter_of("Quito"))
+        trivia_port.command(USER, "N")
+        self.assertFalse(trivia_port._sessions[USER]["answered"])
+        reply = trivia_port.command(USER, self._letter_of("Quito"))
+        self.assertIn("Correct!", reply)
+        self.assertEqual(trivia_port.finish_score(USER)[0], 400)
+
+    def test_exiting_still_works_after_answering(self):
+        trivia_port.start(USER)
+        trivia_port.command(USER, self._letter_of("Quito"))
+        self.assertIn("Trivia King ended", trivia_port.command(USER, "X"))
