@@ -30,17 +30,62 @@ class MainMenuContentsTests(unittest.TestCase):
         self.assertIn("Web Fetch", rendered)
         self.assertIn("Linked Devices", rendered)
 
-    def test_existing_entries_keep_their_numbers(self):
-        """Renumbering would break muscle memory and every doc reference."""
+    def test_a_full_config_numbers_every_entry_in_order(self):
         rendered = ch.build_menu(["Q", "B", "U", "P", "N", "X"], self.MAIN)
         for expected in ("[1] Quick Commands", "[2] BBS", "[3] Utilities",
-                         "[4] Profile", "[5] Ask Nomad"):
+                         "[4] Profile", "[5] Ask Nomad", "[6] Web Fetch",
+                         "[7] Linked Devices", "[0] Exit"):
             self.assertIn(expected, rendered)
-        self.assertNotIn("[0] Exit", rendered)
 
-    def test_new_entries_are_inserted_before_exit(self):
-        lines = [l for l in ch.build_menu(["Q", "X"], self.MAIN).splitlines() if l.strip()]
-        self.assertFalse(any(line.startswith("[0]") for line in lines))
+    def test_a_trimmed_config_closes_the_gap_instead_of_skipping_numbers(self):
+        """The baconbot case. This node hides Profile and Ask Nomad on
+        purpose, and the menu used to read [1][2][3][6][7] -- holes that mean
+        nothing to someone who just found the BBS."""
+        rendered = ch.build_menu(["Q", "B", "U", "X"], self.MAIN)
+        self.assertNotIn("Profile", rendered)
+        self.assertNotIn("Ask Nomad", rendered)
+        self.assertIn("[4] Web Fetch", rendered)
+        self.assertIn("[5] Linked Devices", rendered)
+
+    def test_numbers_run_1_upward_with_no_gaps_for_any_config(self):
+        for items in (["Q", "B", "U", "X"], ["Q", "X"], ["Q", "B", "U", "P", "N", "A", "S", "X"],
+                      ["B", "U"], ["U", "X", "Q"]):
+            with self.subTest(items=items):
+                numbers = [line.split("]")[0][1:]
+                           for line in ch.build_menu(items, self.MAIN).splitlines()[1:]
+                           if line.strip()]
+                body = [n for n in numbers if n != "0"]
+                self.assertEqual(body, [str(n) for n in range(1, len(body) + 1)])
+
+    def test_exit_is_always_last_wherever_the_config_put_it(self):
+        lines = [l for l in ch.build_menu(["Q", "X", "B"], self.MAIN).splitlines() if l.strip()]
+        self.assertTrue(lines[-1].startswith("[0] Exit"))
+
+    def test_a_menu_without_exit_renders_none(self):
+        rendered = ch.build_menu(["Q", "B"], self.MAIN)
+        self.assertNotIn("[0]", rendered)
+
+    def test_an_unknown_config_letter_never_claims_a_number(self):
+        """A stale letter left in config.ini used to render a blank line and
+        push the numbering along with it."""
+        with_junk = ch.build_menu(["Q", "ZZ", "B", "X"], self.MAIN)
+        without = ch.build_menu(["Q", "B", "X"], self.MAIN)
+        self.assertEqual(with_junk, without)
+        self.assertNotIn("ZZ", ch.menu_layout(["Q", "ZZ", "B", "X"], self.MAIN))
+
+    def test_the_digits_match_the_lines_that_were_rendered(self):
+        """The bug this whole layout exists to prevent: display and dispatch
+        reading different tables, so 4 opened something the screen did not
+        show at 4."""
+        for items in (["Q", "B", "U", "X"], ["Q", "B", "U", "P", "N", "A", "S", "X"]):
+            with self.subTest(items=items):
+                alias = ch.menu_number_alias(items, self.MAIN)
+                for line in ch.build_menu(items, self.MAIN).splitlines()[1:]:
+                    if not line.strip():
+                        continue
+                    number, label = line[1:].split("] ", 1)
+                    letter = alias[number]
+                    self.assertEqual(ch.MAIN_MENU_LABELS[letter.upper()], label)
 
     def test_no_duplicates_when_config_already_lists_them(self):
         rendered = ch.build_menu(["Q", "A", "S", "X"], self.MAIN)
@@ -166,6 +211,156 @@ class MenuFeedbackTests(unittest.TestCase):
         help_menu.assert_called_once_with(
             1234, iface, 'bbs', notice="Invalid choice.")
 
+    def test_invalid_main_menu_choice_says_so(self):
+        import message_processing as mp
+        iface = types.SimpleNamespace(bbs_nodes=[], nodes={})
+        ch.update_user_state(1234, {'command': 'MAIN_MENU', 'step': 1})
+        with mock.patch.object(mp, 'handle_help_command') as help_menu:
+            mp.process_message(1234, 'wat', iface)
+        help_menu.assert_called_once_with(
+            1234, iface, None, notice="Invalid choice.")
+
+    def test_a_wrong_key_at_the_mail_menu_answers(self):
+        """This chain had no else at all: the BBS sent nothing back, which
+        from the far end is indistinguishable from a dead link."""
+        sent = []
+        with mock.patch.object(ch, "send_message",
+                               side_effect=lambda text, *_a, **_k: sent.append(text)):
+            ch.update_user_state(1234, {'command': 'MAIL', 'step': 1})
+            ch.handle_mail_steps(1234, "9", 1, {'command': 'MAIL', 'step': 1},
+                                 _FakeInterface(), [])
+        self.assertTrue(sent, "the mail menu answered a bad key with silence")
+        self.assertIn("Invalid choice.", sent[0])
+        self.assertIn("Mail Menu", sent[0])
+
+    def test_a_wrong_key_on_a_board_keeps_you_on_that_board(self):
+        """It used to fall through to the catch-all and drop the reader on
+        the main menu, losing which board they were reading."""
+        import message_processing as mp
+        iface = types.SimpleNamespace(bbs_nodes=[], nodes={})
+        state = {'command': 'BULLETIN_ACTION', 'step': 2,
+                 'board': 'General', 'boards': ['General']}
+        ch.update_user_state(1234, state)
+        with mock.patch.object(mp, 'send_board_action_menu') as board_menu, \
+                mock.patch.object(mp, 'handle_help_command') as help_menu:
+            mp.process_message(1234, '9', iface)
+        board_menu.assert_called_once_with(
+            1234, iface, 'General', ['General'], notice="Invalid choice.")
+        help_menu.assert_not_called()
+
+    def test_a_wrong_key_on_the_profile_screen_says_so(self):
+        sent = []
+        with mock.patch.object(ch, "send_message",
+                               side_effect=lambda text, *_a, **_k: sent.append(text)), \
+                mock.patch.object(ch, "get_user_profile",
+                                  return_value=(1234, "bot", "bot", "2026-09-03",
+                                                "2026-09-03", 3, "")), \
+                mock.patch.object(ch, "get_user_game_scores", return_value=[]), \
+                mock.patch.object(ch, "get_mail_relay_preference", return_value=False):
+            ch.update_user_state(1234, {'command': 'PROFILE', 'step': 1})
+            ch.handle_profile_steps(1234, "9", _FakeInterface())
+        self.assertIn("Invalid choice.", sent[-1])
+
+
+class HiddenEntryTests(unittest.TestCase):
+    """A letter the menu does not show needs the ! prefix.
+
+    Bare letters used to fire for entries trimmed out of config.ini, which
+    is how they collided with apps and door games wanting the same key.
+    """
+
+    def setUp(self):
+        self.iface = types.SimpleNamespace(bbs_nodes=[], nodes={})
+
+    def test_a_hidden_letter_is_refused_bare(self):
+        import message_processing as mp
+        with mock.patch.object(ch, "main_menu_items", ["Q", "B", "U", "X"]), \
+                mock.patch.dict(mp.main_menu_handlers,
+                                {"p": mock.Mock()}, clear=False) as handlers:
+            ch.update_user_state(1234, {'command': 'MAIN_MENU', 'step': 1})
+            with mock.patch.object(mp, 'handle_help_command') as help_menu:
+                mp.process_message(1234, 'p', self.iface)
+            handlers["p"].assert_not_called()
+            help_menu.assert_called_once_with(
+                1234, self.iface, None, notice="Invalid choice.")
+
+    def test_a_hidden_letter_still_works_with_the_prefix(self):
+        import message_processing as mp
+        profile = mock.Mock()
+        with mock.patch.object(ch, "main_menu_items", ["Q", "B", "U", "X"]), \
+                mock.patch.dict(mp.main_menu_handlers, {"p": profile}, clear=False):
+            ch.update_user_state(1234, {'command': 'MAIN_MENU', 'step': 1})
+            mp.process_message(1234, '!p', self.iface)
+        profile.assert_called_once_with(1234, self.iface)
+
+    def test_a_shown_letter_still_works_bare(self):
+        import message_processing as mp
+        quick = mock.Mock()
+        with mock.patch.object(ch, "main_menu_items", ["Q", "B", "U", "X"]), \
+                mock.patch.dict(mp.main_menu_handlers, {"q": quick}, clear=False):
+            ch.update_user_state(1234, {'command': 'MAIN_MENU', 'step': 1})
+            mp.process_message(1234, 'q', self.iface)
+        quick.assert_called_once_with(1234, self.iface)
+
+    def test_a_digit_follows_the_trimmed_menu(self):
+        """4 is Web Fetch on this node because that is what line 4 says."""
+        import message_processing as mp
+        web_fetch = mock.Mock()
+        with mock.patch.object(ch, "main_menu_items", ["Q", "B", "U", "X"]), \
+                mock.patch.dict(mp.main_menu_handlers, {"a": web_fetch}, clear=False):
+            ch.update_user_state(1234, {'command': 'MAIN_MENU', 'step': 1})
+            mp.process_message(1234, '4', self.iface)
+        web_fetch.assert_called_once_with(1234, self.iface)
+
+
+class ExitTests(unittest.TestCase):
+    """[0] at the top level has to actually leave.
+
+    It used to be stripped from the menu entirely while the SSH greeting
+    told new users to type it, and typing it just redrew the same screen.
+    """
+
+    def setUp(self):
+        self.iface = types.SimpleNamespace(bbs_nodes=[], nodes={}, session_ended=False)
+
+    def test_the_main_menu_offers_a_way_out(self):
+        self.assertIn("[0] Exit",
+                      ch.build_menu(["Q", "B", "U", "X"], "\U0001F4BEBacon BBS\U0001F4BE"))
+
+    def test_submenus_still_say_back(self):
+        rendered = ch.build_menu(["M", "B", "C", "X"], ch.BBS_MENU_TITLE)
+        self.assertIn("[0] Back", rendered)
+        self.assertNotIn("Exit", rendered)
+
+    def test_exit_clears_the_menu_state_and_ends_the_session(self):
+        with mock.patch.object(ch, "send_message"):
+            ch.update_user_state(4321, {'command': 'MAIN_MENU', 'step': 1})
+            ch.handle_exit_command(4321, self.iface)
+        self.assertIsNone(ch.get_user_state(4321))
+        self.assertTrue(self.iface.session_ended)
+
+    def test_a_radio_has_no_session_to_end(self):
+        radio = types.SimpleNamespace(bbs_nodes=[], nodes={})
+        with mock.patch.object(ch, "send_message"):
+            ch.handle_exit_command(4321, radio)
+        self.assertFalse(hasattr(radio, "session_ended"))
+
+    def test_zero_at_the_main_menu_exits(self):
+        import message_processing as mp
+        ch.update_user_state(1234, {'command': 'MAIN_MENU', 'step': 1})
+        with mock.patch.object(mp, 'handle_exit_command') as leave:
+            mp.process_message(1234, '0', self.iface)
+        leave.assert_called_once_with(1234, self.iface)
+
+    def test_zero_in_a_submenu_still_goes_back(self):
+        import message_processing as mp
+        ch.update_user_state(1234, {'command': 'MENU', 'menu': 'bbs', 'step': 1})
+        with mock.patch.object(mp, 'handle_exit_command') as leave, \
+                mock.patch.object(mp, 'handle_help_command') as help_menu:
+            mp.process_message(1234, '0', self.iface)
+        leave.assert_not_called()
+        help_menu.assert_called_once_with(1234, self.iface)
+
 
 class MenuHandlerWiringTests(unittest.TestCase):
     def test_main_menu_dispatches_the_new_letters(self):
@@ -175,11 +370,13 @@ class MenuHandlerWiringTests(unittest.TestCase):
         self.assertIs(mp.main_menu_handlers["s"], ch.handle_settings_command)
         self.assertIs(mp.main_menu_handlers["a"], ch.handle_apigw_command)
 
-    def test_utilities_still_accepts_a_for_muscle_memory(self):
-        """No longer listed there, but an existing habit shouldn't break."""
+    def test_utilities_keeps_a_wired_for_the_prefixed_form(self):
+        """A is no longer listed under Utilities, so the bare key is refused
+        like any other hidden entry -- !a reaches the same handler."""
         import message_processing as mp
         self.assertIn("a", mp.utilities_menu_handlers)
         self.assertIn("h", mp.utilities_menu_handlers)
+        self.assertIs(mp.main_menu_handlers["a"], ch.handle_apigw_command)
 
 
 class MenuNumberAliasTests(unittest.TestCase):
@@ -192,44 +389,50 @@ class MenuNumberAliasTests(unittest.TestCase):
     these tests fail if that ever comes apart again.
     """
 
+    MAIN = "\U0001F4BEBacon BBS\U0001F4BE"
+
     def _menus(self):
         import message_processing as mp
         return (
-            ("main", ch.MAIN_NUMBER_MAP, mp._MAIN_NUMBER_ALIAS, mp.main_menu_handlers),
-            ("bbs", ch.BBS_NUMBER_MAP, mp._BBS_NUMBER_ALIAS, mp.bbs_menu_handlers),
-            ("utilities", ch.UTILITIES_NUMBER_MAP, mp._UTILITIES_NUMBER_ALIAS,
-             mp.utilities_menu_handlers),
+            ("main", ch.MAIN_MENU_LABELS, mp.main_menu_handlers),
+            ("bbs", ch.BBS_MENU_LABELS, mp.bbs_menu_handlers),
+            ("utilities", ch.UTILITIES_MENU_LABELS, mp.utilities_menu_handlers),
         )
 
-    def test_every_rendered_number_resolves_to_a_handler(self):
-        for name, number_map, alias, handlers in self._menus():
-            for letter, label in number_map.items():
-                digit = label.split("]")[0].lstrip("[")
-                with self.subTest(menu=name, label=label):
-                    self.assertEqual(alias.get(digit), letter.lower(),
-                                     f"{name} menu prints {label} but {digit} is unmapped")
+    def test_every_label_has_a_handler(self):
+        """A letter that can render but cannot dispatch is a dead line."""
+        for name, labels, handlers in self._menus():
+            for letter in labels:
+                with self.subTest(menu=name, letter=letter):
                     self.assertIn(letter.lower(), handlers)
 
-    def test_the_numbers_that_regressed(self):
-        """5/6/7 on the main menu -- the reported symptom."""
-        import message_processing as mp
-        self.assertEqual(mp._MAIN_NUMBER_ALIAS["5"], "n")
-        self.assertEqual(mp._MAIN_NUMBER_ALIAS["6"], "a")
-        self.assertEqual(mp._MAIN_NUMBER_ALIAS["7"], "s")
+    def test_every_rendered_number_resolves_to_a_handler(self):
+        for name, _labels, handlers in self._menus():
+            items, title = ch.menu_items_for(name)
+            for digit, letter in ch.menu_number_alias(items, title).items():
+                with self.subTest(menu=name, digit=digit):
+                    self.assertIn(letter, handlers)
 
-    def test_utilities_5_opens_public_chatter(self):
-        import message_processing as mp
-        self.assertEqual(mp._UTILITIES_NUMBER_ALIAS["5"], "h")
+    def test_utilities_numbers_reach_games_and_public_chatter(self):
+        items, title = ch.menu_items_for("utilities")
+        alias = ch.menu_number_alias(items, title)
+        self.assertEqual(alias["4"], "g")
+        self.assertEqual(alias["5"], "h")
 
-    def test_legacy_utilities_6_still_opens_public_chatter(self):
-        import message_processing as mp
-        self.assertEqual(mp._UTILITIES_NUMBER_ALIAS["6"], "h")
+    def test_a_hidden_entry_is_given_no_number_at_all(self):
+        """Numbers describe the screen. Public Chatter's old [6] alias went
+        with this: a digit the menu never prints must not quietly work."""
+        alias = ch.menu_number_alias(["Q", "B", "U", "X"], self.MAIN)
+        self.assertNotIn("p", alias.values())
+        self.assertNotIn("n", alias.values())
+        self.assertNotIn("6", alias)
 
     def test_no_digit_is_claimed_twice(self):
-        for name, number_map, _alias, _handlers in self._menus():
-            digits = [label.split("]")[0].lstrip("[") for label in number_map.values()]
+        for name, _labels, _handlers in self._menus():
+            items, title = ch.menu_items_for(name)
+            alias = ch.menu_number_alias(items, title)
             with self.subTest(menu=name):
-                self.assertEqual(len(digits), len(set(digits)))
+                self.assertEqual(len(alias), len(set(alias.values())))
 
 
 class GameInputRoutingTests(unittest.TestCase):

@@ -159,7 +159,9 @@ class BBSClientSession(asyncssh.SSHServerSession):
             self.channel.write(
                 f"Account {self.auth.alias} created. Future logins use "
                 f"{self.auth.alias}.\r\n")
-        self.channel.write("Connected to Bacon BBS. Type 0 to go back.\r\n")
+        self.channel.write(
+            "Connected to Bacon BBS. [0] goes back, and disconnects from the "
+            "main menu.\r\n")
         self._send_to_bbs("?")
         self._reset_idle_timer()
 
@@ -283,6 +285,12 @@ class BBSClientSession(asyncssh.SSHServerSession):
         if error:
             logging.error("SSH BBS handler error for %s: %s", self.auth.alias, error)
             self.channel.write("The BBS could not process that command.\r\n")
+        # [0] Exit at the top level. The handler cannot close the connection
+        # itself -- it has no idea it is talking to SSH -- so it raises this
+        # flag and the transport hangs up.
+        if getattr(self.session.interface, "session_ended", False):
+            self.channel.exit(0)
+            return
         self._write_prompt()
 
     def _write_prompt(self) -> None:

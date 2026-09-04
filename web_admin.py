@@ -2069,7 +2069,7 @@ UPDATED_FLOWCHART_CONTENT = """
   <table>
     <thead><tr><th>Menu</th><th>Selections</th></tr></thead>
     <tbody>
-      <tr><td>Main Menu (💾Bacon BBS💾)</td><td><strong>Q</strong> BBS Menu, <strong>B</strong> BBS Submenu, <strong>U</strong> Utilities Menu, <strong>P</strong> Profile, <strong>X</strong> Exit (configurable via <code>[menu] main_menu_items</code>)</td></tr>
+      <tr><td>Main Menu (💾Bacon BBS💾)</td><td><strong>Q</strong> Quick Commands, <strong>B</strong> BBS Submenu, <strong>U</strong> Utilities Menu, <strong>P</strong> Profile, <strong>N</strong> Ask Nomad, <strong>A</strong> Web Fetch, <strong>S</strong> Linked Devices, <strong>X</strong> Exit (configurable via <code>[menu] main_menu_items</code>; numbers are assigned in list order, and a removed letter still works with the <code>!</code> prefix)</td></tr>
       <tr><td>BBS Menu (📰)</td><td><strong>M</strong> Mail, <strong>B</strong> Bulletins, <strong>C</strong> Channel Directory, <strong>J</strong> JS8Call gateway, <strong>X</strong> Exit</td></tr>
       <tr><td>Utilities Menu (🛠️)</td><td><strong>S</strong> Stats, <strong>F</strong> Fortune, <strong>W</strong> Wall of Shame, <strong>G</strong> Games (Zork + Hall of Fame), <strong>X</strong> Exit</td></tr>
       <tr><td>Mail</td><td>Read inbox, send to a node short name, delete; long messages chunk automatically.</td></tr>

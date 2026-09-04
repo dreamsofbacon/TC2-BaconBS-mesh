@@ -31,7 +31,8 @@ from command_handlers import (
     handle_active_users_command,
     handle_public_chatter_command, handle_public_chatter_steps,
     deliver_ask_nomad_reply,
-    number_alias, MAIN_NUMBER_MAP, BBS_NUMBER_MAP, UTILITIES_NUMBER_MAP,
+    handle_exit_command, send_board_action_menu,
+    menu_items_for, menu_layout, menu_number_alias,
 )
 from db_operations import (
     add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel,
@@ -97,13 +98,21 @@ from utils import (
     _send_one_sync, get_max_text_bytes,
 )
 
-# Digit shortcuts, derived from the same label tables build_menu renders, so
-# a menu entry can never show a number the input handler then ignores.
-_MAIN_NUMBER_ALIAS = number_alias(MAIN_NUMBER_MAP)
-_BBS_NUMBER_ALIAS = number_alias(BBS_NUMBER_MAP)
-_UTILITIES_NUMBER_ALIAS = number_alias(UTILITIES_NUMBER_MAP)
-# Public Chatter used 6 before Utilities numbering was made contiguous.
-_UTILITIES_NUMBER_ALIAS.setdefault('6', 'h')
+def _menu_input(kind, message_lower):
+    """Resolve one keypress against the menu the user is actually looking at.
+
+    Returns (letter, on_screen). Digits are counted off the rendered layout,
+    so 4 always means the fourth line. A letter that is NOT on screen comes
+    back with on_screen False rather than being dispatched: bare letters for
+    hidden entries used to fire anyway, which is how they collided with
+    apps and door games that wanted the same key. '!p' still reaches a
+    hidden Profile -- see the global-prefix branch in process_message.
+    """
+    items, title = menu_items_for(kind)
+    layout = menu_layout(items, title)
+    letter = menu_number_alias(items, title, layout).get(message_lower, message_lower)
+    return letter, letter.upper() in layout
+
 
 main_menu_handlers = {
     "q": handle_quick_help_command,
@@ -114,7 +123,7 @@ main_menu_handlers = {
     "g": handle_games_command,
     "a": handle_apigw_command,
     "s": handle_settings_command,
-    "x": handle_help_command
+    "x": handle_exit_command
 }
 
 bbs_menu_handlers = {
@@ -2788,13 +2797,17 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 menu_name = state.get('menu', 'main')
                 if menu_name == 'bbs':
                     handlers = bbs_menu_handlers
-                    message_lower = _BBS_NUMBER_ALIAS.get(message_lower, message_lower)
                 elif menu_name == 'utilities':
                     handlers = utilities_menu_handlers
-                    message_lower = _UTILITIES_NUMBER_ALIAS.get(message_lower, message_lower)
                 else:
                     handlers = main_menu_handlers
-                    message_lower = _MAIN_NUMBER_ALIAS.get(message_lower, message_lower)
+                    menu_name = 'main'
+                message_lower, on_screen = _menu_input(menu_name, message_lower)
+                if not on_screen:
+                    # Not a line this menu is showing. Fall through to the
+                    # "Invalid choice." re-render below rather than firing a
+                    # handler the user was given no way to know about.
+                    handlers = {}
             elif state and state['command'] == 'BULLETIN_MENU':
                 if message_lower in ('x', '0'):
                     handle_help_command(sender_id, interface)
@@ -2822,8 +2835,14 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             # active, and X should not then bounce the user to the main menu.
             if (handlers and message_lower == 'x' and not door_session
                     and state and state.get('command') in ('MENU', 'MAIN_MENU')):
-                # Reset to main menu state
-                handle_help_command(sender_id, interface)
+                # [0] means Back in a submenu and Exit at the top, which is
+                # what the two menus already label it. Submenus keep going to
+                # the main menu; the main menu now actually leaves, so an SSH
+                # session has a way out it can see.
+                if state.get('command') == 'MENU' and state.get('menu') in ('bbs', 'utilities'):
+                    handle_help_command(sender_id, interface)
+                else:
+                    handle_exit_command(sender_id, interface)
                 return
 
             if message_lower in handlers and not door_session:
@@ -2835,6 +2854,13 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 menu_name = state.get('menu') if state['command'] == 'MENU' else None
                 handle_help_command(
                     sender_id, interface, menu_name, notice="Invalid choice.")
+            elif state and state['command'] == 'BULLETIN_ACTION':
+                # Without this the miss fell all the way to the catch-all at
+                # the end and silently dumped the reader on the main menu,
+                # losing which board they were in.
+                send_board_action_menu(sender_id, interface, state.get('board'),
+                                       state.get('boards'),
+                                       notice="Invalid choice.")
             elif state:
                 command = state['command']
                 step = state['step']

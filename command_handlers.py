@@ -32,6 +32,7 @@ from utils import (
     update_user_state,
     select_gateway_peer, send_api_request, register_api_request,
     home_network, _config_int, send_mail_relay_preference_to_bbs_nodes,
+    clear_user_state, request_session_end,
 )
 from zork_port import (
     GAMES,
@@ -86,21 +87,9 @@ def _urgent_board_allow_lists(interface) -> list:
 main_menu_items = _parse_menu_items(config.get('menu', 'main_menu_items', fallback='Q,B,U,P,N,A,S,X'))
 bbs_menu_items = _parse_menu_items(config.get('menu', 'bbs_menu_items', fallback='M,B,C,J,X'))
 utilities_menu_items = _parse_menu_items(config.get('menu', 'utilities_menu_items', fallback='S,F,W,G,X'))
-
-if 'G' not in utilities_menu_items and 'Z' not in utilities_menu_items:
-    if 'X' in utilities_menu_items:
-        exit_index = utilities_menu_items.index('X')
-        utilities_menu_items.insert(exit_index, 'G')
-    else:
-        utilities_menu_items.append('G')
-# Treat legacy Z config entry as G
-if 'Z' in utilities_menu_items and 'G' not in utilities_menu_items:
-    utilities_menu_items[utilities_menu_items.index('Z')] = 'G'
-if 'H' not in utilities_menu_items:
-    if 'X' in utilities_menu_items:
-        utilities_menu_items.insert(utilities_menu_items.index('X'), 'H')
-    else:
-        utilities_menu_items.append('H')
+# The G/H/Z repairs that used to run here now live in menu_layout, so the
+# rendered menu and the digits accepted for it are decided by one function
+# rather than by a list mutated at import time and a separate fixed table.
 
 
 def get_bulletin_boards() -> list[str]:
@@ -123,106 +112,144 @@ def get_bulletin_boards() -> list[str]:
 LINE_BREAK = chr(10)
 
 
-# Menu label tables. These are the single source of truth for BOTH the
-# rendered menu text and the digit shortcuts message_processing accepts --
-# the two used to be maintained separately, which is how "[5] Ask Nomad"
-# ended up rendering while typing 5 did nothing.
-UTILITIES_NUMBER_MAP = {
-    'S': "[1] Stats",
-    'F': "[2] Fortune",
-    'W': "[3] Wall of Shame",
-    'G': "[4] Games",
-    'H': "[5] Public Chatter",
-    'X': "[0] Back",
+UTILITIES_MENU_TITLE = "🛠️Utilities Menu🛠️"
+BBS_MENU_TITLE = "📰BBS Menu📰"
+
+# Menu labels WITHOUT their numbers. The number an entry gets is decided at
+# render time by menu_layout, so trimming an entry out of config.ini
+# renumbers what is left instead of leaving a hole. A node whose config
+# predates Profile and Ask Nomad used to render "[1][2][3][6][7]", and gaps
+# read as breakage to anyone who finds the BBS cold.
+#
+# These are still the single source of truth for BOTH the rendered text and
+# the digits message_processing accepts, because both go through menu_layout.
+# They used to be separate tables, which is how "[5] Ask Nomad" once
+# rendered while typing 5 did nothing.
+UTILITIES_MENU_LABELS = {
+    'S': "Stats",
+    'F': "Fortune",
+    'W': "Wall of Shame",
+    'G': "Games",
+    'H': "Public Chatter",
+    'X': "Back",
 }
 
-BBS_NUMBER_MAP = {
-    'M': "[1] Mail",
-    'B': "[2] Bulletins",
-    'C': "[3] Channel Dir",
-    'J': "[4] JS8CALL",
-    'X': "[0] Back",
+BBS_MENU_LABELS = {
+    'M': "Mail",
+    'B': "Bulletins",
+    'C': "Channel Dir",
+    'J': "JS8CALL",
+    'X': "Back",
 }
 
-# Numbers are deliberately append-only: renumbering Quick Commands or BBS
-# would break every user's muscle memory and every doc that references them.
-MAIN_NUMBER_MAP = {
-    'Q': "[1] Quick Commands",
-    'B': "[2] BBS",
-    'U': "[3] Utilities",
-    'P': "[4] Profile",
-    'N': "[5] Ask Nomad",
-    'A': "[6] Web Fetch",
-    'S': "[7] Linked Devices",
-    'X': "[0] Exit",
+MAIN_MENU_LABELS = {
+    'Q': "Quick Commands",
+    'B': "BBS",
+    'U': "Utilities",
+    'P': "Profile",
+    'N': "Ask Nomad",
+    'A': "Web Fetch",
+    'S': "Linked Devices",
+    'X': "Exit",
+}
+
+MENU_LABELS = {
+    'main': MAIN_MENU_LABELS,
+    'bbs': BBS_MENU_LABELS,
+    'utilities': UTILITIES_MENU_LABELS,
+}
+
+# Entries added after the first config.ini files were written. An explicit
+# item list would otherwise never show them -- exactly how the API Gateway
+# stayed invisible under Utilities.
+MENU_REQUIRED = {
+    'main': ('A', 'S'),
+    'bbs': (),
+    'utilities': ('G', 'H'),
 }
 
 
-def number_alias(number_map):
-    """Digit -> lowercase letter shortcuts, read off the menu labels.
+def menu_kind(menu_name) -> str:
+    """Which menu a display title refers to.
 
-    Derived rather than hand-written so a new menu entry cannot render with
-    a number that the input handler refuses to accept.
+    The main menu's title carries a live mail count, so it is matched last
+    as the default rather than by equality.
     """
-    alias = {}
-    for letter, label in number_map.items():
-        match = _MENU_NUMBER_RE.match(label)
-        if match:
-            alias[match.group(1)] = letter.lower()
-    return alias
+    if menu_name == UTILITIES_MENU_TITLE:
+        return 'utilities'
+    if menu_name == BBS_MENU_TITLE:
+        return 'bbs'
+    return 'main'
 
 
-_MENU_NUMBER_RE = re.compile(r"\[(\d+)\]")
+def menu_layout(items, menu_name) -> list:
+    """The ordered letters a menu actually shows.
+
+    One list, two consumers: build_menu renders it and menu_number_alias
+    derives the digits from it. They used to read different tables --
+    rendering filtered the configured list while the digits came from a
+    fixed map -- so a trimmed config produced a menu whose numbers skipped
+    values that still worked if you guessed them.
+    """
+    kind = menu_kind(menu_name)
+    labels = MENU_LABELS[kind]
+    layout = [item.strip().upper() for item in items if item and item.strip()]
+
+    # Legacy config spelling for Games.
+    if kind == 'utilities' and 'Z' in layout and 'G' not in layout:
+        layout[layout.index('Z')] = 'G'
+
+    for required in MENU_REQUIRED[kind]:
+        if required not in layout:
+            if 'X' in layout:
+                layout.insert(layout.index('X'), required)
+            else:
+                layout.append(required)
+
+    if kind == 'bbs' and not _js8call_configured():
+        layout = [item for item in layout if item != 'J']
+
+    # Drop anything with no label: an unknown letter left in a config would
+    # otherwise claim a number and render a blank line.
+    ordered = []
+    for item in layout:
+        if item in labels and item not in ordered:
+            ordered.append(item)
+    # Exit/Back is always [0], so it goes last wherever the config put it.
+    return ([item for item in ordered if item != 'X']
+            + (['X'] if 'X' in ordered else []))
 
 
 def build_menu(items, menu_name):
-    menu_items = [item.strip().upper() for item in items if item and item.strip()]
-    if menu_name == "🛠️Utilities Menu🛠️":
-        # Ensure G is present; migrate legacy Z
-        if 'Z' in menu_items and 'G' not in menu_items:
-            menu_items[menu_items.index('Z')] = 'G'
-        if 'G' not in menu_items:
-            if 'X' in menu_items:
-                menu_items.insert(menu_items.index('X'), 'G')
-            else:
-                menu_items.append('G')
-        if 'H' not in menu_items:
-            if 'X' in menu_items:
-                menu_items.insert(menu_items.index('X'), 'H')
-            else:
-                menu_items.append('H')
-
-        number_map = UTILITIES_NUMBER_MAP
-        menu_str = f"{menu_name}\n"
-        for item in menu_items:
-            if item in number_map:
-                menu_str += number_map[item] + "\n"
-        return menu_str
-
-    if menu_name.startswith("💾"):
-        # An existing config.ini lists main_menu_items explicitly, so new
-        # entries would never appear for anyone upgrading -- exactly how the
-        # API Gateway stayed invisible under Utilities. Same approach the
-        # Utilities menu already uses for 'G'.
-        for required in ('A', 'S'):
-            if required not in menu_items:
-                if 'X' in menu_items:
-                    menu_items.insert(menu_items.index('X'), required)
-                else:
-                    menu_items.append(required)
-            menu_items = [item for item in menu_items if item != 'X']
-
-    if menu_name == "📰BBS Menu📰":
-        if not _js8call_configured():
-            menu_items = [item for item in menu_items if item != 'J']
-        number_map = BBS_NUMBER_MAP
-    else:
-        number_map = MAIN_NUMBER_MAP
+    labels = MENU_LABELS[menu_kind(menu_name)]
     menu_str = f"{menu_name}\n"
-    for item in menu_items:
-        if item in number_map:
-            menu_str += number_map[item] + "\n"
+    number = 0
+    for item in menu_layout(items, menu_name):
+        if item == 'X':
+            menu_str += f"[0] {labels['X']}\n"
+            continue
+        number += 1
+        menu_str += f"[{number}] {labels[item]}\n"
     return menu_str
+
+
+def menu_number_alias(items, menu_name, layout=None) -> dict:
+    """Digit -> lowercase letter for one rendered menu.
+
+    Counted off the same layout build_menu renders, so a digit cannot mean
+    anything other than the line the user is looking at. Callers that have
+    already built the layout pass it in: menu_layout consults config.ini for
+    the BBS menu, and that would otherwise be re-read on every keystroke.
+    """
+    alias = {}
+    number = 0
+    for item in (menu_layout(items, menu_name) if layout is None else layout):
+        if item == 'X':
+            alias['0'] = 'x'
+            continue
+        number += 1
+        alias[str(number)] = item.lower()
+    return alias
 
 
 def _js8call_configured() -> bool:
@@ -248,6 +275,48 @@ def handle_help_command(sender_id, interface, menu_name=None, notice=None):
     send_message(response, sender_id, interface)
 
 
+def menu_items_for(kind):
+    """The configured item list and display title for one menu.
+
+    Shared so message_processing derives its digits from exactly the list
+    handle_help_command just rendered, rather than from a parallel table.
+    """
+    if kind == 'bbs':
+        return bbs_menu_items, BBS_MENU_TITLE
+    if kind == 'utilities':
+        return utilities_menu_items, UTILITIES_MENU_TITLE
+    return main_menu_items, "💾Bacon BBS💾"
+
+
+def send_board_action_menu(sender_id, interface, board_name, boards, notice=None):
+    """Show one board's Read/Post menu and park the user on it.
+
+    Shared with the invalid-key path so a wrong number redraws this menu
+    instead of bouncing the reader out to the main menu, which used to lose
+    which board they were in without saying anything.
+    """
+    bulletins = get_bulletins(board_name)
+    response = f"{board_name} has {len(bulletins)} messages.\n[1]Read [2]Post [0]Back"
+    if notice:
+        response = f"{notice}{LINE_BREAK}{response}"
+    send_message(response, sender_id, interface)
+    update_user_state(sender_id, {'command': 'BULLETIN_ACTION', 'step': 2,
+                                  'board': board_name, 'boards': boards})
+
+
+def handle_exit_command(sender_id, interface):
+    """Leave the BBS from the top level.
+
+    On a radio there is no connection to close, so this clears the menu
+    state and says goodbye; the next message starts fresh. Over SSH there is
+    a real session, and request_session_end lets that front end hang up
+    without any command handler needing to know which transport it is on.
+    """
+    clear_user_state(sender_id)
+    send_message("73! Send any message to start again.", sender_id, interface)
+    request_session_end(interface)
+
+
 def _incomplete_notice(content_complete, expected_length, actual_content) -> str:
     if bool(content_complete):
         return ""
@@ -262,8 +331,10 @@ def get_node_name(node_id, interface):
     return f"Node {node_id}"
 
 
-def handle_mail_command(sender_id, interface):
+def handle_mail_command(sender_id, interface, notice=None):
     response = "✉️Mail Menu✉️\nWhat would you like to do with mail?\n[1]Read [2]Send [3]Relay Directory [0]Back"
+    if notice:
+        response = f"{notice}{LINE_BREAK}{response}"
     send_message(response, sender_id, interface)
     update_user_state(sender_id, {'command': 'MAIL', 'step': 1})
 
@@ -620,11 +691,6 @@ def handle_bulletin_command(sender_id, interface):
     )
     send_message(response, sender_id, interface)
     update_user_state(sender_id, {'command': 'BULLETIN_MENU', 'step': 1, 'boards': boards})
-
-
-def handle_exit_command(sender_id, interface):
-    send_message("Type 'HELP' for a list of commands.", sender_id, interface)
-    update_user_state(sender_id, None)
 
 
 def handle_stats_command(sender_id, interface):
@@ -1015,7 +1081,7 @@ def handle_settings_steps(sender_id, message, interface, sender_node_id):
     send_message(_SETTINGS_MENU_TEXT, sender_id, interface)
 
 
-def handle_profile_command(sender_id, interface):
+def handle_profile_command(sender_id, interface, notice=None):
     profile = get_user_profile(sender_id)
     if not profile:
         send_message("No profile yet - send any command to create one!", sender_id, interface)
@@ -1036,6 +1102,8 @@ def handle_profile_command(sender_id, interface):
     node_id = get_node_id_from_num(sender_id, interface)
     relay_status = "On" if get_mail_relay_preference(node_id) else "Off"
     lines.append(f"[1]Edit Bio [3]Offline Relay:{relay_status} [0]Back")
+    if notice:
+        lines.insert(0, notice)
     send_message("\n".join(lines), sender_id, interface)
     update_user_state(sender_id, {'command': 'PROFILE', 'step': 1})
 
@@ -1091,7 +1159,9 @@ def handle_profile_steps(sender_id, message, interface, sender_node_id=None):
         send_message(f"{action} offline mail relay for all linked devices? [Y/N]", sender_id, interface)
         update_user_state(sender_id, {'command': 'PROFILE', 'step': 3, 'relay_enabled': enabled})
         return
-    handle_profile_command(sender_id, interface)
+    # Redrawing the identical screen with no notice looked like the BBS had
+    # ignored the keypress rather than rejected it.
+    handle_profile_command(sender_id, interface, notice="Invalid choice.")
 
 
 # ---------------------------------------------------------------------------
@@ -1524,11 +1594,7 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
             handle_bulletin_command(sender_id, interface)
             return
 
-        board_name = boards[board_index]
-        bulletins = get_bulletins(board_name)
-        response = f"{board_name} has {len(bulletins)} messages.\n[1]Read [2]Post [0]Back"
-        send_message(response, sender_id, interface)
-        update_user_state(sender_id, {'command': 'BULLETIN_ACTION', 'step': 2, 'board': board_name, 'boards': boards})
+        send_board_action_menu(sender_id, interface, boards[board_index], boards)
 
     elif step == 2:
         board_name = state['board']
@@ -1635,6 +1701,10 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             handle_active_users_command(sender_id, interface)
         elif choice == 'x':
             handle_help_command(sender_id, interface)
+        else:
+            # This chain had no else, so a wrong key here sent nothing at
+            # all -- indistinguishable from a dead link.
+            handle_mail_command(sender_id, interface, notice="Invalid choice.")
 
     elif step == 2:
         try:
