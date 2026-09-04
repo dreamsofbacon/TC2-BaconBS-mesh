@@ -407,15 +407,63 @@ def install_requirements() -> tuple:
     return True, "dependencies up to date"
 
 
+# Units that hold the new code only after something restarts them. mesh-bbs
+# is absent on purpose: it exits on update and systemd brings it back.
+#
+# bacon-ssh was missing from this list, and nothing else restarts it, so an
+# SSH front end ran whatever code it had started with -- for seven hours
+# across eight deploys on the live node, while the file on disk had every
+# fix. A hand-verified SSH change appeared not to work at all, and the
+# service had simply never loaded it.
+#
+# Restarting a unit that is not installed is not a failure: forgecam is an
+# MQTT-only node and deliberately has no bacon-ssh. `--all` would refuse the
+# whole command over the missing one, so each is restarted on its own and
+# only an installed unit's failure counts.
+COMPANION_UNITS = ("bacon-web-admin.service", "bacon-ssh.service")
+
+
+def _unit_is_installed(unit: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["systemctl", "list-unit-files", unit],
+            capture_output=True, text=True, timeout=15, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return unit in (result.stdout or "")
+
+
 def restart_companion_services() -> tuple:
     """Refresh processes that do not exit with the mesh server."""
     configured = os.getenv("BBS_FLEET_COMPANION_RESTART_COMMAND")
     if configured is not None:
         command = shlex.split(configured)
     elif os.name == "posix" and shutil.which("systemctl"):
-        command = ["systemctl", "restart", "bacon-web-admin.service"]
+        prefix = []
         if os.geteuid() != 0 and shutil.which("sudo"):
-            command[0:0] = ["sudo", "-n"]
+            prefix = ["sudo", "-n"]
+        failures = []
+        restarted = []
+        for unit in COMPANION_UNITS:
+            if not _unit_is_installed(unit):
+                continue
+            try:
+                result = subprocess.run(
+                    prefix + ["systemctl", "restart", unit],
+                    capture_output=True, text=True, timeout=60, check=False)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                failures.append(f"{unit}: {exc}")
+                continue
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "restart failed").strip()
+                failures.append(f"{unit}: {detail[:120]}")
+            else:
+                restarted.append(unit)
+        if failures:
+            return False, "; ".join(failures)[:300]
+        if not restarted:
+            return True, "no companion services installed"
+        return True, f"restarted {', '.join(restarted)}"
     else:
         return True, "no companion restart command configured"
     if not command:

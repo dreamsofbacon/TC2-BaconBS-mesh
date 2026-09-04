@@ -8,6 +8,7 @@ any peer. So these tests are written as attacks rather than as a happy path:
 if any of them passes when it should not, an attacker on the broker owns
 every node in the fleet.
 """
+import os
 import sys
 import types
 import unittest
@@ -279,3 +280,81 @@ class ApplyLifecycleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompanionRestartTests(unittest.TestCase):
+    """Units that only pick up new code when something restarts them.
+
+    mesh-bbs exits on update and systemd brings it back, so it is absent
+    from the list on purpose. bacon-ssh was absent by accident, and nothing
+    else restarts it: on the live node it ran the code it had started with
+    for seven hours across eight deploys, while the file on disk had every
+    fix. A hand-verified SSH change looked completely broken, and the
+    service had simply never loaded it.
+    """
+
+    def _run(self, installed, results):
+        calls = []
+
+        def fake_run(command, **_kwargs):
+            calls.append(command)
+            if "list-unit-files" in command:
+                unit = command[-1]
+                return types.SimpleNamespace(
+                    returncode=0, stdout=(unit if unit in installed else ""), stderr="")
+            unit = command[-1]
+            code = results.get(unit, 0)
+            return types.SimpleNamespace(
+                returncode=code, stdout="", stderr="boom" if code else "")
+
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(fleet_update.os, "name", "posix"), \
+                mock.patch.object(fleet_update.shutil, "which", return_value="/bin/systemctl"), \
+                mock.patch.object(fleet_update.os, "geteuid", return_value=0, create=True), \
+                mock.patch.object(fleet_update.subprocess, "run", side_effect=fake_run):
+            os.environ.pop("BBS_FLEET_COMPANION_RESTART_COMMAND", None)
+            ok, detail = fleet_update.restart_companion_services()
+        restarted = [c[-1] for c in calls if "restart" in c]
+        return ok, detail, restarted
+
+    def test_the_ssh_front_end_is_restarted_too(self):
+        """The bug: it was never in the list, so it never got the new code."""
+        ok, _detail, restarted = self._run(
+            {"bacon-web-admin.service", "bacon-ssh.service"}, {})
+        self.assertTrue(ok)
+        self.assertIn("bacon-ssh.service", restarted)
+        self.assertIn("bacon-web-admin.service", restarted)
+
+    def test_a_node_without_ssh_installed_is_not_a_failure(self):
+        """forgecam is MQTT-only and deliberately has no bacon-ssh."""
+        ok, _detail, restarted = self._run({"bacon-web-admin.service"}, {})
+        self.assertTrue(ok)
+        self.assertEqual(restarted, ["bacon-web-admin.service"])
+
+    def test_a_real_restart_failure_is_reported(self):
+        ok, detail, _restarted = self._run(
+            {"bacon-web-admin.service", "bacon-ssh.service"},
+            {"bacon-ssh.service": 1})
+        self.assertFalse(ok)
+        self.assertIn("bacon-ssh.service", detail)
+
+    def test_one_units_failure_does_not_skip_the_other(self):
+        _ok, _detail, restarted = self._run(
+            {"bacon-web-admin.service", "bacon-ssh.service"},
+            {"bacon-web-admin.service": 1})
+        self.assertIn("bacon-ssh.service", restarted)
+
+    def test_mesh_bbs_is_not_restarted_here(self):
+        """It exits on update and systemd restarts it; doing it here as well
+        would cut the update short."""
+        self.assertNotIn("mesh-bbs.service", fleet_update.COMPANION_UNITS)
+
+    def test_an_explicit_override_still_wins(self):
+        with mock.patch.dict(
+                os.environ,
+                {"BBS_FLEET_COMPANION_RESTART_COMMAND": "/bin/true"}, clear=False), \
+                mock.patch.object(fleet_update.subprocess, "run",
+                                  return_value=types.SimpleNamespace(
+                                      returncode=0, stdout="", stderr="")):
+            ok, _detail = fleet_update.restart_companion_services()
+        self.assertTrue(ok)
