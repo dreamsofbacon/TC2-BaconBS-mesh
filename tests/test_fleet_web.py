@@ -244,6 +244,74 @@ class FleetApiTests(unittest.TestCase):
             peer = response.get_json()["nodes"][0]
             self.assertEqual(peer["fleet_state"], "failed")
 
+    def test_a_peer_holding_no_target_reads_as_not_enrolled(self):
+        """The live case. Chattanooga sat thirteen releases behind for a day
+        reporting "pending" -- which is also what a node reports for the
+        ninety seconds it takes to converge, so nothing distinguished a peer
+        that was working through an update from one that had never accepted
+        an instruction at all. It is reachable, it talks constantly, and it
+        holds no target; only its own [fleet] settings can change that."""
+        with _Node() as node:
+            node.paste(node.instruction())
+            db_operations.record_node_version(
+                "!peer1", "0.1.500", "0bd9178", "", "pending")
+            response = node.client.get(
+                "/api/fleet/status",
+                headers={"Authorization": f"Bearer {API_TOKEN}"})
+
+            peer = response.get_json()["nodes"][0]
+            self.assertEqual(peer["fleet_state"], "not enrolled")
+
+    def test_a_peer_working_through_an_update_still_reads_as_pending(self):
+        """It has stored our target and is not on it yet. That resolves
+        itself, and must not be reported as an operator problem."""
+        with _Node() as node:
+            node.paste(node.instruction())
+            db_operations.record_node_version(
+                "!peer1", "0.1.500", "0bd9178", COMMIT, "pending")
+            response = node.client.get(
+                "/api/fleet/status",
+                headers={"Authorization": f"Bearer {API_TOKEN}"})
+
+            self.assertEqual(response.get_json()["nodes"][0]["fleet_state"], "pending")
+
+    def test_no_target_of_our_own_means_no_peer_is_blamed(self):
+        """Before anything is signed nobody holds a target, and that is not
+        a peer being unenrolled."""
+        with _Node() as node:
+            db_operations.record_node_version(
+                "!peer1", "0.1.500", "0bd9178", "", "pending")
+            response = node.client.get(
+                "/api/fleet/status",
+                headers={"Authorization": f"Bearer {API_TOKEN}"})
+
+            self.assertNotEqual(
+                response.get_json()["nodes"][0]["fleet_state"], "not enrolled")
+
+    def test_an_explicit_failure_still_wins_over_the_new_state(self):
+        with _Node() as node:
+            node.paste(node.instruction())
+            db_operations.record_node_version(
+                "!peer1", "0.1.500", "0bd9178", "", "failed")
+            response = node.client.get(
+                "/api/fleet/status",
+                headers={"Authorization": f"Bearer {API_TOKEN}"})
+
+            self.assertEqual(response.get_json()["nodes"][0]["fleet_state"], "failed")
+
+    def test_a_peer_already_on_the_target_is_healthy_whatever_it_reports(self):
+        """Caught by an existing test when the not-enrolled check first went
+        in without this guard: a peer sitting on the target commit is fine,
+        and whether it also reports holding a target is beside the point."""
+        with _Node() as node:
+            node.paste(node.instruction())
+            db_operations.record_node_version("!peer1", "0.1.999", COMMIT[:7], "", "")
+            response = node.client.get(
+                "/api/fleet/status",
+                headers={"Authorization": f"Bearer {API_TOKEN}"})
+
+            self.assertEqual(response.get_json()["nodes"][0]["fleet_state"], "healthy")
+
     def test_status_api_requires_the_fleet_token(self):
         with _Node() as node:
             response = node.client.get("/api/fleet/status")
