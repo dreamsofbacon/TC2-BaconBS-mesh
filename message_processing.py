@@ -980,8 +980,12 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
     # stuck multi-chunk save can't starve bulletins/mail/channels of airtime.
     # NOTE: tombstones is always appended alongside zork_saves, so we must
     # check for non-tombstone data scopes — otherwise zork is deferred forever.
+    # public_chatter is excluded too: it's a constantly-refreshing observation
+    # log (new chatter arrives on its own schedule per peer), so it is almost
+    # never fully converged on a live mesh and would otherwise starve zork the
+    # same way tombstones would.
     non_zork = [s for s in requested_scopes if s != 'zork_saves']
-    data_non_zork = [s for s in non_zork if s != 'tombstones']
+    data_non_zork = [s for s in non_zork if s not in ('tombstones', 'public_chatter')]
     if data_non_zork and len(non_zork) != len(requested_scopes):
         logging.info(
             f"Deferring zork_saves repair for {sender_node_id} until other scopes converge "
