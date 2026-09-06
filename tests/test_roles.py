@@ -18,8 +18,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-if "meshtastic" not in sys.modules:
-    sys.modules["meshtastic"] = types.SimpleNamespace(BROADCAST_NUM=0)
+# The shared helper, not a local stub: importing server pulls in
+# config_init, which needs meshtastic and serial as real packages.
+import radio_stubs
+radio_stubs.install()
 
 import command_handlers as ch
 import db_operations
@@ -360,6 +362,62 @@ class RoleWireTests(_RoleCase):
 
     def test_role_is_advertised_as_a_capability(self):
         self.assertIn('role', utils.WIRE_CAPABILITIES)
+
+    def test_a_changed_role_is_advertised_once_per_peer(self):
+        db_operations._advertised_roles.clear()
+        self.addCleanup(db_operations._advertised_roles.clear)
+        db_operations.set_node_role(OTHER, 'vip')
+        sent = []
+        with mock.patch.object(utils, "_send_one_sync",
+                               side_effect=lambda m, p, i, **k: sent.append((m, p))),              mock.patch.object(db_operations, "peer_supports",
+                               side_effect=lambda peer, cap: True):
+            db_operations.sync_node_roles_to_nodes(["!a", "!b"], mock.MagicMock())
+        self.assertEqual(len(sent), 2)
+        self.assertEqual({p for _m, p in sent}, {"!a", "!b"})
+
+    def test_an_unchanged_role_is_not_re_sent(self):
+        """The steady state has to cost no airtime. This runs on the sync
+        tick, so re-sending every role every few seconds would be a constant
+        drip on a shared LoRa channel for nothing."""
+        db_operations._advertised_roles.clear()
+        self.addCleanup(db_operations._advertised_roles.clear)
+        db_operations.set_node_role(OTHER, 'vip')
+        sent = []
+        with mock.patch.object(utils, "_send_one_sync",
+                               side_effect=lambda m, p, i, **k: sent.append(m)),              mock.patch.object(db_operations, "peer_supports",
+                               side_effect=lambda peer, cap: True):
+            db_operations.sync_node_roles_to_nodes(["!a"], mock.MagicMock())
+            first = len(sent)
+            db_operations.sync_node_roles_to_nodes(["!a"], mock.MagicMock())
+        self.assertEqual(len(sent), first)
+
+    def test_changing_it_again_advertises_again(self):
+        db_operations._advertised_roles.clear()
+        self.addCleanup(db_operations._advertised_roles.clear)
+        db_operations.set_node_role(OTHER, 'vip', '2026-09-06T10:00:00')
+        sent = []
+        with mock.patch.object(utils, "_send_one_sync",
+                               side_effect=lambda m, p, i, **k: sent.append(m)),              mock.patch.object(db_operations, "peer_supports",
+                               side_effect=lambda peer, cap: True):
+            db_operations.sync_node_roles_to_nodes(["!a"], mock.MagicMock())
+            db_operations.set_node_role(OTHER, 'banned', '2026-09-06T11:00:00')
+            db_operations.sync_node_roles_to_nodes(["!a"], mock.MagicMock())
+        self.assertEqual(len(sent), 2)
+        self.assertIn("banned", sent[-1])
+
+    def test_it_runs_off_the_tick_not_the_five_phase_sync(self):
+        """The bug this replaced. phases_complete is persisted, so on an
+        established fleet P4 has finished forever and anything hung off it
+        never runs again -- role sync silently did nothing on the live nodes
+        for exactly that reason. The tick is what recurs."""
+        import inspect
+        import server
+        source = inspect.getsource(server)
+        self.assertIn("sync_node_roles_to_nodes", source)
+        # Not inside _run_sync_for_link, which only starts for a peer that
+        # has never completed P1.
+        phase_fn = inspect.getsource(server._run_sync_for_link)
+        self.assertNotIn("sync_node_roles_to_nodes", phase_fn)
 
 
 class BbsRoleCommandTests(_RoleCase):
