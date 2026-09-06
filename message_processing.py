@@ -70,13 +70,14 @@ from db_operations import (
     get_game_score_by_user_and_game,
     get_zork_save_row_by_user_and_game,
     get_sync_tombstone_deleted_at,
+    get_node_role, ROLE_BANNED,
     get_recent_sync_tombstones,
     has_sync_tombstone,
     rollback_db_connection,
 )
 from js8call_integration import handle_js8call_command, handle_js8call_steps, handle_group_message_selection
 from utils import (
-    get_user_state, update_user_state, get_node_short_name, resolve_display_name, get_node_id_from_num, send_message,
+    get_user_state, update_user_state, clear_user_state, get_node_short_name, resolve_display_name, get_node_id_from_num, send_message,
     send_bulletin_to_bbs_nodes, send_mail_to_bbs_nodes, send_channel_to_bbs_nodes,
     send_channel_comment_to_bbs_nodes,
     send_public_chatter_to_bbs_nodes,
@@ -1878,10 +1879,58 @@ def _relay_public_chatter_if_new(unique_id: str, inserted: bool, interface) -> N
     if row:
         _public_chatter_cross_link_relay(row, interface)
 
+# Who has already been told they are banned. In memory, so a restart tells
+# them once more -- which is the right trade: persisting it would mean a ban
+# applied while someone was away could never explain itself.
+_banned_notified = set()
+
+BANNED_NOTICE = "You are not permitted to use this BBS."
+
+
+def _refuse_banned_sender(sender_id, interface, sender_node_id) -> bool:
+    """Stop a banned sender before anything dispatches. True = handled.
+
+    Told once, then silent. Answering every message would let someone who
+    was banned for flooding keep making the node transmit on demand, which
+    on a shared LoRa channel is the behaviour the ban is for. Answering
+    never would be indistinguishable from the BBS being down.
+
+    Resolved from the string node id, never the numeric one: MeshCore
+    synthesises its numeric id from the first bytes of a public key, so two
+    devices can collide there -- and a collision here would ban the wrong
+    person.
+    """
+    try:
+        node_id = sender_node_id or get_node_id_from_num(sender_id, interface)
+        if not node_id:
+            return False
+        if get_node_role(node_id) != ROLE_BANNED:
+            _banned_notified.discard(str(node_id))
+            return False
+    except Exception:
+        # Fail open, deliberately. Everything here -- resolving the id off
+        # the interface, reading the role -- can fail on a transport that
+        # exposes less than the radios do, and a gate that cannot tell who
+        # is speaking must not silence everyone. A ban stops a nuisance; it
+        # is not the thing keeping anyone out of anything.
+        logging.debug("could not resolve a role; letting the message through",
+                      exc_info=True)
+        return False
+
+    if str(node_id) not in _banned_notified:
+        _banned_notified.add(str(node_id))
+        send_message(BANNED_NOTICE, sender_id, interface)
+    clear_user_state(sender_id)
+    return True
+
+
 def process_message(sender_id, message, interface, is_sync_message=False, sender_node_id=None):
     state = get_user_state(sender_id)
     message_lower = message.lower().strip()
     message_strip = message.strip()
+
+    if not is_sync_message and _refuse_banned_sender(sender_id, interface, sender_node_id):
+        return
 
     if not is_sync_message:
         _auto_update_profile(sender_id, interface)

@@ -1450,6 +1450,10 @@ def _ensure_accounts_tables(cursor) -> None:
         cursor.execute("ALTER TABLE accounts ADD COLUMN password_created_at TEXT")
     if 'sender_num' not in _account_cols:
         cursor.execute("ALTER TABLE accounts ADD COLUMN sender_num INTEGER")
+    if 'role' not in _account_cols:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+    if 'role_updated_at' not in _account_cols:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN role_updated_at TEXT NOT NULL DEFAULT ''")
     # Two accounts sharing a number would share their Zork saves and scores,
     # so let the database refuse it rather than trusting the probe below.
     cursor.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_sender_num
@@ -1473,6 +1477,16 @@ def _ensure_accounts_tables(cursor) -> None:
                     node_id TEXT PRIMARY KEY,
                     enabled INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT NOT NULL
+                );''')
+    # Roles for nodes with no account, and the projection that syncs. An
+    # account's role is the authority for its linked nodes; this carries a
+    # role for everyone else, and is what a ROLE frame writes -- exactly the
+    # shape mail_relay_preferences takes for the same reason.
+    cursor.execute('''CREATE TABLE IF NOT EXISTS node_roles (
+                    node_id TEXT PRIMARY KEY,
+                    role TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    assigned_by TEXT NOT NULL DEFAULT ''
                 );''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS link_codes (
                     code TEXT PRIMARY KEY,
@@ -5171,6 +5185,212 @@ def create_account() -> str:
     )
     conn.commit()
     return account_id
+
+
+# Roles, least privileged first. The number is what comparisons use, and
+# the gaps are deliberate: a role can be slotted between two of these later
+# without renumbering the ones already stored in databases and on the wire.
+#
+# UNREGISTERED is never stored. It is what someone with no account and no
+# node_roles row resolves to -- most radio users, since an account is only
+# created when somebody links a device or opts into mail relay.
+#
+# BOT sits with USER on purpose. It is a label for now, so a bot reads as a
+# bot in listings without being given or denied anything a user has.
+ROLE_BANNED = 'banned'
+ROLE_UNREGISTERED = 'unregistered'
+ROLE_USER = 'user'
+ROLE_BOT = 'bot'
+ROLE_VIP = 'vip'
+ROLE_MOD = 'mod'
+ROLE_ADMIN = 'admin'
+ROLE_DEVELOPER = 'developer'
+
+ROLE_RANKS = {
+    ROLE_BANNED: 0,
+    ROLE_UNREGISTERED: 10,
+    ROLE_USER: 20,
+    ROLE_BOT: 25,
+    ROLE_VIP: 30,
+    ROLE_MOD: 50,
+    ROLE_ADMIN: 70,
+    ROLE_DEVELOPER: 90,
+}
+
+# What an operator may pick. UNREGISTERED is excluded because it means "has
+# no account", which assigning a role would contradict.
+ASSIGNABLE_ROLES = (ROLE_BANNED, ROLE_USER, ROLE_BOT, ROLE_VIP,
+                    ROLE_MOD, ROLE_ADMIN, ROLE_DEVELOPER)
+
+
+def normalize_role(role) -> str:
+    """A stored or received role string, or UNREGISTERED if unrecognised.
+
+    Unknown values fall to the LEAST privilege rather than being kept: a
+    typo in config, or a role invented by a newer peer, must never resolve
+    to something powerful just because nothing here recognises it.
+    """
+    text = str(role or '').strip().casefold()
+    return text if text in ROLE_RANKS else ROLE_UNREGISTERED
+
+
+def role_rank(role) -> int:
+    return ROLE_RANKS.get(normalize_role(role), ROLE_RANKS[ROLE_UNREGISTERED])
+
+
+def role_at_least(role, minimum) -> bool:
+    """Privilege comparison. Banned is below everything, so a banned account
+    never satisfies a threshold even if the check is written loosely."""
+    return role_rank(role) >= role_rank(minimum)
+
+
+def get_node_role(node_id) -> str:
+    """The effective role for one node id.
+
+    An account is the authority when the node is linked to one, so a role
+    set on the account covers every device that person has linked without
+    having to be repeated per device. A node with no account falls back to
+    its own node_roles row, and to UNREGISTERED when it has neither.
+    """
+    normalized_id = str(node_id or '').strip()
+    if not normalized_id:
+        return ROLE_UNREGISTERED
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            "SELECT a.role FROM linked_nodes ln JOIN accounts a"
+            " ON a.account_id = ln.account_id WHERE ln.node_id = ?",
+            (normalized_id,))
+        row = c.fetchone()
+        if row is not None:
+            return normalize_role(row[0])
+        c.execute("SELECT role FROM node_roles WHERE node_id = ?", (normalized_id,))
+        row = c.fetchone()
+        if row is not None:
+            return normalize_role(row[0])
+    except sqlite3.Error:
+        # A database that predates these tables. Everyone is unregistered,
+        # which denies nothing that was not already denied.
+        logging.debug("roles unavailable for %s", normalized_id, exc_info=True)
+    return ROLE_UNREGISTERED
+
+
+def set_node_role(node_id, role, updated_at=None, assigned_by: str = '') -> bool:
+    """Assign a role, on the account when the node has one.
+
+    Writing to the account rather than the node keeps one answer per person:
+    a mod with three linked devices is a mod on all three, and demoting them
+    does not leave a stale grant on a device somebody forgot about.
+    """
+    normalized_id = str(node_id or '').strip()
+    normalized_role = normalize_role(role)
+    if not normalized_id or normalized_role == ROLE_UNREGISTERED:
+        return False
+    stamp = str(updated_at or datetime.now(timezone.utc).isoformat(timespec='microseconds'))
+    conn = get_db_connection()
+    c = conn.cursor()
+    account_id = get_account_id_for_node(normalized_id)
+    if account_id:
+        c.execute("UPDATE accounts SET role = ?, role_updated_at = ? WHERE account_id = ?",
+                  (normalized_role, stamp, str(account_id)))
+    else:
+        c.execute(
+            """INSERT INTO node_roles (node_id, role, updated_at, assigned_by)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(node_id) DO UPDATE SET
+                 role = excluded.role,
+                 updated_at = excluded.updated_at,
+                 assigned_by = excluded.assigned_by""",
+            (normalized_id, normalized_role, stamp, str(assigned_by or '')))
+    conn.commit()
+    return True
+
+
+def set_account_role(account_id: str, role, updated_at=None) -> bool:
+    normalized_role = normalize_role(role)
+    if normalized_role == ROLE_UNREGISTERED:
+        return False
+    stamp = str(updated_at or datetime.now(timezone.utc).isoformat(timespec='microseconds'))
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("UPDATE accounts SET role = ?, role_updated_at = ? WHERE account_id = ?",
+              (normalized_role, stamp, str(account_id)))
+    conn.commit()
+    return c.rowcount > 0
+
+
+def get_role_updated_at(node_id) -> str:
+    """When this node's role was last set, for last-writer-wins on sync."""
+    normalized_id = str(node_id or '').strip()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT a.role_updated_at FROM linked_nodes ln JOIN accounts a"
+        " ON a.account_id = ln.account_id WHERE ln.node_id = ?", (normalized_id,))
+    row = c.fetchone()
+    if row is not None:
+        return str(row[0] or '')
+    c.execute("SELECT updated_at FROM node_roles WHERE node_id = ?", (normalized_id,))
+    row = c.fetchone()
+    return str(row[0] or '') if row else ''
+
+
+def get_node_roles_for_sync() -> list:
+    """Every role this node would advertise: (node_id, role, updated_at)."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    rows = []
+    for node_id, role, stamp in c.execute(
+            "SELECT ln.node_id, a.role, a.role_updated_at FROM linked_nodes ln"
+            " JOIN accounts a ON a.account_id = ln.account_id"
+            " WHERE a.role_updated_at != ''").fetchall():
+        rows.append((str(node_id), normalize_role(role), str(stamp)))
+    for node_id, role, stamp in c.execute(
+            "SELECT node_id, role, updated_at FROM node_roles").fetchall():
+        rows.append((str(node_id), normalize_role(role), str(stamp)))
+    return rows
+
+
+def apply_synced_node_role(node_id, role, updated_at) -> bool:
+    """Apply a role a peer asserted, within what a peer is allowed to say.
+
+    Two limits, and both matter because this frame is unsigned like every
+    other sync frame -- anything on the broker can send one.
+
+    A peer may not assign above [roles] remote_role_ceiling, so a fleet-wide
+    ban or mod works while nobody outside this node can grant themselves
+    admin. And last-writer-wins is by timestamp, so a stale replay cannot
+    undo a newer local decision.
+    """
+    from utils import is_role_sync_enabled, get_remote_role_ceiling
+    if not is_role_sync_enabled():
+        return False
+    normalized_id = str(node_id or '').strip()
+    normalized_role = normalize_role(role)
+    stamp = str(updated_at or '').strip()
+    if not normalized_id or not stamp or normalized_role == ROLE_UNREGISTERED:
+        return False
+
+    ceiling = normalize_role(get_remote_role_ceiling())
+    if role_rank(normalized_role) > role_rank(ceiling):
+        logging.warning(
+            "Refused role %s for %s from a peer: above the remote ceiling %s",
+            normalized_role, normalized_id, ceiling)
+        return False
+
+    current = get_role_updated_at(normalized_id)
+    if current and current >= stamp:
+        return False
+    return set_node_role(normalized_id, normalized_role, stamp, assigned_by='peer')
+
+
+def get_account_role(account_id: str) -> str:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT role FROM accounts WHERE account_id = ?", (str(account_id),))
+    row = c.fetchone()
+    return normalize_role(row[0]) if row else ROLE_UNREGISTERED
 
 
 def get_account_id_for_node(node_id: str) -> Optional[str]:
