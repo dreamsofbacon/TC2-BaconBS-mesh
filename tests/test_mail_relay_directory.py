@@ -12,6 +12,7 @@ The browse page also printed "[0] Back" while its handler accepted only 'x',
 so the single key the screen told you to press was the one that did nothing.
 """
 
+import re
 import sqlite3
 import sys
 import types
@@ -220,6 +221,76 @@ class RelayDirectoryNavigationTests(unittest.TestCase):
         page = ch._mail_directory_page(
             [{'display_name': 'somebody', 'protocols': ['Meshtastic']}], 0, selecting=False)
         self.assertIn("[#] Write", page)
+
+
+class DirectoryNumbersMeanWhatTheyShowTests(unittest.TestCase):
+    """The screen and the resolver must agree, at any size.
+
+    This is the guard the case-by-case tests could not be. A directory-wide
+    index is indistinguishable from a page-relative one whenever the fixture
+    fits on one page -- which every test here did, so the tests would have
+    been perfectly happy with a [1] on page two that wrote to the first
+    person instead of the seventh. Wrong recipient, no error, nothing for
+    the sender to notice.
+
+    So this asserts the property rather than an example: for every page of
+    every size, the number printed beside a name resolves back to that same
+    name.
+    """
+
+    def _directory(self, count):
+        return [{'display_name': f"user{i}", 'protocols': ['Meshtastic'],
+                 'recipient_node_id': f"!node{i}", 'node_ids': [f"!node{i}"]}
+                for i in range(count)]
+
+    def test_every_printed_number_resolves_to_the_name_beside_it(self):
+        for count in (0, 1, 5, 6, 7, 12, 13, 40):
+            entries = self._directory(count)
+            _visible, _p, page_count = ch.mail_directory_page_view(entries, 0)
+            for page in range(page_count):
+                rendered = ch._mail_directory_page(entries, page, selecting=False)
+                for number, name in re.findall(r"\[(\d+)\] (user\d+)", rendered):
+                    with self.subTest(count=count, page=page, number=number):
+                        picked, problem = ch._directory_selection(entries, page, number)
+                        self.assertIsNone(problem)
+                        self.assertEqual(picked['display_name'], name)
+
+    def test_a_number_past_the_page_resolves_to_nobody(self):
+        """The complement. Without it, a resolver that ignored the page and
+        returned entries[index] would satisfy the test above -- on page one
+        the two readings agree, and it is never asked about anything else."""
+        entries = self._directory(8)
+        for page, beyond in ((0, "7"), (1, "3")):
+            with self.subTest(page=page):
+                picked, problem = ch._directory_selection(entries, page, beyond)
+                self.assertIsNone(picked)
+                self.assertEqual(problem, 'out_of_range')
+
+    def test_a_stale_page_number_lands_on_the_last_page(self):
+        """The directory is rebuilt from the database each time, so someone
+        sitting on page two while the last opted-in user opts out arrives
+        back with a page number that no longer exists. Unclamped that
+        renders "page 3/1" with nothing under it -- the BBS telling them
+        the directory is empty when it is not."""
+        entries = self._directory(3)
+        visible, page, page_count = ch.mail_directory_page_view(entries, 5)
+        self.assertEqual((page, page_count), (0, 1))
+        self.assertEqual(len(visible), 3)
+        rendered = ch._mail_directory_page(entries, 5, selecting=False)
+        self.assertIn("(page 1/1)", rendered)
+        self.assertIn("user0", rendered)
+
+    def test_a_negative_page_lands_on_the_first(self):
+        visible, page, _count = ch.mail_directory_page_view(self._directory(3), -4)
+        self.assertEqual(page, 0)
+        self.assertEqual(len(visible), 3)
+
+    def test_the_renderer_and_the_resolver_share_one_page_definition(self):
+        """Two copies of the slice arithmetic is the way they drift apart."""
+        import inspect
+        source = inspect.getsource(ch._directory_selection)
+        self.assertIn("mail_directory_page_view", source)
+        self.assertNotIn("_MAIL_DIRECTORY_PAGE_SIZE", source)
 
 
 if __name__ == "__main__":

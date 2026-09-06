@@ -583,6 +583,37 @@ Run the suite before deploying. Two real regressions have shipped this way:
 an accounts schema test that had not been told about new columns, and a
 menu-dispatch test asserting behaviour that had deliberately changed.
 
+### A fixture too small to be wrong
+
+The relay directory browse view accepted a number but resolved it against
+the whole directory instead of the page on screen. Pages restart at `[1]`,
+so `[1]` on page two would have written to the first person rather than the
+seventh -- wrong recipient, no error, nothing for the sender to notice.
+
+Every test used one entry on page one, where a page-relative index and a
+directory-wide one are the same number. The tests were not weak about the
+thing they asserted; the *fixture* could not tell the two implementations
+apart. Only the mutation found it.
+
+Two habits come out of that:
+
+- **Size a fixture so the readings diverge.** Anything paged needs more than
+  one page. Anything with a set needs more than one member -- the same shape
+  as "This node" being a set of ids, where a single-id fixture passes a
+  broken implementation.
+- **Assert the agreement, not an example.** `mail_directory_page_view` is now
+  the single definition of what a page holds, used by the renderer and by
+  the code that resolves a typed number, and a test walks every page of
+  eight directory sizes checking that the number printed beside a name
+  resolves back to that name. That guard does not care how big the fixture
+  is. `menu_layout` is the same pattern, for the same reason.
+
+An audit found no other paged positional list: `_MAIL_DIRECTORY_PAGE_SIZE`
+is the only page size in `command_handlers.py`, and the ten other
+`int(message) - 1` lookups all index a full list held in state. The Node
+View picker pages but numbers globally on purpose, so that `[1] All nodes`
+stays `[1]` on every page.
+
 ---
 
 ## Docker
