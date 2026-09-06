@@ -98,6 +98,41 @@ A duplicate submission may be rejected as a replay when MQTT delivered the
 same fresh timestamp first. Check the stored target and convergence before
 treating that as failure or signing another instruction.
 
+### When the nodes stop trusting the signing key
+
+`fleet_sign.py` will happily sign a blob the nodes then refuse, with
+`instruction was signed by key fkXXXXXX, which this node does not trust`.
+The signature is fine; the node's `[fleet] trusted_keys` no longer lists it.
+
+This happened on 2026-09-04: both nodes went from trusting `fkec622a` and
+`fkf5f136` to `fkf5f136` alone, 32 seconds apart (forgecam 19:48:31, bbs
+19:49:03) -- one deliberate action across the fleet, not a stray click. It
+was *after* a successful deploy that same evening, so nothing about applying
+an update caused it, and nothing in `fleet_update.py` or the apply path
+writes `config.ini` at all; the only writers are the web admin's save
+routes. The journal could not settle it either way because it only reached
+back to the following day. The likeliest cause is
+`scripts/fleet_sign.py enroll`, which rewrites `trusted_keys` wholesale
+rather than appending.
+
+To diagnose, compare the key ids across the config backups on the node:
+
+```sh
+cd ~/TC2-BaconBS-mesh
+for f in config.ini config.ini.*; do
+  echo "$f: $(grep -oh 'fk[0-9a-f]\{6\}' "$f" | sort -u | xargs)"
+done
+```
+
+**Re-adding a key is the node owner's decision, not a step to take because
+it unblocks you.** Whoever holds the private half can make that node run any
+commit they choose, and having shell access is the reason to ask rather than
+a reason not to. Once asked, add it through `/fleet/keys/add` rather than by
+editing `config.ini`: that path validates the entry, derives the fingerprint
+from the key instead of trusting the pasted label, and logs at warning
+level. Add, do not replace -- back up `config.ini` first and check the other
+key is still there afterwards.
+
 ### Companion services, and how eight releases shipped nothing
 
 `mesh-bbs` refreshes itself: it exits on update and systemd restarts it under

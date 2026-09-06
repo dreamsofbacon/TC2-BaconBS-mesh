@@ -69,6 +69,7 @@ class _DbCase(unittest.TestCase):
         self.addCleanup(self._close)
 
     def _restore(self):
+        db_operations._LOCAL_IDENTITY_CACHE = None
         db_operations.set_local_node_id(self._saved[0])
         db_operations.set_local_link_identities(self._saved[1])
         db_operations.set_local_capture_identities(self._saved[2])
@@ -169,6 +170,88 @@ class IdentitySetTests(_DbCase):
     def test_a_peer_id_that_is_not_ours_does_not_pull_in_null(self):
         self._bulletin("old", None)
         self.assertEqual(db_operations.get_bulletins("General", [PEER_RADIO]), [])
+
+
+class SeparateProcessTests(_DbCase):
+    """The SSH front end and the web admin own no radio.
+
+    This shipped broken and was caught only by driving a real SSH session:
+    set_local_link_identities is called by server.py, and bacon-ssh is a
+    different process with its own module globals, so the set was empty
+    there. "This node" then meant an empty id list, which is indistinguishable
+    from "no filter" -- the picker starred All nodes and This node at once
+    and narrowing did nothing at all.
+
+    Every other test in this file sets the globals in-process, which is
+    exactly why none of them saw it.
+    """
+
+    def _as_a_separate_process(self):
+        """Forget everything only server.py could know."""
+        # '' not None: set_local_node_id stringifies, so None would become
+        # the literal 'None' and then look like an id this node answers to.
+        db_operations.set_local_node_id('')
+        db_operations.set_local_link_identities([])
+        db_operations.set_local_capture_identities([])
+        db_operations._LOCAL_IDENTITY_CACHE = None
+
+    def test_this_node_is_still_known_without_the_radios(self):
+        db_operations.persist_local_identities([RADIO, BRIDGE], [CAPTURE])
+        self._as_a_separate_process()
+        self.assertEqual(db_operations.get_local_identities_for_scope(),
+                         {RADIO, BRIDGE, CAPTURE})
+
+    def test_null_is_still_local_without_the_radios(self):
+        """The rule that decides whether pre-tracking rows belong to you."""
+        db_operations.persist_local_identities([RADIO, BRIDGE], [])
+        self._as_a_separate_process()
+        self._bulletin("old", None)
+        self._bulletin("theirs", PEER)
+        rows = db_operations.get_bulletins("General", [RADIO, BRIDGE])
+        self.assertEqual(self._subjects(rows), ["old"])
+
+    def test_a_capture_id_reads_as_this_node_without_the_radios(self):
+        db_operations.persist_local_identities([RADIO], [CAPTURE])
+        self._as_a_separate_process()
+        self.assertEqual(utils.node_display_name(CAPTURE), "this node")
+
+    def test_the_sync_identity_set_is_left_narrow(self):
+        """get_local_link_identities decides 'is this me?' during sync, where
+        a wrong answer makes a node repair against itself forever. It must
+        NOT pick up persisted or capture ids."""
+        db_operations.persist_local_identities([RADIO, BRIDGE], [CAPTURE])
+        self.assertNotIn(CAPTURE, db_operations.get_local_link_identities())
+        self._as_a_separate_process()
+        self.assertEqual(db_operations.get_local_link_identities(), set())
+
+    def test_persisting_replaces_rather_than_accumulates(self):
+        """A bridge removed from config stops being us."""
+        db_operations.persist_local_identities([RADIO, BRIDGE], [])
+        db_operations.persist_local_identities([RADIO], [])
+        self._as_a_separate_process()
+        self.assertEqual(db_operations.get_local_identities_for_scope(), {RADIO})
+
+    def test_startup_actually_writes_them_down(self):
+        """The half that is easy to leave out: a working persist function
+        nothing ever calls looks exactly like a working feature until you
+        open the BBS over SSH."""
+        import server
+
+        class _Link:
+            def __init__(self, node_id, capture):
+                self.interface = types.SimpleNamespace(
+                    self_node_id=node_id,
+                    public_chatter_capture_node_id=capture)
+
+        saved_links = server._active_links
+        server._active_links = [_Link(BRIDGE, CAPTURE)]
+        self.addCleanup(setattr, server, '_active_links', saved_links)
+
+        db_operations.set_local_node_id(RADIO)
+        server.publish_local_identities()
+        self._as_a_separate_process()
+        self.assertEqual(db_operations.get_local_identities_for_scope(),
+                         {RADIO, BRIDGE, CAPTURE})
 
 
 class EmptyScopeTests(_DbCase):

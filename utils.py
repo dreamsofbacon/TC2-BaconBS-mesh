@@ -774,15 +774,12 @@ def local_identities_for_display() -> set:
     Only for display and for the Node View lens -- the sync "is this me?"
     check keeps using the narrower set on its own.
     """
-    ids = set()
     try:
-        from db_operations import (get_local_link_identities,
-                                   get_local_capture_identities)
-        ids |= get_local_link_identities()
-        ids |= get_local_capture_identities()
+        from db_operations import get_local_identities_for_scope
+        return get_local_identities_for_scope()
     except Exception:
         logging.debug("could not resolve local identities", exc_info=True)
-    return ids
+        return set()
 
 
 def get_node_nicknames() -> dict:

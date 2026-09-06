@@ -21,7 +21,13 @@ class PublicChatterTests(unittest.TestCase):
             public_chatter_channels=[0],
             public_chatter_capture_node_id="!capture-a",
         )
-        self.now = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+        # Relative, not a calendar date: chatter expires after seven days,
+        # so a pinned fixture quietly becomes an expired one exactly a week
+        # later. This test suite went red on 2026-09-06 for no reason but
+        # that -- the one case here that does not pass captured_at compares
+        # the fixture's expiry against the real clock.
+        self.now = (datetime.now(timezone.utc) - timedelta(hours=1)).replace(
+            microsecond=0)
 
     def tearDown(self):
         db_operations.thread_local.connection.close()
@@ -51,7 +57,8 @@ class PublicChatterTests(unittest.TestCase):
             public_chatter_channels=[0],
             public_chatter_capture_node_id="!capture-b",
         )
-        second = normalize_broadcast(self.packet(), second_interface, captured_at=self.now)
+        second = normalize_broadcast(self.packet(), second_interface,
+                                     captured_at=self.now + timedelta(minutes=1))
         self.assertFalse(db_operations.add_public_chatter(**second))
 
         conn = db_operations.get_db_connection()
@@ -60,7 +67,13 @@ class PublicChatterTests(unittest.TestCase):
             "SELECT capture_node_id, expires_at FROM public_chatter"
         ).fetchone()
         self.assertEqual(row[0], "!capture-a")
-        self.assertEqual(row[1], "2026-09-06T12:00:00Z")
+        # Against the first observation's own expiry rather than a literal
+        # date, so this says the same thing whatever day the suite runs on.
+        # capture_node_id above is what proves the first capture won; this
+        # confirms its lifetime was not recomputed from the later arrival.
+        # (Both expiries are equal here anyway -- expires_at comes from the
+        # packet's rxTime, not from captured_at.)
+        self.assertEqual(row[1], first["expires_at"])
 
     def test_rejects_dm_and_channel_outside_allowlist(self):
         self.assertIsNone(normalize_broadcast(self.packet(to=42), self.interface, captured_at=self.now))
@@ -184,7 +197,13 @@ class MeshtasticBroadcastAddressTests(unittest.TestCase):
             public_chatter_channels=[0],
             public_chatter_capture_node_id="!capture-a",
         )
-        self.now = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+        # Relative, not a calendar date: chatter expires after seven days,
+        # so a pinned fixture quietly becomes an expired one exactly a week
+        # later. This test suite went red on 2026-09-06 for no reason but
+        # that -- the one case here that does not pass captured_at compares
+        # the fixture's expiry against the real clock.
+        self.now = (datetime.now(timezone.utc) - timedelta(hours=1)).replace(
+            microsecond=0)
 
     def _packet(self, to):
         return {
