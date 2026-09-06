@@ -18,6 +18,14 @@ _MAX_CONSECUTIVE_SEND_FAILURES: int = 10
 
 user_states = {}
 
+# Whose content a session is reading. Deliberately NOT inside user_states:
+# update_user_state replaces that dict wholesale on every menu move, so a
+# lens kept there would evaporate the moment the user pressed a key.
+#
+# Absent means all nodes, which is the default and the only state in which
+# output is byte-identical to a build without this feature.
+_view_scopes = {}
+
 # Conservative single-packet byte ceiling for Meshtastic TEXT_MESSAGE packets.
 # Most LoRa/Meshtastic configurations cap the data payload at 228 bytes; we stay
 # under 220 to leave room for packet-layer overhead and multi-byte UTF-8 chars.
@@ -484,6 +492,35 @@ def clear_user_state(user_id):
     user_states.pop(user_id, None)
 
 
+def get_view_scope(user_id):
+    """The node ids this session is reading, or None for all nodes."""
+    return _view_scopes.get(user_id)
+
+
+def set_view_scope(user_id, node_ids) -> None:
+    """Narrow this session to some nodes, or widen it back to all of them.
+
+    Always a tuple, never a single id: "this node" is the whole
+    link-identity set -- a radio id plus one mqtt:<topic>:<label> per bridge
+    -- and one [node_names] entry can group a peer's BBS id with the
+    separate public keys its radios stamp on public chatter.
+
+    Falsy node_ids clears, so widening back to All has one code path rather
+    than a second function that callers can forget.
+    """
+    ids = tuple(dict.fromkeys(
+        str(node_id).strip() for node_id in (node_ids or []) if str(node_id).strip()))
+    if ids:
+        _view_scopes[user_id] = ids
+    else:
+        _view_scopes.pop(user_id, None)
+
+
+def clear_view_scope(user_id) -> None:
+    """Forget this session's lens, so the next one starts on all nodes."""
+    _view_scopes.pop(user_id, None)
+
+
 def request_session_end(interface):
     """Ask a connected transport to hang up, if it is one that can.
 
@@ -721,6 +758,154 @@ def get_node_id_from_num(node_num, interface):
         if node['num'] == node_num:
             return node_id
     return None
+
+
+def short_node_id(node_id) -> str:
+    """A capture id is up to 64 hex characters; a radio line has about 30."""
+    text = str(node_id or '')
+    return text if len(text) <= 14 else f"{text[:8]}..{text[-4:]}"
+
+
+def local_identities_for_display() -> set:
+    """Every id that means "this node" when labelling content.
+
+    The union of the sync identity set and the public-chatter capture ids,
+    because a user picking "This node" means one node, not one namespace.
+    Only for display and for the Node View lens -- the sync "is this me?"
+    check keeps using the narrower set on its own.
+    """
+    ids = set()
+    try:
+        from db_operations import (get_local_link_identities,
+                                   get_local_capture_identities)
+        ids |= get_local_link_identities()
+        ids |= get_local_capture_identities()
+    except Exception:
+        logging.debug("could not resolve local identities", exc_info=True)
+    return ids
+
+
+def get_node_nicknames() -> dict:
+    """Operator-configured node id -> display name, from [node_names].
+
+    Read through _get_config_path() rather than a bare 'config.ini': the SSH
+    front end runs as its own service from its own working directory, and a
+    relative read there finds nothing.
+
+    Its own parser rather than _load_runtime_config(), for two reasons a
+    default ConfigParser would silently get wrong. optionxform lowercases
+    option names, which mangles mqtt:<topic>:<Label> and destroys base64
+    public keys; and '%' in a key is a format error under the default
+    interpolation. Names are on the LEFT and ids on the right, so one line
+    groups every id a node answers to -- which is the only place the BBS id
+    namespace and the public-chatter capture namespace can be joined.
+    """
+    names = {}
+    try:
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        parser.read(_get_config_path())
+        if not parser.has_section('node_names'):
+            return names
+        for display_name, raw_ids in parser.items('node_names'):
+            label = str(display_name).strip()
+            if not label:
+                continue
+            for node_id in str(raw_ids or '').split(','):
+                node_id = node_id.strip()
+                if node_id:
+                    names[node_id] = label
+    except Exception:
+        logging.debug("could not read [node_names]", exc_info=True)
+    return names
+
+
+def node_ids_for_name(name) -> list:
+    """Every configured id that resolves to one display name."""
+    wanted = str(name or '').strip().casefold()
+    if not wanted:
+        return []
+    return [node_id for node_id, label in get_node_nicknames().items()
+            if label.casefold() == wanted]
+
+
+def node_display_name(node_id, *, local_ids=None, nicknames=None) -> str:
+    """One human label for one origin id.
+
+    Order matters:
+
+    1. The operator's [node_names] nickname.
+    2. An id this node answers to -> its own nickname if it has one, else
+       'this node'. Ahead of rule 3 so a named local node reads by name and
+       an unnamed one still reads as something a stranger understands.
+    3. mqtt:<topic>:<local_id> -> <local_id>. Already operator-chosen, so
+       'mqtt:baconbbsvt:Chattanooga' reads as 'Chattanooga' with no config
+       at all -- which is why this feature is useful before anyone edits
+       anything.
+    4. The short form of the raw id.
+
+    home_network() is deliberately not used: rule 3 is one startswith, and
+    pulling in the classifier would add a dependency for no gain.
+
+    local_ids and nicknames are injectable so a caller rendering a whole
+    page pays for them once -- and so a test can exercise the identity SET
+    rather than a single id.
+    """
+    text = str(node_id or '').strip()
+    if not text:
+        return 'unknown'
+
+    names = get_node_nicknames() if nicknames is None else nicknames
+    if text in names:
+        return names[text]
+
+    if local_ids is None:
+        local_ids = local_identities_for_display()
+    if text in (local_ids or set()):
+        return 'this node'
+
+    if text.startswith('mqtt:'):
+        tail = text.rsplit(':', 1)[-1].strip()
+        if tail:
+            return tail
+
+    return short_node_id(text)
+
+
+def scope_notice(user_id, hidden: int = 0, *, noun: str = '',
+                 local_ids=None) -> str:
+    """One line naming the active lens, or '' when it is all nodes.
+
+    Returns '' for the default scope, which is what keeps every All-scope
+    screen byte-identical to a build without this feature -- callers
+    prepend it only when it is non-empty, so no screen gains a message.
+
+    '!V', never a bare 'V': at a mail or bulletin list prompt the session
+    state is {'command': 'MAIL', 'step': 2}, where a bare letter is read as
+    an item number and never reaches the main menu handlers. The '!' branch
+    dispatches from any state, so this is the only escape that always
+    works. The wording is the mitigation, not decoration.
+    """
+    scope = get_view_scope(user_id)
+    if not scope:
+        return ''
+
+    nicknames = get_node_nicknames()
+    if local_ids is None:
+        local_ids = local_identities_for_display()
+
+    labels = []
+    for node_id in scope:
+        label = node_display_name(node_id, local_ids=local_ids, nicknames=nicknames)
+        if label not in labels:
+            labels.append(label)
+    where = ', '.join(labels) if labels else 'unknown'
+
+    notice = f"Node view: {where}."
+    if hidden > 0:
+        what = f" {noun}" if noun else ""
+        notice += f" {hidden} more{what} from other nodes."
+    return f"{notice} !V=all"
 
 
 def home_network(node_id) -> str:

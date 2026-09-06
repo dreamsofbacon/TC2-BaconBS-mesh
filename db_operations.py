@@ -79,6 +79,13 @@ def set_local_node_id(node_id: str) -> None:
 
 _local_link_identities: set = set()
 
+# What this node's own radios stamp on public chatter. Kept apart from
+# _local_link_identities because those are user['id'] strings and these are
+# public keys -- a different namespace for the same node -- and because the
+# identity set above decides "is this me?" during sync, where being wrong
+# makes a node repair against itself forever.
+_local_capture_identities: set = set()
+
 
 def set_local_link_identities(identities) -> None:
     """Record every id this node answers to, one per active link.
@@ -100,9 +107,89 @@ def get_local_link_identities() -> set:
     return ids
 
 
+def set_local_capture_identities(identities) -> None:
+    """Record what this node's own radios stamp on public chatter."""
+    global _local_capture_identities
+    _local_capture_identities = {str(i) for i in (identities or []) if i}
+
+
+def get_local_capture_identities() -> set:
+    """Public-chatter capture ids belonging to this node's own radios."""
+    return set(_local_capture_identities)
+
+
 def get_local_node_id() -> Optional[str]:
     """Return this node's ID as set at startup, or None if not yet resolved."""
     return _local_node_id
+
+
+def origin_scope_includes_null(source_node_ids) -> bool:
+    """Whether a scope covers rows with no recorded origin.
+
+    A NULL source_node_id means the row predates origin tracking, and the
+    established reading of that is "written here" -- the same rule the
+    op_log backfill relies on. So NULL rows belong to this node, and are in
+    scope exactly when the requested set overlaps the identities this node
+    answers to.
+
+    The whole identity SET, not get_local_node_id(): a node also answers to
+    one mqtt:<topic>:<label> per bridge, and on a live fleet that is what
+    most content is actually stamped with. Comparing one id would drop it.
+    """
+    if source_node_ids is None:
+        return False
+    ids = {str(v).strip() for v in source_node_ids if str(v).strip()}
+    return bool(ids & get_local_link_identities())
+
+
+def origin_scope_clause(column: str, source_node_ids) -> tuple:
+    """SQL fragment and params restricting `column` to a view scope.
+
+    Returns ('', []) for the default scope, so a caller appends nothing and
+    the query it runs is byte-identical to the one it ran before this
+    feature existed.
+
+    An empty-after-normalisation set matches NOTHING ('0'), never
+    everything -- the same choice get_public_chatter_history makes for a
+    malformed channel key, and for the same reason: a filter that silently
+    does the opposite of what was asked is worse than one that returns an
+    empty screen you can see and widen.
+    """
+    if source_node_ids is None:
+        return '', []
+    ids = [str(v).strip() for v in source_node_ids if str(v).strip()]
+    if not ids:
+        return '0', []
+    clause = f"{column} IN ({','.join('?' * len(ids))})"
+    if origin_scope_includes_null(ids):
+        clause = f"({clause} OR {column} IS NULL)"
+    return clause, ids
+
+
+def origin_scope_exclusion(column: str, source_node_ids) -> tuple:
+    """The negation of origin_scope_clause, for counting what is hidden.
+
+    Written out rather than wrapping the clause in NOT(...), because
+    `NOT (col IN (...) OR col IS NULL)` is NULL-unsafe -- a NULL column
+    makes the whole expression NULL, which is not TRUE, so those rows
+    silently vanish from the count and the user is told nothing is hidden
+    when something is.
+
+    Both this and origin_scope_clause take their NULL decision from
+    origin_scope_includes_null, so the filter and its negation cannot
+    disagree about the same scope.
+    """
+    if source_node_ids is None:
+        return '', []
+    ids = [str(v).strip() for v in source_node_ids if str(v).strip()]
+    if not ids:
+        return '1', []
+    placeholders = ','.join('?' * len(ids))
+    if origin_scope_includes_null(ids):
+        # NULL is shown, so only non-NULL rows outside the set are hidden.
+        return f"({column} IS NOT NULL AND {column} NOT IN ({placeholders}))", ids
+    # NULL is not shown, so those rows are hidden too.
+    return f"({column} IS NULL OR {column} NOT IN ({placeholders}))", ids
 
 
 def run_op_log_backfill() -> int:
@@ -665,6 +752,13 @@ def initialize_database():
                     ON public_chatter (network, channel_index, message_timestamp DESC);''')
     c.execute('''CREATE INDEX IF NOT EXISTS idx_public_chatter_expiry
                     ON public_chatter (expires_at);''')
+    # Origin lookups for the Node View lens. Single-column deliberately: the
+    # picker's discovery query is a SELECT DISTINCT over the whole column,
+    # which these serve as an index-only scan and a composite would not. A
+    # composite on bulletins would also need COLLATE NOCASE to be usable at
+    # all, since the board predicate carries it.
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_public_chatter_capture_node
+                    ON public_chatter (capture_node_id);''')
     c.execute("DELETE FROM public_chatter WHERE LOWER(network) LIKE 'mqtt%'")
     c.execute('''CREATE TABLE IF NOT EXISTS zork_saves (
                     user_id TEXT NOT NULL,
@@ -1094,6 +1188,40 @@ def get_public_chatter_filters(hours: int = 168) -> dict:
     return {'networks': networks, 'channels': channels, 'capture_nodes': capture_nodes}
 
 
+def get_content_source_nodes() -> list:
+    """Every origin id that actually has content on this node.
+
+    Mirrors get_public_chatter_filters: offer only what is present. A picker
+    entry for a node holding nothing can do exactly one thing -- empty the
+    screen -- and the user has no way to tell that from a bug.
+
+    Four columns across TWO id namespaces, which is not a mistake to tidy
+    up later. Bulletins, mail and comments are stamped with the node id
+    (user['id'], e.g. 'mqtt:baconbbsvt:Chattanooga'); public chatter is
+    stamped per radio link with getMyNodeInfo()['publicKey'], a completely
+    different string for the same physical node. Nothing in the database
+    joins them. The [node_names] config is what merges them into one picker
+    entry, and an unmapped capture id simply appears on its own -- honest,
+    and the operator's cue to add it.
+
+    NULL is excluded because it means "written here", and "This node" is
+    always offered, so those rows are already reachable.
+    """
+    conn = get_db_connection()
+    rows = conn.execute(
+        '''SELECT source_node_id FROM bulletins
+             WHERE source_node_id IS NOT NULL AND source_node_id != ''
+           UNION SELECT source_node_id FROM mail
+             WHERE source_node_id IS NOT NULL AND source_node_id != ''
+           UNION SELECT source_node_id FROM channel_comments
+             WHERE source_node_id IS NOT NULL AND source_node_id != ''
+           UNION SELECT capture_node_id FROM public_chatter
+             WHERE capture_node_id IS NOT NULL AND capture_node_id != ''
+           ORDER BY 1'''
+    )
+    return [str(row[0]) for row in rows]
+
+
 def channel_name_placeholders(channel_index: int) -> list:
     """Labels that mean "we did not know the name", for one channel index.
 
@@ -1444,6 +1572,18 @@ def _ensure_channel_comment_sync_columns(cursor) -> None:
     if 'received_at' not in cc_cols:
         cursor.execute("ALTER TABLE channel_comments ADD COLUMN received_at TEXT")
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_comments_unique_id_unique ON channel_comments(unique_id)")
+
+    # Origin indexes for the Node View lens, created HERE rather than beside
+    # the table definitions: a database that predates provenance only gains
+    # source_node_id in the ALTERs above, and an index naming a column that
+    # does not exist yet fails outright on every existing install.
+    #
+    # Single-column deliberately -- the picker's discovery query is a SELECT
+    # DISTINCT over the whole column, which these serve as an index-only
+    # scan and a composite would not.
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_bulletins_source_node ON bulletins(source_node_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mail_source_node ON mail(source_node_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_channel_comments_source_node ON channel_comments(source_node_id)")
 
 
 def _ensure_deleted_sync_tombstones_table() -> None:
@@ -3549,14 +3689,32 @@ def add_channel_comment_by_manifest_key(channel_key: str, sender_short_name: str
     return add_channel_comment(channel_id, sender_short_name, content, unique_id=unique_id, comment_date=comment_date, source_node_id=source_node_id, source_timestamp=source_timestamp)
 
 
-def get_channel_comments(channel_id):
+def get_channel_comments(channel_id, source_node_ids=None):
+    conn = get_db_connection()
+    c = conn.cursor()
+    sql = "SELECT id, sender_short_name, date, content, unique_id, COALESCE(content_complete, 1) AS content_complete, COALESCE(expected_content_length, LENGTH(content)) AS expected_content_length, source_node_id, source_timestamp, received_at FROM channel_comments WHERE channel_id = ?"
+    params = [channel_id]
+    clause, scope_params = origin_scope_clause('source_node_id', source_node_ids)
+    if clause:
+        sql += f" AND {clause}"
+        params.extend(scope_params)
+    sql += " ORDER BY date DESC, unique_id DESC, id DESC"
+    c.execute(sql, params)
+    return c.fetchall()
+
+
+def count_hidden_channel_comments(channel_id, source_node_ids) -> int:
+    """How many comments on this post the active lens is holding back."""
+    clause, scope_params = origin_scope_exclusion('source_node_id', source_node_ids)
+    if not clause:
+        return 0
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT id, sender_short_name, date, content, unique_id, COALESCE(content_complete, 1) AS content_complete, COALESCE(expected_content_length, LENGTH(content)) AS expected_content_length, source_node_id, source_timestamp, received_at FROM channel_comments WHERE channel_id = ? ORDER BY date DESC, unique_id DESC, id DESC",
-        (channel_id,)
+        f"SELECT COUNT(*) FROM channel_comments WHERE channel_id = ? AND {clause}",
+        [channel_id] + scope_params,
     )
-    return c.fetchall()
+    return int(c.fetchone()[0])
 
 
 def get_channel_comment_by_unique_id(unique_id: str):
@@ -3964,14 +4122,36 @@ def delete_user_profile(user_id, bbs_nodes=None, interface=None,
     return removed
 
 
-def get_bulletins(board):
+def get_bulletins(board, source_node_ids=None):
+    conn = get_db_connection()
+    c = conn.cursor()
+    sql = "SELECT id, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject || ' [incomplete]' ELSE subject END, sender_short_name, date, unique_id FROM bulletins WHERE board = ? COLLATE NOCASE"
+    params = [board]
+    clause, scope_params = origin_scope_clause('source_node_id', source_node_ids)
+    if clause:
+        sql += f" AND {clause}"
+        params.extend(scope_params)
+    c.execute(sql, params)
+    return c.fetchall()
+
+
+def count_hidden_bulletins(board, source_node_ids) -> int:
+    """How many bulletins on this board the active lens is holding back.
+
+    Returns 0 for the default scope WITHOUT touching the database, so the
+    All path costs exactly what it did before -- which matters on a radio,
+    where every query is in front of a 2-second-per-chunk send.
+    """
+    clause, params = origin_scope_exclusion('source_node_id', source_node_ids)
+    if not clause:
+        return 0
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT id, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject || ' [incomplete]' ELSE subject END, sender_short_name, date, unique_id FROM bulletins WHERE board = ? COLLATE NOCASE",
-        (board,),
+        f"SELECT COUNT(*) FROM bulletins WHERE board = ? COLLATE NOCASE AND {clause}",
+        [board] + params,
     )
-    return c.fetchall()
+    return int(c.fetchone()[0])
 
 def get_bulletin_content(bulletin_id):
     conn = get_db_connection()
@@ -4221,30 +4401,70 @@ def retry_mail_dm_delivery(delivery_id: int, error: str, delay_seconds: int) -> 
     conn.commit()
 
 
-def get_mail(recipient_id):
+def get_mail(recipient_id, source_node_ids=None):
     conn = get_db_connection()
     c = conn.cursor()
     recipient_ids = _mail_recipient_scope(c, recipient_id)
     if not recipient_ids:
         return []
     placeholders = ','.join('?' for _ in recipient_ids)
-    c.execute(
-        f"SELECT id, sender_short_name, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject || ' [incomplete]' ELSE subject END, date, unique_id FROM mail WHERE recipient IN ({placeholders}) ORDER BY id",
-        recipient_ids,
-    )
+    sql = f"SELECT id, sender_short_name, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject || ' [incomplete]' ELSE subject END, date, unique_id FROM mail WHERE recipient IN ({placeholders})"
+    params = list(recipient_ids)
+    clause, scope_params = origin_scope_clause('source_node_id', source_node_ids)
+    if clause:
+        sql += f" AND {clause}"
+        params.extend(scope_params)
+    sql += " ORDER BY id"
+    c.execute(sql, params)
     return c.fetchall()
 
-def get_mail_content(mail_id, recipient_id):
+
+def count_hidden_mail(recipient_id, source_node_ids) -> int:
+    """How much of this mailbox the active lens is holding back.
+
+    Mail is the one scope where hiding is genuinely risky -- someone may be
+    waiting on a message -- so this exists to make sure the count is always
+    said out loud. Returns 0 for the default scope without querying.
+    """
+    clause, scope_params = origin_scope_exclusion('source_node_id', source_node_ids)
+    if not clause:
+        return 0
+    conn = get_db_connection()
+    c = conn.cursor()
+    recipient_ids = _mail_recipient_scope(c, recipient_id)
+    if not recipient_ids:
+        return 0
+    placeholders = ','.join('?' for _ in recipient_ids)
+    c.execute(
+        f"SELECT COUNT(*) FROM mail WHERE recipient IN ({placeholders}) AND {clause}",
+        list(recipient_ids) + scope_params,
+    )
+    return int(c.fetchone()[0])
+
+def get_mail_content(mail_id, recipient_id, source_node_ids=None):
+    """One message, optionally restricted to a view scope.
+
+    The radio handlers deliberately pass None here even when a lens is
+    active. The lens filters LISTING; once someone has picked a message it
+    stays readable, because narrowing between the list and the read would
+    answer with 'Mail not found' -- silently hiding a message the user was
+    just looking at, which is the one thing this feature must never do.
+    The parameter exists for the web admin and for tests that need to prove
+    the predicate is right at this layer.
+    """
     conn = get_db_connection()
     c = conn.cursor()
     recipient_ids = _mail_recipient_scope(c, recipient_id)
     if not recipient_ids:
         return None
     placeholders = ','.join('?' for _ in recipient_ids)
-    c.execute(
-        f"SELECT sender_short_name, date, subject, content, unique_id, COALESCE(content_complete, 1), COALESCE(expected_content_length, LENGTH(content)) FROM mail WHERE id = ? AND recipient IN ({placeholders})",
-        [mail_id, *recipient_ids],
-    )
+    sql = f"SELECT sender_short_name, date, subject, content, unique_id, COALESCE(content_complete, 1), COALESCE(expected_content_length, LENGTH(content)) FROM mail WHERE id = ? AND recipient IN ({placeholders})"
+    params = [mail_id, *recipient_ids]
+    clause, scope_params = origin_scope_clause('source_node_id', source_node_ids)
+    if clause:
+        sql += f" AND {clause}"
+        params.extend(scope_params)
+    c.execute(sql, params)
     return c.fetchone()
 
 def delete_mail(unique_id, recipient_id, bbs_nodes, interface, sync_received: bool = False):

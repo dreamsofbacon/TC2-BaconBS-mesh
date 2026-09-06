@@ -6,6 +6,7 @@ existing config.ini predates those entries.
 import sqlite3
 import sys
 import types
+import re
 import unittest
 from unittest import mock
 
@@ -29,12 +30,13 @@ class MainMenuContentsTests(unittest.TestCase):
         rendered = ch.build_menu(["Q", "B", "U", "P", "N", "X"], self.MAIN)
         self.assertIn("Web Fetch", rendered)
         self.assertIn("Linked Devices", rendered)
+        self.assertIn("Node View", rendered)
 
     def test_a_full_config_numbers_every_entry_in_order(self):
         rendered = ch.build_menu(["Q", "B", "U", "P", "N", "X"], self.MAIN)
         for expected in ("[1] Quick Commands", "[2] BBS", "[3] Utilities",
                          "[4] Profile", "[5] Ask Nomad", "[6] Web Fetch",
-                         "[7] Linked Devices", "[0] Exit"):
+                         "[7] Linked Devices", "[8] Node View", "[0] Exit"):
             self.assertIn(expected, rendered)
 
     def test_a_trimmed_config_closes_the_gap_instead_of_skipping_numbers(self):
@@ -46,6 +48,7 @@ class MainMenuContentsTests(unittest.TestCase):
         self.assertNotIn("Ask Nomad", rendered)
         self.assertIn("[4] Web Fetch", rendered)
         self.assertIn("[5] Linked Devices", rendered)
+        self.assertIn("[6] Node View", rendered)
 
     def test_numbers_run_1_upward_with_no_gaps_for_any_config(self):
         for items in (["Q", "B", "U", "X"], ["Q", "X"], ["Q", "B", "U", "P", "N", "A", "S", "X"],
@@ -430,11 +433,18 @@ class MenuNumberAliasTests(unittest.TestCase):
 
     def test_a_hidden_entry_is_given_no_number_at_all(self):
         """Numbers describe the screen. Public Chatter's old [6] alias went
-        with this: a digit the menu never prints must not quietly work."""
-        alias = ch.menu_number_alias(["Q", "B", "U", "X"], self.MAIN)
+        with this: a digit the menu never prints must not quietly work.
+
+        Asserted against the numbers the menu actually renders rather than
+        against a literal digit -- a fixed "6 is unclaimed" only held while
+        the main menu happened to be that length, and would go quiet the
+        moment a required entry was added rather than catching anything."""
+        items = ["Q", "B", "U", "X"]
+        alias = ch.menu_number_alias(items, self.MAIN)
         self.assertNotIn("p", alias.values())
         self.assertNotIn("n", alias.values())
-        self.assertNotIn("6", alias)
+        rendered = set(re.findall(r"\[(\d+)\]", ch.build_menu(items, self.MAIN)))
+        self.assertEqual(set(alias), rendered)
 
     def test_no_digit_is_claimed_twice(self):
         for name, _labels, _handlers in self._menus():

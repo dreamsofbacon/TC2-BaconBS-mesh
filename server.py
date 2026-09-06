@@ -130,6 +130,29 @@ def local_node_identities() -> set:
     return ids
 
 
+def local_capture_identities() -> set:
+    """The ids this node's own radios stamp on public chatter.
+
+    A SEPARATE set from local_node_identities on purpose, and it must stay
+    separate. Public chatter is stamped with getMyNodeInfo()['publicKey']
+    while everything else uses user['id'], so these are strings from a
+    different namespace entirely -- and local_node_identities feeds the
+    "is this me?" sync check, whose failure mode (documented above) is a
+    node repairing against itself forever. Widening that set with strings
+    that can never appear as a sync sender buys nothing and risks that.
+
+    Used only by the Node View lens, so that picking "This node" covers
+    chatter heard by any of this node's own radios with no configuration.
+    """
+    ids = set()
+    for link in _active_links:
+        iface = getattr(link, 'interface', None)
+        capture = getattr(iface, 'public_chatter_capture_node_id', None)
+        if capture:
+            ids.add(str(capture))
+    return ids
+
+
 def link_for_interface(interface):
     """The RadioLink currently owning ``interface``, or None.
 
@@ -2021,6 +2044,11 @@ def main():
         set_local_link_identities(local_node_identities())
     except Exception:
         logging.debug("could not publish local link identities", exc_info=True)
+    try:
+        from db_operations import set_local_capture_identities
+        set_local_capture_identities(local_capture_identities())
+    except Exception:
+        logging.debug("could not publish local capture identities", exc_info=True)
 
     trigger_path = get_manual_sync_trigger_path()
     force_check_trigger_path = get_force_check_trigger_path()

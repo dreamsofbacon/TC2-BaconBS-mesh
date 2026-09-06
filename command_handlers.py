@@ -10,6 +10,8 @@ from meshtastic import BROADCAST_NUM
 
 from db_operations import (
     add_bulletin, add_mail, delete_mail,
+    get_content_source_nodes,
+    count_hidden_bulletins, count_hidden_mail, count_hidden_channel_comments,
     get_bulletin_content, get_bulletins,
     get_mail, get_mail_content,
     add_channel, get_channels, get_sender_id_by_mail_id,
@@ -34,6 +36,10 @@ from utils import (
     select_gateway_peer, send_api_request, register_api_request,
     home_network, _config_int, send_mail_relay_preference_to_bbs_nodes,
     clear_user_state, request_session_end,
+    get_view_scope, set_view_scope, clear_view_scope,
+    node_display_name, scope_notice, local_identities_for_display,
+    short_node_id,
+    get_node_nicknames, node_ids_for_name, get_max_text_bytes,
 )
 from zork_port import (
     GAMES,
@@ -169,6 +175,7 @@ MAIN_MENU_LABELS = {
     'N': "Ask Nomad",
     'A': "Web Fetch",
     'S': "Linked Devices",
+    'V': "Node View",
     'X': "Exit",
 }
 
@@ -182,7 +189,7 @@ MENU_LABELS = {
 # item list would otherwise never show them -- exactly how the API Gateway
 # stayed invisible under Utilities.
 MENU_REQUIRED = {
-    'main': ('A', 'S'),
+    'main': ('A', 'S', 'V'),
     'bbs': (),
     'utilities': ('G', 'H'),
 }
@@ -287,6 +294,11 @@ def handle_help_command(sender_id, interface, menu_name=None, notice=None):
             response = build_menu(main_menu_items, "💾Bacon BBS💾")
     else:
         update_user_state(sender_id, {'command': 'MAIN_MENU', 'step': 1})  # Reset to main menu state
+        # Deliberately NOT scoped by the Node View lens. This badge is the
+        # top-level guarantee that mail is never hidden: it always counts
+        # the whole mailbox, so if it says 5 and a narrowed list shows 3,
+        # the notice on that list accounts for the other 2. Scoping it here
+        # would make that promise impossible to state.
         mail = get_mail(get_node_id_from_num(sender_id, interface))
         response = build_menu(main_menu_items, f"💾Bacon BBS💾 (✉️:{len(mail)})")
     if notice:
@@ -348,8 +360,12 @@ def send_board_action_menu(sender_id, interface, board_name, boards, notice=None
     instead of bouncing the reader out to the main menu, which used to lose
     which board they were in without saying anything.
     """
-    bulletins = get_bulletins(board_name)
+    scope = get_view_scope(sender_id)
+    bulletins = get_bulletins(board_name, scope)
     response = f"{board_name} has {len(bulletins)} messages.\n[1]Read [2]Post [0]Back"
+    lens = scope_notice(sender_id, count_hidden_bulletins(board_name, scope))
+    if lens:
+        response = f"{lens}{LINE_BREAK}{response}"
     if notice:
         response = f"{notice}{LINE_BREAK}{response}"
     send_message(response, sender_id, interface)
@@ -366,6 +382,7 @@ def handle_exit_command(sender_id, interface):
     without any command handler needing to know which transport it is on.
     """
     clear_user_state(sender_id)
+    clear_view_scope(sender_id)
     send_message("73! Send any message to start again.", sender_id, interface)
     request_session_end(interface)
 
@@ -469,7 +486,7 @@ def handle_public_chatter_command(sender_id, interface):
     send_message(_chatter_windows_text(), sender_id, interface)
     update_user_state(sender_id, {
         'command': 'PUBLIC_CHATTER', 'step': 1,
-        'channels': [], 'nodes': [],
+        'channels': [],
     })
 
 
@@ -484,18 +501,24 @@ def _network_tag(network: str) -> str:
     return _NETWORK_TAGS.get(text, (text[:2] or '??').upper())
 
 
-def _short_node(node_id: str) -> str:
-    """A capture id is up to 64 hex characters; a line has about 30."""
-    text = str(node_id or '')
-    return text if len(text) <= 14 else f"{text[:8]}..{text[-4:]}"
+# The public form lives in utils now, because Node View labels the same ids.
+# Kept as a module name here so the existing readability tests still address
+# it where they always have.
+_short_node = short_node_id
 
 
 def _chatter_filter_options(state: dict) -> list:
-    """Both dimensions as one numbered list.
+    """The channels present in this window, as one numbered list.
 
     Reuses get_public_chatter_filters, which already reports exactly what is
-    present in the window -- offering a channel with nothing in it would be
-    a filter that can only ever empty the screen.
+    present -- offering a channel with nothing in it would be a filter that
+    can only ever empty the screen.
+
+    Nodes used to be a second section here, headed "Heard by:", listing raw
+    capture ids. Those ids are per-RADIO, not per-node, so on a two-radio
+    node the list read as two unlabelled 64-character keys meaning "my
+    MeshCore radio" and "my Meshtastic radio". Node View owns that dimension
+    now, across every screen rather than this one.
     """
     filters = get_public_chatter_filters(int(state.get('hours', 24)))
     options = []
@@ -508,12 +531,6 @@ def _chatter_filter_options(state: dict) -> list:
             'value': f"{network}/{index}",
             'label': f"{_network_tag(network)}/{name}"[:22],
         })
-    for node_id in filters.get('capture_nodes', []):
-        options.append({
-            'kind': 'node',
-            'value': str(node_id),
-            'label': _short_node(node_id),
-        })
     return options
 
 
@@ -524,13 +541,11 @@ def _chatter_filter_text(state: dict) -> str:
             "Nothing heard in this window to filter.",
             "[T]ime [0] Back",
         ])
-    chosen = set(state.get('channels') or []) | set(state.get('nodes') or [])
-    lines = ["Filter  (* = shown)"]
-    kind = None
+    chosen = set(state.get('channels') or [])
+    # One dimension, so no sub-headers: a heading over a single group is
+    # noise, and it cost bytes on a screen that has 160 of them.
+    lines = ["Channels  (* = shown)"]
     for number, option in enumerate(options, 1):
-        if option['kind'] != kind:
-            kind = option['kind']
-            lines.append("Channels:" if kind == 'channel' else "Heard by:")
         mark = '*' if option['value'] in chosen else ' '
         lines.append(f"[{number}]{mark}{option['label']}")
     # Nothing selected means no constraint, the same as the web feed: the
@@ -563,7 +578,7 @@ def _chatter_entry_lines(entry: dict) -> str:
 
 def _chatter_controls(state: dict, has_more: bool) -> str:
     controls = ['[M]ore'] if has_more else []
-    if state.get('channels') or state.get('nodes'):
+    if state.get('channels'):
         controls.append('[F]ilter*')
     else:
         controls.append('[F]ilter')
@@ -576,7 +591,10 @@ def _send_chatter_batch(sender_id, interface, state: dict, *, older: bool) -> No
         hours=int(state['hours']),
         limit=CHATTER_BATCH,
         channel_keys=list(state.get('channels') or []),
-        capture_node_ids=list(state.get('nodes') or []),
+        # The node dimension comes from the session's Node View lens, so
+        # "show me Chattanooga" means the same thing on this screen as it
+        # does on bulletins and mail rather than needing setting twice.
+        capture_node_ids=list(get_view_scope(sender_id) or []),
         before_time=state.get('before_time', '') if older else '',
         before_id=int(state.get('before_id', 0)) if older else 0,
     )
@@ -598,6 +616,11 @@ def _send_chatter_batch(sender_id, interface, state: dict, *, older: bool) -> No
     # message does not turn a batch into a broadcast. The cursor follows what
     # was actually sent, so nothing is skipped on the next More.
     header = f"Public Chatter {state['hours']}h"
+    # Folded into the header rather than sent separately, so the notice is
+    # inside the batch's byte budget instead of costing another message.
+    _lens = scope_notice(sender_id)
+    if _lens:
+        header = f"{_lens}{LINE_BREAK}{header}"
     included = []
     used = len(header.encode('utf-8'))
     for entry in entries:
@@ -627,7 +650,7 @@ def _toggle_chatter_filter(state: dict, number: int) -> bool:
     if not 1 <= number <= len(options):
         return False
     option = options[number - 1]
-    key = 'channels' if option['kind'] == 'channel' else 'nodes'
+    key = 'channels'
     chosen = list(state.get(key) or [])
     if option['value'] in chosen:
         chosen.remove(option['value'])
@@ -669,8 +692,11 @@ def handle_public_chatter_steps(sender_id, message, interface, state):
             _send_chatter_batch(sender_id, interface, state, older=False)
             return
         if choice in ('a', 'all'):
+            # Clears the channel filter only. The Node View lens is global
+            # and survives -- [A]ll here means "all channels", and silently
+            # widening the whole session from a channel screen would be a
+            # different promise than the one the key makes.
             state['channels'] = []
-            state['nodes'] = []
             send_message(_chatter_filter_text(state), sender_id, interface)
             update_user_state(sender_id, state)
             return
@@ -696,6 +722,138 @@ def handle_public_chatter_steps(sender_id, message, interface, state):
     send_message(
         LINE_BREAK.join(["Reply:", _chatter_controls(state, bool(state.get('has_more')))]),
         sender_id, interface)
+
+
+# Room kept back from the page for the [P]rev/[N]ext/[0] control line, so a
+# page that exactly fills the budget does not push its own controls into a
+# second chunk -- two seconds of airtime to say "[0] Back".
+_NODE_VIEW_CONTROL_BYTES = 40
+
+NODE_VIEW_TITLE = "Node View (*=now)"
+# The one sentence that has to do the explaining. It says the two things
+# someone who wandered in needs: nothing is being withheld from the network,
+# and this control is about reading. Longer phrasings cost a node off the
+# page on MeshCore's 160 bytes.
+NODE_VIEW_BLURB = "Posts sync everywhere. Pick whose you read."
+
+
+def _node_view_options(sender_id) -> list:
+    """The pickable nodes: All, This node, then whoever actually has content.
+
+    Offering a node that holds nothing gives the user a choice whose only
+    outcome is an empty screen they cannot tell apart from a bug, so the
+    list comes from what is really stored -- the same rule the chatter
+    filter follows.
+
+    All and This node are always present. A lens that cannot return you to
+    all of it, or to your own posts, is a trap rather than a filter.
+    """
+    local_ids = local_identities_for_display()
+    nicknames = get_node_nicknames()
+    options = [
+        {'label': 'All nodes', 'ids': []},
+        {'label': 'This node', 'ids': sorted(local_ids)},
+    ]
+
+    grouped = {}
+    for node_id in get_content_source_nodes():
+        if node_id in local_ids:
+            continue
+        label = node_display_name(node_id, local_ids=local_ids, nicknames=nicknames)
+        grouped.setdefault(label, []).append(node_id)
+
+    for label in sorted(grouped):
+        # Every id the node answers to, not just the one that had content:
+        # a nickname grouping a peer's BBS id with its chatter capture key
+        # is the only thing joining those two namespaces, and dropping the
+        # rest would filter half a node.
+        ids = set(grouped[label]) | set(node_ids_for_name(label))
+        options.append({'label': label, 'ids': sorted(ids)})
+    return options
+
+
+def _node_view_text(options, page: int, chosen, max_bytes: int) -> tuple:
+    """Render one page, and say whether more follows.
+
+    Filled by bytes rather than a fixed count, like the chatter batch: a
+    twelve-node fleet at a fixed count becomes a six-chunk, twelve-second
+    transmission.
+    """
+    chosen_ids = set(chosen or [])
+    budget = max(64, int(max_bytes) - _NODE_VIEW_CONTROL_BYTES)
+    head = f"{NODE_VIEW_TITLE}{LINE_BREAK}{NODE_VIEW_BLURB}"
+
+    lines = []
+    used = len(head.encode('utf-8'))
+    index = int(page)
+    while index < len(options):
+        option = options[index]
+        ids = set(option['ids'])
+        # All nodes is the current choice exactly when nothing is narrowed.
+        marked = (not chosen_ids) if not ids else (ids == chosen_ids)
+        line = f"[{index + 1}]{'*' if marked else ' '}{option['label']}"
+        cost = len(line.encode('utf-8')) + 1
+        if lines and used + cost > budget:
+            break
+        lines.append(line)
+        used += cost
+        index += 1
+
+    controls = []
+    if index < len(options):
+        controls.append("[N]ext")
+    if page > 0:
+        controls.append("[P]rev")
+    controls.append("[0] Back")
+    body = [head] + lines + [" ".join(controls)]
+    return LINE_BREAK.join(body), index
+
+
+def handle_node_view_command(sender_id, interface, notice=None) -> None:
+    """Show the picker from the top."""
+    _send_node_view_page(sender_id, interface, 0, notice=notice)
+
+
+def _send_node_view_page(sender_id, interface, page: int, notice=None) -> None:
+    options = _node_view_options(sender_id)
+    page = max(0, min(int(page), max(0, len(options) - 1)))
+    text, next_page = _node_view_text(
+        options, page, get_view_scope(sender_id), get_max_text_bytes(interface))
+    if notice:
+        text = f"{notice}{LINE_BREAK}{text}"
+    send_message(text, sender_id, interface)
+    update_user_state(sender_id, {'command': 'NODE_VIEW', 'step': 1,
+                                  'options': options, 'page': page,
+                                  'next_page': next_page})
+
+
+def handle_node_view_steps(sender_id, message, interface, state) -> None:
+    """One number picks a node; there is no [D]one because this is not a
+    multi-select. The choice applies at once and the screen redraws with the
+    star moved, so the change is visible before leaving."""
+    choice = str(message or '').strip().lower()
+    options = state.get('options') or _node_view_options(sender_id)
+    page = int(state.get('page', 0))
+
+    if choice in ('0', 'x'):
+        clear_user_state(sender_id)
+        handle_help_command(sender_id, interface)
+        return
+    if choice == 'n' and int(state.get('next_page', 0)) < len(options):
+        _send_node_view_page(sender_id, interface, int(state.get('next_page', 0)))
+        return
+    if choice == 'p' and page > 0:
+        _send_node_view_page(sender_id, interface, 0)
+        return
+
+    if choice.isdigit():
+        index = int(choice) - 1
+        if 0 <= index < len(options):
+            set_view_scope(sender_id, options[index]['ids'])
+            _send_node_view_page(sender_id, interface, page)
+            return
+
+    _send_node_view_page(sender_id, interface, page, notice="Invalid choice.")
 
 
 def _start_mail_recipient_selection(sender_id, interface) -> None:
@@ -1671,14 +1829,25 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
     elif step == 2:
         board_name = state['board']
         if message.lower() == 'r':
-            bulletins = get_bulletins(board_name)
+            scope = get_view_scope(sender_id)
+            bulletins = get_bulletins(board_name, scope)
+            # One notice on the header, never on the per-bulletin sends
+            # below -- those are one radio message each, and that is where
+            # the airtime actually goes.
+            lens = scope_notice(sender_id, count_hidden_bulletins(board_name, scope))
             if bulletins:
-                send_message(f"Select a bulletin number to view from {board_name}:", sender_id, interface)
+                header = f"Select a bulletin number to view from {board_name}:"
+                if lens:
+                    header = f"{lens}{LINE_BREAK}{header}"
+                send_message(header, sender_id, interface)
                 for bulletin in bulletins:
                     send_message(f"[{bulletin[0]}] {bulletin[1]}", sender_id, interface)
                 update_user_state(sender_id, {'command': 'BULLETIN_READ', 'step': 3, 'board': board_name})
             else:
-                send_message(f"No bulletins in {board_name}.", sender_id, interface)
+                empty = f"No bulletins in {board_name}."
+                if lens:
+                    empty = f"{empty}{LINE_BREAK}{lens}"
+                send_message(empty, sender_id, interface)
                 handle_bb_steps(sender_id, 'e', 1, state, interface, bbs_nodes)
         elif message.lower() == 'p':
             if board_name.lower() == 'urgent':
@@ -1757,14 +1926,27 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
         choice = _mail_step1_alias.get(choice, choice)
         if choice == 'r':
             sender_node_id = get_node_id_from_num(sender_id, interface)
-            mail = get_mail(sender_node_id)
+            scope = get_view_scope(sender_id)
+            mail = get_mail(sender_node_id, scope)
+            # Mail is the one scope where a lens can hide something someone
+            # is waiting on, so the count of what it held back is said out
+            # loud -- most of all on the empty mailbox, where otherwise the
+            # BBS would flatly claim there is nothing.
+            lens = scope_notice(sender_id, count_hidden_mail(sender_node_id, scope),
+                                noun='mail')
             if mail:
-                send_message(f"You have {len(mail)} mail messages. Select a message number to read:", sender_id, interface)
+                header = f"You have {len(mail)} mail messages. Select a message number to read:"
+                if lens:
+                    header = f"{lens}{LINE_BREAK}{header}"
+                send_message(header, sender_id, interface)
                 for msg in mail:
                     send_message(f"-{msg[0]}-\nDate: {msg[3]}\nFrom: {msg[1]}\nSubject: {msg[2]}", sender_id, interface)
                 update_user_state(sender_id, {'command': 'MAIL', 'step': 2})
             else:
-                send_message("There are no messages in your mailbox.📭", sender_id, interface)
+                empty = "There are no messages in your mailbox.📭"
+                if lens:
+                    empty = f"{empty}{LINE_BREAK}{lens}"
+                send_message(empty, sender_id, interface)
                 handle_mail_command(sender_id, interface)
         elif choice == 's':
             _start_mail_recipient_selection(sender_id, interface)
@@ -2009,6 +2191,12 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
                 post_lines = []
                 for i, post in enumerate(posts, 1):
                     post_id = post[0]
+                    # Deliberately unscoped: this is a liveliness preview,
+                    # not a read. Filtering it would label a busy post "No
+                    # comments yet", which is simply false -- and since the
+                    # lens is a view over shared content rather than a
+                    # boundary, naming a commenter from another node costs
+                    # nothing. The lens applies where comments are read.
                     comments = get_channel_comments(post_id)
                     if comments:
                         latest_commenter = comments[0][1]
@@ -2060,14 +2248,22 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
             return
         if choice == 'v':
             channel_id = state.get('channel_id')
-            comments = get_channel_comments(channel_id)
+            scope = get_view_scope(sender_id)
+            comments = get_channel_comments(channel_id, scope)
+            lens = scope_notice(sender_id,
+                                count_hidden_channel_comments(channel_id, scope))
             if comments:
                 for i, comment in enumerate(comments, start=1):
                     sender_short_name, date, content = comment[1], comment[2], comment[3]
                     send_message(f"[{i}] {sender_short_name} @ {date}\n{content}", sender_id, interface)
             else:
                 send_message("No comments yet for this post.", sender_id, interface)
-            send_message("[1]View comments [2]Comment [0]Exit", sender_id, interface)
+            # Folded onto the controls line the screen already sends, so a
+            # narrowed view costs no extra message.
+            controls = "[1]View comments [2]Comment [0]Exit"
+            if lens:
+                controls = f"{lens}{LINE_BREAK}{controls}"
+            send_message(controls, sender_id, interface)
             return
         if choice == 'c':
             send_message("Send your comment. Send END on a new message when finished.", sender_id, interface)
@@ -2157,12 +2353,20 @@ def handle_send_mail_command(sender_id, message, interface, bbs_nodes):
 def handle_check_mail_command(sender_id, interface):
     try:
         sender_node_id = get_node_id_from_num(sender_id, interface)
-        mail = get_mail(sender_node_id)
+        scope = get_view_scope(sender_id)
+        mail = get_mail(sender_node_id, scope)
+        lens = scope_notice(sender_id, count_hidden_mail(sender_node_id, scope),
+                            noun='mail')
         if not mail:
-            send_message("You have no new messages.", sender_id, interface)
+            empty = "You have no new messages."
+            if lens:
+                empty = f"{empty}{LINE_BREAK}{lens}"
+            send_message(empty, sender_id, interface)
             return
 
         response = "📬 You have the following messages:\n"
+        if lens:
+            response = f"{lens}\n{response}"
         for i, msg in enumerate(mail):
             response += f"{i + 1:02d}. From: {msg[1]}, Subject: {msg[2]}\n"
         response += "\nPlease reply with the number of the message you want to read."
@@ -2387,6 +2591,6 @@ def handle_quick_help_command(sender_id, interface):
         "!SM,, - Send Mail\n!CM - Check Mail\n!AU - Relay Directory\n"
         "!PB,, - Post Bulletin\n!CB,, - Check Bulletins\n"
         "!CHP,, - Post Channel\n!CHL - List Channels\n"
-        "Global menus: !Q !B !U !P !N !A !S !X"
+        "Global menus: !Q !B !U !P !N !A !S !V !X"
     )
     send_message(response, sender_id, interface)

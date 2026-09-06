@@ -9,8 +9,18 @@
         <input type="text" id="table-search-input" name="q" value="{{ search_query }}"
                placeholder="Search {{ table_title }}…" autocomplete="off" aria-label="Search {{ table_title }}">
       </div>
+      {% if node_options %}
+      <select class="form-control" name="node" aria-label="Filter by origin node"
+              onchange="this.form.submit()">
+        <option value="">All nodes</option>
+        {% for option in node_options %}
+        <option value="{{ option.value }}"
+                {% if option.value == node_filter %}selected{% endif %}>{{ option.label }}</option>
+        {% endfor %}
+      </select>
+      {% endif %}
       <button class="btn btn-sm" type="submit">Search</button>
-      {% if search_query %}
+      {% if search_query or node_filter %}
       <a class="btn btn-sm" href="{{ url_for('table_list', table=table_name) }}">Clear</a>
       {% endif %}
     </form>
