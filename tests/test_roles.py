@@ -459,6 +459,251 @@ class BbsRoleCommandTests(_RoleCase):
         self.assertEqual(db_operations.get_node_role(OTHER), 'unregistered')
 
 
+class ModerationTests(_RoleCase):
+    """Taking a post down from inside the BBS.
+
+    Destructive and fleet-wide: these go through delete_bulletin and
+    delete_channel_comment, which tombstone, so a mistyped key removes a
+    post on every node and a radio user cannot undo it from the radio.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.sent = []
+        self._real = (message_processing.send_message, ch.send_message)
+        capture = lambda text, sid, iface: self.sent.append(text)
+        message_processing.send_message = capture
+        ch.send_message = capture
+        message_processing._banned_notified.clear()
+        self.iface = _Iface()
+        conn = db_operations.get_db_connection()
+        conn.execute(
+            "INSERT INTO bulletins (board, sender_short_name, date, subject,"
+            " content, unique_id) VALUES ('General','someone','2026-09-06 10:00',"
+            "'Spam','buy things','bad-post')")
+        conn.commit()
+        self.bulletin_id = conn.execute(
+            "SELECT id FROM bulletins WHERE unique_id='bad-post'").fetchone()[0]
+        self.addCleanup(self._restore_send)
+
+    def _restore_send(self):
+        message_processing.send_message, ch.send_message = self._real
+        utils.user_states.pop(4242, None)
+
+    def _as(self, role):
+        db_operations.set_node_role(NODE, role)
+
+    def _say(self, text):
+        self.sent.clear()
+        message_processing.process_message(
+            sender_id=4242, message=text, interface=self.iface,
+            sender_node_id=NODE)
+        return "\n".join(self.sent)
+
+    def _open_bulletin(self):
+        utils.update_user_state(4242, {'command': 'BULLETIN_READ', 'step': 3,
+                                       'board': 'General', 'boards': ['General']})
+        return self._say(str(self.bulletin_id))
+
+    def _bulletins(self):
+        return db_operations.get_db_connection().execute(
+            "SELECT COUNT(*) FROM bulletins").fetchone()[0]
+
+    def test_an_ordinary_reader_is_offered_nothing(self):
+        self._as('user')
+        self.assertNotIn("[D]elete", self._open_bulletin())
+
+    def test_an_ordinary_reader_is_not_parked_on_the_post(self):
+        """Their flow is untouched -- no extra key, no extra message, and
+        never held in the moderation state waiting for a decision they
+        cannot make."""
+        self._as('user')
+        self._open_bulletin()
+        self.assertNotEqual(
+            (utils.get_user_state(4242) or {}).get('command'), 'BULLETIN_MODERATE')
+
+    def test_a_moderator_is_parked_on_the_post(self):
+        self._as('mod')
+        self._open_bulletin()
+        self.assertEqual(
+            (utils.get_user_state(4242) or {}).get('command'), 'BULLETIN_MODERATE')
+
+    def test_a_moderator_is_offered_delete(self):
+        self._as('mod')
+        self.assertIn("[D]elete", self._open_bulletin())
+
+    def test_deleting_asks_first(self):
+        """A key that removes a post from every node in the fleet does not
+        get to be a single keystroke."""
+        self._as('mod')
+        self._open_bulletin()
+        self.assertIn("[Y]es", self._say("d"))
+        self.assertEqual(self._bulletins(), 1)
+
+    def test_confirming_removes_it(self):
+        self._as('mod')
+        self._open_bulletin()
+        self._say("d")
+        self._say("y")
+        self.assertEqual(self._bulletins(), 0)
+
+    def test_declining_leaves_it(self):
+        self._as('mod')
+        self._open_bulletin()
+        self._say("d")
+        self.assertIn("Left alone", self._say("0"))
+        self.assertEqual(self._bulletins(), 1)
+
+    def test_the_delete_is_tombstoned(self):
+        """Which is what makes it stick. A bare row removal comes straight
+        back from the first peer that still holds it."""
+        self._as('mod')
+        self._open_bulletin()
+        self._say("d")
+        self._say("y")
+        self.assertTrue(db_operations.has_sync_tombstone('bulletins', 'bad-post'))
+
+    def test_a_user_who_reaches_the_state_anyway_is_refused(self):
+        """The state is only handed out to moderators, but authority is
+        re-checked at the point of action -- a role can change between
+        opening a post and confirming."""
+        self._as('mod')
+        self._open_bulletin()
+        self._say("d")
+        self._as('user')
+        self.assertIn("for moderators", self._say("y"))
+        self.assertEqual(self._bulletins(), 1)
+
+    def test_a_banned_moderator_never_gets_there(self):
+        self._as('mod')
+        self._open_bulletin()
+        db_operations.set_node_role(NODE, 'banned')
+        self._say("d")
+        self.assertEqual(self._bulletins(), 1)
+
+    def test_moderation_survives_role_commands_being_off(self):
+        """That switch is about handing out authority over the radio. An
+        operator who turned it off has not said moderation should stop."""
+        self._config("[roles]\nbbs_commands = false\n")
+        self._as('mod')
+        self.assertIn("[D]elete", self._open_bulletin())
+
+
+class CommentModerationTests(_RoleCase):
+    """Taking down one comment on a channel post."""
+
+    def setUp(self):
+        super().setUp()
+        self.sent = []
+        self._real = (message_processing.send_message, ch.send_message)
+        capture = lambda text, sid, iface: self.sent.append(text)
+        message_processing.send_message = capture
+        ch.send_message = capture
+        message_processing._banned_notified.clear()
+        self.iface = _Iface()
+        conn = db_operations.get_db_connection()
+        conn.execute("INSERT INTO channels (name, url) VALUES ('Chan','psk')")
+        self.channel_id = conn.execute(
+            "SELECT id FROM channels WHERE name='Chan'").fetchone()[0]
+        for uid, who in (("c-keep", "innocent"), ("c-bad", "spammer")):
+            conn.execute(
+                "INSERT INTO channel_comments (channel_id, sender_short_name,"
+                " date, content, unique_id)"
+                " VALUES (?,?,'2026-09-06 10:00','text',?)",
+                (self.channel_id, who, uid))
+        conn.commit()
+        self.addCleanup(self._restore_send)
+
+    def _restore_send(self):
+        message_processing.send_message, ch.send_message = self._real
+        utils.user_states.pop(4242, None)
+
+    def _as(self, role):
+        db_operations.set_node_role(NODE, role)
+
+    def _say(self, text):
+        self.sent.clear()
+        message_processing.process_message(
+            sender_id=4242, message=text, interface=self.iface,
+            sender_node_id=NODE)
+        return "\n".join(self.sent)
+
+    def _view_comments(self):
+        utils.update_user_state(4242, {'command': 'CHANNEL_DIRECTORY', 'step': 6,
+                                       'channel_id': self.channel_id})
+        return self._say("v")
+
+    def _remaining(self):
+        return {r[0] for r in db_operations.get_db_connection().execute(
+            "SELECT unique_id FROM channel_comments")}
+
+    def test_an_ordinary_reader_is_offered_nothing(self):
+        self._as('user')
+        self.assertNotIn("[D]elete", self._view_comments())
+
+    def test_a_moderator_is_offered_delete(self):
+        self._as('mod')
+        self.assertIn("[D]elete", self._view_comments())
+
+    def test_deleting_picks_a_comment_then_confirms(self):
+        self._as('mod')
+        self._view_comments()
+        self.assertIn("Which comment number", self._say("d"))
+        self.assertIn("[Y]es", self._say("2"))
+        self.assertEqual(len(self._remaining()), 2)
+
+    def test_confirming_removes_only_that_comment(self):
+        """The number has to mean the line they read, not an index into
+        whatever the database returns later."""
+        self._as('mod')
+        self._view_comments()
+        self._say("d")
+        self._say("2")
+        self._say("y")
+        self.assertEqual(self._remaining(), {"c-keep"})
+
+    def test_declining_leaves_it(self):
+        self._as('mod')
+        self._view_comments()
+        self._say("d")
+        self._say("2")
+        self._say("0")
+        self.assertEqual(len(self._remaining()), 2)
+
+    def test_the_delete_is_tombstoned(self):
+        self._as('mod')
+        self._view_comments()
+        self._say("d")
+        self._say("2")
+        self._say("y")
+        self.assertTrue(
+            db_operations.has_sync_tombstone('channels', 'comment:c-bad'))
+
+    def test_a_number_nobody_is_at_is_refused(self):
+        self._as('mod')
+        self._view_comments()
+        self._say("d")
+        self.assertIn("No comment at that number", self._say("9"))
+        self.assertEqual(len(self._remaining()), 2)
+
+    def test_authority_is_rechecked_at_the_delete(self):
+        self._as('mod')
+        self._view_comments()
+        self._say("d")
+        self._say("2")
+        self._as('user')
+        self.assertIn("for moderators", self._say("y"))
+        self.assertEqual(len(self._remaining()), 2)
+
+    def test_viewing_normally_still_works_for_a_moderator(self):
+        """The extra state must not swallow the ordinary post controls."""
+        self._as('mod')
+        self._view_comments()
+        self._say("2")
+        self.assertNotEqual(
+            (utils.get_user_state(4242) or {}).get('command'), 'COMMENT_MODERATE')
+
+
 class WebAdminRoleTests(unittest.TestCase):
     """Assigning a role, from the console that is actually behind a password."""
 

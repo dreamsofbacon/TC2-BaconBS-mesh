@@ -9,7 +9,8 @@ import time
 from meshtastic import BROADCAST_NUM
 
 from db_operations import (
-    add_bulletin, add_mail, delete_mail,
+    add_bulletin, add_mail, delete_mail, delete_bulletin,
+    delete_channel_comment,
     get_content_source_nodes,
     get_node_role, set_node_role, get_role_updated_at,
     role_at_least, role_rank, normalize_role,
@@ -1963,6 +1964,17 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
         notice = _incomplete_notice(content_complete, expected_length, content)
         send_message(f"From: {sender_short_name}\nDate: {date}\nSubject: {subject}\n- - - - - - -\n{content}{notice}", sender_id, interface)
         board_name = state['board']
+        # Only a moderator is offered anything here, and only they are held
+        # on the post afterwards. Everyone else bounces straight back to the
+        # list exactly as before -- the option costs them no bytes and no
+        # extra key.
+        if _can_moderate(sender_id, interface):
+            send_message(f"[D]elete this post  [0]Back", sender_id, interface)
+            update_user_state(sender_id, {
+                'command': 'BULLETIN_MODERATE', 'step': 1,
+                'board': board_name, 'boards': state.get('boards', []),
+                'unique_id': unique_id, 'subject': subject})
+            return
         handle_bb_steps(sender_id, 'e', 1, state, interface, bbs_nodes)
 
     elif step == 4:
@@ -2354,6 +2366,15 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
             # Folded onto the controls line the screen already sends, so a
             # narrowed view costs no extra message.
             controls = "[1]View comments [2]Comment [0]Exit"
+            if comments and _can_moderate(sender_id, interface):
+                controls = "[1]View comments [2]Comment [D]elete [0]Exit"
+                update_user_state(sender_id, {
+                    'command': 'COMMENT_MODERATE', 'step': 0,
+                    'channel_id': channel_id,
+                    # Carried in state so the number a moderator types means
+                    # the line they just read, not whatever the database
+                    # returns when they get around to typing it.
+                    'comments': [(str(c[4]), str(c[1])) for c in comments]})
             if lens:
                 controls = f"{lens}{LINE_BREAK}{controls}"
             send_message(controls, sender_id, interface)
@@ -2788,6 +2809,110 @@ def _announce_role_change(node_id, role, interface, bbs_nodes) -> None:
                                     bbs_nodes, interface)
     except Exception:
         logging.debug("could not announce a role change", exc_info=True)
+
+
+def _can_moderate(sender_id, interface) -> bool:
+    """Whether this session may remove other people's posts.
+
+    Deliberately NOT gated on [roles] bbs_commands. That switch is about
+    handing out authority over the radio; taking down a post is the job a
+    moderator was appointed to do, and an operator who turns off role
+    commands has not said they want moderation to stop.
+    """
+    node_id = get_node_id_from_num(sender_id, interface)
+    return bool(node_id) and role_at_least(get_node_role(node_id), ROLE_MOD)
+
+
+def handle_bulletin_moderate_steps(sender_id, message, interface, state, bbs_nodes=None):
+    """A moderator's Delete on the post they are reading.
+
+    Two steps rather than one. A delete here is tombstoned and travels to
+    every node in the fleet, so the cost of a mistyped key is not local --
+    and a radio user cannot undo it from the radio. One confirmation is two
+    seconds of airtime against a post being removed everywhere by accident.
+    """
+    choice = str(message or '').strip().lower()
+    board = state.get('board')
+    boards = state.get('boards', [])
+
+    if state.get('step') == 2:
+        if choice in ('y', 'yes'):
+            if not _can_moderate(sender_id, interface):
+                # Re-checked at the point of action: a role can change
+                # between reading a post and confirming the delete.
+                send_message("That is for moderators.", sender_id, interface)
+            else:
+                delete_bulletin(state.get('unique_id'), bbs_nodes or [], interface)
+                logging.warning("Bulletin %s deleted by %s over the BBS",
+                                state.get('unique_id'),
+                                get_node_id_from_num(sender_id, interface))
+                send_message("Deleted. Peers drop their copies on the next sync.",
+                             sender_id, interface)
+        else:
+            send_message("Left alone.", sender_id, interface)
+        send_board_action_menu(sender_id, interface, board, boards)
+        return
+
+    if choice == 'd':
+        if not _can_moderate(sender_id, interface):
+            send_message("That is for moderators.", sender_id, interface)
+            send_board_action_menu(sender_id, interface, board, boards)
+            return
+        subject = str(state.get('subject') or 'this post')
+        send_message(f"Delete \"{subject}\" everywhere? [Y]es  [0]No",
+                     sender_id, interface)
+        state['step'] = 2
+        update_user_state(sender_id, state)
+        return
+
+    send_board_action_menu(sender_id, interface, board, boards)
+
+
+def handle_comment_moderate_steps(sender_id, message, interface, state, bbs_nodes=None):
+    """A moderator's Delete on one comment of a channel post."""
+    choice = str(message or '').strip().lower()
+    channel_id = state.get('channel_id')
+    comments = state.get('comments') or []
+
+    if state.get('step') == 2:
+        if choice in ('y', 'yes') and state.get('pending'):
+            if not _can_moderate(sender_id, interface):
+                send_message("That is for moderators.", sender_id, interface)
+            else:
+                delete_channel_comment(state['pending'], bbs_nodes or [], interface)
+                logging.warning("Channel comment %s deleted by %s over the BBS",
+                                state['pending'],
+                                get_node_id_from_num(sender_id, interface))
+                send_message("Deleted. Peers drop their copies on the next sync.",
+                             sender_id, interface)
+        else:
+            send_message("Left alone.", sender_id, interface)
+        _return_to_channel_post(sender_id, interface, state)
+        return
+
+    if not choice.isdigit():
+        send_message("Reply with a comment number, or 0 to go back.",
+                     sender_id, interface)
+        _return_to_channel_post(sender_id, interface, state)
+        return
+    index = int(choice) - 1
+    if not 0 <= index < len(comments):
+        send_message("No comment at that number.", sender_id, interface)
+        _return_to_channel_post(sender_id, interface, state)
+        return
+
+    unique_id, who = comments[index]
+    send_message(f"Delete the comment by {who} everywhere? [Y]es  [0]No",
+                 sender_id, interface)
+    state['step'] = 2
+    state['pending'] = unique_id
+    update_user_state(sender_id, state)
+
+
+def _return_to_channel_post(sender_id, interface, state) -> None:
+    send_message("[1]View comments [2]Comment [0]Exit", sender_id, interface)
+    update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 6,
+                                  'channel_id': state.get('channel_id')})
 
 
 def _role_command_refusal(sender_id, interface) -> str:

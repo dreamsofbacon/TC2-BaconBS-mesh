@@ -32,6 +32,7 @@ from command_handlers import (
     handle_public_chatter_command, handle_public_chatter_steps,
     handle_node_view_command, handle_node_view_steps,
     handle_role_command, handle_who_command,
+    handle_bulletin_moderate_steps, handle_comment_moderate_steps,
     deliver_ask_nomad_reply,
     handle_exit_command, send_board_action_menu,
     menu_items_for, menu_layout, menu_number_alias,
@@ -2938,6 +2939,25 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
         if state and state.get('command') == 'NODE_VIEW':
             handle_node_view_steps(sender_id, message, interface, state)
             return
+        if state and state.get('command') == 'BULLETIN_MODERATE':
+            handle_bulletin_moderate_steps(sender_id, message, interface, state, bbs_nodes)
+            return
+        if state and state.get('command') == 'COMMENT_MODERATE':
+            # Step 0 means the controls line is on screen, where D starts a
+            # delete and everything else is ordinary post navigation.
+            if int(state.get('step', 0)) == 0 and message_lower != 'd':
+                state = {'command': 'CHANNEL_DIRECTORY', 'step': 6,
+                         'channel_id': state.get('channel_id')}
+                update_user_state(sender_id, state)
+            elif int(state.get('step', 0)) == 0:
+                send_message("Which comment number? [0] to go back.",
+                             sender_id, interface)
+                state['step'] = 1
+                update_user_state(sender_id, state)
+                return
+            else:
+                handle_comment_moderate_steps(sender_id, message, interface, state, bbs_nodes)
+                return
         if state and state.get('command') in ('GAMES_MENU', 'ZORK'):
             if state['command'] == 'GAMES_MENU':
                 handle_games_steps(sender_id, message, interface)
