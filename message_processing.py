@@ -111,6 +111,13 @@ from utils import (
 #
 # MAIL is absent on purpose: process_message hands its steps off before the
 # global-prefix branch is reached, so its cancel words already arrive.
+#
+# Those same steps are the ones a "!" command must NOT escape from, for the
+# same reason -- a recipient, a subject or a message body is content, and a
+# body that opens with "!" is a body. Every other mail step is a menu, where
+# a global command should work like it does everywhere else.
+_MAIL_TEXT_STEPS = (3, 5, 7)
+
 _TEXT_PROMPTS = {
     'PROFILE': (2,),
     'ACCOUNT': (2, 4),
@@ -2879,8 +2886,19 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 handle_zork_steps(sender_id, message, interface)
             return
         if state and state.get('command') == 'MAIL':
-            handle_mail_steps(sender_id, message, state['step'], state, interface, bbs_nodes)
-            return
+            # Mail is dispatched ahead of the global-prefix branch, which
+            # meant a "!" command typed anywhere in the mail flow was eaten
+            # as mail input. That is fine while the BBS is asking for a
+            # subject or a message body -- text there belongs to the prompt
+            # -- but not on the menu and list screens, where the Node View
+            # notice tells the reader "!V=all" and nothing happened when
+            # they typed it. The notice is the promise that a narrowed
+            # mailbox can be widened; it has to be true on the screen that
+            # makes it.
+            if not (message_lower.startswith('!')
+                    and int(state.get('step', 1)) not in _MAIL_TEXT_STEPS):
+                handle_mail_steps(sender_id, message, state['step'], state, interface, bbs_nodes)
+                return
 
         # A cancel word at a content prompt belongs to that prompt, not to
         # the global command table.
