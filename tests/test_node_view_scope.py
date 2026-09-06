@@ -231,6 +231,27 @@ class SeparateProcessTests(_DbCase):
         self._as_a_separate_process()
         self.assertEqual(db_operations.get_local_identities_for_scope(), {RADIO})
 
+    def test_the_radio_id_is_recorded_once_it_is_known(self):
+        """Startup publishes before the runtime snapshot has run, and the
+        snapshot is what calls set_local_node_id -- so the first publish
+        knows the bridge ids and not the radio id. Live, the persisted set
+        held two mqtt ids and no '!04058ac8'."""
+        import server
+
+        saved_links = server._active_links
+        server._active_links = []
+        self.addCleanup(setattr, server, '_active_links', saved_links)
+
+        db_operations.set_local_node_id('')
+        server.publish_local_identities()          # as at startup
+        db_operations._LOCAL_IDENTITY_CACHE = None
+        self.assertNotIn(RADIO, db_operations.get_persisted_local_identities())
+
+        db_operations.set_local_node_id(RADIO)     # as the snapshot resolves it
+        server.publish_local_identities()
+        db_operations._LOCAL_IDENTITY_CACHE = None
+        self.assertIn(RADIO, db_operations.get_persisted_local_identities())
+
     def test_startup_actually_writes_them_down(self):
         """The half that is easy to leave out: a working persist function
         nothing ever calls looks exactly like a working feature until you
