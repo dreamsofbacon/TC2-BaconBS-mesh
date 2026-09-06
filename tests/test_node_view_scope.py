@@ -27,8 +27,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-if "meshtastic" not in sys.modules:
-    sys.modules["meshtastic"] = types.SimpleNamespace(BROADCAST_NUM=0)
+# The shared helper rather than a local stub: it fills in only what is
+# missing, so every importer ends up with the same module object whatever
+# order the suite runs in. Importing server -- which these tests do, to
+# check startup really records the identities -- pulls in config_init,
+# which needs meshtastic and serial for real.
+import radio_stubs
+radio_stubs.install()
 
 import db_operations
 import utils
