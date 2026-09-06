@@ -257,6 +257,28 @@ class BanEnforcementTests(_RoleCase):
         self.assertTrue(sent)
         self.assertNotIn(message_processing.BANNED_NOTICE, sent)
 
+    def test_the_refusal_repeats_after_a_while(self):
+        """Once per process was the first attempt and it was wrong in the
+        field: the node runs for weeks, so somebody banned on Monday who
+        came back on Friday got pure silence -- exactly the "the BBS must be
+        down" reading the notice exists to prevent."""
+        db_operations.set_node_role(NODE, 'banned')
+        self._say()
+        self.assertEqual(self._say(), [])
+        # An hour later, from the node's point of view.
+        for node_id in list(message_processing._banned_notified):
+            message_processing._banned_notified[node_id] -= (
+                message_processing.BANNED_NOTICE_INTERVAL_SECONDS + 1)
+        self.assertEqual(self._say(), [message_processing.BANNED_NOTICE])
+
+    def test_but_not_on_every_message_in_between(self):
+        """The other half. A flooder must not be able to make the node
+        transmit once per message they send."""
+        db_operations.set_node_role(NODE, 'banned')
+        self._say()
+        for _ in range(5):
+            self.assertEqual(self._say(), [])
+
     def test_a_re_ban_explains_itself_again(self):
         """Otherwise someone banned, unbanned, then banned again gets
         silence and no idea why."""

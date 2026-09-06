@@ -1881,10 +1881,18 @@ def _relay_public_chatter_if_new(unique_id: str, inserted: bool, interface) -> N
     if row:
         _public_chatter_cross_link_relay(row, interface)
 
-# Who has already been told they are banned. In memory, so a restart tells
-# them once more -- which is the right trade: persisting it would mean a ban
-# applied while someone was away could never explain itself.
-_banned_notified = set()
+# When each banned sender was last told, so the refusal repeats occasionally
+# rather than once for the life of the process.
+#
+# Once per process was the first attempt and it was wrong in the field: the
+# node runs for weeks, so somebody banned on Monday who came back on Friday
+# got pure silence -- the exact "indistinguishable from the BBS being down"
+# outcome the notice exists to avoid. Once an hour still denies a flooder
+# the reply-per-message they were banned for, while anyone returning later
+# is told why.
+_banned_notified = {}
+
+BANNED_NOTICE_INTERVAL_SECONDS = 3600.0
 
 BANNED_NOTICE = "You are not permitted to use this BBS."
 
@@ -1907,7 +1915,7 @@ def _refuse_banned_sender(sender_id, interface, sender_node_id) -> bool:
         if not node_id:
             return False
         if get_node_role(node_id) != ROLE_BANNED:
-            _banned_notified.discard(str(node_id))
+            _banned_notified.pop(str(node_id), None)
             return False
     except Exception:
         # Fail open, deliberately. Everything here -- resolving the id off
@@ -1919,8 +1927,10 @@ def _refuse_banned_sender(sender_id, interface, sender_node_id) -> bool:
                       exc_info=True)
         return False
 
-    if str(node_id) not in _banned_notified:
-        _banned_notified.add(str(node_id))
+    now = time.time()
+    last_told = _banned_notified.get(str(node_id))
+    if last_told is None or (now - float(last_told)) >= BANNED_NOTICE_INTERVAL_SECONDS:
+        _banned_notified[str(node_id)] = now
         send_message(BANNED_NOTICE, sender_id, interface)
     clear_user_state(sender_id)
     return True
