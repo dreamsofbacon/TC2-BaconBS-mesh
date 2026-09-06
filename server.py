@@ -864,6 +864,13 @@ def write_runtime_diagnostics_snapshot(links, system_config: dict) -> None:
     except Exception as exc:
         logging.debug(f"Unable to write runtime diagnostics snapshot: {exc}")
 
+    # Refreshed here, not only at startup. Collecting the snapshot is what
+    # calls set_local_node_id, so the very first publish -- which runs
+    # before it -- records the bridge ids but not the radio id. Re-running
+    # it on every snapshot also means a radio that reconnects with a new
+    # key stops looking like a stranger to Node View.
+    publish_local_identities()
+
     return snapshot
 
 
