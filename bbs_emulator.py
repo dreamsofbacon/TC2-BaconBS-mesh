@@ -191,8 +191,12 @@ class EmulatorSession:
     def close(self):
         """Drop menu state and stop anything holding a process or a thread."""
         try:
-            from utils import user_states
+            from utils import user_states, clear_view_scope
             user_states.pop(self.sender_id, None)
+            # The Node View lens is per-session and lives in its own dict,
+            # so ending the session has to say so explicitly. This covers
+            # SSH too, which ends its sessions through here.
+            clear_view_scope(self.sender_id)
         except Exception:
             logging.exception("Emulator could not clear menu state")
 

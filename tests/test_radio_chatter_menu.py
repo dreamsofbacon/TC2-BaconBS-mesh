@@ -221,12 +221,20 @@ class ChoosingSourcesTests(_Radio):
         return [o["value"] for o in self.state().get("filter_options", [])
                 if kind is None or o["kind"] == kind]
 
-    def test_both_dimensions_are_offered_in_one_list(self):
-        """One screen and one interaction, rather than a menu per dimension."""
+    def test_the_filter_screen_is_channels_only(self):
+        """The node dimension moved out to Node View.
+
+        It was headed "Heard by:" and listed raw capture ids -- which are
+        stamped per RADIO, not per node, so on a two-radio node it read as
+        two unlabelled 64-character keys meaning "my MeshCore radio" and
+        "my Meshtastic radio". With one dimension left there is no sub-header
+        to print either."""
         self.seed()
         reply = self.say("f")
-        self.assertIn("Channels:", reply)
-        self.assertIn("Heard by:", reply)
+        self.assertIn("Channels", reply)
+        self.assertNotIn("Heard by:", reply)
+        self.assertNotIn(CHAT, reply)
+        self.assertNotIn(BBS, reply)
 
     def test_only_sources_actually_present_are_offered(self):
         """A channel with nothing in it is a filter that can only empty the
@@ -237,7 +245,8 @@ class ChoosingSourcesTests(_Radio):
         # id is base64 and contains one.
         self.assertEqual(sorted(self.options("channel")),
                          ["meshcore/0", "meshcore/2", "meshtastic/0"])
-        self.assertEqual(sorted(self.options("node")), sorted([CHAT, BBS]))
+        # Every option is a channel now; nothing else may sneak into the list.
+        self.assertEqual(sorted(self.options()), sorted(self.options("channel")))
 
     def test_several_can_be_toggled_in_one_reply(self):
         """Over LoRa, one round trip per choice is the difference between a
@@ -268,18 +277,32 @@ class ChoosingSourcesTests(_Radio):
         self.assertIn("mc-two", reply)
         self.assertNotIn("mt-long", reply)
 
-    def test_a_channel_and_a_node_combine_as_and(self):
+    def test_a_channel_and_the_lens_combine_as_and(self):
         """Picking a channel and a node that never met must return nothing,
-        not the union of the two."""
+        not the union of the two. Same property as before, one layer up:
+        the node half now comes from the session lens."""
         self.seed()
+        ch.set_view_scope(SENDER, [BBS])
+        self.addCleanup(ch.clear_view_scope, SENDER)
         self.say("f")
         options = self.state()["filter_options"]
         mc_two = next(i for i, o in enumerate(options, 1)
                       if o["value"] == "meshcore/2")
-        bbs = next(i for i, o in enumerate(options, 1) if o["value"] == BBS)
-        self.say(f"{mc_two} {bbs}")
+        self.say(str(mc_two))
         reply = self.say("d")
         self.assertIn("Nothing heard", reply)
+
+    def test_the_lens_narrows_the_chatter_feed(self):
+        """And the other direction: a lens that matched nothing above must
+        still match its own node's traffic, or the test above passes on a
+        lens that is simply ignored."""
+        self.seed()
+        ch.set_view_scope(SENDER, [CHAT])
+        self.addCleanup(ch.clear_view_scope, SENDER)
+        self.say("f")
+        reply = self.say("d")
+        self.assertIn("mc-public", reply)
+        self.assertNotIn("mt-long", reply)
 
     def test_selecting_nothing_shows_everything(self):
         """An empty selection is no constraint, not an empty screen."""
@@ -290,13 +313,25 @@ class ChoosingSourcesTests(_Radio):
             with self.subTest(content=content):
                 self.assertIn(content, reply)
 
-    def test_all_clears_the_selection(self):
+    def test_all_clears_the_channel_selection(self):
         self.seed()
         self.say("f")
         self.say("1")
         self.say("a")
         self.assertEqual(self.state()["channels"], [])
-        self.assertEqual(self.state()["nodes"], [])
+        self.assertNotIn("nodes", self.state())
+
+    def test_all_leaves_the_session_lens_alone(self):
+        """[A]ll on a channel screen means all channels. Silently widening
+        the whole session from here would be a different promise than the
+        key makes, and the user would have no idea it had happened."""
+        self.seed()
+        ch.set_view_scope(SENDER, [CHAT])
+        self.addCleanup(ch.clear_view_scope, SENDER)
+        self.say("f")
+        self.say("1")
+        self.say("a")
+        self.assertEqual(ch.get_view_scope(SENDER), (CHAT,))
 
     def test_an_active_filter_is_visible_from_the_results(self):
         """Otherwise a short list reads as a quiet mesh."""

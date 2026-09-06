@@ -30,6 +30,7 @@ from command_handlers import (
     handle_settings_command, handle_settings_steps,
     handle_active_users_command,
     handle_public_chatter_command, handle_public_chatter_steps,
+    handle_node_view_command, handle_node_view_steps,
     deliver_ask_nomad_reply,
     handle_exit_command, send_board_action_menu,
     menu_items_for, menu_layout, menu_number_alias,
@@ -150,6 +151,7 @@ main_menu_handlers = {
     "g": handle_games_command,
     "a": handle_apigw_command,
     "s": handle_settings_command,
+    "v": handle_node_view_command,
     "x": handle_exit_command
 }
 
@@ -2866,6 +2868,9 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
     else:
         if state and state.get('command') == 'PUBLIC_CHATTER':
             handle_public_chatter_steps(sender_id, message, interface, state)
+            return
+        if state and state.get('command') == 'NODE_VIEW':
+            handle_node_view_steps(sender_id, message, interface, state)
             return
         if state and state.get('command') in ('GAMES_MENU', 'ZORK'):
             if state['command'] == 'GAMES_MENU':

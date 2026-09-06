@@ -32,13 +32,13 @@ TABLE_CONFIG = {
         "title": "Bulletins",
     "columns": ["id", "board", "sender_short_name", "date", "subject", "content", "local_only", "unique_id", "source_node_id", "source_timestamp", "received_at"],
     "editable": ["board", "sender_short_name", "date", "subject", "content", "local_only"],
-    "searchable": ["board", "sender_short_name", "subject", "content", "unique_id", "local_only"],
+    "searchable": ["board", "sender_short_name", "subject", "content", "unique_id", "local_only", "source_node_id"],
     },
     "mail": {
         "title": "Mail",
         "columns": ["id", "sender", "sender_short_name", "recipient", "date", "subject", "content", "unique_id", "source_node_id", "source_timestamp", "received_at"],
         "editable": ["sender", "sender_short_name", "recipient", "date", "subject", "content"],
-        "searchable": ["sender", "sender_short_name", "recipient", "subject", "content", "unique_id"],
+        "searchable": ["sender", "sender_short_name", "recipient", "subject", "content", "unique_id", "source_node_id"],
     },
     "channels": {
         "title": "Channels",
@@ -6841,6 +6841,38 @@ def create_app(runtime_interface=None) -> Flask:
         flash("Transmission stats reset.", "success")
         return redirect(url_for("system_transmissions"))
 
+    LOCAL_NODE_SENTINEL = "~local"
+
+    def _table_where(cfg, search_query, node_filter):
+        """WHERE for the table browser, combining search and origin node.
+
+        The two clauses are parenthesised separately. The search half is a
+        chain of ORs, and ANDing anything onto it unbracketed would bind to
+        only the last arm -- so searching while filtering would quietly
+        return most of the table instead of the intersection.
+        """
+        clauses, params = [], []
+        if search_query:
+            clauses.append("(" + " OR ".join(
+                f"{col} LIKE ?" for col in cfg["searchable"]) + ")")
+            params.extend(f"%{search_query}%" for _ in cfg["searchable"])
+        if node_filter:
+            from db_operations import (origin_scope_clause,
+                                       get_local_link_identities,
+                                       get_local_capture_identities)
+            if node_filter == LOCAL_NODE_SENTINEL:
+                ids = sorted(get_local_link_identities()
+                             | get_local_capture_identities())
+            else:
+                ids = [node_filter]
+            clause, scope_params = origin_scope_clause('source_node_id', ids)
+            if clause:
+                clauses.append(f"({clause})")
+                params.extend(scope_params)
+        if not clauses:
+            return "", []
+        return " WHERE " + " AND ".join(clauses), params
+
     @app.route("/<table>")
     @login_required
     def table_list(table: str):
@@ -6851,6 +6883,9 @@ def create_app(runtime_interface=None) -> Flask:
             return redirect(url_for("table_list", table="bulletins"))
 
         search_query = request.args.get("q", "").strip()
+        # Only tables that record where a row came from can be filtered by it.
+        node_filter = (request.args.get("node", "").strip()
+                       if "source_node_id" in cfg["columns"] else "")
         with get_db_connection() as conn:
             cursor = conn.cursor()
             if table == "bulletins":
@@ -6860,28 +6895,38 @@ def create_app(runtime_interface=None) -> Flask:
                     "COALESCE(expected_content_length, LENGTH(content)) AS _expected_content_length "
                     "FROM bulletins"
                 )
-                if search_query:
-                    where_clause = " OR ".join([f"{col} LIKE ?" for col in cfg["searchable"]])
-                    params = [f"%{search_query}%" for _ in cfg["searchable"]]
-                    cursor.execute(f"{select_sql} WHERE {where_clause} ORDER BY id DESC", params)
-                else:
-                    cursor.execute(f"{select_sql} ORDER BY id DESC")
+                where_sql, params = _table_where(cfg, search_query, node_filter)
+                cursor.execute(f"{select_sql}{where_sql} ORDER BY id DESC", params)
             else:
-                if search_query:
-                    where_clause = " OR ".join([f"{col} LIKE ?" for col in cfg["searchable"]])
-                    params = [f"%{search_query}%" for _ in cfg["searchable"]]
-                    cursor.execute(
-                        f"SELECT {', '.join(cfg['columns'])} FROM {table} WHERE {where_clause} ORDER BY id DESC",
-                        params,
-                    )
-                else:
-                    cursor.execute(f"SELECT {', '.join(cfg['columns'])} FROM {table} ORDER BY id DESC")
+                where_sql, params = _table_where(cfg, search_query, node_filter)
+                cursor.execute(
+                    f"SELECT {', '.join(cfg['columns'])} FROM {table}{where_sql} ORDER BY id DESC",
+                    params,
+                )
             rows = [dict(row) for row in cursor.fetchall()]
 
         display_columns = list(cfg["columns"])
         column_labels = dict(cfg.get("column_labels", {}))
+        node_options = []
+        if "source_node_id" in cfg["columns"]:
+            # Same resolver the radio menus use, so a node reads the same
+            # name in both places.
+            from utils import node_display_name, local_identities_for_display
+            from db_operations import get_content_source_nodes
+            local_ids = local_identities_for_display()
+            node_options = [{"value": LOCAL_NODE_SENTINEL, "label": "This node"}]
+            for node_id in get_content_source_nodes():
+                if node_id in local_ids:
+                    continue
+                node_options.append({
+                    "value": node_id,
+                    "label": node_display_name(node_id, local_ids=local_ids)})
+            for row in rows:
+                row["node"] = node_display_name(
+                    row.get("source_node_id"), local_ids=local_ids)
         if table == "bulletins":
-            display_columns = ["board", "sender_short_name", "date", "subject", "sync_status", "content"]
+            display_columns = ["board", "sender_short_name", "date", "subject", "node", "sync_status", "content"]
+            column_labels["node"] = "Node"
             for row in rows:
                 expected = int(row.get("_expected_content_length") or len(str(row.get("content") or "")))
                 actual = len(str(row.get("content") or ""))
@@ -6895,9 +6940,10 @@ def create_app(runtime_interface=None) -> Flask:
                 if len(content) > 200:
                     row["content"] = content[:200] + "…"
         elif table == "mail":
-            display_columns = ["sender_short_name", "recipient", "date", "subject", "content"]
+            display_columns = ["sender_short_name", "recipient", "date", "subject", "node", "content"]
             column_labels["sender_short_name"] = "From"
             column_labels["recipient"] = "To"
+            column_labels["node"] = "Node"
             for row in rows:
                 content = str(row.get("content") or "")
                 if len(content) > 200:
@@ -6913,6 +6959,8 @@ def create_app(runtime_interface=None) -> Flask:
             column_labels=column_labels,
             rows=rows,
             search_query=search_query,
+            node_filter=node_filter,
+            node_options=node_options,
             db_path=app.config["DB_PATH"],
             create_url=(url_for("bulletin_new") if table == "bulletins" else url_for("channel_new") if table == "channels" else None),
             create_label=("New Bulletin Post" if table == "bulletins" else "New Channel Entry" if table == "channels" else ""),
