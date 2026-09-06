@@ -419,6 +419,36 @@ def is_zork_save_sync_enabled() -> bool:
     return _config_bool("sync", "sync_zork_saves", False)
 
 
+def is_role_sync_enabled() -> bool:
+    """Whether this node accepts role changes asserted by its peers."""
+    return _config_bool("roles", "sync_roles", True)
+
+
+def get_remote_role_ceiling() -> str:
+    """The most privileged role a PEER may assign on this node.
+
+    Roles sync fleet-wide, which means a node on the shared broker can
+    assert a role for any node id. That is fine for the roles this exists to
+    carry -- a ban, a VIP, a mod -- and not fine for handing out admin: the
+    whole point of the ceiling is that nobody outside this node can promote
+    themselves past it. A local operator at the web admin is unaffected.
+
+    Set it to 'developer' to accept anything, or 'banned' to accept nothing
+    above a ban.
+    """
+    return (_config_raw("roles", "remote_role_ceiling") or "mod").strip().casefold()
+
+
+def is_bbs_role_management_enabled() -> bool:
+    """Whether Mod and Admin can change roles from inside the BBS.
+
+    Off turns the radio and SSH commands into a refusal while leaving the
+    web admin alone, for an operator who would rather role changes only
+    happen somewhere that is behind a password.
+    """
+    return _config_bool("roles", "bbs_commands", True)
+
+
 def get_zork_save_sync_notice() -> str:
     if is_zork_save_sync_enabled():
         return ""

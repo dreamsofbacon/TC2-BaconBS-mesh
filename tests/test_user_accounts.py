@@ -54,7 +54,10 @@ class AccountsSchemaTests(unittest.TestCase):
         self.assertEqual(cols, {"account_id", "alias", "alias_normalized", "created_at",
                     "mail_relay_enabled", "mail_relay_updated_at",
                     "password_hash", "password_salt", "password_created_at",
-                    "sender_num"})
+                    "sender_num",
+                    # The account is the authority for every device someone
+                    # has linked, so a role lives here rather than per node.
+                    "role", "role_updated_at"})
         cols = {row[1] for row in conn.execute("PRAGMA table_info(linked_nodes)")}
         self.assertEqual(cols, {"node_id", "account_id", "network", "linked_at"})
 
