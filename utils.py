@@ -52,7 +52,7 @@ def get_max_text_bytes(interface=None) -> int:
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat', 'role')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state, 'role'=user roles
 
 # Single-char scope codes used by the 'scc' wire capability.  Senders gate
 # encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
@@ -1849,6 +1849,26 @@ def send_mail_relay_preference_to_bbs_nodes(node_id, enabled, updated_at, bbs_no
     sent = 0
     for peer_id in bbs_nodes or []:
         if peer_supports(peer_id, 'mrp'):
+            _send_one_sync(message, peer_id, interface)
+            sent += 1
+    return sent
+
+
+def send_node_role_to_bbs_nodes(node_id, role, updated_at, bbs_nodes, interface):
+    """Advertise one node's role to peers that understand roles.
+
+    Unsigned, like every other sync frame, which is why the receiving side
+    caps what a peer may assign -- see apply_synced_node_role. This is a
+    statement about what THIS node believes, not an instruction.
+    """
+    try:
+        from db_operations import peer_supports
+    except Exception:
+        return 0
+    message = f"ROLE|{str(node_id)}|{str(role)}|{str(updated_at)}"
+    sent = 0
+    for peer_id in bbs_nodes or []:
+        if peer_supports(peer_id, 'role'):
             _send_one_sync(message, peer_id, interface)
             sent += 1
     return sent

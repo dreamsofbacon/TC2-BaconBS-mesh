@@ -15,6 +15,32 @@
     </div>
   </form>
 
+  <h3>Role</h3>
+  <p class="text-muted">
+    Applies to every device linked below, so one change covers the person
+    rather than each radio they own. <strong>Banned</strong> stops them using
+    the BBS at all &mdash; they are told once, then ignored.
+  </p>
+  {% if role_syncs %}
+  <p class="text-muted">
+    Roles sync to the fleet. A peer may assign up to
+    <code>{{ remote_role_ceiling }}</code> here; anything above that has to be
+    set on this node.
+  </p>
+  {% endif %}
+  <form method="post" action="{{ url_for('account_detail', account_id=account_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="action" value="set_role">
+    <div class="form-group">
+      <select name="role" class="form-control" style="max-width:200px;display:inline-block">
+        {% for option in assignable_roles %}
+        <option value="{{ option }}" {% if option == role %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn" type="submit">Save Role</button>
+    </div>
+  </form>
+
   <h3>Linked Devices</h3>
   <div class="table-scroll-container">
     <table class="data-table">

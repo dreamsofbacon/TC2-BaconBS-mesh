@@ -31,6 +31,7 @@ from command_handlers import (
     handle_active_users_command,
     handle_public_chatter_command, handle_public_chatter_steps,
     handle_node_view_command, handle_node_view_steps,
+    handle_role_command, handle_who_command,
     deliver_ask_nomad_reply,
     handle_exit_command, send_board_action_menu,
     menu_items_for, menu_layout, menu_number_alias,
@@ -70,7 +71,7 @@ from db_operations import (
     get_game_score_by_user_and_game,
     get_zork_save_row_by_user_and_game,
     get_sync_tombstone_deleted_at,
-    get_node_role, ROLE_BANNED,
+    get_node_role, ROLE_BANNED, apply_synced_node_role,
     get_recent_sync_tombstones,
     has_sync_tombstone,
     rollback_db_connection,
@@ -2564,6 +2565,15 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     logging.debug("FLEETSTATUS: could not record peer status",
                                   exc_info=True)
             return
+        elif message.startswith("ROLE|"):
+            parts = message.split("|", 3)
+            if len(parts) != 4 or not parts[1] or not parts[2] or not parts[3]:
+                logging.warning(f"Malformed ROLE ignored: {message}")
+                return
+            # Everything about what a peer is allowed to say lives in
+            # apply_synced_node_role: unsigned frame, so it caps what can be
+            # granted and refuses anything older than a local decision.
+            apply_synced_node_role(parts[1].strip(), parts[2], parts[3].strip())
         elif message.startswith("RELAYPREF|"):
             parts = message.split("|", 3)
             if len(parts) != 4 or parts[2] not in ('0', '1') or not parts[1] or not parts[3]:
@@ -2969,6 +2979,12 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 handle_post_channel_command(sender_id, global_message, interface)
             elif global_lower == "chl":
                 handle_list_channels_command(sender_id, interface)
+            elif global_lower.startswith("role,,"):
+                handle_role_command(sender_id, global_message, interface, bbs_nodes)
+            elif global_lower == "role":
+                handle_role_command(sender_id, global_message, interface, bbs_nodes)
+            elif global_lower.startswith("who,,") or global_lower == "who":
+                handle_who_command(sender_id, global_message, interface)
             elif global_lower in main_menu_handlers:
                 main_menu_handlers[global_lower](sender_id, interface)
             else:
@@ -3145,7 +3161,7 @@ def on_receive(packet, interface):
                                    "DELETE_SCORE|", "DELETE_PROFILE|",
                                    "CHANNEL|", "DELETE_CHANNEL|", "CHANNELCOMMENT|", "CHANNELCOMMENTCONT|", "CHANNELCOMMENTMETA|", "DELETE_CHANNELCOMMENT|",
                                    "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
-                                   "PROFILESYNC|", "RELAYPREF|", "SCORESYNC|",
+                                   "PROFILESYNC|", "RELAYPREF|", "SCORESYNC|", "ROLE|",
                                    "FLEETVER|", "FLEETVERCONT|", "NODEVER|", "FLEETSTATUS|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|", "HASHZGAP|",
                                    "HAVE|", "WANT|", "EVENT|", "PEERGOSSIP|",

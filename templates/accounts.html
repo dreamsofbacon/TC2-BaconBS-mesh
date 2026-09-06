@@ -8,15 +8,19 @@
       <thead>
         <tr>
           <th>Alias</th>
+          <th>Role</th>
           <th>Devices</th>
           <th>Created</th>
           <th></th>
         </tr>
       </thead>
       <tbody>
-        {% for account_id, alias, created_at, device_count in rows %}
+        {% for account_id, alias, created_at, device_count, role in rows %}
         <tr>
           <td>{{ alias or '(none)' }}</td>
+          <td>{% if role == 'banned' %}<span class="text-danger">{{ role }}</span>
+              {%- elif role in ('mod', 'admin', 'developer') %}<span class="text-warning">{{ role }}</span>
+              {%- else %}{{ role }}{% endif %}</td>
           <td>{{ device_count }}</td>
           <td>{{ created_at }}</td>
           <td><a href="{{ url_for('account_detail', account_id=account_id) }}" class="btn btn-sm">View</a></td>
@@ -24,7 +28,7 @@
         {% endfor %}
         {% if not rows %}
         <tr>
-          <td colspan="4" class="text-muted empty-state">No accounts yet.</td>
+          <td colspan="5" class="text-muted empty-state">No accounts yet.</td>
         </tr>
         {% endif %}
       </tbody>

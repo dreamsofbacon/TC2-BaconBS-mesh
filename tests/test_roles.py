@@ -278,5 +278,305 @@ class BanEnforcementTests(_RoleCase):
         self.assertNotIn(message_processing.BANNED_NOTICE, self.sent)
 
 
+class RoleWireTests(_RoleCase):
+    """The ROLE frame, end to end through process_message."""
+
+    def _receive(self, frame):
+        message_processing.process_message(
+            sender_id=1, message=frame, interface=_Iface(),
+            is_sync_message=True, sender_node_id="!peer1")
+
+    def test_a_role_frame_is_applied(self):
+        self._receive(f"ROLE|{OTHER}|vip|2026-09-06T10:00:00")
+        self.assertEqual(db_operations.get_node_role(OTHER), "vip")
+
+    def test_a_ban_travels(self):
+        """The point of fleet-wide: someone abusive is stopped everywhere."""
+        self._receive(f"ROLE|{OTHER}|banned|2026-09-06T10:00:00")
+        self.assertEqual(db_operations.get_node_role(OTHER), "banned")
+
+    def test_the_frame_cannot_grant_above_the_ceiling(self):
+        """Same guarantee as the unit test, but through the real wire path,
+        so a handler that bypassed apply_synced_node_role would be caught."""
+        self._receive(f"ROLE|{OTHER}|developer|2026-09-06T10:00:00")
+        self.assertEqual(db_operations.get_node_role(OTHER), "unregistered")
+
+    def test_a_malformed_frame_changes_nothing(self):
+        for frame in (f"ROLE|{OTHER}", f"ROLE|{OTHER}|vip", "ROLE|||",
+                      f"ROLE||vip|2026-09-06T10:00:00"):
+            with self.subTest(frame=frame):
+                self._receive(frame)
+                self.assertEqual(db_operations.get_node_role(OTHER), "unregistered")
+
+    def test_the_frame_is_recognised_as_sync_traffic(self):
+        """on_receive decides what counts as sync from a literal prefix
+        list. A frame missing from it is handled as somebody typing
+        "ROLE|..." at the menu and never reaches the sync path at all."""
+        import inspect
+        source = inspect.getsource(message_processing.on_receive)
+        self.assertIn('"ROLE|"', source)
+
+    def test_a_peer_that_does_not_understand_roles_is_not_sent_any(self):
+        """Gated on the capability like every other optional frame, so an
+        older peer is not handed a frame it will log as malformed."""
+        sent = []
+        with mock.patch.object(utils, "_send_one_sync",
+                               side_effect=lambda m, p, i, **k: sent.append((m, p))),              mock.patch.object(db_operations, "peer_supports",
+                               side_effect=lambda peer, cap: cap != 'role'):
+            utils.send_node_role_to_bbs_nodes(
+                OTHER, "vip", "2026-09-06T10:00:00", ["!old"], mock.MagicMock())
+        self.assertEqual(sent, [])
+
+    def test_a_capable_peer_is_sent_the_frame(self):
+        sent = []
+        with mock.patch.object(utils, "_send_one_sync",
+                               side_effect=lambda m, p, i, **k: sent.append((m, p))),              mock.patch.object(db_operations, "peer_supports",
+                               side_effect=lambda peer, cap: True):
+            utils.send_node_role_to_bbs_nodes(
+                OTHER, "vip", "2026-09-06T10:00:00", ["!new"], mock.MagicMock())
+        self.assertEqual(sent, [(f"ROLE|{OTHER}|vip|2026-09-06T10:00:00", "!new")])
+
+    def test_role_is_advertised_as_a_capability(self):
+        self.assertIn('role', utils.WIRE_CAPABILITIES)
+
+
+class BbsRoleCommandTests(_RoleCase):
+    """!ROLE and !WHO from a radio or SSH session."""
+
+    def setUp(self):
+        super().setUp()
+        self.sent = []
+        self._real = (message_processing.send_message, ch.send_message)
+        capture = lambda text, sid, iface: self.sent.append(text)
+        message_processing.send_message = capture
+        ch.send_message = capture
+        message_processing._banned_notified.clear()
+        self.iface = _Iface()
+        self.addCleanup(self._restore_send)
+
+    def _restore_send(self):
+        message_processing.send_message, ch.send_message = self._real
+        utils.user_states.pop(4242, None)
+
+    def _as(self, role):
+        if role != 'unregistered':
+            db_operations.set_node_role(NODE, role)
+
+    def _say(self, text):
+        self.sent.clear()
+        message_processing.process_message(
+            sender_id=4242, message=text, interface=self.iface,
+            sender_node_id=NODE)
+        return "\n".join(self.sent)
+
+    def test_a_user_cannot_use_it(self):
+        self._as('user')
+        self.assertIn("for moderators", self._say(f"!role,,{OTHER},,vip"))
+        self.assertEqual(db_operations.get_node_role(OTHER), 'unregistered')
+
+    def test_a_mod_can_assign_up_to_vip(self):
+        self._as('mod')
+        self.assertIn("is now vip", self._say(f"!role,,{OTHER},,vip"))
+        self.assertEqual(db_operations.get_node_role(OTHER), 'vip')
+
+    def test_a_mod_cannot_appoint_another_mod(self):
+        """The power to appoint is what turns one bad moderator into
+        several, so it stays with admin."""
+        self._as('mod')
+        self.assertIn("can assign up to", self._say(f"!role,,{OTHER},,mod"))
+        self.assertEqual(db_operations.get_node_role(OTHER), 'unregistered')
+
+    def test_an_admin_can_appoint_a_mod(self):
+        self._as('admin')
+        self.assertIn("is now mod", self._say(f"!role,,{OTHER},,mod"))
+
+    def test_nobody_can_assign_above_their_own_rank(self):
+        self._as('admin')
+        self.assertIn("can assign up to", self._say(f"!role,,{OTHER},,developer"))
+        self.assertEqual(db_operations.get_node_role(OTHER), 'unregistered')
+
+    def test_a_mod_can_ban(self):
+        """The thing moderators are for."""
+        self._as('mod')
+        self._say(f"!role,,{OTHER},,banned")
+        self.assertEqual(db_operations.get_node_role(OTHER), 'banned')
+
+    def test_you_cannot_change_your_own_role(self):
+        self._as('admin')
+        self.assertIn("your own role", self._say(f"!role,,{NODE},,developer"))
+        self.assertEqual(db_operations.get_node_role(NODE), 'admin')
+
+    def test_you_cannot_demote_someone_who_outranks_you(self):
+        self._as('mod')
+        db_operations.set_node_role(OTHER, 'admin')
+        self.assertIn("outranks you", self._say(f"!role,,{OTHER},,user"))
+        self.assertEqual(db_operations.get_node_role(OTHER), 'admin')
+
+    def test_an_unknown_role_is_refused(self):
+        self._as('admin')
+        self.assertIn("Unknown role", self._say(f"!role,,{OTHER},,wizard"))
+
+    def test_bad_usage_explains_itself(self):
+        self._as('admin')
+        self.assertIn("Usage:", self._say("!role,,onlyone"))
+
+    def test_who_reports_a_role(self):
+        self._as('mod')
+        db_operations.set_node_role(OTHER, 'vip')
+        self.assertIn("vip", self._say(f"!who,,{OTHER}"))
+
+    def test_who_is_not_for_ordinary_users(self):
+        """It reports on other people."""
+        self._as('user')
+        self.assertIn("for moderators", self._say(f"!who,,{OTHER}"))
+
+    def test_the_commands_can_be_turned_off(self):
+        self._config("[roles]\nbbs_commands = false\n")
+        self._as('admin')
+        self.assertIn("turned off", self._say(f"!role,,{OTHER},,vip"))
+        self.assertEqual(db_operations.get_node_role(OTHER), 'unregistered')
+
+    def test_quick_help_hides_them_from_ordinary_users(self):
+        """A moderator toolkit on everyone's help screen invites attempts,
+        and every attempt costs the node a refusal on air."""
+        self._as('user')
+        self.assertNotIn("!ROLE", self._say("!q"))
+
+    def test_quick_help_shows_them_to_a_mod(self):
+        self._as('mod')
+        self.assertIn("!ROLE", self._say("!q"))
+
+    def test_quick_help_hides_them_when_the_commands_are_off(self):
+        self._config("[roles]\nbbs_commands = false\n")
+        self._as('admin')
+        self.assertNotIn("!ROLE", self._say("!q"))
+
+    def test_a_banned_moderator_gets_nowhere(self):
+        """Banned is checked before dispatch, so rank cannot rescue it."""
+        db_operations.set_node_role(NODE, 'banned')
+        self.assertEqual(self._say(f"!role,,{OTHER},,vip"),
+                         message_processing.BANNED_NOTICE)
+        self.assertEqual(db_operations.get_node_role(OTHER), 'unregistered')
+
+
+class WebAdminRoleTests(unittest.TestCase):
+    """Assigning a role, from the console that is actually behind a password."""
+
+    def setUp(self):
+        import configparser
+        from web_admin import create_app
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        root = Path(self.temp_dir.name)
+        self.config_path = root / "config.ini"
+        config = configparser.ConfigParser()
+        config["admin"] = {"username": "admin", "password": "oldpass"}
+        config["boards"] = {"bulletin_boards": "General"}
+        with open(self.config_path, "w", encoding="utf-8") as handle:
+            config.write(handle)
+        self.env_patch = mock.patch.dict(
+            os.environ,
+            {"BBS_CONFIG_PATH": str(self.config_path),
+             "BBS_DB_PATH": str(root / "bulletins.db"),
+             "BBS_WEBGUI_SECRET": "test-secret"},
+            clear=False)
+        self.env_patch.start()
+        db_operations.initialize_database()
+        self.account_id = db_operations.create_account()
+        db_operations.link_node_to_account(NODE, self.account_id, "meshtastic")
+        db_operations.set_account_alias(self.account_id, "somebody")
+        self.create_app = create_app
+        self.addCleanup(self._close)
+
+    def _close(self):
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
+        if hasattr(db_operations.thread_local, "connection_origin"):
+            del db_operations.thread_local.connection_origin
+        db_operations.remove_connection_log_handler()
+        self.env_patch.stop()
+        self.temp_dir.cleanup()
+
+    def _client(self):
+        client = self.create_app().test_client()
+        token = client.get("/api/csrf-token").get_json()["csrf_token"]
+        client.post("/login", data={"username": "admin", "password": "oldpass",
+                                    "csrf_token": token})
+        return client
+
+    def _post(self, client, path, data):
+        token = client.get("/api/csrf-token").get_json()["csrf_token"]
+        form = dict(data)
+        form["csrf_token"] = token
+        return client.post(path, data=form, follow_redirects=False)
+
+    def test_the_account_page_offers_every_assignable_role(self):
+        page = self._client().get(f"/accounts/{self.account_id}").get_data(as_text=True)
+        for role in db_operations.ASSIGNABLE_ROLES:
+            with self.subTest(role=role):
+                self.assertIn(f'value="{role}"', page)
+        self.assertNotIn('value="unregistered"', page)
+
+    def test_setting_a_role_takes_effect_for_the_linked_device(self):
+        client = self._client()
+        self._post(client, f"/accounts/{self.account_id}", {"action": "set_role",
+                                                            "role": "mod"})
+        self.assertEqual(db_operations.get_node_role(NODE), "mod")
+
+    def test_banning_from_the_account_page_works(self):
+        client = self._client()
+        self._post(client, f"/accounts/{self.account_id}", {"action": "set_role",
+                                                            "role": "banned"})
+        self.assertEqual(db_operations.get_node_role(NODE), "banned")
+
+    def test_an_unknown_role_is_refused(self):
+        client = self._client()
+        self._post(client, f"/accounts/{self.account_id}", {"action": "set_role",
+                                                            "role": "wizard"})
+        self.assertEqual(db_operations.get_node_role(NODE), "user")
+
+    def test_the_local_console_is_not_subject_to_the_remote_ceiling(self):
+        """The ceiling constrains peers. An operator at the web admin can
+        grant developer, or the ceiling would lock them out of their own
+        node."""
+        client = self._client()
+        self._post(client, f"/accounts/{self.account_id}", {"action": "set_role",
+                                                            "role": "developer"})
+        self.assertEqual(db_operations.get_node_role(NODE), "developer")
+
+    def test_a_node_with_no_account_gets_its_role_on_the_client_page(self):
+        """Most radio users never register, so without this the only people
+        who could be banned are the ones who did."""
+        client = self._client()
+        self._post(client, f"/clients/{OTHER}/role", {"role": "banned"})
+        self.assertEqual(db_operations.get_node_role(OTHER), "banned")
+
+    def test_a_linked_device_is_sent_to_its_account_instead(self):
+        """Two places to set one thing is how they end up disagreeing."""
+        client = self._client()
+        self._post(client, f"/clients/{NODE}/role", {"role": "banned"})
+        self.assertEqual(db_operations.get_node_role(NODE), "user")
+
+    def test_the_accounts_list_shows_the_role(self):
+        db_operations.set_account_role(self.account_id, "vip")
+        page = self._client().get("/accounts").get_data(as_text=True)
+        self.assertIn("vip", page)
+
+    def test_setting_a_role_needs_a_login(self):
+        client = self.create_app().test_client()
+        token = client.get("/api/csrf-token").get_json()["csrf_token"]
+        response = client.post(f"/clients/{OTHER}/role",
+                               data={"role": "developer", "csrf_token": token})
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response.headers.get("Location", ""))
+        self.assertEqual(db_operations.get_node_role(OTHER), "unregistered")
+
+    def test_setting_a_role_needs_a_csrf_token(self):
+        client = self._client()
+        client.post(f"/clients/{OTHER}/role", data={"role": "developer"})
+        self.assertEqual(db_operations.get_node_role(OTHER), "unregistered")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6159,6 +6159,7 @@ def create_app(runtime_interface=None) -> Flask:
     @app.route("/clients/<path:node_id>/profile")
     @login_required
     def client_profile(node_id):
+      from db_operations import get_node_role, ASSIGNABLE_ROLES
       with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -6194,7 +6195,34 @@ def create_app(runtime_interface=None) -> Flask:
         profile=profile,
         node_id=node_id,
         linked_account_id=account_id,
+        role=get_node_role(node_id),
+        assignable_roles=ASSIGNABLE_ROLES,
       )
+
+    @app.post("/clients/<path:node_id>/role")
+    @login_required
+    def client_role(node_id):
+      """Assign a role to a node that has no account.
+
+      Most radio users never get an account -- one is only created when
+      somebody links a device or opts into mail relay -- so without this the
+      only people who could be banned are the ones who registered.
+      """
+      from db_operations import (ASSIGNABLE_ROLES, set_node_role,
+                                 get_account_id_for_node)
+      role = (request.form.get("role") or "").strip().casefold()
+      if role not in ASSIGNABLE_ROLES:
+        flash("Unknown role.", "error")
+      elif get_account_id_for_node(node_id):
+        # The account is the authority, and editing it there keeps one
+        # answer for every device that person has linked.
+        flash("This device belongs to an account; set the role there.", "error")
+      elif set_node_role(node_id, role, assigned_by='web'):
+        logging.warning("Node %s role set to %r via web admin", node_id, role)
+        flash(f'Role set to "{role}".', "success")
+      else:
+        flash("That role could not be set.", "error")
+      return redirect(url_for("client_profile", node_id=node_id))
 
     @app.post("/clients/<path:node_id>/profile/delete")
     @login_required
@@ -6325,7 +6353,9 @@ def create_app(runtime_interface=None) -> Flask:
         get_account, get_linked_nodes_detail, set_account_alias,
         unlink_node, link_node_to_account, get_account_id_for_node,
         account_deletion_blockers, delete_account,
+        get_account_role, ASSIGNABLE_ROLES,
       )
+      from utils import is_role_sync_enabled, get_remote_role_ceiling
       from utils import home_network
 
       account = get_account(account_id)
@@ -6356,6 +6386,19 @@ def create_app(runtime_interface=None) -> Flask:
           else:
             link_node_to_account(node_id, account_id, home_network(node_id))
             flash(f"Linked {node_id}.", "success")
+        elif action == "set_role":
+          # Banned is the one that does something today, so it is logged at
+          # warning level like the other authority changes on this box.
+          from db_operations import ASSIGNABLE_ROLES, set_account_role
+          role = (request.form.get("role") or "").strip().casefold()
+          if role not in ASSIGNABLE_ROLES:
+            flash("Unknown role.", "error")
+          elif set_account_role(account_id, role):
+            logging.warning("Account %s role set to %r via web admin",
+                            account_id, role)
+            flash(f'Role set to "{role}".', "success")
+          else:
+            flash("That account's role could not be changed.", "error")
         elif action == "delete_account":
           # Typing the alias is the confirmation. A dialog is one careless
           # Enter away, and this removes the account's mail for good --
@@ -6394,6 +6437,10 @@ def create_app(runtime_interface=None) -> Flask:
         alias=account[1],
         created_at=account[2],
         devices=detail,
+        role=get_account_role(account_id),
+        assignable_roles=ASSIGNABLE_ROLES,
+        role_syncs=is_role_sync_enabled(),
+        remote_role_ceiling=get_remote_role_ceiling(),
         deletion_blockers=account_deletion_blockers(account_id),
       )
 
