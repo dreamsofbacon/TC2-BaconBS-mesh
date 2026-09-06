@@ -412,11 +412,26 @@ def handle_mail_command(sender_id, interface, notice=None):
 _MAIL_DIRECTORY_PAGE_SIZE = 6
 
 
-def _mail_directory_page(entries: list[dict], page: int, selecting: bool) -> str:
+def mail_directory_page_view(entries: list[dict], page: int) -> tuple:
+    """The one definition of what a page of the directory contains.
+
+    Returns (visible, page, page_count) with the page clamped into range.
+
+    Shared by the renderer and by the code that resolves a typed number,
+    because those two disagreeing is a silent wrong-recipient bug: the
+    screen restarts at [1] on every page, so a resolver indexing the whole
+    directory sends page two's [1] to the first person instead of the
+    seventh, with no error anywhere. menu_layout exists for the same reason
+    -- the main menu's numbers once disagreed with the handlers behind them.
+    """
     page_count = max(1, (len(entries) + _MAIL_DIRECTORY_PAGE_SIZE - 1) // _MAIL_DIRECTORY_PAGE_SIZE)
-    page = max(0, min(page, page_count - 1))
+    page = max(0, min(int(page), page_count - 1))
     start = page * _MAIL_DIRECTORY_PAGE_SIZE
-    visible = entries[start:start + _MAIL_DIRECTORY_PAGE_SIZE]
+    return entries[start:start + _MAIL_DIRECTORY_PAGE_SIZE], page, page_count
+
+
+def _mail_directory_page(entries: list[dict], page: int, selecting: bool) -> str:
+    visible, page, page_count = mail_directory_page_view(entries, page)
     heading = "Select a relay user:" if selecting else "Relay Directory"
     lines = [f"{heading} (page {page + 1}/{page_count})"]
     for index, entry in enumerate(visible, start=1):
@@ -449,8 +464,7 @@ def _directory_selection(entries: list[dict], page: int, message) -> tuple:
         index = int(str(message).strip()) - 1
     except (TypeError, ValueError):
         return None, 'not_a_number'
-    start = page * _MAIL_DIRECTORY_PAGE_SIZE
-    visible = entries[start:start + _MAIL_DIRECTORY_PAGE_SIZE]
+    visible, _page, _count = mail_directory_page_view(entries, page)
     if 0 <= index < len(visible):
         return visible[index], None
     return None, 'out_of_range'
@@ -2135,8 +2149,8 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
 
     elif step == 9:
         entries = state.get('directory', [])
-        page_count = max(1, (len(entries) + _MAIL_DIRECTORY_PAGE_SIZE - 1) // _MAIL_DIRECTORY_PAGE_SIZE)
-        page = max(0, min(int(state.get('directory_page', 0)), page_count - 1))
+        _visible, page, page_count = mail_directory_page_view(
+            entries, state.get('directory_page', 0))
         choice = message.lower()
         if choice in ('0', 'x', 'cancel'):
             handle_mail_command(sender_id, interface)
@@ -2163,8 +2177,8 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
 
     elif step == 10:
         entries = state.get('directory', [])
-        page_count = max(1, (len(entries) + _MAIL_DIRECTORY_PAGE_SIZE - 1) // _MAIL_DIRECTORY_PAGE_SIZE)
-        page = max(0, min(int(state.get('directory_page', 0)), page_count - 1))
+        _visible, page, page_count = mail_directory_page_view(
+            entries, state.get('directory_page', 0))
         choice = message.lower()
         # The page footer prints "[0] Back", and 0 is Back everywhere else in
         # the BBS, but this handler only ever accepted 'x' -- so the one key
