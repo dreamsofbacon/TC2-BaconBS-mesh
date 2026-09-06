@@ -1527,7 +1527,6 @@ def _run_sync_for_link(link: RadioLink, node) -> None:
     if 'profiles' not in peer_scopes_mismatched:
         logging.info(f"[{link.name}] P4 profiles skipped for {node}: SYNCSTATE counts/hash match")
         sync_mail_relay_preferences_to_nodes([node], interface)
-        sync_node_roles_to_nodes([node], interface)
         link.profiles_synced_nodes.add(node)
         mark_peer_phase_synced(node, 'profiles')
     else:
@@ -1961,6 +1960,15 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
         for new_node in sorted(new_nodes, key=str):
             t = threading.Thread(target=_run_sync_for_link, args=(link, new_node), daemon=True)
             t.start()
+
+    # Roles ride the tick, not the five-phase sync. The phases are gated on
+    # phases_complete, which is persisted, so on an established fleet P4 has
+    # finished forever -- anything hung off it never runs again. This is
+    # change-driven, so a fleet where nobody's role moves sends nothing.
+    try:
+        sync_node_roles_to_nodes(sorted(current_bbs_nodes), link.interface)
+    except Exception:
+        logging.debug(f"[{link.name}] role advertisement failed", exc_info=True)
 
     link.next_node_sync_check = now + 5
 

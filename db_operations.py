@@ -6544,8 +6544,26 @@ def sync_mail_relay_preferences_to_nodes(bbs_nodes: list, interface) -> int:
     return sent
 
 
-def sync_node_roles_to_nodes(bbs_nodes: list, interface) -> int:
-    """Advertise every role this node holds an opinion about."""
+# What we have already told each peer: (peer, node_id) -> updated_at.
+# In memory, so a restart re-advertises once and a peer that missed a frame
+# while it was down gets it again -- roles have no hash scope, so nothing
+# else would ever notice the gap.
+_advertised_roles = {}
+
+
+def sync_node_roles_to_nodes(bbs_nodes: list, interface, force: bool = False) -> int:
+    """Advertise roles that have changed since we last told each peer.
+
+    Called from the periodic tick rather than the five-phase sync. The
+    phases are gated on `phases_complete`, which is persisted -- so on an
+    established fleet P4 has finished forever and anything hung off it
+    never runs again. That is where this started, and role sync silently
+    did nothing on the live nodes as a result.
+
+    Change-driven so the steady state costs no airtime at all: a role that
+    has not moved is not re-sent, and a fleet where nobody's role changes
+    sends nothing.
+    """
     if not bbs_nodes or not interface:
         return 0
     from utils import send_node_role_to_bbs_nodes, is_role_sync_enabled
@@ -6555,8 +6573,14 @@ def sync_node_roles_to_nodes(bbs_nodes: list, interface) -> int:
     for node_id, role, updated_at in get_node_roles_for_sync():
         if not updated_at:
             continue
-        sent += send_node_role_to_bbs_nodes(
-            node_id, role, updated_at, bbs_nodes, interface)
+        for peer_id in bbs_nodes:
+            key = (str(peer_id), str(node_id))
+            if not force and _advertised_roles.get(key) == updated_at:
+                continue
+            if send_node_role_to_bbs_nodes(
+                    node_id, role, updated_at, [peer_id], interface):
+                _advertised_roles[key] = updated_at
+                sent += 1
     return sent
 
 
@@ -6591,10 +6615,6 @@ def sync_profiles_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] =
                                   current_phase='syncing_profiles',
                                   last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         relay_preferences_synced = sync_mail_relay_preferences_to_nodes(bbs_nodes, interface)
-        # Roles ride the profile phase: both are small statements about
-        # people rather than content, and neither has a hash scope of
-        # its own to drive a repair pass.
-        sync_node_roles_to_nodes(bbs_nodes, interface)
         logging.info(f"P4 profile sync: sent {profiles_synced} profiles to {len(bbs_nodes)} peer(s)")
         _update_sync_progress(in_progress=False, progress_percent=100, completed_items=total_items,
                               total_items=total_items, remaining_items=0, current_phase='profiles_complete',
