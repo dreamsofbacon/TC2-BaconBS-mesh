@@ -25,6 +25,35 @@
   <p style="margin-top:1rem"><a href="{{ url_for('clients_summary') }}">&larr; Back to Clients</a></p>
 </div>
 
+<div class="card">
+  <h2>Role</h2>
+  {% if linked_account_id %}
+  <p class="text-muted">
+    This device belongs to <a href="{{ url_for('account_detail', account_id=linked_account_id) }}">an account</a>,
+    which is where its role lives &mdash; one answer for every device that
+    person has linked. Current role: <strong>{{ role }}</strong>.
+  </p>
+  {% else %}
+  <p class="text-muted">
+    This device has no account, so the role is set here. Most radio users are
+    in this position: an account only appears when somebody links a device or
+    opts into mail relay. <strong>Banned</strong> stops them using the BBS at
+    all &mdash; they are told once, then ignored.
+  </p>
+  <form method="post" action="{{ url_for('client_role', node_id=node_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-group">
+      <select name="role" class="form-control" style="max-width:200px;display:inline-block">
+        {% for option in assignable_roles %}
+        <option value="{{ option }}" {% if option == role %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn" type="submit">Save Role</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+
 {% if profile %}
 <div class="card">
   <h2>Delete this profile</h2>

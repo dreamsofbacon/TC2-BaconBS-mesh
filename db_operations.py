@@ -6053,18 +6053,21 @@ def account_authorized(node_id: str, configured_allow_lists) -> bool:
 
 
 def list_accounts() -> list:
-    """[(account_id, alias, created_at, device_count), ...] for the web
-    admin's /accounts list page, newest first."""
+    """[(account_id, alias, created_at, device_count, role), ...] for the
+    web admin's /accounts list page, newest first.
+
+    Role is appended rather than inserted, because the page unpacks these
+    positionally."""
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        '''SELECT a.account_id, a.alias, a.created_at, COUNT(l.node_id)
+        '''SELECT a.account_id, a.alias, a.created_at, COUNT(l.node_id), a.role
            FROM accounts a
            LEFT JOIN linked_nodes l ON l.account_id = a.account_id
-           GROUP BY a.account_id, a.alias, a.created_at
+           GROUP BY a.account_id, a.alias, a.created_at, a.role
            ORDER BY a.created_at DESC'''
     )
-    return c.fetchall()
+    return [(r[0], r[1], r[2], r[3], normalize_role(r[4])) for r in c.fetchall()]
 
 
 def get_account(account_id: str):
@@ -6541,6 +6544,22 @@ def sync_mail_relay_preferences_to_nodes(bbs_nodes: list, interface) -> int:
     return sent
 
 
+def sync_node_roles_to_nodes(bbs_nodes: list, interface) -> int:
+    """Advertise every role this node holds an opinion about."""
+    if not bbs_nodes or not interface:
+        return 0
+    from utils import send_node_role_to_bbs_nodes, is_role_sync_enabled
+    if not is_role_sync_enabled():
+        return 0
+    sent = 0
+    for node_id, role, updated_at in get_node_roles_for_sync():
+        if not updated_at:
+            continue
+        sent += send_node_role_to_bbs_nodes(
+            node_id, role, updated_at, bbs_nodes, interface)
+    return sent
+
+
 def sync_profiles_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] = None) -> dict:
     """P4 — user profile records."""
     if not bbs_nodes or not interface:
@@ -6572,6 +6591,10 @@ def sync_profiles_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] =
                                   current_phase='syncing_profiles',
                                   last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         relay_preferences_synced = sync_mail_relay_preferences_to_nodes(bbs_nodes, interface)
+        # Roles ride the profile phase: both are small statements about
+        # people rather than content, and neither has a hash scope of
+        # its own to drive a repair pass.
+        sync_node_roles_to_nodes(bbs_nodes, interface)
         logging.info(f"P4 profile sync: sent {profiles_synced} profiles to {len(bbs_nodes)} peer(s)")
         _update_sync_progress(in_progress=False, progress_percent=100, completed_items=total_items,
                               total_items=total_items, remaining_items=0, current_phase='profiles_complete',

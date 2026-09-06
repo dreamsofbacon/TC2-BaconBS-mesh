@@ -38,6 +38,7 @@ from config_init import (
 )
 from radio_link import RadioLink
 from db_operations import (
+    sync_node_roles_to_nodes,
     initialize_database,
     install_connection_log_handler,
     sync_full_database_to_nodes,
@@ -1526,6 +1527,7 @@ def _run_sync_for_link(link: RadioLink, node) -> None:
     if 'profiles' not in peer_scopes_mismatched:
         logging.info(f"[{link.name}] P4 profiles skipped for {node}: SYNCSTATE counts/hash match")
         sync_mail_relay_preferences_to_nodes([node], interface)
+        sync_node_roles_to_nodes([node], interface)
         link.profiles_synced_nodes.add(node)
         mark_peer_phase_synced(node, 'profiles')
     else:

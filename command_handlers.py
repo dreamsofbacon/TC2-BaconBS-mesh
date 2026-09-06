@@ -11,6 +11,10 @@ from meshtastic import BROADCAST_NUM
 from db_operations import (
     add_bulletin, add_mail, delete_mail,
     get_content_source_nodes,
+    get_node_role, set_node_role, get_role_updated_at,
+    role_at_least, role_rank, normalize_role,
+    ASSIGNABLE_ROLES, ROLE_MOD, ROLE_VIP, ROLE_UNREGISTERED,
+    get_account_id_for_node,
     count_hidden_bulletins, count_hidden_mail, count_hidden_channel_comments,
     get_bulletin_content, get_bulletins,
     get_mail, get_mail_content,
@@ -40,6 +44,8 @@ from utils import (
     node_display_name, scope_notice, local_identities_for_display,
     short_node_id,
     get_node_nicknames, node_ids_for_name, get_max_text_bytes,
+    is_bbs_role_management_enabled, is_role_sync_enabled,
+    send_node_role_to_bbs_nodes,
 )
 from zork_port import (
     GAMES,
@@ -2680,4 +2686,111 @@ def handle_quick_help_command(sender_id, interface):
         "!CHP,, - Post Channel\n!CHL - List Channels\n"
         "Global menus: !Q !B !U !P !N !A !S !V !X"
     )
+    # Only shown to someone who can use them. A moderator's toolkit listed on
+    # everyone's help screen is an invitation to try it, and every attempt
+    # costs the node a refusal on air.
+    if _role_commands_available(sender_id, interface):
+        response += "\n!ROLE,,<node>,,<role> - Set a role\n!WHO,,<node> - Look one up"
     send_message(response, sender_id, interface)
+
+
+def _role_commands_available(sender_id, interface) -> bool:
+    if not is_bbs_role_management_enabled():
+        return False
+    node_id = get_node_id_from_num(sender_id, interface)
+    return bool(node_id) and role_at_least(get_node_role(node_id), ROLE_MOD)
+
+
+def handle_who_command(sender_id, message, interface):
+    """!WHO,,<node id> -- what role somebody has.
+
+    Mod and up, because it reports on other people. A moderator deciding
+    whether to act needs to see the current state first, and guessing at it
+    from a ban that may not have applied is how you ban someone twice.
+    """
+    if not _role_commands_available(sender_id, interface):
+        send_message(_role_command_refusal(sender_id, interface), sender_id, interface)
+        return
+    target = str(message or '').split(',,', 1)[-1].strip()
+    if not target:
+        send_message("Usage: !WHO,,<node id>", sender_id, interface)
+        return
+    role = get_node_role(target)
+    account_id = get_account_id_for_node(target)
+    where = "account" if account_id else "this device"
+    send_message(f"{target}\nRole: {role} (set on {where})", sender_id, interface)
+
+
+def handle_role_command(sender_id, message, interface, bbs_nodes=None):
+    """!ROLE,,<node id>,,<role> -- assign a role from the BBS.
+
+    Mod and Admin only, and a mod may not create another mod: promotion to
+    the level that can promote stays with Admin, so a single compromised
+    moderator cannot widen its own reach. Nobody may assign above their own
+    rank for the same reason.
+    """
+    if not is_bbs_role_management_enabled():
+        send_message("Role commands are turned off on this node.", sender_id, interface)
+        return
+    node_id = get_node_id_from_num(sender_id, interface)
+    actor_role = get_node_role(node_id) if node_id else ROLE_UNREGISTERED
+    if not role_at_least(actor_role, ROLE_MOD):
+        send_message(_role_command_refusal(sender_id, interface), sender_id, interface)
+        return
+
+    parts = [p.strip() for p in str(message or '').split(',,')]
+    if len(parts) < 3 or not parts[1] or not parts[2]:
+        send_message("Usage: !ROLE,,<node id>,,<role>\n"
+                     f"Roles: {', '.join(ASSIGNABLE_ROLES)}", sender_id, interface)
+        return
+    target, requested = parts[1], normalize_role(parts[2])
+    if requested not in ASSIGNABLE_ROLES:
+        send_message(f"Unknown role. Try: {', '.join(ASSIGNABLE_ROLES)}",
+                     sender_id, interface)
+        return
+
+    # Checked first, and before the ceiling, so someone trying to promote
+    # themselves is told the actual rule rather than being handed a limit
+    # that reads like the only thing standing in the way.
+    if str(target) == str(node_id):
+        send_message("You cannot change your own role.", sender_id, interface)
+        return
+    # Never above your own rank, and a mod stops below mod: the power to
+    # appoint is what turns one bad moderator into several.
+    ceiling = ROLE_VIP if actor_role == ROLE_MOD else actor_role
+    if role_rank(requested) > role_rank(ceiling):
+        send_message(f"You can assign up to {ceiling}.", sender_id, interface)
+        return
+    target_role = get_node_role(target)
+    if role_rank(target_role) > role_rank(actor_role):
+        send_message("That person outranks you.", sender_id, interface)
+        return
+
+    if set_node_role(target, requested, assigned_by=str(node_id or 'bbs')):
+        logging.warning("Role %r set for %s by %s over the BBS",
+                        requested, target, node_id)
+        send_message(f"{target} is now {requested}.", sender_id, interface)
+        _announce_role_change(target, requested, interface, bbs_nodes)
+    else:
+        send_message("That role could not be set.", sender_id, interface)
+
+
+def _announce_role_change(node_id, role, interface, bbs_nodes) -> None:
+    """Push a role straight out rather than waiting for the next sync pass.
+
+    A ban that takes an hour to reach the other nodes is most of an hour of
+    the thing you banned them for.
+    """
+    try:
+        if not bbs_nodes or not interface or not is_role_sync_enabled():
+            return
+        send_node_role_to_bbs_nodes(node_id, role, get_role_updated_at(node_id),
+                                    bbs_nodes, interface)
+    except Exception:
+        logging.debug("could not announce a role change", exc_info=True)
+
+
+def _role_command_refusal(sender_id, interface) -> str:
+    if not is_bbs_role_management_enabled():
+        return "Role commands are turned off on this node."
+    return "That command is for moderators."
