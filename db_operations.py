@@ -123,6 +123,85 @@ def get_local_node_id() -> Optional[str]:
     return _local_node_id
 
 
+_LOCAL_IDENTITY_CACHE = None
+_LOCAL_IDENTITY_CACHE_AT = 0.0
+_LOCAL_IDENTITY_CACHE_SECONDS = 30.0
+
+
+def _ensure_local_identities_table(c) -> None:
+    c.execute('''CREATE TABLE IF NOT EXISTS local_node_identities (
+                    node_id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL DEFAULT 'link',
+                    recorded_at TEXT NOT NULL
+                );''')
+
+
+def persist_local_identities(link_ids, capture_ids=None) -> None:
+    """Write down what this node answers to, for the other processes.
+
+    server.py is the only process that can know this -- it owns the radios --
+    but it is not the only one that needs it. bacon-ssh and bacon-web-admin
+    are separate services with their own module globals, so an in-memory set
+    is empty there, and "This node" silently means "no ids", which resolves
+    to no filter at all. That is not a hypothetical: it shipped, and the SSH
+    picker starred both All nodes and This node at once because their id sets
+    were both empty and therefore equal.
+
+    Replaces the table wholesale rather than merging, so an identity that
+    goes away (a bridge removed from config) stops being us.
+    """
+    global _LOCAL_IDENTITY_CACHE
+    rows = [(str(i), 'link') for i in (link_ids or []) if i]
+    rows += [(str(i), 'capture') for i in (capture_ids or []) if i]
+    if not rows:
+        return
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn = get_db_connection()
+    c = conn.cursor()
+    _ensure_local_identities_table(c)
+    c.execute("DELETE FROM local_node_identities")
+    c.executemany(
+        "INSERT OR REPLACE INTO local_node_identities (node_id, kind, recorded_at)"
+        " VALUES (?, ?, ?)", [(nid, kind, now) for nid, kind in rows])
+    conn.commit()
+    _LOCAL_IDENTITY_CACHE = None
+
+
+def get_persisted_local_identities() -> set:
+    """What server.py last recorded as this node's own ids."""
+    global _LOCAL_IDENTITY_CACHE, _LOCAL_IDENTITY_CACHE_AT
+    now = time.time()
+    if (_LOCAL_IDENTITY_CACHE is not None
+            and now - _LOCAL_IDENTITY_CACHE_AT < _LOCAL_IDENTITY_CACHE_SECONDS):
+        return set(_LOCAL_IDENTITY_CACHE)
+    ids = set()
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        _ensure_local_identities_table(c)
+        ids = {str(row[0]) for row in c.execute(
+            "SELECT node_id FROM local_node_identities") if row[0]}
+    except Exception:
+        logging.debug("could not read local identities", exc_info=True)
+    _LOCAL_IDENTITY_CACHE = set(ids)
+    _LOCAL_IDENTITY_CACHE_AT = now
+    return set(ids)
+
+
+def get_local_identities_for_scope() -> set:
+    """Every id that means "this node" to the Node View lens.
+
+    Deliberately NOT get_local_link_identities(). That set answers "is this
+    me?" during sync, where being wrong makes a node record sync state for
+    itself and repair against a phantom peer forever, so it stays narrow and
+    in-process. This one is wider -- it folds in the public-chatter capture
+    ids, which live in a different namespace entirely -- and falls back to
+    what server.py persisted, so it is right in a process that owns no radio.
+    """
+    ids = get_local_link_identities() | get_local_capture_identities()
+    return ids | get_persisted_local_identities()
+
+
 def origin_scope_includes_null(source_node_ids) -> bool:
     """Whether a scope covers rows with no recorded origin.
 
@@ -139,7 +218,7 @@ def origin_scope_includes_null(source_node_ids) -> bool:
     if source_node_ids is None:
         return False
     ids = {str(v).strip() for v in source_node_ids if str(v).strip()}
-    return bool(ids & get_local_link_identities())
+    return bool(ids & get_local_identities_for_scope())
 
 
 def origin_scope_clause(column: str, source_node_ids) -> tuple:

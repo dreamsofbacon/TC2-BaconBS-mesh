@@ -130,6 +130,37 @@ def local_node_identities() -> set:
     return ids
 
 
+def publish_local_identities() -> None:
+    """Tell the rest of the system what this node answers to.
+
+    Two audiences, and they need different things.
+
+    In-process, so the "is this me?" sync check does not have to import
+    server (see local_node_identities) -- and that set stays narrow, because
+    a wrong answer there makes a node record sync state for itself and
+    repair against a phantom peer forever.
+
+    And in the database, because bacon-ssh and bacon-web-admin are separate
+    services with their own module globals. Without that the Node View lens
+    reads "This node" as an empty id set over SSH, which is indistinguishable
+    from no filter -- it shipped that way, and the picker starred All nodes
+    and This node at the same time because both sets were empty.
+    """
+    try:
+        from db_operations import set_local_link_identities
+        set_local_link_identities(local_node_identities())
+    except Exception:
+        logging.debug("could not publish local link identities", exc_info=True)
+    try:
+        from db_operations import (set_local_capture_identities,
+                                   persist_local_identities)
+        set_local_capture_identities(local_capture_identities())
+        persist_local_identities(local_node_identities(),
+                                 local_capture_identities())
+    except Exception:
+        logging.debug("could not publish local capture identities", exc_info=True)
+
+
 def local_capture_identities() -> set:
     """The ids this node's own radios stamp on public chatter.
 
@@ -2037,18 +2068,7 @@ def main():
     global _active_links
     _active_links = links
     set_public_chatter_cross_link_relay(relay_public_chatter_to_mqtt_links)
-    # Publish every identity this node answers to, so the "is this me?"
-    # checks do not have to import server (see local_node_identities).
-    try:
-        from db_operations import set_local_link_identities
-        set_local_link_identities(local_node_identities())
-    except Exception:
-        logging.debug("could not publish local link identities", exc_info=True)
-    try:
-        from db_operations import set_local_capture_identities
-        set_local_capture_identities(local_capture_identities())
-    except Exception:
-        logging.debug("could not publish local capture identities", exc_info=True)
+    publish_local_identities()
 
     trigger_path = get_manual_sync_trigger_path()
     force_check_trigger_path = get_force_check_trigger_path()
