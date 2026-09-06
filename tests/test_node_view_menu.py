@@ -306,6 +306,35 @@ class MailIndicatorTests(_Screen):
         utils.set_view_scope(SENDER, [PEER])
         self.assertIn("!V=all", self.read_mail())
 
+    def test_the_way_out_actually_works_from_the_mailbox(self):
+        """The notice is a promise, and it was false here. Mail is
+        dispatched ahead of the global-prefix branch, so !V typed on a mail
+        screen was swallowed as mail input and nothing happened -- on the
+        one screen where being able to widen matters most."""
+        utils.set_view_scope(SENDER, [PEER])
+        utils.update_user_state(SENDER, {'command': 'MAIL', 'step': 1})
+        self.sent.clear()
+        message_processing.process_message(
+            sender_id=SENDER, message="!v", interface=self.iface,
+            sender_node_id=SENDER_NODE)
+        self.assertIn("Node View", self.all_sent())
+        self.assertIn("Posts sync everywhere", self.all_sent())
+
+    def test_a_message_body_starting_with_a_bang_is_still_a_body(self):
+        """The reason mail is dispatched early in the first place. Escaping
+        must not reach into the steps where the BBS asked for content."""
+        for step in (3, 5, 7):
+            with self.subTest(step=step):
+                utils.update_user_state(
+                    SENDER, {'command': 'MAIL', 'step': step,
+                             'recipient_id': PEER, 'recipient_name': 'x',
+                             'subject': 's', 'content': ''})
+                self.sent.clear()
+                message_processing.process_message(
+                    sender_id=SENDER, message="!vote for me", interface=self.iface,
+                    sender_node_id=SENDER_NODE)
+                self.assertNotIn("Posts sync everywhere", self.all_sent())
+
     def test_the_main_menu_badge_still_counts_the_whole_mailbox(self):
         """Deliberately unscoped. It is the top-level guarantee that mail is
         never hidden: badge 2 against a list of 1 is what makes the notice
