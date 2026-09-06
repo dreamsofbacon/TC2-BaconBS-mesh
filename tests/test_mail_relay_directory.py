@@ -128,8 +128,11 @@ class RelayDirectoryNavigationTests(unittest.TestCase):
 
     def _browse(self, key):
         state = {'command': 'MAIL', 'step': 10,
+                 # recipient_node_id as well as node_ids, because a real
+                 # get_mail_relay_directory entry carries both -- the browse
+                 # path simply never read the first one before.
                  'directory': [{'display_name': 'somebody', 'protocols': ['Meshtastic'],
-                                'node_ids': [THEM]}],
+                                'recipient_node_id': THEM, 'node_ids': [THEM]}],
                  'directory_page': 0}
         with mock.patch.object(ch, "send_message",
                                side_effect=lambda text, *_a, **_k: self.sent.append(text)):
@@ -155,6 +158,68 @@ class RelayDirectoryNavigationTests(unittest.TestCase):
         sent = self._browse("?")
         self.assertIn("Relay Directory", sent[-1])
         self.assertNotIn("Reply N, P, or X.", sent[-1])
+
+    def test_a_number_starts_a_message_to_that_person(self):
+        """Browsing the directory was a dead end. The entries are numbered,
+        so a number is the obvious thing to type, and typing one redrew the
+        identical page -- which reads as the key being broken, not as
+        "this screen is read-only"."""
+        sent = self._browse("1")
+        self.assertIn("subject of your message to somebody", sent[-1])
+
+    def test_it_leaves_the_user_ready_to_write(self):
+        """Not just the right words: the state has to move to the compose
+        step with the recipient attached, or the next thing they type is
+        read as another directory key."""
+        self._browse("1")
+        state = ch.get_user_state(1234)
+        self.assertEqual(state['step'], 5)
+        self.assertEqual(state['recipient_id'], THEM)
+        self.assertEqual(state['recipient_name'], 'somebody')
+
+    def test_the_subject_prompt_says_how_to_back_out(self):
+        """It drops the reader into a free-text prompt. Both other routes
+        into this step name the cancel word; this one did not."""
+        self.assertIn(ch.CANCEL_HINT, self._browse("1")[-1])
+
+    def test_a_number_nobody_is_listed_at_says_so(self):
+        sent = self._browse("9")
+        self.assertIn("No one is listed at that number", sent[-1])
+        self.assertIn("Relay Directory", sent[-1])
+
+    def _browse_page(self, key, page, count=8):
+        directory = [{'display_name': f"user{i}", 'protocols': ['Meshtastic'],
+                      'recipient_node_id': f"!node{i}", 'node_ids': [f"!node{i}"]}
+                     for i in range(count)]
+        state = {'command': 'MAIL', 'step': 10,
+                 'directory': directory, 'directory_page': page}
+        with mock.patch.object(ch, "send_message",
+                               side_effect=lambda text, *_a, **_k: self.sent.append(text)):
+            ch.update_user_state(1234, state)
+            ch.handle_mail_steps(1234, key, 10, state, self.iface, [])
+        return self.sent
+
+    def test_numbers_are_relative_to_the_page_on_screen(self):
+        """The page restarts at [1] every time, so [1] on page two is the
+        seventh person -- not the first. Every other test here uses one
+        entry on page one, where those two readings are identical and a
+        directory-wide index would look perfectly correct."""
+        self._browse_page("1", page=1)
+        self.assertEqual(ch.get_user_state(1234)['recipient_name'], "user6")
+
+    def test_a_number_past_the_end_of_the_last_page_is_refused(self):
+        """Page two holds two of the eight, so [3] names nobody -- even
+        though a directory-wide index would happily return the third."""
+        sent = self._browse_page("3", page=1)
+        self.assertIn("No one is listed at that number", sent[-1])
+
+    def test_the_page_says_numbers_do_something(self):
+        """Without a cue the numbers read as decoration -- the selecting
+        view has "Select a relay user:" in its heading, browsing had
+        nothing."""
+        page = ch._mail_directory_page(
+            [{'display_name': 'somebody', 'protocols': ['Meshtastic']}], 0, selecting=False)
+        self.assertIn("[#] Write", page)
 
 
 if __name__ == "__main__":
