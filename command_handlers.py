@@ -809,6 +809,26 @@ def _node_view_text(options, page: int, chosen, max_bytes: int) -> tuple:
     return LINE_BREAK.join(body), index
 
 
+def _node_view_page_of(options, index: int, interface) -> int:
+    """Which page an option falls on, walking the same byte fill.
+
+    Derived by running _node_view_text rather than by dividing, because
+    pages are filled to a byte ceiling and hold however many entries fit --
+    a fixed page size here would drift from what was actually rendered as
+    soon as one node had a longer name than another.
+    """
+    max_bytes = get_max_text_bytes(interface)
+    page = 0
+    while page < len(options):
+        _, next_page = _node_view_text(options, page, None, max_bytes)
+        if index < next_page:
+            return page
+        if next_page <= page:
+            break
+        page = next_page
+    return 0
+
+
 def handle_node_view_command(sender_id, interface, notice=None) -> None:
     """Show the picker from the top."""
     _send_node_view_page(sender_id, interface, 0, notice=notice)
@@ -850,7 +870,15 @@ def handle_node_view_steps(sender_id, message, interface, state) -> None:
         index = int(choice) - 1
         if 0 <= index < len(options):
             set_view_scope(sender_id, options[index]['ids'])
-            _send_node_view_page(sender_id, interface, page)
+            # Redraw the page the choice is ON, not the page it was made
+            # from. Numbers are global so that [1] All nodes is always [1]
+            # and the "!V=all" every notice ends with stays true -- but on
+            # MeshCore's 160 bytes a page holds about three entries, so
+            # picking a number from a later page would otherwise redraw a
+            # screen with no star anywhere on it. Selecting something and
+            # being shown no confirmation reads as the key not working.
+            _send_node_view_page(sender_id, interface,
+                                 _node_view_page_of(options, index, interface))
             return
 
     _send_node_view_page(sender_id, interface, page, notice="Invalid choice.")

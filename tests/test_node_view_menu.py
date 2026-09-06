@@ -227,6 +227,20 @@ class PickerTests(_Screen):
         self.assertIn("[N]ext", screen)
         self.assertLessEqual(len(screen.encode("utf-8")), 160)
 
+    def test_picking_from_a_later_page_shows_the_star(self):
+        """On MeshCore a page holds about three entries. Numbers are global
+        so [1] All nodes is always [1], which means a number from a later
+        page is valid from anywhere -- and redrawing the page it was made
+        FROM would show no star at all. Selecting something and seeing no
+        confirmation reads as the key not working."""
+        for i in range(12):
+            self.bulletin(f"b{i}", f"mqtt:baconbbsvt:LongNodeName{i}")
+        self.open_picker()
+        options = (utils.get_user_state(SENDER) or {}).get("options") or []
+        last = len(options)
+        screen = self.pick(str(last))
+        self.assertIn(f"*{options[last - 1]['label']}", screen)
+
     def test_next_shows_the_rest(self):
         for i in range(12):
             self.bulletin(f"b{i}", f"mqtt:baconbbsvt:LongNodeName{i}")
