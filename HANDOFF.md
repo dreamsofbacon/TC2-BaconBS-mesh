@@ -4,7 +4,7 @@ State of the deployment, the decisions behind it, and what is still open.
 For the feature backlog see [feature requests.txt](feature%20requests.txt);
 this file is about running the thing.
 
-Last updated 2026-09-04 at commit `ccb238d` (`v0.1.560`).
+Last updated 2026-09-06 at commit `e4738fa` (`v0.1.566`).
 
 ---
 
@@ -19,7 +19,7 @@ Last updated 2026-09-04 at commit `ccb238d` (`v0.1.560`).
 | Path | `/home/bacon/TC2-BaconBS-mesh` | same |
 | Services | `mesh-bbs.service`, `bacon-web-admin.service`, `bacon-ssh.service` | `mesh-bbs.service`, `bacon-web-admin.service` |
 | Bacon BBS SSH | Active, dual-stack port 2222 | Disabled/inactive |
-| Fleet state | Healthy on `ccb238d` | Healthy on `ccb238d` |
+| Fleet state | Healthy on `e4738fa` | Healthy on `e4738fa` |
 
 forgecam's Python 3.9 matters: `meshcore` and the supported AsyncSSH release
 require newer Python, so `requirements.txt` carries environment markers and
@@ -73,6 +73,15 @@ Recent deployed release sequence (2026-09-04):
 Earlier the same day: `5174737` menu renumbering and a working `[0] Exit`,
 `0bd9178` prefixed cancel words, `75e6ac5` safe account deletion and the
 shared-connection test fix.
+
+Since (2026-09-05/06):
+
+| Commit | Change |
+| --- | --- |
+| `438ebf1` | Deletes for game scores and profiles are remembered |
+| `e291ada` | Delete a score or profile from the web admin |
+| `19caaea` | Node View: read one node, or all of them |
+| `e4738fa` | Node View works in the SSH and web admin processes |
 
 ---
 
@@ -269,6 +278,58 @@ Two details are load-bearing rather than incidental:
 
 Mail an account *sent* stays in its recipients' mailboxes. Deleting the
 sender is not consent to reach into those.
+
+### Node View, and the two id namespaces
+
+`[V] Node View` on the main menu lets a user read **All nodes** (the
+default), **This node**, or **one named peer**, across bulletins, mail,
+channel comments and public chatter. It is a per-session lens over content
+that still syncs everywhere, not a boundary -- `local_only` is the boundary,
+and it remains admin-only and invisible to users.
+
+The rule it lives or dies by: **nothing is ever silently hidden.** A
+narrowed screen names the node, says how many records it is holding back,
+and says `!V=all`. Most of all the empty mailbox, which would otherwise
+flatly claim there is nothing while someone waits on a message. Two places
+stay unscoped on purpose and say so in comments: the main-menu envelope
+badge (it is what makes the count on a narrowed list checkable) and the
+channel post list's latest-commenter preview (scoping it would label a busy
+post "No comments yet").
+
+`!V`, not a bare `V` -- at a mail or bulletin list prompt a bare letter is
+read as an item number and never reaches the menu handlers.
+
+**A node is several ids, in two unrelated namespaces.** Bulletins, mail and
+comments carry `source_node_id` from `user['id']`. Public chatter carries
+`capture_node_id`, set *per radio* from `getMyNodeInfo()['publicKey']`
+(`server.py`). The same physical node therefore appears as
+`mqtt:baconbbsvt:Chattanooga` in one place and a base64 key in the other,
+and nothing in the database relates them. `[node_names]` in `config.ini` is
+the only thing that does -- names on the left, every id on the right, one
+line per node. It is optional: an `mqtt:<topic>:<label>` id already reads as
+its label, so an MQTT-bridged fleet is readable with no config at all.
+
+Also note the chatter filter no longer has a "Heard by:" section. Those were
+capture ids, so on a two-radio node it offered two unlabelled 64-character
+keys meaning "my MeshCore radio" and "my Meshtastic radio". The lens owns
+that dimension now.
+
+**`get_local_link_identities()` is not the set to use for this.** It answers
+"is this me?" during sync, and widening it is how a node ends up recording
+sync state for itself and repairing against a phantom peer forever. The lens
+uses `get_local_identities_for_scope()`, which adds the capture ids and
+falls back to what `server.py` persisted.
+
+That fallback exists because of a bug worth remembering: `bacon-ssh` and
+`bacon-web-admin` are **separate processes** with their own module globals,
+so `set_local_link_identities()` -- called only by `server.py` -- left them
+empty. "This node" was then an empty id list, which is indistinguishable
+from no filter, so the SSH picker starred All nodes and This node at once
+and narrowing did nothing. It raised nowhere. Every unit test set those
+globals in-process, which is precisely why none of them saw it, and it was
+caught only by driving a real SSH session against the deployed node.
+`tests/test_node_view_scope.py::SeparateProcessTests` now forgets everything
+only `server.py` could know before asserting.
 
 ### Deleting a synced record, and why raw SQL is not deleting
 
