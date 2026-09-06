@@ -429,9 +429,49 @@ def _mail_directory_page(entries: list[dict], page: int, selecting: bool) -> str
         controls.append("[N]ext")
     if selecting:
         controls.append("[A]ddress")
+    else:
+        # The selecting view says "Select a relay user:" in its heading.
+        # Browsing had no such cue, so the numbers looked decorative.
+        controls.append("[#] Write")
     controls.append("[0] Back")
     lines.append(" ".join(controls))
     return "\n".join(lines)
+
+
+def _directory_selection(entries: list[dict], page: int, message) -> tuple:
+    """Resolve a reply against the page in front of the user.
+
+    Returns (entry, problem). Numbers are per-page -- _mail_directory_page
+    restarts at [1] on every page -- so this has to be told which page was
+    on screen rather than indexing the whole directory.
+    """
+    try:
+        index = int(str(message).strip()) - 1
+    except (TypeError, ValueError):
+        return None, 'not_a_number'
+    start = page * _MAIL_DIRECTORY_PAGE_SIZE
+    visible = entries[start:start + _MAIL_DIRECTORY_PAGE_SIZE]
+    if 0 <= index < len(visible):
+        return visible[index], None
+    return None, 'out_of_range'
+
+
+def _begin_mail_to_directory_entry(sender_id, interface, entry: dict) -> None:
+    """Go from a directory listing into writing to that person.
+
+    Shared by both ways of reaching the directory. Browsing it used to be a
+    dead end: the entries were numbered, so a number looked like the obvious
+    thing to type, and typing one silently redrew the same page.
+    """
+    send_message(
+        f"What is the subject of your message to {entry['display_name']}?\n"
+        f"Keep it short. {CANCEL_HINT} to stop",
+        sender_id, interface)
+    update_user_state(sender_id, {
+        'command': 'MAIL', 'step': 5,
+        'recipient_id': entry['recipient_node_id'],
+        'recipient_name': entry['display_name'],
+    })
 
 
 def handle_active_users_command(sender_id, interface):
@@ -2112,22 +2152,14 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             update_user_state(sender_id, state)
             send_message(_mail_directory_page(entries, page, selecting=True), sender_id, interface)
             return
-        try:
-            selected_index = int(message) - 1
-        except ValueError:
+        selected, problem = _directory_selection(entries, page, message)
+        if problem == 'not_a_number':
             send_message("Invalid selection. Reply with a listed number, N, P, or X.", sender_id, interface)
             return
-        visible = entries[page * _MAIL_DIRECTORY_PAGE_SIZE:(page + 1) * _MAIL_DIRECTORY_PAGE_SIZE]
-        if selected_index < 0 or selected_index >= len(visible):
+        if problem:
             send_message("Invalid selection. Please choose a listed user.", sender_id, interface)
             return
-        selected = visible[selected_index]
-        send_message(f"What is the subject of your message to {selected['display_name']}?\nKeep it short.", sender_id, interface)
-        update_user_state(sender_id, {
-            'command': 'MAIL', 'step': 5,
-            'recipient_id': selected['recipient_node_id'],
-            'recipient_name': selected['display_name'],
-        })
+        _begin_mail_to_directory_entry(sender_id, interface, selected)
 
     elif step == 10:
         entries = state.get('directory', [])
@@ -2146,7 +2178,20 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             update_user_state(sender_id, state)
             send_message(_mail_directory_page(entries, page, selecting=False), sender_id, interface)
             return
-        send_message(_mail_directory_page(entries, page, selecting=False),
+        # A number picks that person and starts a message to them, the same
+        # as it does when the directory is reached through Send. The entries
+        # are numbered either way, so a number is the obvious thing to type
+        # here -- and it used to redraw the identical page, which reads as
+        # the key being broken rather than as "browsing only".
+        selected, problem = _directory_selection(entries, page, message)
+        if selected is not None:
+            _begin_mail_to_directory_entry(sender_id, interface, selected)
+            return
+        notice = ("No one is listed at that number on this page."
+                  if problem == 'out_of_range'
+                  else "Reply with a number to write to someone, N, P, or 0.")
+        send_message(f"{notice}{LINE_BREAK}"
+                     f"{_mail_directory_page(entries, page, selecting=False)}",
                      sender_id, interface)
 
 
