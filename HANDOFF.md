@@ -299,6 +299,15 @@ post "No comments yet").
 `!V`, not a bare `V` -- at a mail or bulletin list prompt a bare letter is
 read as an item number and never reaches the menu handlers.
 
+**`capture_node_id` travels over the wire and is preserved.** It records
+whichever node originally HEARD a message, wherever that row later ends up
+-- so a capture id you hold is very often not yours. On bbs, 3592 of 3652
+chatter rows carry Chattanooga's MeshCore key: forgecam holds identical
+counts with no radios at all, the hop spread runs 1-31 across 486 senders
+with nothing at hops=0, and the senders are `ChattaMe.sh`, `NashMe.sh`,
+`Knox`, `BNA` -- Tennessee, not Vermont. Do not assume an unfamiliar capture
+id is a stale key of your own; check the hops and the senders.
+
 **A node is several ids, in two unrelated namespaces.** Bulletins, mail and
 comments carry `source_node_id` from `user['id']`. Public chatter carries
 `capture_node_id`, set *per radio* from `getMyNodeInfo()['publicKey']`
@@ -308,6 +317,19 @@ and nothing in the database relates them. `[node_names]` in `config.ini` is
 the only thing that does -- names on the left, every id on the right, one
 line per node. It is optional: an `mqtt:<topic>:<label>` id already reads as
 its label, so an MQTT-bridged fleet is readable with no config at all.
+
+Live `[node_names]` as configured on both nodes is one line, because
+everything else already resolves: this node's own ids are registered
+automatically and read as "this node", and an `mqtt:<topic>:<label>` id
+reads as its label. The only thing nothing can derive is that Chattanooga's
+MeshCore capture key is the same node as `mqtt:baconbbsvt:Chattanooga`.
+Verified over SSH: narrowing to Chattanooga shows the Tennessee mesh,
+narrowing to This node shows Vermont LongFast, and the two differ.
+
+bbs's own radios are `!0408b778` (Meshtastic, capture key `hW9UeHYK..`) and
+`88166fee0f70..` (MeshCore). The MeshCore one has captured nothing, which is
+correct rather than broken: the operator reports it hears nothing but his own
+traffic, and a radio does not receive its own transmissions.
 
 Also note the chatter filter no longer has a "Heard by:" section. Those were
 capture ids, so on a two-radio node it offered two unlabelled 64-character
