@@ -29,26 +29,30 @@ class MainMenuContentsTests(unittest.TestCase):
         list, so a new entry would never show up on an upgraded node."""
         rendered = ch.build_menu(["Q", "B", "U", "P", "N", "X"], self.MAIN)
         self.assertIn("Web Fetch", rendered)
-        self.assertIn("Linked Devices", rendered)
+        self.assertIn("Settings", rendered)
         self.assertIn("Node View", rendered)
 
     def test_a_full_config_numbers_every_entry_in_order(self):
         rendered = ch.build_menu(["Q", "B", "U", "P", "N", "X"], self.MAIN)
         for expected in ("[1] Quick Commands", "[2] BBS", "[3] Utilities",
                          "[4] Profile", "[5] Ask Nomad", "[6] Web Fetch",
-                         "[7] Linked Devices", "[8] Node View", "[0] Exit"):
+                         "[7] Settings", "[8] Node View", "[0] Exit"):
             self.assertIn(expected, rendered)
 
     def test_a_trimmed_config_closes_the_gap_instead_of_skipping_numbers(self):
-        """The baconbot case. This node hides Profile and Ask Nomad on
-        purpose, and the menu used to read [1][2][3][6][7] -- holes that mean
-        nothing to someone who just found the BBS."""
+        """The baconbot case. This node hides Ask Nomad on purpose, and
+        the menu used to read [1][2][3][6][7] -- holes that mean nothing to
+        someone who just found the BBS.
+
+        Profile is no longer hideable: it is where a user reads and edits
+        everything about themselves, so it joins Web Fetch, Settings and
+        Node View in MENU_REQUIRED."""
         rendered = ch.build_menu(["Q", "B", "U", "X"], self.MAIN)
-        self.assertNotIn("Profile", rendered)
         self.assertNotIn("Ask Nomad", rendered)
-        self.assertIn("[4] Web Fetch", rendered)
-        self.assertIn("[5] Linked Devices", rendered)
-        self.assertIn("[6] Node View", rendered)
+        self.assertIn("[4] Profile", rendered)
+        self.assertIn("[5] Web Fetch", rendered)
+        self.assertIn("[6] Settings", rendered)
+        self.assertIn("[7] Node View", rendered)
 
     def test_numbers_run_1_upward_with_no_gaps_for_any_config(self):
         for items in (["Q", "B", "U", "X"], ["Q", "X"], ["Q", "B", "U", "P", "N", "A", "S", "X"],
@@ -91,9 +95,10 @@ class MainMenuContentsTests(unittest.TestCase):
                     self.assertEqual(ch.MAIN_MENU_LABELS[letter.upper()], label)
 
     def test_no_duplicates_when_config_already_lists_them(self):
-        rendered = ch.build_menu(["Q", "A", "S", "X"], self.MAIN)
+        rendered = ch.build_menu(["Q", "A", "S", "P", "X"], self.MAIN)
         self.assertEqual(rendered.count("Web Fetch"), 1)
-        self.assertEqual(rendered.count("Linked Devices"), 1)
+        self.assertEqual(rendered.count("Settings"), 1)
+        self.assertEqual(rendered.count("Profile"), 1)
 
     def test_api_gateway_no_longer_rendered_under_utilities(self):
         """It moved to the main menu; showing it in both would be confusing."""
@@ -130,25 +135,52 @@ class SettingsNavigationTests(unittest.TestCase):
             conn.close()
             del db_operations.thread_local.connection
 
-    def test_settings_shortcut_opens_linked_devices(self):
+    def test_settings_is_its_own_menu_now(self):
+        """It used to jump straight into Linked Devices, which left the S
+        entry mislabelled and the real Settings menu unreachable. Linking
+        moved to Profile, where the rest of a user's identity lives."""
         ch.handle_settings_command(1234, self.iface)
-        self.assertIn("Linked Devices", self.sent[-1])
-        self.assertEqual(ch.get_user_state(1234).get("command"), "ACCOUNT")
-        self.assertEqual(ch.get_user_state(1234).get("return_to"), "main")
+        self.assertIn("Settings", self.sent[-1])
+        self.assertNotIn("Request link code", self.sent[-1])
+        self.assertEqual(ch.get_user_state(1234).get("command"), "SETTINGS")
 
-    def test_choice_one_opens_account_linking(self):
+    def test_it_reports_each_setting_current_value(self):
+        """A menu line that names a toggle without its state makes you open
+        it just to find out."""
+        ch.handle_settings_command(1234, self.iface)
+        body = self.sent[-1]
+        self.assertIn("Offline mail relay: Off", body)
+        self.assertIn("Node View: All nodes", body)
+
+    def test_choice_one_offers_the_relay_toggle(self):
         ch.handle_settings_command(1234, self.iface)
         self.sent.clear()
         ch.handle_settings_steps(1234, "1", self.iface, "!abc")
-        self.assertIn("Request link code", self.sent[-1])
-        self.assertEqual(ch.get_user_state(1234).get("command"), "ACCOUNT")
-        self.assertEqual(ch.get_user_state(1234).get("return_to"), "settings")
+        self.assertIn("offline mail relay", self.sent[-1].lower())
+        self.assertEqual(ch.get_user_state(1234).get("command"), "SETTINGS")
+        self.assertEqual(ch.get_user_state(1234).get("step"), 2)
 
-    def test_linked_devices_back_returns_to_main(self):
+    def test_the_relay_toggle_takes_effect_and_shows_in_the_menu(self):
+        ch.handle_settings_command(1234, self.iface)
+        ch.handle_settings_steps(1234, "1", self.iface, "!abc")
+        with mock.patch.object(ch, "send_mail_relay_preference_to_bbs_nodes",
+                               lambda *a, **k: None):
+            self.iface.bbs_nodes = []
+            ch.handle_settings_steps(1234, "y", self.iface, "!abc")
+        self.assertTrue(db_operations.get_mail_relay_preference("!abc"))
+        self.assertIn("Offline mail relay: On", self.sent[-1])
+
+    def test_choice_two_opens_the_node_view_lens(self):
         ch.handle_settings_command(1234, self.iface)
         self.sent.clear()
-        ch.handle_account_steps(1234, "0", self.iface, "!abc")
-        self.assertIn("Bacon BBS", self.sent[-1])
+        ch.handle_settings_steps(1234, "2", self.iface, "!abc")
+        self.assertEqual(ch.get_user_state(1234).get("command"), "NODE_VIEW")
+
+    def test_choice_three_says_what_this_node_is(self):
+        ch.handle_settings_command(1234, self.iface)
+        self.sent.clear()
+        ch.handle_settings_steps(1234, "3", self.iface, "!abc")
+        self.assertIn("Bacon BBS", self.sent[0])
 
     def test_zero_returns_to_the_main_menu(self):
         ch.handle_settings_command(1234, self.iface)
@@ -285,14 +317,16 @@ class HiddenEntryTests(unittest.TestCase):
         self.iface = types.SimpleNamespace(bbs_nodes=[], nodes={})
 
     def test_a_hidden_letter_is_refused_bare(self):
+        # Ask Nomad, not Profile: Profile is in MENU_REQUIRED now, so it is
+        # never hidden and cannot demonstrate this rule.
         import message_processing as mp
         with mock.patch.object(ch, "main_menu_items", ["Q", "B", "U", "X"]), \
                 mock.patch.dict(mp.main_menu_handlers,
-                                {"p": mock.Mock()}, clear=False) as handlers:
+                                {"n": mock.Mock()}, clear=False) as handlers:
             ch.update_user_state(1234, {'command': 'MAIN_MENU', 'step': 1})
             with mock.patch.object(mp, 'handle_help_command') as help_menu:
-                mp.process_message(1234, 'p', self.iface)
-            handlers["p"].assert_not_called()
+                mp.process_message(1234, 'n', self.iface)
+            handlers["n"].assert_not_called()
             help_menu.assert_called_once_with(
                 1234, self.iface, None, notice="Invalid choice.")
 
@@ -315,14 +349,23 @@ class HiddenEntryTests(unittest.TestCase):
         quick.assert_called_once_with(1234, self.iface)
 
     def test_a_digit_follows_the_trimmed_menu(self):
-        """4 is Web Fetch on this node because that is what line 4 says."""
+        """A digit means whatever that line of the screen says.
+
+        On this node 4 is Profile and 5 is Web Fetch, because Profile joined
+        MENU_REQUIRED ahead of it. Both are asserted: checking only one would
+        pass if the digits stopped tracking the layout and happened to land
+        right.
+        """
         import message_processing as mp
-        web_fetch = mock.Mock()
-        with mock.patch.object(ch, "main_menu_items", ["Q", "B", "U", "X"]), \
-                mock.patch.dict(mp.main_menu_handlers, {"a": web_fetch}, clear=False):
-            ch.update_user_state(1234, {'command': 'MAIN_MENU', 'step': 1})
-            mp.process_message(1234, '4', self.iface)
-        web_fetch.assert_called_once_with(1234, self.iface)
+        for digit, letter in (("4", "p"), ("5", "a")):
+            with self.subTest(digit=digit):
+                handler = mock.Mock()
+                with mock.patch.object(ch, "main_menu_items", ["Q", "B", "U", "X"]), \
+                        mock.patch.dict(mp.main_menu_handlers,
+                                        {letter: handler}, clear=False):
+                    ch.update_user_state(1234, {'command': 'MAIN_MENU', 'step': 1})
+                    mp.process_message(1234, digit, self.iface)
+                handler.assert_called_once_with(1234, self.iface)
 
 
 class ExitTests(unittest.TestCase):
@@ -441,7 +484,10 @@ class MenuNumberAliasTests(unittest.TestCase):
         moment a required entry was added rather than catching anything."""
         items = ["Q", "B", "U", "X"]
         alias = ch.menu_number_alias(items, self.MAIN)
-        self.assertNotIn("p", alias.values())
+        # 'n' (Ask Nomad) rather than 'p': Profile is required now, so it
+        # always has a number and would make this assertion vacuous.
+        self.assertNotIn("n", alias.values())
+        self.assertIn("p", alias.values())
         self.assertNotIn("n", alias.values())
         rendered = set(re.findall(r"\[(\d+)\]", ch.build_menu(items, self.MAIN)))
         self.assertEqual(set(alias), rendered)

@@ -219,20 +219,37 @@ class AccountMenuTests(unittest.TestCase):
         self.assertIn("Linked Devices", _sent(sm)[0])
         self.assertEqual(command_handlers.get_user_state(1), {"command": "ACCOUNT", "step": 1})
 
-    def test_profile_relay_opt_in_bootstraps_account(self):
-        command_handlers.update_user_state(1, {"command": "PROFILE", "step": 1})
+    def test_settings_relay_opt_in_bootstraps_account(self):
+        """The relay toggle moved from Profile to Settings -- it is what the
+        BBS does with your mail, not who you are. Opting in must still
+        create the account it needs."""
+        command_handlers.update_user_state(1, {"command": "SETTINGS", "step": 1})
         with mock.patch.object(command_handlers, "send_message"):
-            command_handlers.handle_profile_steps(
-                1, "3", self.interface, sender_node_id="!aaa11111"
+            command_handlers.handle_settings_steps(
+                1, "1", self.interface, "!aaa11111"
             )
             state = command_handlers.get_user_state(1)
-            self.assertEqual(state["step"], 3)
-            command_handlers.handle_profile_steps(
-                1, "Y", self.interface, sender_node_id="!aaa11111"
+            self.assertEqual(state["step"], 2)
+            command_handlers.handle_settings_steps(
+                1, "Y", self.interface, "!aaa11111"
             )
 
         self.assertIsNotNone(db_operations.get_account_id_for_node("!aaa11111"))
         self.assertTrue(db_operations.get_mail_relay_preference("!aaa11111"))
+
+    def test_the_old_profile_number_still_reaches_the_toggle(self):
+        """Someone who learned [3] on the Profile screen should land where
+        the toggle went, not on 'Invalid choice.'"""
+        command_handlers.update_user_state(1, {"command": "PROFILE", "step": 1})
+        with mock.patch.object(command_handlers, "send_message") as sm:
+            command_handlers.handle_profile_steps(
+                1, "3", self.interface, sender_node_id="!aaa11111"
+            )
+        sent = _sent(sm)
+        self.assertTrue(sent, "[3] sent nothing at all -- it dead-ends")
+        self.assertIn("Settings", sent[0])
+        self.assertEqual(
+            command_handlers.get_user_state(1)["command"], "SETTINGS")
 
 
 class AccountRoutingIntegrationTests(unittest.TestCase):
