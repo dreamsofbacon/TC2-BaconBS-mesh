@@ -183,7 +183,7 @@ MAIN_MENU_LABELS = {
     'P': "Profile",
     'N': "Ask Nomad",
     'A': "Web Fetch",
-    'S': "Linked Devices",
+    'S': "Settings",
     'V': "Node View",
     'X': "Exit",
 }
@@ -198,7 +198,10 @@ MENU_LABELS = {
 # item list would otherwise never show them -- exactly how the API Gateway
 # stayed invisible under Utilities.
 MENU_REQUIRED = {
-    'main': ('A', 'S', 'V'),
+    # Profile ahead of the rest: it is the entry a stranger looks for first,
+    # and it was defined but never shown -- reachable only as !P, which is
+    # the discoverability complaint restated.
+    'main': ('P', 'A', 'S', 'V'),
     'bbs': (),
     'utilities': ('G', 'H'),
 }
@@ -1442,38 +1445,143 @@ def handle_scoreboard_steps(sender_id, message, interface):
     update_user_state(sender_id, {'command': 'SCOREBOARD', 'step': 1})
 
 
-_SETTINGS_MENU_TEXT = (
-    "⚙️ Settings" + LINE_BREAK
-    + "[1] Linked Devices" + LINE_BREAK
-    + "[0] Back"
-)
+def _settings_menu_text(sender_id, interface, sender_node_id=None) -> str:
+    """Settings is what the BBS DOES for you; Profile is who you are.
+
+    Built fresh each time rather than held as a constant, because every
+    line reports a current value -- a menu that says "Offline relay" without
+    saying whether it is on makes the user open it to find out.
+    """
+    node_id = sender_node_id or get_node_id_from_num(sender_id, interface)
+    relay = "On" if (node_id and get_mail_relay_preference(node_id)) else "Off"
+    scope = get_view_scope(sender_id)
+    lens = "All nodes" if not scope else _scope_label(scope)
+    return LINE_BREAK.join([
+        "⚙️ Settings",
+        f"[1] Offline mail relay: {relay}",
+        f"[2] Node View: {lens}",
+        "[3] About this node",
+        "[0] Back",
+    ])
 
 
-def handle_settings_command(sender_id, interface):
-    """Open Linked Devices directly from its discoverable main-menu entry."""
-    handle_account_command(sender_id, interface, return_to='main')
+def _scope_label(scope) -> str:
+    """The narrowed lens, said the way the Node View picker says it."""
+    try:
+        local_ids = local_identities_for_display()
+        if set(scope) & set(local_ids or ()):
+            return "This node"
+        nicknames = get_node_nicknames()
+        for node_id in scope:
+            return node_display_name(node_id, local_ids=local_ids,
+                                     nicknames=nicknames)
+    except Exception:
+        logging.debug("could not label the view scope", exc_info=True)
+    return "Narrowed"
+
+
+def handle_settings_command(sender_id, interface, sender_node_id=None):
+    send_message(_settings_menu_text(sender_id, interface, sender_node_id),
+                 sender_id, interface)
+    update_user_state(sender_id, {'command': 'SETTINGS', 'step': 1})
 
 
 def handle_settings_steps(sender_id, message, interface, sender_node_id):
+    state = get_user_state(sender_id) or {}
     choice = message.strip().lower()
+
+    if state.get('step') == 2:
+        # Confirming the relay toggle. Kept here rather than in Profile: it
+        # changes what the BBS does with your mail, not who you are.
+        if choice not in ('y', 'yes'):
+            send_message("Relay setting unchanged.", sender_id, interface)
+            handle_settings_command(sender_id, interface, sender_node_id)
+            return
+        if not sender_node_id:
+            send_message("Couldn't verify your device identity.", sender_id, interface)
+            handle_settings_command(sender_id, interface, sender_node_id)
+            return
+        records = set_mail_relay_for_node(
+            sender_node_id, bool(state.get('relay_enabled')),
+            home_network(sender_node_id))
+        for node_id, enabled, updated_at in records:
+            send_mail_relay_preference_to_bbs_nodes(
+                node_id, enabled, updated_at, interface.bbs_nodes, interface)
+        status = "enabled" if state.get('relay_enabled') else "disabled"
+        send_message(f"Offline mail relay {status} for all linked devices.",
+                     sender_id, interface)
+        handle_settings_command(sender_id, interface, sender_node_id)
+        return
+
     if choice in ('0', 'x', 'back', 'exit'):
         handle_help_command(sender_id, interface)
         return
     if choice == '1':
-        handle_account_command(sender_id, interface, return_to='settings')
+        if not sender_node_id:
+            send_message("Couldn't verify your device identity.", sender_id, interface)
+            return
+        enabled = not get_mail_relay_preference(sender_node_id)
+        action = "Enable" if enabled else "Disable"
+        send_message(f"{action} offline mail relay for all linked devices? [Y/N]",
+                     sender_id, interface)
+        update_user_state(sender_id, {'command': 'SETTINGS', 'step': 2,
+                                      'relay_enabled': enabled})
         return
-    send_message(_SETTINGS_MENU_TEXT, sender_id, interface)
+    if choice == '2':
+        handle_node_view_command(sender_id, interface)
+        return
+    if choice == '3':
+        handle_version_command(sender_id, interface)
+        handle_settings_command(sender_id, interface, sender_node_id)
+        return
+    send_message(_settings_menu_text(sender_id, interface, sender_node_id),
+                 sender_id, interface)
 
 
-def handle_profile_command(sender_id, interface, notice=None):
+def handle_profile_command(sender_id, interface, notice=None,
+                           sender_node_id=None):
+    """Everything about you, in one screen: who you are and what you have done.
+
+    Preferences deliberately live in Settings instead. The split is "who you
+    are" against "what the BBS does for you" -- a bio belongs here, a mail
+    relay toggle does not, and putting both in one list made neither easy to
+    find.
+    """
     profile = get_user_profile(sender_id)
     if not profile:
         send_message("No profile yet - send any command to create one!", sender_id, interface)
         return
     _, short_name, long_name, first_seen, last_seen, msg_count, bio = profile
     first_date = first_seen[:10] if first_seen else "?"
+    node_id = sender_node_id or get_node_id_from_num(sender_id, interface)
+
+    lines = [f"👤 {short_name}"]
+
+    # The alias, when set, is the name that actually appears on this
+    # person's posts; short_name is whatever their radio reports. Shown only
+    # when they differ, which is when the question "why does my name look
+    # like that?" arises.
+    alias, devices = '', 0
+    try:
+        account_id = get_account_id_for_node(node_id) if node_id else None
+        if account_id:
+            alias = (get_account_alias(account_id) or '').strip()
+            devices = len(get_linked_node_ids(account_id) or [])
+    except Exception:
+        logging.debug("could not read account details for profile", exc_info=True)
+    if alias and alias != short_name:
+        lines.append(f"Posts as: {alias}")
+
+    stats = f"Since:{first_date} Msgs:{msg_count}"
+    try:
+        role = normalize_role(get_node_role(node_id)) if node_id else ''
+    except Exception:
+        role = ''
+    if role and role != ROLE_UNREGISTERED:
+        stats += f" Role:{role}"
+    lines.append(stats)
+
     scores = get_user_game_scores(sender_id)
-    lines = [f"👤 {short_name}", f"Since:{first_date} Msgs:{msg_count}"]
     if scores:
         parts = []
         for game_id, score, max_score in scores[:3]:
@@ -1483,9 +1591,9 @@ def handle_profile_command(sender_id, interface, notice=None):
         lines.append("Scores: " + " ".join(parts))
     if bio:
         lines.append(f"Bio: {bio}")
-    node_id = get_node_id_from_num(sender_id, interface)
-    relay_status = "On" if get_mail_relay_preference(node_id) else "Off"
-    lines.append(f"[1]Edit Bio [3]Offline Relay:{relay_status} [0]Back")
+
+    device_note = f" ({devices})" if devices > 1 else ""
+    lines.append(f"[1] Edit bio  [2] Linked devices{device_note}  [0] Back")
     if notice:
         lines.insert(0, notice)
     send_message("\n".join(lines), sender_id, interface)
@@ -1502,27 +1610,8 @@ def handle_profile_steps(sender_id, message, interface, sender_node_id=None):
         bio = choice[:100]
         update_user_bio(sender_id, bio)
         send_message("Bio updated!", sender_id, interface)
-        handle_profile_command(sender_id, interface)
-        return
-    if state.get('step') == 3:
-        if choice.lower() not in ('y', 'yes'):
-            send_message("Relay setting unchanged.", sender_id, interface)
-            handle_profile_command(sender_id, interface)
-            return
-        if not sender_node_id:
-            send_message("Couldn't verify your device identity.", sender_id, interface)
-            handle_profile_command(sender_id, interface)
-            return
-        records = set_mail_relay_for_node(
-            sender_node_id, bool(state.get('relay_enabled')), home_network(sender_node_id)
-        )
-        for node_id, enabled, updated_at in records:
-            send_mail_relay_preference_to_bbs_nodes(
-                node_id, enabled, updated_at, interface.bbs_nodes, interface
-            )
-        status = "enabled" if state.get('relay_enabled') else "disabled"
-        send_message(f"Offline mail relay {status} for all linked devices.", sender_id, interface)
-        handle_profile_command(sender_id, interface)
+        handle_profile_command(sender_id, interface,
+                               sender_node_id=sender_node_id)
         return
     if choice.lower() in ('0', 'x', 'back', 'exit'):
         handle_help_command(sender_id, interface)
@@ -1535,13 +1624,10 @@ def handle_profile_steps(sender_id, message, interface, sender_node_id=None):
         handle_account_command(sender_id, interface)
         return
     if choice == '3':
-        if not sender_node_id:
-            send_message("Couldn't verify your device identity.", sender_id, interface)
-            return
-        enabled = not get_mail_relay_preference(sender_node_id)
-        action = "Enable" if enabled else "Disable"
-        send_message(f"{action} offline mail relay for all linked devices? [Y/N]", sender_id, interface)
-        update_user_state(sender_id, {'command': 'PROFILE', 'step': 3, 'relay_enabled': enabled})
+        # Where the relay toggle used to be. Someone who learned the old
+        # number gets sent to where it lives now rather than "Invalid
+        # choice."
+        handle_settings_command(sender_id, interface, sender_node_id)
         return
     # Redrawing the identical screen with no notice looked like the BBS had
     # ignored the keypress rather than rejected it.
