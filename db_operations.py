@@ -4826,10 +4826,30 @@ def delete_zork_save(user_id: int, game_id: str = 'zork1', bbs_nodes=None, inter
 # User profiles
 # ---------------------------------------------------------------------------
 
-def auto_upsert_user_profile(user_id: int, short_name: str, long_name: str) -> None:
+def auto_upsert_user_profile(user_id: int, short_name: str, long_name: str) -> bool:
+    """Record that this user spoke. True if that was their FIRST message.
+
+    The return value is what the welcome hangs off.
+
+    Asked as a SELECT rather than with RETURNING on the upsert, which would
+    read better and answer atomically. RETURNING needs SQLite 3.35 and
+    forgecam is on 3.34.1 -- Debian bullseye -- where it raises
+    OperationalError, which on this path is every message the node
+    receives. Our two nodes differ in SQLite as well as in Python.
+
+    The gap between the SELECT and the INSERT means two genuinely
+    simultaneous first messages from one user could both be greeted. That
+    costs one extra radio message, once, and is the better failure.
+
+    Profiles sync fleet-wide, so 'first' means first to the BBS, not first
+    to this node: someone who already met forgecam is not greeted again
+    when they reach Burlington.
+    """
     conn = get_db_connection()
     c = conn.cursor()
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    c.execute("SELECT 1 FROM user_profiles WHERE user_id = ?", (str(user_id),))
+    first_contact = c.fetchone() is None
     c.execute(
         '''INSERT INTO user_profiles (user_id, short_name, long_name, first_seen, last_seen, messages_sent, bio)
            VALUES (?, ?, ?, ?, ?, 1, '')
@@ -4841,6 +4861,7 @@ def auto_upsert_user_profile(user_id: int, short_name: str, long_name: str) -> N
         (str(user_id), short_name, long_name, now, now)
     )
     conn.commit()
+    return first_contact
 
 
 # ---------------------------------------------------------------------------
