@@ -189,6 +189,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(sent[0][1:], ("!alpha", secondary_interface))
         self.assertIn("Relay subject", sent[0][0])
         self.assertIn("Relay body", sent[0][0])
+        self.assertIn("Send !R to reply.", sent[0][0])
         state = db_operations.get_db_connection().execute(
             "SELECT state FROM mail_dm_deliveries WHERE mail_unique_id = ?", (unique_id,)
         ).fetchone()[0]

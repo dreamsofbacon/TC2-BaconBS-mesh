@@ -704,6 +704,13 @@ class GlobalCommandPrefixTests(unittest.TestCase):
             mp.process_message(1234, '!CM', self.iface)
         check_mail.assert_called_once_with(1234, self.iface)
 
+    def test_prefixed_reply_command_dispatches(self):
+        import message_processing as mp
+
+        with mock.patch.object(mp, 'handle_quick_reply_command') as quick_reply:
+            mp.process_message(1234, '!R', self.iface)
+        quick_reply.assert_called_once_with(1234, self.iface)
+
     def test_structured_global_command_strips_prefix_for_handler(self):
         import message_processing as mp
 

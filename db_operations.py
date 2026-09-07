@@ -4493,6 +4493,34 @@ def get_due_mail_dm_deliveries(now_epoch: Optional[int] = None, limit: int = 20)
     return [dict(zip(keys, row)) for row in c.fetchall()]
 
 
+def get_latest_delivered_mail(recipient_id: str) -> Optional[dict]:
+    """Return the newest complete mail delivered to this linked mailbox."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    recipient_ids = _mail_recipient_scope(c, recipient_id)
+    if not recipient_ids:
+        return None
+    placeholders = ','.join('?' for _ in recipient_ids)
+    c.execute(
+        f"""SELECT m.id, m.sender, m.sender_short_name, m.subject, m.unique_id,
+                   d.delivered_at
+            FROM mail_dm_deliveries d
+            JOIN mail m ON m.unique_id = d.mail_unique_id
+            WHERE d.target_node_id IN ({placeholders})
+              AND d.state = 'delivered'
+              AND d.delivered_at IS NOT NULL
+              AND COALESCE(m.content_complete, 1) = 1
+            ORDER BY d.delivered_at DESC, d.id DESC
+            LIMIT 1""",
+        recipient_ids,
+    )
+    row = c.fetchone()
+    if not row:
+        return None
+    keys = ['mail_id', 'sender_id', 'sender_short_name', 'subject', 'unique_id', 'delivered_at']
+    return dict(zip(keys, row))
+
+
 def mark_mail_dm_delivered(delivery_id: int) -> None:
     conn = get_db_connection()
     conn.execute(

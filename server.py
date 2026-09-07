@@ -1225,7 +1225,8 @@ def deliver_due_mail_dms(links, active_window_seconds: int = 900, retry_base_sec
             f"MAIL {str(entry['mail_unique_id'])[:8]}\n"
             f"From: {entry['sender_short_name']}\n"
             f"Subject: {entry['subject']}\n\n"
-            f"{entry['content']}"
+            f"{entry['content']}\n\n"
+            "Send !R to reply."
         )
         try:
             if _send(message, node_id, link.interface):
