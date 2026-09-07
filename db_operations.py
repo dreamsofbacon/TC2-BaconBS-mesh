@@ -188,6 +188,26 @@ def get_persisted_local_identities() -> set:
     return set(ids)
 
 
+def get_persisted_local_link_ids() -> list:
+    """The 'link' ids server.py recorded, in a stable order.
+
+    Only the link ids: the capture ids are radio public keys, which name
+    nothing a person would recognise. Stable order because this feeds a
+    label, and a label that flips between two correct answers reads as a
+    bug.
+    """
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        _ensure_local_identities_table(c)
+        return [str(row[0]) for row in c.execute(
+            "SELECT node_id FROM local_node_identities WHERE kind = 'link' "
+            "ORDER BY node_id") if row[0]]
+    except Exception:
+        logging.debug("could not read local link identities", exc_info=True)
+        return []
+
+
 def get_local_identities_for_scope() -> set:
     """Every id that means "this node" to the Node View lens.
 

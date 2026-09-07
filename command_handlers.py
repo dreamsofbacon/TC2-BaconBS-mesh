@@ -2773,17 +2773,42 @@ def handle_version_command(sender_id, interface):
     the fix live yet?" unanswerable from the side that would notice.
     """
     from version_info import get_display_version
-    from db_operations import get_local_node_id
-    node_id = str(get_local_node_id() or '').strip()
-    # node_display_name answers "whose content is this?" and so calls the
-    # local node 'this node' -- true, and useless in a sentence whose whole
-    # job is to say WHICH node. Fall back to the id, which is at least
-    # something the user can quote back.
-    name = node_display_name(node_id) if node_id else ''
-    if name in ('this node', 'unknown', ''):
-        name = short_node_id(node_id) if node_id else ''
-    where = f" on {name}" if name else ''
-    send_message(f"Bacon BBS {get_display_version()}{where}", sender_id, interface)
+    where = _this_node_label()
+    send_message(f"Bacon BBS {get_display_version()}"
+                 + (f" on {where}" if where else ''), sender_id, interface)
+
+
+def _this_node_label() -> str:
+    """A name for the node the user is actually connected to, or ''.
+
+    Deliberately not node_display_name: that answers "whose content is
+    this?" and so calls every local id 'this node' -- true, and useless in
+    a sentence whose whole job is to say WHICH node.
+
+    And deliberately not get_local_node_id() alone. That is a module global
+    set when a radio link comes up, so it is empty in bacon-ssh and
+    bacon-web-admin, which is the same separate-process gap that once left
+    Node View inert over SSH. The persisted link ids are what survive a
+    process boundary.
+    """
+    from db_operations import get_local_node_id, get_persisted_local_link_ids
+    candidates = [str(get_local_node_id() or '').strip()]
+    try:
+        candidates += get_persisted_local_link_ids()
+    except Exception:
+        logging.debug("could not read local link identities", exc_info=True)
+    candidates = [c for c in candidates if c]
+
+    nicknames = get_node_nicknames()
+    for node_id in candidates:
+        if node_id in nicknames:
+            return nicknames[node_id]
+    for node_id in candidates:
+        if node_id.startswith('mqtt:'):
+            tail = node_id.rsplit(':', 1)[-1].strip()
+            if tail:
+                return tail
+    return short_node_id(candidates[0]) if candidates else ''
 
 
 def handle_quick_help_command(sender_id, interface):
