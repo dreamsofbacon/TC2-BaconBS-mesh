@@ -4,7 +4,7 @@ State of the deployment, the decisions behind it, and what is still open.
 For the feature backlog see [feature requests.txt](feature%20requests.txt);
 this file is about running the thing.
 
-Last updated 2026-09-07 at commit `48567cf` (`v0.1.588`).
+Last updated 2026-09-07 at commit `03a817a` (`v0.1.591`).
 
 ---
 
@@ -19,7 +19,7 @@ Last updated 2026-09-07 at commit `48567cf` (`v0.1.588`).
 | Path | `/home/bacon/TC2-BaconBS-mesh` | same |
 | Services | `mesh-bbs.service`, `bacon-web-admin.service`, `bacon-ssh.service` | `mesh-bbs.service`, `bacon-web-admin.service` |
 | Bacon BBS SSH | Active, dual-stack port 2222 | Disabled/inactive |
-| Fleet state | Healthy on `48567cf` | Healthy on `48567cf` |
+| Fleet state | Healthy on `03a817a` | Healthy on `03a817a` |
 
 forgecam's Python 3.9 matters: `meshcore` and the supported AsyncSSH release
 require newer Python, so `requirements.txt` carries environment markers and
@@ -99,6 +99,7 @@ Since (2026-09-05/06):
 | `76d6a38` | `!VER` names the node from any process |
 | `5aa5b55` | One instant, one hash: the timestamp drift, except public_chatter |
 | `48567cf` | A welcome screen, and `[node_names]` grouping on both nodes |
+| `1cd8024` `03a817a` | The BBS name and greeting sync, to nodes you name |
 
 ---
 
@@ -525,6 +526,15 @@ NULL on forgecam. Dormant -- those scopes' aggregates hash no timestamp, so
 the mismatch never surfaces -- but it is a real gap and a different bug from
 the drift. Rows and ids are in the doc above.
 
+**The fleet identity allow-list is set on both nodes.** `[bbs]
+accept_identity_from` lists only the *other* node's link ids on each, so an
+edit to the BBS name or greeting propagates between them and Chattanooga --
+in neither list -- can neither rename this BBS nor be renamed by it. Empty
+remains the shipped default: the frame is unsigned, so out of the box
+nobody can. `[node_names]` also gained `Burlington` and `forgecam` entries
+grouping each node's two broker identities, without which the welcome
+announced four nodes for three.
+
 **Web Fetch has no allowed hosts, and that is now the operator's to fix.**
 `[gateway] allowed_hosts` is still empty on the live node, so Web Fetch
 still fetches nothing -- but it says so up front, in a sentence, and no
@@ -704,6 +714,28 @@ A related trap while diagnosing this: `grep -c 'P4'` over the journal
 returned 120 and I reported it. Those were matches inside base64 sync
 payloads, not log lines. Anchor greps on the literal message text before
 believing a count.
+
+### A handler can be perfect and never called
+
+`onReceive` decides `is_sync_message` from a hard-coded prefix list *before*
+`process_message` is reached, and a frame from a known BBS node that is not
+on that list is discarded as "Ignored non-sync message from known BBS
+node". Adding a frame type means adding it in **two** places.
+
+BBSID shipped with only one. On the live fleet bbs sent all four frames,
+forgecam received and logged all four, and adopted nothing -- while
+twenty-two tests passed, because every one drove `process_message` directly
+and none crossed the gate above it.
+
+`tests/test_fleet_identity_sync.py` now derives both sets from the source
+-- every prefix a handler matches on, and every prefix the classifier
+admits -- and fails if anything is handled but never classified. Add a
+frame type and that test checks it without anyone remembering this.
+
+**And read the evidence from the right end.** Diagnosing it, I grepped the
+*sender's* journal for BBSID, found zero, and concluded nothing was sent.
+The sender does not log frame payloads; only the receiver does. The frames
+had been going out the whole time.
 
 ### A test that cannot fail on the machine it runs on
 
