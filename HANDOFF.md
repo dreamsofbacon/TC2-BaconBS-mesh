@@ -4,7 +4,7 @@ State of the deployment, the decisions behind it, and what is still open.
 For the feature backlog see [feature requests.txt](feature%20requests.txt);
 this file is about running the thing.
 
-Last updated 2026-09-06 at commit `e4738fa` (`v0.1.566`).
+Last updated 2026-09-07 at commit `4b944ae` (`v0.1.579`).
 
 ---
 
@@ -19,7 +19,7 @@ Last updated 2026-09-06 at commit `e4738fa` (`v0.1.566`).
 | Path | `/home/bacon/TC2-BaconBS-mesh` | same |
 | Services | `mesh-bbs.service`, `bacon-web-admin.service`, `bacon-ssh.service` | `mesh-bbs.service`, `bacon-web-admin.service` |
 | Bacon BBS SSH | Active, dual-stack port 2222 | Disabled/inactive |
-| Fleet state | Healthy on `e4738fa` | Healthy on `e4738fa` |
+| Fleet state | Healthy on `4b944ae` | Healthy on `4b944ae` |
 
 forgecam's Python 3.9 matters: `meshcore` and the supported AsyncSSH release
 require newer Python, so `requirements.txt` carries environment markers and
@@ -278,6 +278,51 @@ Two details are load-bearing rather than incidental:
 
 Mail an account *sent* stays in its recipients' mailboxes. Deleting the
 sender is not consent to reach into those.
+
+### Roles
+
+Eight, least privileged first: `banned`, `unregistered`, `user`, `bot`,
+`vip`, `mod`, `admin`, `developer`. Ranks have wide gaps so another can be
+slotted in without renumbering what is stored and on the wire.
+
+Two rules everything leans on. **An unrecognised role resolves to the least
+privilege** -- a typo, or one a newer peer invented, grants nothing. And
+**the account is the authority** when a node is linked to one, so a mod with
+three radios is a mod on all three and demoting them leaves no grant on a
+device they forgot about. `unregistered` is never stored; it is what a node
+with no account resolves to, which is most radio users.
+
+Assign from Accounts (covers every linked device), from a node's Clients
+page (for the unregistered majority), or with `!ROLE,,<node>,,<role>` for
+mod and up. `[roles] bbs_commands = false` turns the commands off without
+touching the web admin. Three limits: nobody assigns above their own rank, a
+**mod stops below mod** because the power to appoint is what turns one bad
+moderator into several, and nobody changes their own role.
+
+Moderation is not gated on that switch -- taking a post down is the job a
+moderator was appointed to do. A mod reading a bulletin, or viewing a
+channel post's comments, is offered `[D]elete` and one confirmation. Both go
+through `delete_bulletin` / `delete_channel_comment`, so the removal is
+tombstoned and travels; a bare row delete would come back from the first
+peer that still held it.
+
+**Banned** is refused before anything dispatches, resolved from the STRING
+node id (MeshCore's numeric id is synthesised from a public key prefix and
+collides). The refusal repeats hourly: once per process left somebody banned
+on Monday meeting silence on Friday, and silence is indistinguishable from
+the BBS being down. Sync traffic is never subject to it. The gate fails
+OPEN -- one that cannot tell who is speaking must not silence everyone.
+
+Roles sync fleet-wide. The frame is unsigned like every other, so
+`apply_synced_node_role` caps what a peer may assign at
+`[roles] remote_role_ceiling` (default `mod`): a fleet-wide ban or mod
+works, nobody outside this node grants themselves admin, and the local
+console is unaffected.
+
+**There is no retraction.** A role row, once asserted, is re-advertised
+forever; deleting it on one node only means the peer sends it back. Setting
+someone to `user` is the practical way to undo a role. Removing a row for
+good means deleting it on every node before the next sweep.
 
 ### Node View, and the two id namespaces
 
@@ -582,6 +627,39 @@ regressions hide, and this one did mask real ones.
 Run the suite before deploying. Two real regressions have shipped this way:
 an accounts schema test that had not been told about new columns, and a
 menu-dispatch test asserting behaviour that had deliberately changed.
+
+### "Sent" is not "synced", and a phase is not a schedule
+
+Fleet-wide roles shipped doing nothing, then shipped again still not
+arriving. Neither was a wiring mistake -- the frames, the capability
+negotiation and the sender were correct throughout, and calling the function
+by hand on the node sent frames immediately.
+
+**First: it was never called.** `sync_node_roles_to_nodes` was hung off P4
+of the five-phase sync. `phases_complete` is persisted in `peer_sync_state`,
+so after a restart a node resumes and marks its peers already synced, and
+`_run_sync_for_link` only starts a thread for a peer that has not completed
+P1. On an established fleet those phases have finished for good and drift is
+handed to hash repair. **Anything hung off a phase runs once, at the dawn of
+time, and never again.** Put recurring work on the periodic tick.
+
+**Then: the first frame was lost and never retried.** It went out while the
+far node was restarting from that same deploy. Change-driven sending had
+already recorded it delivered. Content scopes heal because hash repair
+notices a difference; roles have no scope, so nothing would ever have
+noticed. Anything synced without a hash scope needs a periodic
+re-advertisement -- `ROLE_READVERTISE_SECONDS` is that, at fifteen minutes.
+
+Both were found the same way: set a value on one node, then go and look on
+the other. Every test passed the whole time, because every test called the
+function. `sync_transmissions` is the tool that settles it -- a `tx` row on
+one node with no matching `rx` on the other is a lost frame, and nothing
+else in the system will tell you.
+
+A related trap while diagnosing this: `grep -c 'P4'` over the journal
+returned 120 and I reported it. Those were matches inside base64 sync
+payloads, not log lines. Anchor greps on the literal message text before
+believing a count.
 
 ### A fixture too small to be wrong
 
