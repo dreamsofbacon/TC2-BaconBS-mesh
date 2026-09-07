@@ -4,7 +4,7 @@ State of the deployment, the decisions behind it, and what is still open.
 For the feature backlog see [feature requests.txt](feature%20requests.txt);
 this file is about running the thing.
 
-Last updated 2026-09-07 at commit `bfeb9c0` (`v0.1.593`).
+Last updated 2026-09-07 at commit `0f518a9` (`v0.1.596`).
 
 ---
 
@@ -19,7 +19,7 @@ Last updated 2026-09-07 at commit `bfeb9c0` (`v0.1.593`).
 | Path | `/home/bacon/TC2-BaconBS-mesh` | same |
 | Services | `mesh-bbs.service`, `bacon-web-admin.service`, `bacon-ssh.service` | `mesh-bbs.service`, `bacon-web-admin.service` |
 | Bacon BBS SSH | Active, dual-stack port 2222 | Disabled/inactive |
-| Fleet state | Healthy on `bfeb9c0` | Healthy on `bfeb9c0` |
+| Fleet state | Healthy on `0f518a9` | Healthy on `0f518a9` |
 
 forgecam's Python 3.9 matters: `meshcore` and the supported AsyncSSH release
 require newer Python, so `requirements.txt` carries environment markers and
@@ -101,6 +101,8 @@ Since (2026-09-05/06):
 | `48567cf` | A welcome screen, and `[node_names]` grouping on both nodes |
 | `1cd8024` `03a817a` | The BBS name and greeting sync, to nodes you name |
 | `bfeb9c0` | Invite files: hand someone a file and their node joins |
+| `e7bbb16` | Profile and Settings on the main menu, each doing one job |
+| `0f518a9` | A bio you write is a bio you keep |
 
 ---
 
@@ -647,6 +649,27 @@ reached. It reports the node too, by `[node_names]` nickname where there is
 one and by short id otherwise; `node_display_name` calls the local node
 "this node", which is true and useless in a sentence whose job is to say
 *which* node.
+
+**One value, one owner.** The mail relay toggle MOVED from Profile to
+Settings rather than being shown in both, and `[3]` on the Profile screen
+forwards to where it went. Two screens owning one value is how they start
+disagreeing -- the same shape as the aggregate and the manifest hashing one
+timestamp two ways, and as the SQL CASE that duplicated
+`_normalize_sync_timestamp`.
+
+**Profile and Settings are in `MENU_REQUIRED`.** Profile was defined in
+`MAIN_MENU_LABELS` and shown by no live config, so `!P` was the only way
+in; `S` was labelled "Linked Devices" and jumped past a Settings menu
+nothing rendered. Profile is who you are (name, alias, role, stats, scores,
+bio, linked devices); Settings is what the BBS does for you (mail relay,
+Node View lens, node and version).
+
+**A synced column needs a newer-wins rule or the last writer owns it.**
+`upsert_synced_user_profile` took `bio = excluded.bio` unconditionally while
+every neighbouring column guarded on a timestamp, so a peer's older copy
+silently wiped a bio the user had just written -- caught by driving the
+live BBS, not by the suite. Any column added to a synced upsert wants the
+same question asked of it.
 
 **`data/trivia.db` is committed** so the game works on pull. It is CC BY-SA
 4.0 from the Open Trivia Database, and the attribution lives in the file's own
