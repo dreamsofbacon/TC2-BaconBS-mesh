@@ -17,7 +17,8 @@ from command_handlers import (
     handle_mail_command, handle_bulletin_command, handle_help_command, handle_stats_command, handle_fortune_command,
     handle_bb_steps, handle_mail_steps, handle_stats_steps, handle_wall_of_shame_command,
     handle_channel_directory_command, handle_channel_directory_steps, handle_send_mail_command,
-    handle_read_mail_command, handle_check_mail_command, handle_delete_mail_confirmation, handle_post_bulletin_command,
+    handle_read_mail_command, handle_check_mail_command, handle_quick_reply_command,
+    handle_delete_mail_confirmation, handle_post_bulletin_command,
     handle_check_bulletin_command, handle_read_bulletin_command, handle_read_channel_command,
     handle_post_channel_command, handle_list_channels_command, handle_quick_help_command,
     handle_version_command, handle_welcome_command,
@@ -3031,6 +3032,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 handle_active_users_command(sender_id, interface)
             elif global_lower == "cm":
                 handle_check_mail_command(sender_id, interface)
+            elif global_lower == "r":
+                handle_quick_reply_command(sender_id, interface)
             elif global_lower.startswith("pb,,"):
                 handle_post_bulletin_command(sender_id, global_message, interface, bbs_nodes)
             elif global_lower.startswith("cb,,"):

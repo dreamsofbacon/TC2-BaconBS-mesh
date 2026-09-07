@@ -133,12 +133,15 @@ Presence is inferred from the persisted client roster rather than guaranteed.
 Accounts are local to each BBS, and full message bodies cross the same radio or
 MQTT transports as normal DMs. Multiple synchronized BBS nodes may each relay a
 recognizable copy of the same mail; the short mail ID in the DM identifies such
-duplicates.
+duplicates. Send `!R` after a delivered mail DM to reply to the most recently
+delivered message across your linked devices. Enter the reply in one or more
+parts, then send `END`; beginning a reply pins that message even if newer mail
+arrives while you are writing.
 
 ### Commands
 
 Out-of-band actions require an immediate `!` prefix. Quick actions are `!SM,,`,
-`!CM`, `!AU`, `!PB,,`, `!CB,,`, `!CHP,,`, and `!CHL`. Global navigation uses
+`!CM`, `!R`, `!AU`, `!PB,,`, `!CB,,`, `!CHP,,`, and `!CHL`. Global navigation uses
 `!Q`, `!B`, `!U`, `!P`, `!N`, `!A`, `!S`, and `!X`. Plain letters and numbers
 belong to the current menu or prompt, preventing short replies from triggering
 unrelated actions. Mail composition and games treat all input literally until

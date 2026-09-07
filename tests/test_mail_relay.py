@@ -221,6 +221,168 @@ class MailRelayDatabaseTests(unittest.TestCase):
         self.assertEqual(len(due), 2)
         self.assertEqual({row["content"] for row in due}, {"FirstSecond"})
 
+    def test_latest_delivered_mail_uses_linked_scope_and_ignores_pending(self):
+        self._linked_account()
+        older = db_operations.add_mail(
+            "!first", "First", "!aaa11111", "Older", "Body", [], None
+        )
+        newer = db_operations.add_mail(
+            "!second", "Second", "!aaa11111", "Newer", "Body", [], None
+        )
+        conn = db_operations.get_db_connection()
+        conn.execute(
+            "UPDATE mail_dm_deliveries SET state = 'delivered', delivered_at = ? "
+            "WHERE mail_unique_id = ? AND target_node_id = ?",
+            ("2026-09-07T12:00:00+00:00", older, "bbbb2222"),
+        )
+        conn.execute(
+            "UPDATE mail_dm_deliveries SET delivered_at = ? "
+            "WHERE mail_unique_id = ? AND target_node_id = ?",
+            ("2026-09-07T13:00:00+00:00", newer, "!aaa11111"),
+        )
+        conn.commit()
+
+        latest = db_operations.get_latest_delivered_mail("!aaa11111")
+
+        self.assertEqual(latest["unique_id"], older)
+        self.assertEqual(latest["sender_id"], "!first")
+        self.assertEqual(latest["subject"], "Older")
+
+    def test_latest_delivered_mail_uses_delivery_id_to_break_timestamp_ties(self):
+        self._linked_account()
+        first = db_operations.add_mail(
+            "!first", "First", "!aaa11111", "First", "Body", [], None
+        )
+        second = db_operations.add_mail(
+            "!second", "Second", "!aaa11111", "Second", "Body", [], None
+        )
+        conn = db_operations.get_db_connection()
+        for unique_id in (first, second):
+            conn.execute(
+                "UPDATE mail_dm_deliveries SET state = 'delivered', delivered_at = ? "
+                "WHERE mail_unique_id = ? AND target_node_id = ?",
+                ("2026-09-07T13:00:00+00:00", unique_id, "!aaa11111"),
+            )
+        conn.commit()
+
+        latest = db_operations.get_latest_delivered_mail("!aaa11111")
+
+        self.assertEqual(latest["unique_id"], second)
+
+    def test_latest_delivered_mail_ignores_incomplete_mail(self):
+        self._linked_account()
+        complete = db_operations.add_mail(
+            "!first", "First", "!aaa11111", "Complete", "Body", [], None
+        )
+        incomplete = db_operations.add_mail(
+            "!second", "Second", "!aaa11111", "Incomplete", "Part", [], None
+        )
+        db_operations.apply_mail_expected_content_length(incomplete, 20)
+        conn = db_operations.get_db_connection()
+        conn.execute(
+            "UPDATE mail_dm_deliveries SET state = 'delivered', delivered_at = ? "
+            "WHERE mail_unique_id = ? AND target_node_id = ?",
+            ("2026-09-07T12:00:00+00:00", complete, "!aaa11111"),
+        )
+        conn.execute(
+            "UPDATE mail_dm_deliveries SET state = 'delivered', delivered_at = ? "
+            "WHERE mail_unique_id = ? AND target_node_id = ?",
+            ("2026-09-07T13:00:00+00:00", incomplete, "!aaa11111"),
+        )
+        conn.commit()
+
+        latest = db_operations.get_latest_delivered_mail("!aaa11111")
+
+        self.assertEqual(latest["unique_id"], complete)
+
+    def test_quick_reply_opens_existing_composer_and_normalizes_subject(self):
+        account_id = db_operations.create_account()
+        db_operations.link_node_to_account("!sender", account_id, "meshtastic")
+        db_operations.set_account_mail_relay(account_id, True)
+        unique_id = db_operations.add_mail(
+            "!origin", "Origin", "!sender", "re: Hello", "Body", [], None
+        )
+        conn = db_operations.get_db_connection()
+        conn.execute(
+            "UPDATE mail_dm_deliveries SET state = 'delivered', delivered_at = ? "
+            "WHERE mail_unique_id = ? AND target_node_id = ?",
+            ("2026-09-07T13:00:00+00:00", unique_id, "!sender"),
+        )
+        conn.commit()
+
+        with mock.patch.object(command_handlers, "send_message") as send:
+            command_handlers.handle_quick_reply_command(111, self.interface)
+
+        state = command_handlers.get_user_state(111)
+        self.assertEqual(state["command"], "MAIL")
+        self.assertEqual(state["step"], 7)
+        self.assertEqual(state["subject"], "Re: Hello")
+        self.assertEqual(state["reply_to_mail_id"], db_operations.get_mail("!sender")[0][0])
+        self.assertIn("Origin", send.call_args.args[0])
+
+    def test_quick_reply_without_delivery_directs_user_to_mailbox(self):
+        with mock.patch.object(command_handlers, "send_message") as send:
+            command_handlers.handle_quick_reply_command(111, self.interface)
+
+        self.assertIn("!CM", send.call_args.args[0])
+        self.assertIsNone(command_handlers.get_user_state(111))
+
+    def test_quick_reply_stays_pinned_when_newer_mail_arrives(self):
+        account_id = db_operations.create_account()
+        db_operations.link_node_to_account("!sender", account_id, "meshtastic")
+        db_operations.set_account_mail_relay(account_id, True)
+        db_operations.apply_synced_mail_relay_preference(
+            "!first", True, "2026-09-07T10:00:00+00:00")
+        first = db_operations.add_mail(
+            "!first", "First", "!sender", "First subject", "Body", [], None
+        )
+        conn = db_operations.get_db_connection()
+        conn.execute(
+            "UPDATE mail_dm_deliveries SET state = 'delivered', delivered_at = ? "
+            "WHERE mail_unique_id = ? AND target_node_id = ?",
+            ("2026-09-07T12:00:00+00:00", first, "!sender"),
+        )
+        conn.commit()
+
+        with mock.patch.object(command_handlers, "send_message"):
+            command_handlers.handle_quick_reply_command(111, self.interface)
+            pinned = command_handlers.get_user_state(111)
+
+            second = db_operations.add_mail(
+                "!second", "Second", "!sender", "Second subject", "Body", [], None
+            )
+            conn.execute(
+                "UPDATE mail_dm_deliveries SET state = 'delivered', delivered_at = ? "
+                "WHERE mail_unique_id = ? AND target_node_id = ?",
+                ("2026-09-07T13:00:00+00:00", second, "!sender"),
+            )
+            conn.commit()
+
+            command_handlers.handle_mail_steps(
+                111, "Reply body", 7, pinned, self.interface, [])
+            composing = command_handlers.get_user_state(111)
+            command_handlers.handle_mail_steps(
+                111, "END", 7, composing, self.interface, [])
+
+        replies = db_operations.get_mail("!first")
+        self.assertEqual(len(replies), 1)
+        self.assertEqual(replies[0][2], "Re: First subject")
+        self.assertEqual(db_operations.get_mail("!second"), [])
+
+    def test_mailbox_reply_also_collapses_repeated_subject_prefixes(self):
+        state = {
+            "command": "MAIL", "step": 4, "mail_id": 12,
+            "sender": "Origin", "subject": "Re: RE: Hello",
+        }
+
+        with mock.patch.object(command_handlers, "send_message"):
+            command_handlers.handle_mail_steps(
+                111, "3", 4, state, self.interface, [])
+
+        reply = command_handlers.get_user_state(111)
+        self.assertEqual(reply["reply_to_mail_id"], 12)
+        self.assertEqual(reply["subject"], "Re: Hello")
+
     def test_delete_from_sibling_cleans_mail_and_delivery_rows(self):
         self._linked_account()
         unique_id = db_operations.add_mail(

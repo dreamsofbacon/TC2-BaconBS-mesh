@@ -18,7 +18,7 @@ from db_operations import (
     get_account_id_for_node,
     count_hidden_bulletins, count_hidden_mail, count_hidden_channel_comments,
     get_bulletin_content, get_bulletins,
-    get_mail, get_mail_content,
+    get_mail, get_mail_content, get_latest_delivered_mail,
     add_channel, get_channels, get_sender_id_by_mail_id,
     get_channel_categories, get_channels_by_name, get_channel_by_id,
     add_channel_comment, get_channel_comments,
@@ -448,6 +448,39 @@ def handle_mail_command(sender_id, interface, notice=None):
         response = f"{notice}{LINE_BREAK}{response}"
     send_message(response, sender_id, interface)
     update_user_state(sender_id, {'command': 'MAIL', 'step': 1})
+
+
+def _reply_subject(subject: str) -> str:
+    base = re.sub(r'^(?:\s*re:\s*)+', '', str(subject or ''), flags=re.IGNORECASE)
+    return f"Re: {base}".rstrip()
+
+
+def _begin_mail_reply(sender_id, interface, mail_id: int, sender: str, subject: str) -> None:
+    send_message(
+        f"Send your reply to {sender} now, followed by a message with END",
+        sender_id, interface,
+    )
+    update_user_state(sender_id, {
+        'command': 'MAIL', 'step': 7,
+        'reply_to_mail_id': mail_id,
+        'subject': _reply_subject(subject),
+        'content': '',
+    })
+
+
+def handle_quick_reply_command(sender_id, interface):
+    sender_node_id = get_node_id_from_num(sender_id, interface)
+    mail = get_latest_delivered_mail(sender_node_id)
+    if mail is None:
+        send_message(
+            "No delivered mail is available for quick reply. Send !CM to check your mailbox.",
+            sender_id, interface,
+        )
+        return
+    _begin_mail_reply(
+        sender_id, interface, mail['mail_id'],
+        mail['sender_short_name'], mail['subject'],
+    )
 
 
 _MAIL_DIRECTORY_PAGE_SIZE = 6
@@ -2298,9 +2331,8 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             send_message("The message has been deleted 🗑️", sender_id, interface)
             update_user_state(sender_id, None)
         elif choice4 == "r":
-            sender = state['sender']
-            send_message(f"Send your reply to {sender} now, followed by a message with END", sender_id, interface)
-            update_user_state(sender_id, {'command': 'MAIL', 'step': 7, 'reply_to_mail_id': state['mail_id'], 'subject': f"Re: {state['subject']}", 'content': ''})
+            _begin_mail_reply(
+                sender_id, interface, state['mail_id'], state['sender'], state['subject'])
         else:
             send_message("The message has been kept in your inbox.✉️", sender_id, interface)
             update_user_state(sender_id, None)
@@ -2728,9 +2760,8 @@ def handle_delete_mail_confirmation(sender_id, message, state, interface, bbs_no
             send_message("The message has been deleted 🗑️", sender_id, interface)
             update_user_state(sender_id, None)
         elif choice == 'r':
-            sender = state['sender']
-            send_message(f"Send your reply to {sender} now, followed by a message with END", sender_id, interface)
-            update_user_state(sender_id, {'command': 'MAIL', 'step': 7, 'reply_to_mail_id': state['mail_id'], 'subject': f"Re: {state['subject']}", 'content': ''})
+            _begin_mail_reply(
+                sender_id, interface, state['mail_id'], state['sender'], state['subject'])
         else:
             send_message("The message has been kept in your inbox.✉️", sender_id, interface)
             update_user_state(sender_id, None)
@@ -2960,7 +2991,8 @@ def _this_node_label() -> str:
 def handle_quick_help_command(sender_id, interface):
     response = (
         "✈️QUICK COMMANDS✈️\n"
-        "!SM,, - Send Mail\n!CM - Check Mail\n!AU - Relay Directory\n"
+        "!SM,, - Send Mail\n!CM - Check Mail\n!R - Reply to latest mail\n"
+        "!AU - Relay Directory\n"
         "!PB,, - Post Bulletin\n!CB,, - Check Bulletins\n"
         "!CHP,, - Post Channel\n!CHL - List Channels\n"
         "!VER - This node and its version\n"
