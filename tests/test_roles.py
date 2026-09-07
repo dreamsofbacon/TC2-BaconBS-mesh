@@ -412,7 +412,7 @@ class RoleWireTests(_RoleCase):
         first live probe went out while forgecam was restarting, was lost,
         and never came back."""
         db_operations._advertised_roles.clear()
-        db_operations._roles_last_full_sweep = 0.0
+        db_operations._roles_last_full_sweep.clear()
         self.addCleanup(db_operations._advertised_roles.clear)
         db_operations.set_node_role(OTHER, 'vip')
         sent = []
@@ -425,10 +425,30 @@ class RoleWireTests(_RoleCase):
             db_operations.sync_node_roles_to_nodes(["!a"], mock.MagicMock())
             self.assertEqual(len(sent), after_first)
             # The sweep comes round.
-            db_operations._roles_last_full_sweep -= (
-                db_operations.ROLE_READVERTISE_SECONDS + 1)
+            for peer in list(db_operations._roles_last_full_sweep):
+                db_operations._roles_last_full_sweep[peer] -= (
+                    db_operations.ROLE_READVERTISE_SECONDS + 1)
             db_operations.sync_node_roles_to_nodes(["!a"], mock.MagicMock())
         self.assertGreater(len(sent), after_first)
+
+    def test_the_sweep_is_tracked_per_peer(self):
+        """One global timestamp meant the first link to tick consumed the
+        sweep for everyone -- sync_node_roles_to_nodes runs once per
+        RadioLink, so the other links' peers never got the
+        re-advertisement that is the only thing healing a dropped frame."""
+        db_operations._advertised_roles.clear()
+        db_operations._roles_last_full_sweep.clear()
+        self.addCleanup(db_operations._advertised_roles.clear)
+        db_operations.set_node_role(OTHER, 'vip')
+        sent = []
+        with mock.patch.object(utils, "_send_one_sync",
+                               side_effect=lambda m, p, i, **k: sent.append(p)),              mock.patch.object(db_operations, "peer_supports",
+                               side_effect=lambda peer, cap: True):
+            # One link ticks, carrying only its own peer.
+            db_operations.sync_node_roles_to_nodes(["!a"], mock.MagicMock())
+            # A second link, a different peer, same instant.
+            db_operations.sync_node_roles_to_nodes(["!b"], mock.MagicMock())
+        self.assertEqual(set(sent), {"!a", "!b"})
 
     def test_it_runs_off_the_tick_not_the_five_phase_sync(self):
         """The bug this replaced. phases_complete is persisted, so on an
@@ -530,6 +550,15 @@ class BbsRoleCommandTests(_RoleCase):
         db_operations.set_node_role(OTHER, 'vip')
         self.assertIn("vip", self._say(f"!who,,{OTHER}"))
 
+    def test_who_with_no_argument_explains_itself(self):
+        """"who".split(',,')[-1] is "who" -- taking the last element of a
+        split that never happened hands back the command word, so a bare
+        !WHO looked up a node called "who" and reported a role for it."""
+        self._as('mod')
+        reply = self._say("!who")
+        self.assertIn("Usage:", reply)
+        self.assertNotIn("Role:", reply)
+
     def test_who_is_not_for_ordinary_users(self):
         """It reports on other people."""
         self._as('user')
@@ -555,6 +584,24 @@ class BbsRoleCommandTests(_RoleCase):
         self._config("[roles]\nbbs_commands = false\n")
         self._as('admin')
         self.assertNotIn("!ROLE", self._say("!q"))
+
+    def test_a_future_stamp_cannot_pin_a_role(self):
+        """Clocks are not synchronised and the frame is unsigned, so a
+        stamp from the future is both ordinary skew and the obvious way to
+        beat last-writer-wins: un-ban locally, and the next sweep re-applies
+        the peer's future-dated ban on top."""
+        self.assertFalse(db_operations.apply_synced_node_role(
+            OTHER, 'banned', '2099-01-01T00:00:00+00:00'))
+        self.assertEqual(db_operations.get_node_role(OTHER), 'unregistered')
+
+    def test_ordinary_clock_skew_still_applies(self):
+        """Refusing anything ahead of us at all would drop honest updates
+        from a node whose clock runs a little fast."""
+        from datetime import datetime, timedelta, timezone
+        soon = (datetime.now(timezone.utc) + timedelta(seconds=30)
+                ).isoformat(timespec='microseconds')
+        self.assertTrue(db_operations.apply_synced_node_role(OTHER, 'vip', soon))
+        self.assertEqual(db_operations.get_node_role(OTHER), 'vip')
 
     def test_a_banned_moderator_gets_nowhere(self):
         """Banned is checked before dispatch, so rank cannot rescue it."""

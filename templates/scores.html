@@ -41,7 +41,7 @@
           <td class="text-muted">{{ row['achieved_at'] }}</td>
           <td>
             <form method="post" action="{{ url_for('scores_delete') }}" class="inline-form"
-                  onsubmit="return confirm('Delete the {{ row['game_id'] }} score of {{ row['score'] }} for {{ row['short_name'] or row['user_id'] }}? Peers drop their copies too.');">
+                  onsubmit="return confirm('Delete this score? Peers drop their copies too.');">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <input type="hidden" name="user_id" value="{{ row['user_id'] }}">
               <input type="hidden" name="game_id" value="{{ row['game_id'] }}">

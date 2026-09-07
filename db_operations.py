@@ -5379,6 +5379,24 @@ def apply_synced_node_role(node_id, role, updated_at) -> bool:
             normalized_role, normalized_id, ceiling)
         return False
 
+    # A stamp far in the future pins the role: the operator un-bans in the
+    # web admin, stamped now, and the peer's future-dated ban wins on the
+    # next sweep, forever. Clocks are not synchronised across the fleet and
+    # the frame is unsigned, so this is both ordinary skew and the obvious
+    # way to beat last-writer-wins.
+    #
+    # Refused rather than clamped. Clamping to "now" looks safer and is
+    # worse: it makes every re-assertion of a stale claim look freshly
+    # minted, so the peer beats the local decision on every sweep instead of
+    # only once. A few minutes of tolerance keeps honest skew working.
+    horizon = (datetime.now(timezone.utc)
+               + timedelta(seconds=ROLE_FUTURE_TOLERANCE_SECONDS)
+               ).isoformat(timespec='microseconds')
+    if stamp > horizon:
+        logging.warning("Refused role %s for %s: stamped %s, which is in the future",
+                        normalized_role, normalized_id, stamp)
+        return False
+
     current = get_role_updated_at(normalized_id)
     if current and current >= stamp:
         return False
@@ -6546,7 +6564,11 @@ def sync_mail_relay_preferences_to_nodes(bbs_nodes: list, interface) -> int:
 
 # What we have already told each peer: (peer, node_id) -> updated_at.
 _advertised_roles = {}
-_roles_last_full_sweep = 0.0
+# Per peer, not one global: sync_node_roles_to_nodes runs once per
+# RadioLink, so a single timestamp meant the first link to tick consumed
+# the sweep and every other link's peers never got the re-advertisement --
+# which is the only thing that heals a dropped ROLE frame.
+_roles_last_full_sweep = {}
 
 # Every role is re-advertised this often regardless of whether it changed.
 #
@@ -6556,6 +6578,10 @@ _roles_last_full_sweep = 0.0
 # Content scopes heal through hash repair. Roles have no scope, so this
 # sweep is the only thing that closes a gap left by a dropped frame.
 ROLE_READVERTISE_SECONDS = 900.0
+
+# How far ahead of us a peer's role stamp may be before it is refused.
+# Enough for unsynchronised clocks, far short of useful for pinning a role.
+ROLE_FUTURE_TOLERANCE_SECONDS = 300
 
 
 def sync_node_roles_to_nodes(bbs_nodes: list, interface, force: bool = False) -> int:
@@ -6571,7 +6597,6 @@ def sync_node_roles_to_nodes(bbs_nodes: list, interface, force: bool = False) ->
     has not moved is not re-sent, and a fleet where nobody's role changes
     sends nothing.
     """
-    global _roles_last_full_sweep
     if not bbs_nodes or not interface:
         return 0
     from utils import send_node_role_to_bbs_nodes, is_role_sync_enabled
@@ -6579,9 +6604,11 @@ def sync_node_roles_to_nodes(bbs_nodes: list, interface, force: bool = False) ->
         return 0
 
     now = time.time()
-    if now - _roles_last_full_sweep >= ROLE_READVERTISE_SECONDS:
-        force = True
-        _roles_last_full_sweep = now
+    sweeping = set()
+    for peer_id in bbs_nodes:
+        if now - _roles_last_full_sweep.get(str(peer_id), 0.0) >= ROLE_READVERTISE_SECONDS:
+            sweeping.add(str(peer_id))
+            _roles_last_full_sweep[str(peer_id)] = now
 
     sent = 0
     for node_id, role, updated_at in get_node_roles_for_sync():
@@ -6589,7 +6616,8 @@ def sync_node_roles_to_nodes(bbs_nodes: list, interface, force: bool = False) ->
             continue
         for peer_id in bbs_nodes:
             key = (str(peer_id), str(node_id))
-            if not force and _advertised_roles.get(key) == updated_at:
+            if (not force and str(peer_id) not in sweeping
+                    and _advertised_roles.get(key) == updated_at):
                 continue
             if send_node_role_to_bbs_nodes(
                     node_id, role, updated_at, [peer_id], interface):
