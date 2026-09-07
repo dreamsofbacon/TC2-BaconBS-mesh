@@ -570,6 +570,44 @@ def load_account_settings(config_path: str) -> dict:
   }
 
 
+def _welcome_preview() -> dict:
+  """What the BBS would actually send, at each transport's byte budget.
+
+  Deliberately rendered through utils rather than re-implemented here, so
+  the preview cannot drift from the thing it previews -- and so it shows
+  the derived node list, which is where an operator sees that a peer
+  bridged over two brokers is being announced twice and needs a
+  [node_names] line to group its ids.
+  """
+  try:
+    import utils
+    return {
+      "meshcore": utils.welcome_text(max_bytes=160),
+      "meshtastic": utils.welcome_text(max_bytes=220),
+      "ssh": utils.welcome_text(max_bytes=8192),
+      "nodes": utils.affiliated_node_labels(),
+    }
+  except Exception:
+    logging.debug("could not build welcome preview", exc_info=True)
+    return {"meshcore": "", "meshtastic": "", "ssh": "", "nodes": []}
+
+
+def load_bbs_settings(config_path: str) -> dict:
+  """Read the [bbs] welcome section for the Settings form.
+
+  Defaults match utils.py's own, because these are the same values the BBS
+  reads at runtime -- this is only the editable-in-the-GUI view of them.
+  """
+  config = read_config_file(config_path)
+  return {
+    "name": config.get("bbs", "name", fallback="").strip(),
+    "welcome": config.get("bbs", "welcome", fallback="").strip(),
+    "node_welcome": config.get("bbs", "node_welcome", fallback="").strip(),
+    "show_nodes": _parse_bool_setting(
+      config.get("bbs", "show_nodes", fallback="true"), True),
+  }
+
+
 _MQTT_SECTION_RE = re.compile(r"^mqtt(\d+)$")
 
 # Uploaded TLS material for MQTT links. Lets an operator point a broker at a
@@ -3982,6 +4020,20 @@ def create_app(runtime_interface=None) -> Flask:
       write_config_file(config, app.config["CONFIG_PATH"])
       return []
 
+    def save_bbs_settings(form) -> None:
+      """Persist the [bbs] welcome section. Hot-reloads: utils reads these
+      fresh on every welcome, so no restart is needed."""
+      config = read_config_file(app.config["CONFIG_PATH"])
+      if not config.has_section("bbs"):
+        config.add_section("bbs")
+      for key in ("name", "welcome", "node_welcome"):
+        config.set("bbs", key, form.get(f"bbs_{key}", "").strip())
+      config.set("bbs", "show_nodes",
+                 "true" if _parse_bool_setting(form.get("bbs_show_nodes", ""), False)
+                 else "false")
+      write_config_file(config, app.config["CONFIG_PATH"])
+
+
     def save_account_settings(form) -> None:
       """Persist [accounts] tunables. Hot-reloads: command_handlers.py
       reads these fresh via utils._config_int on every use, so no restart
@@ -5019,6 +5071,7 @@ def create_app(runtime_interface=None) -> Flask:
       subscriber_settings = load_subscriber_settings(app.config["CONFIG_PATH"])
       device_settings = load_device_settings(app.config["CONFIG_PATH"])
       account_settings = load_account_settings(app.config["CONFIG_PATH"])
+      bbs_settings = load_bbs_settings(app.config["CONFIG_PATH"])
       mqtt_settings = load_mqtt_settings(app.config["CONFIG_PATH"])
       attach_discovered_mqtt_peers(mqtt_settings)
       sync_peers = load_sync_peers(app.config["CONFIG_PATH"])
@@ -5036,6 +5089,8 @@ def create_app(runtime_interface=None) -> Flask:
         subscribers=subscriber_settings,
         devices=device_settings,
         accounts=account_settings,
+        bbs=bbs_settings,
+        welcome_preview=_welcome_preview(),
         mqtt_links=mqtt_settings,
         sync_peers=sync_peers,
         peer_link_targets=peer_link_targets,
@@ -5631,6 +5686,11 @@ def create_app(runtime_interface=None) -> Flask:
           if not errors:
             flash("Device settings saved. Restart the mesh-bbs service for the change to take effect.", "success")
           return redirect(url_for("settings_page") + "#devices")
+
+        if section == "welcome":
+          save_bbs_settings(request.form)
+          flash("Welcome settings saved. They apply immediately.", "success")
+          return redirect(url_for("settings_page") + "#welcome")
 
         if section == "accounts":
           save_account_settings(request.form)

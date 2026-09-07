@@ -43,6 +43,7 @@ from utils import (
     clear_user_state, request_session_end,
     get_view_scope, set_view_scope, clear_view_scope,
     node_display_name, scope_notice, local_identities_for_display,
+    welcome_text,
     short_node_id,
     get_node_nicknames, node_ids_for_name, get_max_text_bytes,
     is_bbs_role_management_enabled, is_role_sync_enabled,
@@ -2764,6 +2765,21 @@ def handle_list_channels_command(sender_id, interface):
         send_message("Error processing list channels command.", sender_id, interface)
 
 
+def handle_welcome_command(sender_id, interface, *, first_contact=False):
+    """Say what this BBS is and which node you have reached.
+
+    Sent once, unprompted, on someone's very first message, and any time
+    afterwards on request. The first-contact copy adds the one line a
+    stranger actually needs -- that there is a menu and how to get it --
+    because at that moment they have not chosen to be here and may have no
+    idea what just answered them.
+    """
+    text = welcome_text(interface)
+    if first_contact:
+        text = f"{text}{LINE_BREAK}Send ? any time for the menu."
+    send_message(text, sender_id, interface)
+
+
 def handle_version_command(sender_id, interface):
     """Answer "what am I talking to?" -- the node's name and its version.
 
@@ -2818,6 +2834,7 @@ def handle_quick_help_command(sender_id, interface):
         "!PB,, - Post Bulletin\n!CB,, - Check Bulletins\n"
         "!CHP,, - Post Channel\n!CHL - List Channels\n"
         "!VER - This node and its version\n"
+        "!WELCOME - What this BBS is\n"
         "Global menus: !Q !B !U !P !N !A !S !V !X"
     )
     # Only shown to someone who can use them. A moderator's toolkit listed on

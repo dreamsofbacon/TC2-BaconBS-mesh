@@ -456,6 +456,119 @@ def get_max_exported_role() -> str:
     return (_config_raw("roles", "max_exported_role") or "mod").strip().casefold()
 
 
+# ---------------------------------------------------------------------------
+# The welcome screen: what a stranger sees when they first reach this BBS.
+#
+# Two sections, because a fleet is two things at once. [bbs] name and
+# [bbs] welcome describe the BBS -- one identity that every node shares, and
+# the part that syncs. [bbs] node_welcome is this node's own line and never
+# leaves it: "you have reached the Burlington node" is only true here.
+#
+# The node list under them is derived, not configured. Every id this BBS
+# syncs with is already in peer_sync_state, and [node_names] already knows
+# how to say them out loud, so the list stays right on its own as the fleet
+# changes.
+# ---------------------------------------------------------------------------
+
+WELCOME_DEFAULT_NAME = "Bacon BBS"
+
+
+def get_bbs_name() -> str:
+    """The public name of the BBS. Fleet-level: every node is this BBS."""
+    return (_config_raw("bbs", "name") or "").strip() or WELCOME_DEFAULT_NAME
+
+
+def get_fleet_welcome() -> str:
+    """The greeting that describes the BBS itself. Fleet-level."""
+    return (_config_raw("bbs", "welcome") or "").strip()
+
+
+def get_node_welcome() -> str:
+    """This node's own line. Never synced -- it is only true here."""
+    return (_config_raw("bbs", "node_welcome") or "").strip()
+
+
+def is_welcome_node_list_enabled() -> bool:
+    return _config_bool("bbs", "show_nodes", True)
+
+
+def affiliated_node_labels() -> list:
+    """Every node of this BBS, this one first, as a person would say them.
+
+    Sourced from peer_sync_state rather than [sync] bbs_nodes: that table is
+    what this node has actually heard from, so a peer that was configured
+    and never arrived is not announced to a stranger as part of the fleet.
+
+    Deduplicated by LABEL, not by id, because one node is several ids: a
+    node bridged over two brokers advertises one identity per broker, and
+    listing both tells a stranger this BBS has four nodes when it has
+    three. A [node_names] line grouping a peer's ids under one name is what
+    collapses them -- which is the same thing that makes Node View read
+    properly, and the web admin's Welcome section shows this list so the
+    duplication is visible where the fix is.
+    """
+    labels = []
+    try:
+        from db_operations import get_peer_sync_states
+        local_ids = local_identities_for_display()
+        nicknames = get_node_nicknames()
+
+        here = ''
+        for node_id in sorted(local_ids or ()):
+            candidate = nicknames.get(node_id)
+            if not candidate and str(node_id).startswith('mqtt:'):
+                candidate = str(node_id).rsplit(':', 1)[-1].strip()
+            if candidate:
+                here = candidate
+                break
+        if here:
+            labels.append(f"{here} (here)")
+
+        seen = set(str(i) for i in (local_ids or ()))
+        spoken = {here} if here else set()
+        for row in get_peer_sync_states():
+            peer = str(row[0] or '').strip()
+            if not peer or peer in seen:
+                continue
+            seen.add(peer)
+            label = node_display_name(peer, local_ids=local_ids,
+                                      nicknames=nicknames)
+            if label in spoken:
+                continue
+            spoken.add(label)
+            labels.append(label)
+    except Exception:
+        logging.debug("could not list affiliated nodes", exc_info=True)
+    return labels
+
+
+def welcome_text(interface=None, *, max_bytes=None) -> str:
+    """The whole welcome, trimmed to what this transport can carry.
+
+    Assembled most-important-first and dropped from the end until it fits,
+    so a Meshtastic user gets the name and the greeting while an SSH user
+    gets everything. The name always survives: a welcome that has been
+    trimmed down to nothing still has to say where you are.
+    """
+    if max_bytes is None:
+        max_bytes = get_max_text_bytes(interface)
+    parts = [get_bbs_name()]
+    for optional in (get_fleet_welcome(), get_node_welcome()):
+        if optional:
+            parts.append(optional)
+    if is_welcome_node_list_enabled():
+        labels = affiliated_node_labels()
+        if labels:
+            parts.append("Nodes: " + ", ".join(labels))
+
+    while len(parts) > 1:
+        text = "\n".join(parts)
+        if len(text.encode('utf-8')) <= max_bytes:
+            return text
+        parts.pop()
+    return parts[0]
+
+
 def is_bbs_role_management_enabled() -> bool:
     """Whether Mod and Admin can change roles from inside the BBS.
 

@@ -16,6 +16,10 @@
         <span class="settings-nav-title">MQTT Bridges</span>
         <span class="settings-nav-hint">Brokers, TLS, what each one receives</span>
       </a>
+      <a class="settings-nav-link" href="#welcome" data-panel-link="welcome">
+        <span class="settings-nav-title">Welcome &amp; Identity</span>
+        <span class="settings-nav-hint">BBS name, greeting, node list</span>
+      </a>
       <a class="settings-nav-link" href="#boards" data-panel-link="boards">
         <span class="settings-nav-title">Board Settings</span>
         <span class="settings-nav-hint">Bulletin board names</span>
@@ -996,6 +1000,78 @@
     </div>
     <button class="btn" type="submit" style="background:#521c1c;border-color:#8d3434;color:#ffd7d7">Wipe Database</button>
   </form>
+</section>
+
+<section class="card settings-panel" id="welcome" data-settings-panel="welcome" style="max-width:760px">
+  <h2>Welcome &amp; Identity</h2>
+  <p class="text-muted">
+    What a stranger sees on their first message to this BBS, and whenever
+    anyone sends <code>!WELCOME</code>. Changes apply immediately, no restart.
+  </p>
+
+  <form method="post" action="{{ url_for('settings_page') }}#welcome">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="welcome">
+
+    <h3>The BBS &mdash; shared by every node</h3>
+    <p class="text-muted">
+      One identity the whole fleet answers to. This is the part that syncs
+      between nodes.
+    </p>
+    <div class="form-group">
+      <label for="bbs_name">Public name</label>
+      <input type="text" id="bbs_name" name="bbs_name" class="form-control"
+             placeholder="Bacon BBS" value="{{ bbs.name }}">
+      <p class="text-muted">Blank falls back to &ldquo;Bacon BBS&rdquo;. Always shown, even when everything else is trimmed away for a small radio packet.</p>
+    </div>
+    <div class="form-group">
+      <label for="bbs_welcome">Greeting</label>
+      <textarea id="bbs_welcome" name="bbs_welcome" class="form-control" rows="3"
+                placeholder="An off-grid BBS carried over LoRa mesh radio.">{{ bbs.welcome }}</textarea>
+      <p class="text-muted">Describes the BBS itself. Keep it short &mdash; a MeshCore packet is 160 bytes in total.</p>
+    </div>
+
+    <h3>This node &mdash; local only</h3>
+    <p class="text-muted">
+      Never synced, because it is only true here.
+    </p>
+    <div class="form-group">
+      <label for="bbs_node_welcome">This node's line</label>
+      <textarea id="bbs_node_welcome" name="bbs_node_welcome" class="form-control" rows="2"
+                placeholder="You have reached the Burlington node, in Vermont.">{{ bbs.node_welcome }}</textarea>
+    </div>
+    <div class="form-group">
+      <label>
+        <input type="checkbox" name="bbs_show_nodes" value="true" {% if bbs.show_nodes %}checked{% endif %}>
+        List the other nodes of this BBS
+      </label>
+      <p class="text-muted">Derived from the peers this node has actually heard from &mdash; nothing to keep up to date.</p>
+    </div>
+    <button class="btn btn-primary" type="submit">Save Welcome</button>
+  </form>
+
+  <h3>What it looks like</h3>
+  <p class="text-muted">
+    Rendered by the same code the BBS uses, at each transport's byte budget.
+    The greeting is dropped before the name when it will not fit.
+  </p>
+  <div class="table-scroll">
+    <table class="table">
+      <tr><th style="width:9rem">MeshCore (160B)</th><td><pre style="white-space:pre-wrap;margin:0">{{ welcome_preview.meshcore }}</pre></td></tr>
+      <tr><th>Meshtastic (220B)</th><td><pre style="white-space:pre-wrap;margin:0">{{ welcome_preview.meshtastic }}</pre></td></tr>
+      <tr><th>SSH (8KB)</th><td><pre style="white-space:pre-wrap;margin:0">{{ welcome_preview.ssh }}</pre></td></tr>
+    </table>
+  </div>
+  {% if welcome_preview.nodes %}
+  <p class="text-muted">
+    Nodes listed: {{ welcome_preview.nodes|join(', ') }}.
+    One node can answer to several ids &mdash; a peer bridged over two brokers
+    advertises one per broker. If a node appears twice under different names,
+    group its ids on one <code>[node_names]</code> line in
+    <code>config.ini</code> and it collapses to a single entry here and in Node
+    View.
+  </p>
+  {% endif %}
 </section>
 
 <section class="card settings-panel" id="accounts" data-settings-panel="accounts" style="max-width:600px">

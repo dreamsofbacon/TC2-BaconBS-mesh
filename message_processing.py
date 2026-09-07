@@ -20,7 +20,7 @@ from command_handlers import (
     handle_read_mail_command, handle_check_mail_command, handle_delete_mail_confirmation, handle_post_bulletin_command,
     handle_check_bulletin_command, handle_read_bulletin_command, handle_read_channel_command,
     handle_post_channel_command, handle_list_channels_command, handle_quick_help_command,
-    handle_version_command,
+    handle_version_command, handle_welcome_command,
     handle_zork_command, handle_zork_steps, handle_trivia_steps,
     handle_games_command, handle_games_steps,
     handle_scoreboard_command, handle_scoreboard_steps,
@@ -1585,16 +1585,22 @@ def _push_delete_to_peer(tomb_scope: str, tomb_key: str, peer_id: str, interface
         logging.debug("could not push delete to peer", exc_info=True)
 
 
-def _auto_update_profile(sender_id, interface):
+def _auto_update_profile(sender_id, interface) -> bool:
+    """Record the sender, and say whether this is their first message ever.
+
+    Returns False on any failure, so a profile problem can never turn into
+    a greeting sent to a regular on every message.
+    """
     try:
         node_id = get_node_id_from_num(sender_id, interface)
         if node_id and node_id in interface.nodes:
             user = interface.nodes[node_id].get('user', {})
             short_name = user.get('shortName', '')
             long_name = user.get('longName', '')
-            auto_upsert_user_profile(sender_id, short_name, long_name)
+            return bool(auto_upsert_user_profile(sender_id, short_name, long_name))
     except Exception:
         pass
+    return False
 
 
 _pending_fleet_instructions = {}
@@ -1946,7 +1952,11 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
         return
 
     if not is_sync_message:
-        _auto_update_profile(sender_id, interface)
+        # Before anything they typed is acted on, so a stranger's first
+        # message gets an answer that says where they have arrived and then
+        # does what they asked. One extra message per person, ever.
+        if _auto_update_profile(sender_id, interface):
+            handle_welcome_command(sender_id, interface, first_contact=True)
 
     bbs_nodes = interface.bbs_nodes
 
@@ -3012,6 +3022,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 handle_list_channels_command(sender_id, interface)
             elif global_lower in ("ver", "version"):
                 handle_version_command(sender_id, interface)
+            elif global_lower in ("welcome", "hello"):
+                handle_welcome_command(sender_id, interface)
             elif global_lower.startswith("role,,"):
                 handle_role_command(sender_id, global_message, interface, bbs_nodes)
             elif global_lower == "role":
