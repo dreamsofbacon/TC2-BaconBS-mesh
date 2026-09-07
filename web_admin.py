@@ -6904,12 +6904,15 @@ def create_app(runtime_interface=None) -> Flask:
                 f"{col} LIKE ?" for col in cfg["searchable"]) + ")")
             params.extend(f"%{search_query}%" for _ in cfg["searchable"])
         if node_filter:
-            from db_operations import (origin_scope_clause,
-                                       get_local_link_identities,
-                                       get_local_capture_identities)
+            from db_operations import origin_scope_clause
+            from utils import local_identities_for_display
             if node_filter == LOCAL_NODE_SENTINEL:
-                ids = sorted(get_local_link_identities()
-                             | get_local_capture_identities())
+                # local_identities_for_display, not the in-process sets:
+                # those are populated by server.py and are always empty
+                # here, so this filter matched nothing at all while the
+                # dropdown beside it -- which already used the persisted
+                # fallback -- happily offered the option.
+                ids = sorted(local_identities_for_display())
             else:
                 ids = [node_filter]
             clause, scope_params = origin_scope_clause('source_node_id', ids)

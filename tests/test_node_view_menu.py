@@ -241,6 +241,18 @@ class PickerTests(_Screen):
         screen = self.pick(str(last))
         self.assertIn(f"*{options[last - 1]['label']}", screen)
 
+    def test_prev_steps_back_one_page_not_to_the_start(self):
+        """Jumping to page 0 made anything past page two unreachable
+        backwards -- you could walk forward to page three and then only
+        ever land back at the beginning."""
+        for i in range(24):
+            self.bulletin(f"b{i}", f"mqtt:baconbbsvt:LongNodeName{i}")
+        self.open_picker()
+        second = self.pick("n")
+        third = self.pick("n")
+        self.assertNotEqual(second, third)
+        self.assertEqual(self.pick("p"), second)
+
     def test_next_shows_the_rest(self):
         for i in range(12):
             self.bulletin(f"b{i}", f"mqtt:baconbbsvt:LongNodeName{i}")

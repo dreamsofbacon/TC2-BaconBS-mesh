@@ -664,12 +664,16 @@ def _send_chatter_batch(sender_id, interface, state: dict, *, older: bool) -> No
 
     if not entries:
         state['has_more'] = False
-        send_message(
-            LINE_BREAK.join([
-                "No older chatter." if older else "Nothing heard in this window.",
-                "[T]ime [0] Back",
-            ]),
-            sender_id, interface)
+        # The empty screen is exactly where the lens has to own up. Without
+        # this, a scope that filters out every message reads as a quiet mesh
+        # -- the same false "there is nothing here" the empty mailbox and the
+        # empty board already guard against.
+        lines = ["No older chatter." if older else "Nothing heard in this window."]
+        lens = scope_notice(sender_id)
+        if lens:
+            lines.append(lens)
+        lines.append("[T]ime [0] Back")
+        send_message(LINE_BREAK.join(lines), sender_id, interface)
         update_user_state(sender_id, state)
         return
 
@@ -890,6 +894,20 @@ def _node_view_page_of(options, index: int, interface) -> int:
     return 0
 
 
+def _node_view_page_before(options, page: int, interface) -> int:
+    """The page that precedes `page`, by the same byte fill that built it."""
+    max_bytes = get_max_text_bytes(interface)
+    previous = 0
+    cursor = 0
+    while cursor < page:
+        _, nxt = _node_view_text(options, cursor, None, max_bytes)
+        if nxt <= cursor:
+            break
+        previous = cursor
+        cursor = nxt
+    return previous
+
+
 def handle_node_view_command(sender_id, interface, notice=None) -> None:
     """Show the picker from the top."""
     _send_node_view_page(sender_id, interface, 0, notice=notice)
@@ -924,7 +942,10 @@ def handle_node_view_steps(sender_id, message, interface, state) -> None:
         _send_node_view_page(sender_id, interface, int(state.get('next_page', 0)))
         return
     if choice == 'p' and page > 0:
-        _send_node_view_page(sender_id, interface, 0)
+        # The page before this one, found by walking the same byte fill --
+        # jumping to 0 made anything past page two unreachable backwards.
+        _send_node_view_page(sender_id, interface,
+                             _node_view_page_before(options, page, interface))
         return
 
     if choice.isdigit():
@@ -2732,7 +2753,11 @@ def handle_who_command(sender_id, message, interface):
     if not _role_commands_available(sender_id, interface):
         send_message(_role_command_refusal(sender_id, interface), sender_id, interface)
         return
-    target = str(message or '').split(',,', 1)[-1].strip()
+    # Split on the separator and require the second half. Taking [-1] of a
+    # split that never happened hands back the command word itself, so a
+    # bare !WHO looked up a node called "who" and reported a role for it.
+    parts = str(message or '').split(',,', 1)
+    target = parts[1].strip() if len(parts) == 2 else ''
     if not target:
         send_message("Usage: !WHO,,<node id>", sender_id, interface)
         return
@@ -2890,6 +2915,11 @@ def handle_comment_moderate_steps(sender_id, message, interface, state, bbs_node
         _return_to_channel_post(sender_id, interface, state)
         return
 
+    if choice in ('0', 'x'):
+        # The prompt offers it, so it has to mean going back rather than
+        # being parsed as index -1 and answered "no comment at that number".
+        _return_to_channel_post(sender_id, interface, state)
+        return
     if not choice.isdigit():
         send_message("Reply with a comment number, or 0 to go back.",
                      sender_id, interface)

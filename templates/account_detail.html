@@ -55,7 +55,7 @@
           <td>{{ linked_at }}</td>
           <td>
             <form method="post" action="{{ url_for('account_detail', account_id=account_id) }}"
-                  onsubmit="return confirm('Unlink {{ node_id }}?');" style="display:inline">
+                  onsubmit="return confirm('Unlink this device?');" style="display:inline">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <input type="hidden" name="action" value="unlink">
               <input type="hidden" name="node_id" value="{{ node_id }}">
