@@ -277,3 +277,90 @@ class MailRelayDatabaseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RelayRetryBackoffTests(unittest.TestCase):
+    """How long a failed relay delivery waits before trying again.
+
+    Measured on the live fleet: MeshCore deliveries took 308 and 431
+    minutes, Meshtastic under five. The difference was not the radio -- it
+    was the backoff doubling all the way to an hour and staying there. A
+    "send returned false" on MeshCore means the radio could not transmit
+    just then; a peer that is genuinely absent takes the defer path and
+    never increments attempts at all. Backing off an hour for a transient
+    condition leaves mail sitting long after the radio recovered.
+    """
+
+    def setUp(self):
+        import radio_stubs
+        radio_stubs.install()
+        import server
+        self.server = server
+
+    def test_the_wait_is_capped_in_minutes_not_hours(self):
+        worst = max(self.server._mail_dm_retry_delay(a, 30) for a in range(20))
+        self.assertLessEqual(worst, self.server.MAIL_DM_RETRY_MAX_SECONDS)
+        self.assertLessEqual(worst, 600)
+
+    def test_it_still_backs_off_at_first(self):
+        """Retrying every few seconds forever would be its own problem."""
+        first = self.server._mail_dm_retry_delay(0, 30)
+        later = self.server._mail_dm_retry_delay(4, 30)
+        self.assertGreater(later, first)
+
+    def test_a_long_outage_no_longer_costs_hours(self):
+        """The live case: thirteen consecutive failures."""
+        total = sum(self.server._mail_dm_retry_delay(a, 30) for a in range(13))
+        self.assertLess(total, 60 * 60)
+
+    def test_recovery_is_noticed_within_the_cap(self):
+        """The number that actually matters is how long a message waits
+        after the radio comes back, which is one cap interval."""
+        self.assertLessEqual(self.server._mail_dm_retry_delay(99, 30), 300)
+
+
+class GameOutputLimitTests(unittest.TestCase):
+    """A door's reply is capped by the transport it is going to.
+
+    Flat 900 characters is about six chunks on a radio -- a fair ceiling,
+    since one room description should not monopolise the channel. Over SSH,
+    where a single message carries 8192 bytes, that same cap threw away
+    most of a response and the player simply lost game text.
+    """
+
+    def _limit(self, max_text_bytes):
+        import zork_port
+        return zork_port.response_limit_for(
+            types.SimpleNamespace(max_text_bytes=max_text_bytes))
+
+    def test_radios_keep_exactly_the_old_ceiling(self):
+        """No change on the transport the cap was chosen for."""
+        import zork_port
+        for mtb in (160, 220):
+            with self.subTest(max_text_bytes=mtb):
+                self.assertEqual(self._limit(mtb), zork_port.MAX_RESPONSE_CHARS)
+
+    def test_ssh_is_no_longer_cut_to_a_radio_ceiling(self):
+        import zork_port
+        self.assertGreater(self._limit(8192), zork_port.MAX_RESPONSE_CHARS * 10)
+
+    def test_an_unknown_transport_falls_back_to_the_floor(self):
+        import zork_port
+        self.assertEqual(zork_port.response_limit_for(None),
+                         zork_port.MAX_RESPONSE_CHARS)
+
+    def test_the_limit_is_actually_applied_to_output(self):
+        """The cap has to reach read_output, not just be computed."""
+        import queue as _queue
+        import zork_port
+        session = zork_port.ZorkSession.__new__(zork_port.ZorkSession)
+        session.output_queue = _queue.Queue()
+        session.last_output = ""
+        session.output_queue.put("x" * 5000)
+        short = session.read_output(settle_seconds=0.01, max_chars=100)
+        self.assertIn("[Output truncated]", short)
+        self.assertLess(len(short), 200)
+
+        session.output_queue.put("y" * 5000)
+        long = session.read_output(settle_seconds=0.01, max_chars=32768)
+        self.assertNotIn("[Output truncated]", long)

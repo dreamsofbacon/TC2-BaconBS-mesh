@@ -6599,9 +6599,11 @@ def sync_node_roles_to_nodes(bbs_nodes: list, interface, force: bool = False) ->
     """
     if not bbs_nodes or not interface:
         return 0
-    from utils import send_node_role_to_bbs_nodes, is_role_sync_enabled
+    from utils import (send_node_role_to_bbs_nodes, is_role_sync_enabled,
+                       get_max_exported_role)
     if not is_role_sync_enabled():
         return 0
+    export_ceiling = normalize_role(get_max_exported_role())
 
     now = time.time()
     sweeping = set()
@@ -6613,6 +6615,10 @@ def sync_node_roles_to_nodes(bbs_nodes: list, interface, force: bool = False) ->
     sent = 0
     for node_id, role, updated_at in get_node_roles_for_sync():
         if not updated_at:
+            continue
+        if role_rank(role) > role_rank(export_ceiling):
+            # A peer would refuse it anyway -- see remote_role_ceiling. Not
+            # sending is the same result without the frame every sweep.
             continue
         for peer_id in bbs_nodes:
             key = (str(peer_id), str(node_id))

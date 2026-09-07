@@ -1162,6 +1162,23 @@ def deliver_due_link_codes(links) -> int:
     return sent
 
 
+# How long a retry may back off to. The doubling used to run all the way to
+# an hour and stay there, which on the live fleet meant MeshCore deliveries
+# taking five and seven hours: "send returned false" there is the radio
+# being momentarily unable to transmit, not the peer being gone -- an
+# absent peer takes the defer path instead and never increments attempts.
+# Backing off for an hour over a transient condition leaves the message
+# sitting long after the radio recovered. Five minutes bounds the wait
+# while still thinning out retries for something genuinely stuck.
+MAIL_DM_RETRY_MAX_SECONDS = 300
+
+
+def _mail_dm_retry_delay(attempts: int, base_seconds: int) -> int:
+    """Exponential backoff, capped so a transient failure stays minutes."""
+    return min(MAIL_DM_RETRY_MAX_SECONDS,
+               max(5, int(base_seconds)) * (2 ** min(int(attempts), 7)))
+
+
 def deliver_due_mail_dms(links, active_window_seconds: int = 900, retry_base_seconds: int = 30) -> int:
     """Deliver complete queued mail to targets recently seen on this BBS."""
     if not links:
@@ -1218,12 +1235,12 @@ def deliver_due_mail_dms(links, active_window_seconds: int = 900, retry_base_sec
                     str(entry['mail_unique_id'])[:8], node_id, link.name,
                 )
             else:
-                attempts = int(entry.get('attempts') or 0)
-                delay = min(3600, max(5, int(retry_base_seconds)) * (2 ** min(attempts, 7)))
+                delay = _mail_dm_retry_delay(entry.get('attempts') or 0,
+                                             retry_base_seconds)
                 retry_mail_dm_delivery(entry['id'], "send returned false", delay)
         except Exception as exc:
-            attempts = int(entry.get('attempts') or 0)
-            delay = min(3600, max(5, int(retry_base_seconds)) * (2 ** min(attempts, 7)))
+            delay = _mail_dm_retry_delay(entry.get('attempts') or 0,
+                                         retry_base_seconds)
             retry_mail_dm_delivery(entry['id'], str(exc), delay)
             logging.warning("Mail DM delivery to %s failed: %s", node_id, exc)
     return delivered
