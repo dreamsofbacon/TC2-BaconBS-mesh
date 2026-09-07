@@ -4,7 +4,7 @@ State of the deployment, the decisions behind it, and what is still open.
 For the feature backlog see [feature requests.txt](feature%20requests.txt);
 this file is about running the thing.
 
-Last updated 2026-09-07 at commit `5aa5b55` (`v0.1.586`).
+Last updated 2026-09-07 at commit `48567cf` (`v0.1.588`).
 
 ---
 
@@ -19,13 +19,25 @@ Last updated 2026-09-07 at commit `5aa5b55` (`v0.1.586`).
 | Path | `/home/bacon/TC2-BaconBS-mesh` | same |
 | Services | `mesh-bbs.service`, `bacon-web-admin.service`, `bacon-ssh.service` | `mesh-bbs.service`, `bacon-web-admin.service` |
 | Bacon BBS SSH | Active, dual-stack port 2222 | Disabled/inactive |
-| Fleet state | Healthy on `5aa5b55` | Healthy on `5aa5b55` |
+| Fleet state | Healthy on `48567cf` | Healthy on `48567cf` |
 
 forgecam's Python 3.9 matters: `meshcore` and the supported AsyncSSH release
 require newer Python, so `requirements.txt` carries environment markers and
 pip skips them there. forgecam is an MQTT-only BBS node and must not run
 `bacon-ssh.service`. Both node environments passed `pip check` after the SSH
 release.
+
+**The nodes differ in SQLite too, and that has already bitten twice.** bbs
+is on 3.46.1, forgecam on 3.34.1 (Debian bullseye). So `RETURNING` -- 3.35+
+-- raises `OperationalError` on forgecam, and `datetime.fromisoformat`
+accepts arbitrary fractional-second digits only from Python 3.11, so a
+timestamp one node parses the other returns untouched. **Anything that
+parses or queries differently across those versions makes the two nodes
+disagree about identical data**, which is the whole class of bug behind the
+hash drift. A green suite proves nothing here: it runs on one interpreter,
+against one SQLite. Check the feature matrix, and test the property rather
+than the behaviour -- see "A test that cannot fail on the machine it runs
+on" under Testing.
 
 A third node, `mqtt:baconbbsvt:Chattanooga`, belongs to
 [materva](https://github.com/materva/TC2-BaconBS-mesh) and is reachable over
@@ -86,6 +98,7 @@ Since (2026-09-05/06):
 | `55066c5` | Web Fetch says what it can do; `!VER` |
 | `76d6a38` | `!VER` names the node from any process |
 | `5aa5b55` | One instant, one hash: the timestamp drift, except public_chatter |
+| `48567cf` | A welcome screen, and `[node_names]` grouping on both nodes |
 
 ---
 
