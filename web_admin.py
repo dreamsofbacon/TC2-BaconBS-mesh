@@ -22,6 +22,9 @@ from db_operations import (
     initialize_database,
   get_public_chatter_history,
     get_peer_sync_states,
+    get_fleet_identity,
+    set_fleet_identity,
+    get_persisted_local_link_ids,
 )
 from utils import get_sync_runtime_settings
 from version_info import get_display_version, get_version_resolution_note
@@ -570,6 +573,15 @@ def load_account_settings(config_path: str) -> dict:
   }
 
 
+def _live_fleet_value(key: str) -> str:
+  try:
+    import utils
+    return utils._fleet_value(key)
+  except Exception:
+    logging.debug("could not read fleet value", exc_info=True)
+    return ""
+
+
 def _welcome_preview() -> dict:
   """What the BBS would actually send, at each transport's byte budget.
 
@@ -600,9 +612,13 @@ def load_bbs_settings(config_path: str) -> dict:
   """
   config = read_config_file(config_path)
   return {
-    "name": config.get("bbs", "name", fallback="").strip(),
-    "welcome": config.get("bbs", "welcome", fallback="").strip(),
+    # Through utils, so the form shows what the BBS actually says -- which
+    # after a peer edit is the stored value, not this file's seed.
+    "name": _live_fleet_value("name"),
+    "welcome": _live_fleet_value("welcome"),
     "node_welcome": config.get("bbs", "node_welcome", fallback="").strip(),
+    "accept_identity_from": config.get(
+      "bbs", "accept_identity_from", fallback="").strip(),
     "show_nodes": _parse_bool_setting(
       config.get("bbs", "show_nodes", fallback="true"), True),
   }
@@ -4026,8 +4042,25 @@ def create_app(runtime_interface=None) -> Flask:
       config = read_config_file(app.config["CONFIG_PATH"])
       if not config.has_section("bbs"):
         config.add_section("bbs")
-      for key in ("name", "welcome", "node_welcome"):
-        config.set("bbs", key, form.get(f"bbs_{key}", "").strip())
+      # node_welcome is this node's own line and lives in config. name and
+      # welcome are the FLEET's, and go to the database instead: that is the
+      # one store a peer's frame can also write, and an unsigned radio frame
+      # must never edit config.ini -- which also holds the fleet signing keys.
+      config.set("bbs", "node_welcome", form.get("bbs_node_welcome", "").strip())
+      config.set("bbs", "accept_identity_from",
+                 form.get("bbs_accept_identity_from", "").strip())
+      for key in ("name", "welcome"):
+        submitted = form.get(f"bbs_{key}", "").strip()
+        stored, _ = get_fleet_identity(key)
+        if submitted != (stored if stored is not None else ""):
+          # Stamped only when it actually changed, so re-saving the page does
+          # not hand this node a fresher timestamp than a peer's real edit.
+          # Not get_local_node_id(): that is a module global set when a radio
+          # link comes up, and this is the web-admin process, which owns no
+          # radio. The persisted link ids are what survive a process boundary.
+          local_ids = get_persisted_local_link_ids()
+          set_fleet_identity(key, submitted,
+                             source_node_id=local_ids[0] if local_ids else "")
       config.set("bbs", "show_nodes",
                  "true" if _parse_bool_setting(form.get("bbs_show_nodes", ""), False)
                  else "false")

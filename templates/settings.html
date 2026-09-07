@@ -1047,6 +1047,21 @@
       </label>
       <p class="text-muted">Derived from the peers this node has actually heard from &mdash; nothing to keep up to date.</p>
     </div>
+    <div class="form-group">
+      <label for="bbs_accept_identity_from">Accept name and greeting from</label>
+      <input type="text" id="bbs_accept_identity_from" name="bbs_accept_identity_from"
+             class="form-control" placeholder="(nobody)" value="{{ bbs.accept_identity_from }}">
+      <p class="text-muted">
+        Node ids, comma separated, whose BBS name and greeting this node will
+        adopt. Empty &mdash; the default &mdash; means nobody: the sync frame
+        is unsigned like every other, so without this list anything on your
+        broker could rename your BBS. Name your <em>own</em> other nodes here
+        and one edit propagates to them. Publishing is separate: this node
+        always tells its peers what it believes, whether or not it listens
+        back.
+      </p>
+    </div>
+
     <button class="btn btn-primary" type="submit">Save Welcome</button>
   </form>
 

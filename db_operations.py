@@ -6653,6 +6653,154 @@ def sync_mail_relay_preferences_to_nodes(bbs_nodes: list, interface) -> int:
 
 # What we have already told each peer: (peer, node_id) -> updated_at.
 _advertised_roles = {}
+# ---------------------------------------------------------------------------
+# Fleet identity: the BBS name and greeting, shared by every node.
+#
+# Stored HERE and not in config.ini, deliberately. An unsigned radio frame
+# must never rewrite an operator's config file -- config.ini also holds the
+# fleet signing keys, and a mystery edit to it has already cost this project
+# a day of forensics (see HANDOFF, "When the nodes stop trusting the signing
+# key"). [bbs] name and [bbs] welcome stay readable as the SEED used until
+# this table has a row.
+# ---------------------------------------------------------------------------
+
+FLEET_IDENTITY_KEYS = ('name', 'welcome')
+
+# Same reasoning as ROLE_FUTURE_TOLERANCE_SECONDS: refuse a stamp far enough
+# ahead to pin the value forever, tolerate ordinary clock skew.
+IDENTITY_FUTURE_TOLERANCE_SECONDS = 300
+
+# And the same reasoning as ROLE_READVERTISE_SECONDS: no hash scope covers
+# this, so a dropped frame is only ever healed by saying it again.
+IDENTITY_READVERTISE_SECONDS = 900.0
+
+# Per peer, for the reason the roles sweep is per peer.
+_identity_last_full_sweep = {}
+_advertised_identity = {}
+
+
+def _ensure_fleet_identity_table(c) -> None:
+    c.execute('''CREATE TABLE IF NOT EXISTS fleet_identity (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    source_node_id TEXT NOT NULL DEFAULT ''
+                );''')
+
+
+def get_fleet_identity(key: str):
+    """The stored fleet value and its stamp, or (None, '') if unset."""
+    if key not in FLEET_IDENTITY_KEYS:
+        return (None, '')
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        _ensure_fleet_identity_table(c)
+        row = c.execute(
+            "SELECT value, updated_at FROM fleet_identity WHERE key = ?",
+            (key,)).fetchone()
+        if row:
+            return (str(row[0]), str(row[1] or ''))
+    except Exception:
+        logging.debug("could not read fleet identity", exc_info=True)
+    return (None, '')
+
+
+def set_fleet_identity(key: str, value: str, updated_at=None,
+                       source_node_id: str = '') -> bool:
+    """Record a fleet value. Used by the web admin and by an accepted peer."""
+    if key not in FLEET_IDENTITY_KEYS:
+        return False
+    stamp = str(updated_at or '').strip() or datetime.now(
+        timezone.utc).isoformat(timespec='microseconds')
+    conn = get_db_connection()
+    c = conn.cursor()
+    _ensure_fleet_identity_table(c)
+    c.execute(
+        '''INSERT INTO fleet_identity (key, value, updated_at, source_node_id)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET
+             value = excluded.value,
+             updated_at = excluded.updated_at,
+             source_node_id = excluded.source_node_id''',
+        (key, str(value or ''), stamp, str(source_node_id or '')))
+    conn.commit()
+    return True
+
+
+def apply_synced_fleet_identity(key, value, updated_at, sender_node_id) -> bool:
+    """Adopt a peer's BBS name or greeting -- only from a node you named.
+
+    The frame is unsigned like every other, and this one renames the whole
+    BBS, so the guard is an allow-list rather than a ceiling: [bbs]
+    accept_identity_from, empty by default. A node you do not run cannot
+    rename your BBS, and out of the box nobody can.
+    """
+    from utils import identity_sync_sources
+    normalized_key = str(key or '').strip()
+    stamp = str(updated_at or '').strip()
+    sender = str(sender_node_id or '').strip()
+    if normalized_key not in FLEET_IDENTITY_KEYS or not stamp or not sender:
+        return False
+
+    trusted = identity_sync_sources()
+    if sender not in trusted:
+        logging.info(
+            "Ignoring fleet identity %s from %s: not in [bbs] accept_identity_from",
+            normalized_key, sender)
+        return False
+
+    horizon = (datetime.now(timezone.utc)
+               + timedelta(seconds=IDENTITY_FUTURE_TOLERANCE_SECONDS)
+               ).isoformat(timespec='microseconds')
+    if stamp > horizon:
+        logging.warning("Refused fleet identity %s from %s: stamped %s, in the future",
+                        normalized_key, sender, stamp)
+        return False
+
+    _, current = get_fleet_identity(normalized_key)
+    if current and current >= stamp:
+        return False
+    logging.info("Adopting fleet %s from %s", normalized_key, sender)
+    return set_fleet_identity(normalized_key, value, stamp, sender)
+
+
+def sync_fleet_identity_to_nodes(bbs_nodes: list, interface, force: bool = False) -> int:
+    """Tell peers what this node believes the BBS is called.
+
+    Rides the periodic tick for the reason roles do, and re-advertises on a
+    sweep for the reason roles do -- see ROLE_READVERTISE_SECONDS. Sent
+    regardless of whether this node would ACCEPT an identity itself: telling
+    peers and adopting from peers are separate decisions, and a node that
+    only publishes is the normal shape of a fleet with one editor.
+    """
+    if not bbs_nodes or not interface:
+        return 0
+    from utils import send_fleet_identity_to_bbs_nodes
+
+    now = time.time()
+    sweeping = set()
+    for peer_id in bbs_nodes:
+        if now - _identity_last_full_sweep.get(str(peer_id), 0.0) >= IDENTITY_READVERTISE_SECONDS:
+            sweeping.add(str(peer_id))
+            _identity_last_full_sweep[str(peer_id)] = now
+
+    sent = 0
+    for key in FLEET_IDENTITY_KEYS:
+        value, stamp = get_fleet_identity(key)
+        if value is None or not stamp:
+            continue  # never edited here; nothing to assert
+        for peer_id in bbs_nodes:
+            cache_key = (str(peer_id), key)
+            if (not force and str(peer_id) not in sweeping
+                    and _advertised_identity.get(cache_key) == stamp):
+                continue
+            if send_fleet_identity_to_bbs_nodes(key, value, stamp, [peer_id], interface):
+                _advertised_identity[cache_key] = stamp
+                sent += 1
+    return sent
+
+
 # Per peer, not one global: sync_node_roles_to_nodes runs once per
 # RadioLink, so a single timestamp meant the first link to tick consumed
 # the sweep and every other link's peers never got the re-advertisement --

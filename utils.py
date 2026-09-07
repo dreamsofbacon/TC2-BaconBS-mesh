@@ -52,7 +52,7 @@ def get_max_text_bytes(interface=None) -> int:
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat', 'role')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state, 'role'=user roles
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat', 'role', 'bbsid')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state, 'role'=user roles, 'bbsid'=fleet BBS name/greeting
 
 # Single-char scope codes used by the 'scc' wire capability.  Senders gate
 # encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
@@ -473,14 +473,42 @@ def get_max_exported_role() -> str:
 WELCOME_DEFAULT_NAME = "Bacon BBS"
 
 
+def identity_sync_sources() -> set:
+    """Node ids whose BBS name and greeting this node will adopt.
+
+    Empty by default, and that default is the point: the frame is unsigned,
+    so without an explicit list anything on the broker could rename your
+    BBS. Naming your own other nodes here is what makes one edit propagate.
+    """
+    raw = _config_raw("bbs", "accept_identity_from") or ""
+    return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+
+def _fleet_value(key: str) -> str:
+    """The stored fleet value, falling back to config as the seed.
+
+    The database wins because that is what a web-admin edit and an accepted
+    peer both write; config.ini seeds a node that has never been edited, so
+    a fresh install still comes up named.
+    """
+    try:
+        from db_operations import get_fleet_identity
+        stored, _ = get_fleet_identity(key)
+        if stored is not None:
+            return str(stored).strip()
+    except Exception:
+        logging.debug("could not read stored fleet identity", exc_info=True)
+    return (_config_raw("bbs", key) or "").strip()
+
+
 def get_bbs_name() -> str:
     """The public name of the BBS. Fleet-level: every node is this BBS."""
-    return (_config_raw("bbs", "name") or "").strip() or WELCOME_DEFAULT_NAME
+    return _fleet_value("name") or WELCOME_DEFAULT_NAME
 
 
 def get_fleet_welcome() -> str:
     """The greeting that describes the BBS itself. Fleet-level."""
-    return (_config_raw("bbs", "welcome") or "").strip()
+    return _fleet_value("welcome")
 
 
 def get_node_welcome() -> str:
@@ -2007,6 +2035,31 @@ def send_node_role_to_bbs_nodes(node_id, role, updated_at, bbs_nodes, interface)
     sent = 0
     for peer_id in bbs_nodes or []:
         if peer_supports(peer_id, 'role'):
+            _send_one_sync(message, peer_id, interface)
+            sent += 1
+    return sent
+
+
+def send_fleet_identity_to_bbs_nodes(key, value, updated_at, bbs_nodes, interface):
+    """Advertise the BBS name or greeting to peers that understand it.
+
+    Unsigned, like every other sync frame, which is why the RECEIVING side
+    decides whether to listen -- see apply_synced_fleet_identity and
+    [bbs] accept_identity_from. This says what this node believes; it is
+    not an instruction.
+
+    The value is encoded because a greeting is free text an operator types,
+    and a '|' in it would otherwise split the frame.
+    """
+    try:
+        from db_operations import peer_supports
+    except Exception:
+        return 0
+    message = (f"BBSID|{str(key)}|{encode_text(str(value or ''))}"
+               f"|{str(updated_at)}")
+    sent = 0
+    for peer_id in bbs_nodes or []:
+        if peer_supports(peer_id, 'bbsid'):
             _send_one_sync(message, peer_id, interface)
             sent += 1
     return sent

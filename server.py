@@ -39,6 +39,7 @@ from config_init import (
 from radio_link import RadioLink
 from db_operations import (
     sync_node_roles_to_nodes,
+    sync_fleet_identity_to_nodes,
     initialize_database,
     install_connection_log_handler,
     sync_full_database_to_nodes,
@@ -1986,6 +1987,14 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
         sync_node_roles_to_nodes(sorted(current_bbs_nodes), link.interface)
     except Exception:
         logging.debug(f"[{link.name}] role advertisement failed", exc_info=True)
+
+    # The BBS name and greeting ride the same tick, for the same two reasons:
+    # a five-phase phase has finished forever on an established fleet, and a
+    # frame with no hash scope behind it is only healed by being said again.
+    try:
+        sync_fleet_identity_to_nodes(sorted(current_bbs_nodes), link.interface)
+    except Exception:
+        logging.debug(f"[{link.name}] identity advertisement failed", exc_info=True)
 
     link.next_node_sync_check = now + 5
 

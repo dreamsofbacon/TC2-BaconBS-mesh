@@ -53,6 +53,7 @@ from db_operations import (
     log_sync_transmission,
     upsert_synced_user_profile, upsert_synced_game_score,
     apply_synced_mail_relay_preference,
+    apply_synced_fleet_identity,
     upsert_synced_zork_save,
     apply_synced_zork_save_delete,
     apply_synced_game_score_delete,
@@ -2596,6 +2597,21 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             # apply_synced_node_role: unsigned frame, so it caps what can be
             # granted and refuses anything older than a local decision.
             apply_synced_node_role(parts[1].strip(), parts[2], parts[3].strip())
+        elif message.startswith("BBSID|"):
+            parts = message.split("|", 3)
+            if len(parts) != 4 or not parts[1] or not parts[3]:
+                logging.warning(f"Malformed BBSID ignored: {message}")
+                return
+            # Whether to listen at all is decided in
+            # apply_synced_fleet_identity: unsigned frame, and this one
+            # renames the whole BBS, so it is an allow-list not a ceiling.
+            try:
+                value = decode_text(parts[2])
+            except Exception:
+                logging.warning(f"Malformed BBSID payload ignored: {message}")
+                return
+            apply_synced_fleet_identity(parts[1].strip(), value,
+                                        parts[3].strip(), sender_node_id)
         elif message.startswith("RELAYPREF|"):
             parts = message.split("|", 3)
             if len(parts) != 4 or parts[2] not in ('0', '1') or not parts[1] or not parts[3]:
