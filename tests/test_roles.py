@@ -405,6 +405,31 @@ class RoleWireTests(_RoleCase):
         self.assertEqual(len(sent), 2)
         self.assertIn("banned", sent[-1])
 
+    def test_a_dropped_frame_heals_on_the_next_sweep(self):
+        """Change-driven alone loses anything sent while a peer is down --
+        the sender has already recorded it as delivered, and roles have no
+        hash scope to notice the gap later. That is not theoretical: the
+        first live probe went out while forgecam was restarting, was lost,
+        and never came back."""
+        db_operations._advertised_roles.clear()
+        db_operations._roles_last_full_sweep = 0.0
+        self.addCleanup(db_operations._advertised_roles.clear)
+        db_operations.set_node_role(OTHER, 'vip')
+        sent = []
+        with mock.patch.object(utils, "_send_one_sync",
+                               side_effect=lambda m, p, i, **k: sent.append(m)),              mock.patch.object(db_operations, "peer_supports",
+                               side_effect=lambda peer, cap: True):
+            db_operations.sync_node_roles_to_nodes(["!a"], mock.MagicMock())
+            after_first = len(sent)
+            # Quiet for a while: nothing repeats.
+            db_operations.sync_node_roles_to_nodes(["!a"], mock.MagicMock())
+            self.assertEqual(len(sent), after_first)
+            # The sweep comes round.
+            db_operations._roles_last_full_sweep -= (
+                db_operations.ROLE_READVERTISE_SECONDS + 1)
+            db_operations.sync_node_roles_to_nodes(["!a"], mock.MagicMock())
+        self.assertGreater(len(sent), after_first)
+
     def test_it_runs_off_the_tick_not_the_five_phase_sync(self):
         """The bug this replaced. phases_complete is persisted, so on an
         established fleet P4 has finished forever and anything hung off it

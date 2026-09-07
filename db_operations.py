@@ -6545,10 +6545,17 @@ def sync_mail_relay_preferences_to_nodes(bbs_nodes: list, interface) -> int:
 
 
 # What we have already told each peer: (peer, node_id) -> updated_at.
-# In memory, so a restart re-advertises once and a peer that missed a frame
-# while it was down gets it again -- roles have no hash scope, so nothing
-# else would ever notice the gap.
 _advertised_roles = {}
+_roles_last_full_sweep = 0.0
+
+# Every role is re-advertised this often regardless of whether it changed.
+#
+# Change-driven alone is not enough, and that is not theoretical: the first
+# probe frame went out while the far node was still restarting, was lost,
+# and was never re-sent -- the sender had already recorded it as delivered.
+# Content scopes heal through hash repair. Roles have no scope, so this
+# sweep is the only thing that closes a gap left by a dropped frame.
+ROLE_READVERTISE_SECONDS = 900.0
 
 
 def sync_node_roles_to_nodes(bbs_nodes: list, interface, force: bool = False) -> int:
@@ -6564,11 +6571,18 @@ def sync_node_roles_to_nodes(bbs_nodes: list, interface, force: bool = False) ->
     has not moved is not re-sent, and a fleet where nobody's role changes
     sends nothing.
     """
+    global _roles_last_full_sweep
     if not bbs_nodes or not interface:
         return 0
     from utils import send_node_role_to_bbs_nodes, is_role_sync_enabled
     if not is_role_sync_enabled():
         return 0
+
+    now = time.time()
+    if now - _roles_last_full_sweep >= ROLE_READVERTISE_SECONDS:
+        force = True
+        _roles_last_full_sweep = now
+
     sent = 0
     for node_id, role, updated_at in get_node_roles_for_sync():
         if not updated_at:
