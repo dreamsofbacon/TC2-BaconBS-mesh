@@ -191,5 +191,63 @@ class SettingsScreenTests(_Case):
         self.assertNotIn("Linked", self.last)
 
 
+class BioSurvivesSyncTests(_Case):
+    """The bio is the one field on a profile a person actually authors, and
+    it was the one field they could not keep.
+
+    upsert_synced_user_profile took `bio = excluded.bio` unconditionally
+    while every other column had a newer-wins guard. On the live fleet an
+    edit was accepted, displayed back, and empty again within one sync
+    cycle, because the peer still held the older copy and its arrival won.
+    """
+
+    def _peer_sends(self, bio, last_seen):
+        db_operations.upsert_synced_user_profile(
+            "1234", "bac", "bacon", "2026-09-01 10:00:00", last_seen, 5, bio)
+
+    def _bio(self):
+        return db_operations.get_db_connection().execute(
+            "SELECT bio FROM user_profiles WHERE user_id = '1234'").fetchone()[0]
+
+    def test_an_older_peer_copy_cannot_wipe_a_fresh_edit(self):
+        db_operations.update_user_bio(1234, "runs a solar node in VT")
+        self._peer_sends("", "2026-09-01 10:00:00")
+        self.assertEqual(self._bio(), "runs a solar node in VT")
+
+    def test_a_newer_peer_copy_still_wins(self):
+        """Editing on your phone must still reach the node you last used."""
+        db_operations.update_user_bio(1234, "old text")
+        self._peer_sends("edited elsewhere", "2099-01-01 00:00:00")
+        self.assertEqual(self._bio(), "edited elsewhere")
+
+    def test_editing_stamps_the_row_as_the_newest_copy(self):
+        """The guard compares last_seen, so writing a bio without touching
+        it leaves the edit stamped in the past and the peer wins anyway.
+
+        The peer here is stamped BETWEEN the row's old value and now, which
+        is the real case -- forgecam's copy is a few seconds old, not
+        ancient. A peer stamped at the row's original time would be refused
+        with or without the fix, and would prove nothing.
+        """
+        conn = db_operations.get_db_connection()
+        conn.execute("UPDATE user_profiles SET last_seen = '2026-01-01 00:00:00'"
+                     " WHERE user_id = '1234'")
+        conn.commit()
+
+        db_operations.update_user_bio(1234, "something new")
+        self._peer_sends("", "2026-06-01 00:00:00")
+        self.assertEqual(self._bio(), "something new")
+
+    def test_the_edit_survives_a_full_round_trip_through_the_handler(self):
+        """End to end: the path a user actually walks."""
+        ch.handle_profile_command(1234, self.iface, sender_node_id="!abc")
+        ch.handle_profile_steps(1234, "1", self.iface, sender_node_id="!abc")
+        ch.handle_profile_steps(1234, "a real bio", self.iface, sender_node_id="!abc")
+        self._peer_sends("", "2026-09-01 10:00:00")
+        self.sent.clear()
+        ch.handle_profile_command(1234, self.iface, sender_node_id="!abc")
+        self.assertIn("a real bio", self.last)
+
+
 if __name__ == "__main__":
     unittest.main()

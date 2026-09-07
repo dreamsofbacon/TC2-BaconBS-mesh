@@ -4101,7 +4101,14 @@ def upsert_synced_user_profile(user_id: str, short_name: str, long_name: str,
              first_seen = CASE WHEN excluded.first_seen < first_seen THEN excluded.first_seen ELSE first_seen END,
              last_seen = CASE WHEN excluded.last_seen > last_seen THEN excluded.last_seen ELSE last_seen END,
              messages_sent = CASE WHEN excluded.messages_sent > messages_sent THEN excluded.messages_sent ELSE messages_sent END,
-             bio = excluded.bio''',
+             -- Newer wins, like every other column here. This was
+             -- `bio = excluded.bio`, unconditional, so a peer holding an
+             -- older copy overwrote a bio the user had just written -- on
+             -- the live fleet an edit survived, was displayed, and was
+             -- empty again within one sync cycle. The bio is the one field
+             -- on the profile a person actually authors; taking whichever
+             -- copy arrived last made it the one field they could not keep.
+             bio = CASE WHEN excluded.last_seen > last_seen THEN excluded.bio ELSE bio END''',
         (str(user_id), short_name, long_name, first_seen, last_seen, int(messages_sent), bio[:100]),
     )
     conn.commit()
@@ -5230,9 +5237,18 @@ def get_user_profile(user_id: int):
 
 
 def update_user_bio(user_id: int, bio: str) -> None:
+    """Set a user's bio, and stamp the row as the newest copy of it.
+
+    last_seen is what profile sync compares, so writing the bio without
+    touching it left the edit older than a peer's stale copy and the peer
+    won the next reconcile. The user did just interact with us, so this is
+    also simply true.
+    """
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("UPDATE user_profiles SET bio = ? WHERE user_id = ?", (bio[:100], str(user_id)))
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    c.execute("UPDATE user_profiles SET bio = ?, last_seen = ? WHERE user_id = ?",
+              (bio[:100], now, str(user_id)))
     conn.commit()
 
 
