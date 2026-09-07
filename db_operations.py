@@ -2697,12 +2697,19 @@ def get_local_record_counts() -> dict:
     c.execute("SELECT COUNT(*) FROM public_chatter WHERE expires_at > ?", (now,))
     public_chatter = int(c.fetchone()[0])
 
-    def _hash_rows(query: str, params: tuple = ()) -> str:
+    def _hash_rows(query: str, params: tuple = (),
+                   timestamp_columns: tuple = ()) -> str:
         digest = hashlib.blake2b(digest_size=8)
         row_count = 0
         for row in c.execute(query, params):
             row_count += 1
-            for value in row:
+            for index, value in enumerate(row):
+                if index in timestamp_columns:
+                    # One spelling of one instant. See _normalize_sync_timestamp:
+                    # a row written here and the same row received from a peer
+                    # differ only in a 'T' or a space, and hashing that string
+                    # raw makes two identical records look different forever.
+                    value = _normalize_sync_timestamp(value)
                 if value is None:
                     blob = b''
                 elif isinstance(value, bytes):
@@ -2734,7 +2741,9 @@ def get_local_record_counts() -> dict:
         "FROM channel_comments cc JOIN channels ch ON ch.id = cc.channel_id WHERE ch.local_only = 0 ORDER BY cc.unique_id"
     ):
         channels_row_count += 1
-        for value in row:
+        for index, value in enumerate(row):
+            if index == 4:  # cc.date -- see _normalize_sync_timestamp
+                value = _normalize_sync_timestamp(value)
             blob = b'' if value is None else str(value).encode('utf-8')
             channels_digest.update(len(blob).to_bytes(4, 'big'))
             channels_digest.update(blob)
@@ -2748,12 +2757,17 @@ def get_local_record_counts() -> dict:
         # disagree about whether the same rows are the same rows -- the scope
         # would report a mismatch that the record diff then found nothing to
         # fix, and the repair cycle would run forever finding nothing.
+        # In Python, not SQL. The CASE expression this replaces handled only
+        # the T-for-space swap, while _normalize_sync_timestamp -- which the
+        # manifest uses -- also strips a trailing 'Z'. Two spellings of the
+        # rule meant the aggregate and the manifest could disagree about the
+        # same row, which is the failure the comment above warns about,
+        # reintroduced by the fix for it. No stored timestamp carries a 'Z'
+        # today, so this was latent rather than live.
         zork_saves_hash = _hash_rows(
-            "SELECT user_id, game_id, save_data,"
-            " CASE WHEN length(updated_at) > 10 AND substr(updated_at, 11, 1) = 'T'"
-            "      THEN substr(updated_at, 1, 10) || ' ' || substr(updated_at, 12)"
-            "      ELSE updated_at END"
-            " FROM zork_saves ORDER BY user_id, game_id"
+            "SELECT user_id, game_id, save_data, updated_at"
+            " FROM zork_saves ORDER BY user_id, game_id",
+            timestamp_columns=(3,),
         )
     else:
         zork_saves_hash = zork_saves_disabled_hash()
@@ -2761,7 +2775,8 @@ def get_local_record_counts() -> dict:
         "SELECT user_id, short_name, long_name, bio FROM user_profiles ORDER BY user_id"
     )
     game_scores_hash = _hash_rows(
-        "SELECT user_id, game_id, short_name, score, max_score, moves, achieved_at FROM game_scores ORDER BY user_id, game_id"
+        "SELECT user_id, game_id, short_name, score, max_score, moves, achieved_at FROM game_scores ORDER BY user_id, game_id",
+        timestamp_columns=(6,),
     )
     public_chatter_hash = _hash_rows(
         "SELECT unique_id, network, channel_index, sender_node_id, content, "
@@ -4133,7 +4148,14 @@ def upsert_synced_game_score(user_id: str, game_id: str, short_name: str,
                                                             WHEN excluded.score = score AND excluded.moves = moves AND excluded.achieved_at < achieved_at THEN excluded.achieved_at
                                                             ELSE achieved_at
                                                         END''',
-        (str(user_id), game_id, short_name, int(score), int(max_score), int(moves), achieved_at),
+        # normalized_achieved_at, not achieved_at. The raw value was stored
+        # here while only the tombstone check used the normalised one, so a
+        # peer's 'T' spelling went straight into the table -- which is why
+        # the same two scores read '2026-09-06 21:24:31' on one node and
+        # '2026-09-06T21:24:31' on the other, and why game_scores was the
+        # one scope our two nodes could never agree on.
+        (str(user_id), game_id, short_name, int(score), int(max_score),
+         int(moves), normalized_achieved_at),
     )
     conn.commit()
     clear_sync_tombstone('game_scores', key)
@@ -4682,6 +4704,19 @@ def _normalize_sync_timestamp(value) -> str:
     candidate = text[:-1] if text.endswith('Z') else text
     if len(candidate) > 10 and candidate[10] == ' ':
         candidate = candidate[:10] + 'T' + candidate[11:]
+    # Drop sub-second precision and any UTC offset before parsing. The output
+    # format has room for neither, so no result changes -- but the parse stops
+    # depending on the interpreter. datetime.fromisoformat accepts any number
+    # of fractional digits from 3.11 on and only 3 or 6 before it, and our two
+    # nodes run 3.13 and 3.9. A value like '...T00:17:16.84+00:00' parses on
+    # one and is returned untouched by the other, so the two nodes hash one
+    # record differently -- this function's own defect, one layer down.
+    date_part, separator, time_part = candidate.partition('T')
+    if separator:
+        # The time never contains '-', so splitting on it only strips a
+        # negative offset; 'Z' is already gone.
+        time_part = time_part.split('.')[0].split('+')[0].split('-')[0]
+        candidate = f"{date_part}T{time_part}"
     try:
         parsed = datetime.fromisoformat(candidate)
     except ValueError:
@@ -6212,6 +6247,19 @@ def _compact_row_hash(values: tuple) -> str:
     return base64.urlsafe_b64encode(digest.digest()).decode('ascii').rstrip('=')
 
 
+def _compact_record_hash(row, timestamp_columns=()) -> str:
+    """A record hash with its timestamp columns spelled canonically.
+
+    The manifest decides which records move; the aggregate decides which
+    scopes are mismatched. Both must apply the same rule to the same
+    columns, or a scope reports a mismatch the record diff then finds
+    nothing to fix and the repair cycle runs forever finding nothing.
+    """
+    return _compact_row_hash(tuple(
+        _normalize_sync_timestamp(value) if index in timestamp_columns else value
+        for index, value in enumerate(row)))
+
+
 def get_record_hash_manifest(scope: str) -> dict:
     """Return a per-record hash map for selective mismatch repair.
 
@@ -6226,13 +6274,13 @@ def get_record_hash_manifest(scope: str) -> dict:
             "SELECT board, sender_short_name, subject, content, unique_id, source_node_id, source_timestamp FROM bulletins WHERE local_only = 0"
         ):
             key = str(row[4])
-            manifest[key] = _compact_row_hash(row)
+            manifest[key] = _compact_record_hash(row, timestamp_columns=(6,))
     elif scope == 'mail':
         for row in c.execute(
             "SELECT sender, sender_short_name, recipient, subject, content, unique_id, source_node_id, source_timestamp FROM mail"
         ):
             key = str(row[5])
-            manifest[key] = _compact_row_hash(row)
+            manifest[key] = _compact_record_hash(row, timestamp_columns=(7,))
     elif scope == 'channels':
         # Channel records only — comments are a separate sub-scope.
         for row in c.execute(
@@ -6249,7 +6297,8 @@ def get_record_hash_manifest(scope: str) -> dict:
             "cc.source_node_id, cc.source_timestamp "
             "FROM channel_comments cc JOIN channels ch ON ch.id = cc.channel_id WHERE ch.local_only = 0"
         ):
-            manifest[str(row[5])] = _compact_row_hash(row)
+            manifest[str(row[5])] = _compact_record_hash(
+                row, timestamp_columns=(3, 9))
     elif scope == 'public_chatter':
         now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
         for row in c.execute(
@@ -6270,7 +6319,7 @@ def get_record_hash_manifest(scope: str) -> dict:
             "SELECT user_id, game_id, short_name, score, max_score, moves, achieved_at FROM game_scores"
         ):
             key = f"{row[0]}:{row[1]}"
-            manifest[key] = _compact_row_hash(row)
+            manifest[key] = _compact_record_hash(row, timestamp_columns=(6,))
     elif scope == 'zork_saves':
         if not is_zork_save_sync_enabled():
             return manifest
@@ -6282,8 +6331,7 @@ def get_record_hash_manifest(scope: str) -> dict:
             # Hash the canonical timestamp, so a peer still holding the other
             # spelling of the same instant hashes identically and the
             # mismatch clears without waiting for that peer to be updated.
-            manifest[key] = _compact_row_hash(
-                (row[0], row[1], row[2], _normalize_zork_timestamp(row[3])))
+            manifest[key] = _compact_record_hash(row, timestamp_columns=(3,))
     elif scope == 'tombstones':
         _ensure_deleted_sync_tombstones_table()
         for row in c.execute(

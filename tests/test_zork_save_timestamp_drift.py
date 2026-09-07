@@ -44,7 +44,11 @@ class TimestampNormalisationTests(unittest.TestCase):
         wire = utils.encode_ts_second(SPACE_FORM, True)
         self.assertTrue(wire.startswith("s"), wire)
         decoded = utils.decode_ts_second(wire)
-        self.assertEqual(decoded, T_FORM, "decode still returns the T form")
+        # decode_ts_second used to return T_FORM here, and storing that is
+        # what put two spellings of one instant in the database. It now
+        # agrees with the local writers, so the round trip is a no-op.
+        self.assertEqual(decoded, SPACE_FORM,
+                         "decode must land on the writers' spelling")
         self.assertEqual(db_operations._normalize_zork_timestamp(decoded),
                          SPACE_FORM)
 
