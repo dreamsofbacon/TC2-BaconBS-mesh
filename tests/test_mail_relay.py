@@ -368,6 +368,60 @@ class MailRelayDatabaseTests(unittest.TestCase):
         self.assertEqual(len(replies), 1)
         self.assertEqual(replies[0][2], "Re: First subject")
         self.assertEqual(db_operations.get_mail("!second"), [])
+        # Landed back on the mail menu, not the invisible step-8 gate --
+        # !R can be sent from anywhere, so there is no other "previous
+        # menu" to speak of than the mailbox itself.
+        self.assertEqual(command_handlers.get_user_state(111),
+                         {"command": "MAIL", "step": 1})
+
+    def test_a_reply_returns_to_the_mail_menu_automatically(self):
+        """Before this, step 7's END branch always fell through to step 8 --
+        a state with no message of its own, so the confirmation was followed
+        by silence and the next keypress meant something the user could not
+        see (typing "y" happened to open the mail menu; anything else
+        cleared the session). A reply only ever starts from a mail screen
+        (an opened message, its delete confirmation, or !R from anywhere),
+        so there is nothing left to ask once it is sent -- land back on the
+        mailbox instead."""
+        db_operations.apply_synced_mail_relay_preference(
+            "!first", True, "2026-09-07T10:00:00+00:00")
+        db_operations.add_mail(
+            "!first", "First", "!sender", "Original subject", "Body", [], None)
+        state = {
+            "command": "MAIL", "step": 7,
+            "reply_to_mail_id": db_operations.get_mail("!sender")[0][0],
+            "subject": "Re: Original subject", "content": "",
+        }
+
+        with mock.patch.object(command_handlers, "send_message") as send:
+            command_handlers.handle_mail_steps(
+                111, "Reply body", 7, state, self.interface, [])
+            command_handlers.handle_mail_steps(
+                111, "END", 7, command_handlers.get_user_state(111),
+                self.interface, [])
+
+        self.assertEqual(command_handlers.get_user_state(111),
+                         {"command": "MAIL", "step": 1})
+        self.assertIn("Mail Menu", send.call_args.args[0])
+
+    def test_a_fresh_message_still_gets_the_send_another_prompt(self):
+        """The auto-return above is specific to replies. Composing brand
+        new mail is untouched -- this is a regression guard, not a
+        statement that step 8's own missing prompt is fine."""
+        state = {
+            "command": "MAIL", "step": 7,
+            "recipient_id": "!first", "recipient_name": "First",
+            "subject": "New subject", "content": "",
+        }
+        db_operations.apply_synced_mail_relay_preference(
+            "!first", True, "2026-09-07T10:00:00+00:00")
+
+        with mock.patch.object(command_handlers, "send_message"):
+            command_handlers.handle_mail_steps(
+                111, "END", 7, state, self.interface, [])
+
+        self.assertEqual(command_handlers.get_user_state(111),
+                         {"command": "MAIL", "step": 8})
 
     def test_mailbox_reply_also_collapses_repeated_subject_prefixes(self):
         state = {

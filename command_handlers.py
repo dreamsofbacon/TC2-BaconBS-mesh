@@ -2364,7 +2364,8 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
 
     elif step == 7:
         if message.lower() == "end":
-            if 'reply_to_mail_id' in state:
+            is_reply = 'reply_to_mail_id' in state
+            if is_reply:
                 recipient_id = get_sender_id_by_mail_id(state['reply_to_mail_id'])  # Get the sender ID from the mail ID
             else:
                 recipient_id = state.get('recipient_id')
@@ -2380,8 +2381,18 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             unique_id = add_mail(get_node_id_from_num(sender_id, interface), sender_short_name, recipient_id, subject, content, bbs_nodes, interface)
             send_message(f"Mail has been posted to the mailbox of {recipient_name}.\n(╯°□°)╯📨📬", sender_id, interface)
 
-            update_user_state(sender_id, None)
-            update_user_state(sender_id, {'command': 'MAIL', 'step': 8})
+            if is_reply:
+                # A reply only ever starts from a mail-related screen (an
+                # opened message, its delete confirmation, or !R from
+                # anywhere) -- once it's sent there is nothing left to ask;
+                # land back on the mailbox rather than the invisible "Send
+                # another? [Y/N]" gate below, which never printed its own
+                # prompt and left the next keypress meaning something the
+                # user could not see.
+                handle_mail_command(sender_id, interface)
+            else:
+                update_user_state(sender_id, None)
+                update_user_state(sender_id, {'command': 'MAIL', 'step': 8})
         else:
             state['content'] += message + "\n"
             update_user_state(sender_id, state)
