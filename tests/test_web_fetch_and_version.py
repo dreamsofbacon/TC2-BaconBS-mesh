@@ -136,9 +136,14 @@ class VersionCommandTests(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def _run(self, node_id, display="v9.9 (abc1234)"):
+    def _run(self, node_id, *, link_ids=(), nicknames=None,
+             display="v9.9 (abc1234)"):
         with patch("version_info.get_display_version", lambda: display), \
-             patch("db_operations.get_local_node_id", lambda: node_id):
+             patch("db_operations.get_local_node_id", lambda: node_id), \
+             patch("db_operations.get_persisted_local_link_ids",
+                   lambda: list(link_ids)), \
+             patch.object(command_handlers, "get_node_nicknames",
+                          lambda: dict(nicknames or {})):
             command_handlers.handle_version_command("!user", object())
         return self.radio.sent[-1]
 
@@ -146,19 +151,38 @@ class VersionCommandTests(unittest.TestCase):
         self.assertIn("v9.9 (abc1234)", self._run("!0408b778"))
 
     def test_it_names_the_node_by_its_nickname(self):
-        with patch.object(command_handlers, "node_display_name",
-                          lambda nid, **k: "Burlington"):
-            self.assertIn("Burlington", self._run("!0408b778"))
+        line = self._run("!0408b778", nicknames={"!0408b778": "Burlington"})
+        self.assertIn("Burlington", line)
 
-    def test_this_node_is_replaced_by_something_quotable(self):
-        """'on this node' answers a question nobody asked. The id does."""
-        with patch.object(command_handlers, "node_display_name",
-                          lambda nid, **k: "this node"):
-            line = self._run("!0408b778")
-        self.assertNotIn("this node", line)
-        self.assertIn("0408b778", line)
+    def test_an_mqtt_id_reads_as_its_label(self):
+        self.assertIn("Burlington-NNE",
+                      self._run("mqtt:baconbbsvt:Burlington-NNE"))
 
-    def test_an_unknown_id_leaves_the_clause_off_entirely(self):
+    def test_it_never_says_this_node(self):
+        """'on this node' answers a question nobody asked."""
+        self.assertNotIn("this node", self._run("!0408b778"))
+
+    def test_ssh_falls_back_to_the_persisted_link_ids(self):
+        """bacon-ssh owns no radio, so get_local_node_id() is empty there --
+        the gap that once left Node View inert over SSH."""
+        line = self._run("", link_ids=["mqtt:baconbbsvt:Burlington-NNE"])
+        self.assertIn("Burlington-NNE", line)
+
+    def test_capture_ids_are_not_offered_as_a_name(self):
+        """Those are radio public keys; get_persisted_local_link_ids must be
+        the source, not the whole identity set."""
+        import db_operations
+        self.assertIn("kind = 'link'",
+                      __import__("inspect").getsource(
+                          db_operations.get_persisted_local_link_ids))
+
+    def test_a_nickname_beats_an_mqtt_label(self):
+        line = self._run("", link_ids=["mqtt:baconbbsvt:Burlington-NNE"],
+                         nicknames={"mqtt:baconbbsvt:Burlington-NNE": "Burl"})
+        self.assertIn("Burl", line)
+        self.assertNotIn("Burlington-NNE", line)
+
+    def test_no_identity_at_all_leaves_the_clause_off_entirely(self):
         line = self._run("")
         self.assertIn("v9.9 (abc1234)", line)
         self.assertNotIn(" on ", line)
