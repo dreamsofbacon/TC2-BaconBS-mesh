@@ -16,6 +16,10 @@
         <span class="settings-nav-title">MQTT Bridges</span>
         <span class="settings-nav-hint">Brokers, TLS, what each one receives</span>
       </a>
+      <a class="settings-nav-link" href="#invite" data-panel-link="invite">
+        <span class="settings-nav-title">Invite &amp; Join</span>
+        <span class="settings-nav-hint">Share a link, or join one from a file</span>
+      </a>
       <a class="settings-nav-link" href="#welcome" data-panel-link="welcome">
         <span class="settings-nav-title">Welcome &amp; Identity</span>
         <span class="settings-nav-hint">BBS name, greeting, node list</span>
@@ -999,6 +1003,83 @@
       <input type="text" id="wipe_confirmation" name="wipe_confirmation" placeholder="Type WIPE DATABASE" class="form-control" required>
     </div>
     <button class="btn" type="submit" style="background:#521c1c;border-color:#8d3434;color:#ffd7d7">Wipe Database</button>
+  </form>
+</section>
+
+<section class="card settings-panel" id="invite" data-settings-panel="invite" style="max-width:820px">
+  <h2>Invite &amp; Join</h2>
+  <p class="text-muted">
+    An invite is one encrypted file holding everything another node needs to
+    join this mesh: the broker, its credentials and TLS material, who to sync
+    with, and optionally your fleet's signing key. Send the file however you
+    like; send the passphrase another way.
+  </p>
+
+  <h3>Share a link</h3>
+  {% if mqtt_links %}
+  <form method="post" action="{{ url_for('invite_export') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-group">
+      <label for="link_index">Which link</label>
+      <select id="link_index" name="link_index" class="form-control">
+        {% for link in mqtt_links %}
+        <option value="{{ link.index }}">[mqtt{{ link.index }}] {{ link.host }}:{{ link.port }} &mdash; {{ link.topic_prefix }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="export_passphrase">Passphrase</label>
+      <input type="password" id="export_passphrase" name="passphrase"
+             class="form-control" autocomplete="new-password" required>
+      <p class="text-muted">The file carries your broker password, so it is
+        encrypted. Give this passphrase to the other operator by some other
+        route than the file itself.</p>
+    </div>
+    <div class="form-group">
+      <label>
+        <input type="checkbox" name="include_certs" value="true" checked>
+        Include TLS certificates and key
+      </label>
+      <p class="text-muted">Needed if the broker uses a private CA or mutual
+        TLS &mdash; config.ini only stores file paths, which mean nothing on
+        another machine. This shares your client key, so their node
+        authenticates to the broker as you.</p>
+    </div>
+    <div class="form-group">
+      <label>
+        <input type="checkbox" name="include_fleet" value="true">
+        Include this fleet's signing key, so they can receive updates
+      </label>
+      <p class="text-muted">Public halves only &mdash; they verify signatures
+        and cannot create them. The importer still has to tick a box before
+        anything is armed.</p>
+    </div>
+    <button class="btn btn-primary" type="submit">Download invite</button>
+  </form>
+  {% else %}
+  <p class="text-muted">No MQTT links are configured yet, so there is nothing
+    to share. Add one under <a href="#mqtt" data-panel-link="mqtt">MQTT Bridges</a> first.</p>
+  {% endif %}
+
+  <h3>Join from an invite</h3>
+  <form method="post" action="{{ url_for('invite_import') }}" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-group">
+      <label for="invite_file">Invite file</label>
+      <input type="file" id="invite_file" name="invite_file" class="form-control"
+             accept=".bbsinvite,.json,application/json" required>
+    </div>
+    <div class="form-group">
+      <label for="import_passphrase">Passphrase</label>
+      <input type="password" id="import_passphrase" name="passphrase"
+             class="form-control" autocomplete="off" required>
+    </div>
+    <p class="text-muted">
+      You will see exactly what it contains before anything changes. Importing
+      only ever adds a new link &mdash; it never edits or removes one you
+      already have.
+    </p>
+    <button class="btn btn-primary" type="submit">Open invite</button>
   </form>
 </section>
 

@@ -604,6 +604,76 @@ def _welcome_preview() -> dict:
     return {"meshcore": "", "meshtastic": "", "ssh": "", "nodes": []}
 
 
+# A decrypted invite waiting for its review screen. Held in memory rather
+# than in the session cookie because it contains a broker password and, for
+# a mutual-TLS broker, a private key -- neither belongs in something the
+# browser stores and replays on every request.
+_PENDING_INVITES: dict = {}
+INVITE_PENDING_SECONDS = 900
+
+
+def _sweep_pending_invites() -> None:
+  cutoff = time.time() - INVITE_PENDING_SECONDS
+  for token in [t for t, (when, _) in _PENDING_INVITES.items() if when < cutoff]:
+    _PENDING_INVITES.pop(token, None)
+
+
+def remember_pending_invite(payload: dict) -> str:
+  import invite as invite_mod
+  _sweep_pending_invites()
+  token = invite_mod.new_token()
+  _PENDING_INVITES[token] = (time.time(), payload)
+  return token
+
+
+def take_pending_invite(token: str, *, consume: bool = False):
+  _sweep_pending_invites()
+  entry = (_PENDING_INVITES.pop(str(token), None) if consume
+           else _PENDING_INVITES.get(str(token)))
+  return entry[1] if entry else None
+
+
+def suggested_local_id() -> str:
+  """A starting name for this node ON the new link.
+
+  The hostname, because it is already unique on the operator's network and
+  they will recognise it. It must NOT be the inviter's own local_id: two
+  nodes sharing one collide on the broker.
+  """
+  import invite as invite_mod
+  import socket
+  raw = socket.gethostname().split(".")[0]
+  cleaned = "".join(ch for ch in raw if ch.isalnum() or ch in "._-")
+  try:
+    return invite_mod.validate_local_id(cleaned)
+  except invite_mod.InviteError:
+    return ""
+
+
+def read_link_certs(link: dict) -> dict:
+  """Read a link's TLS material so the bundle can carry the CONTENT.
+
+  config.ini stores paths, and a path on this machine means nothing on
+  someone else's. Without the file contents the most useful invite -- the
+  internet broker that needs mutual TLS -- would import and then fail to
+  connect for a reason nobody could see.
+  """
+  import invite as invite_mod
+  out = {}
+  for role in invite_mod.CERT_FIELDS:
+    path = str(link.get(role, "") or "").strip()
+    if not path:
+      continue
+    try:
+      with open(path, "r", encoding="utf-8") as handle:
+        text = handle.read().strip()
+      if text:
+        out[role] = text
+    except OSError:
+      logging.warning("invite: could not read %s at %s", role, path)
+  return out
+
+
 def load_bbs_settings(config_path: str) -> dict:
   """Read the [bbs] welcome section for the Settings form.
 
@@ -5695,6 +5765,154 @@ def create_app(runtime_interface=None) -> Flask:
             flash("Invalid username or password.", "error")
 
         return render_template("login.html", title="Login", show_nav=False)
+
+    @app.route("/invite/export", methods=["POST"])
+    @login_required
+    def invite_export():
+      import invite as invite_mod
+      if not csrf_request_valid():
+        flash("Session expired. Try again.", "error")
+        return redirect(url_for("settings_page") + "#invite")
+      try:
+        index = int(request.form.get("link_index", "0"))
+      except ValueError:
+        index = 0
+      passphrase = request.form.get("passphrase", "")
+      include_certs = _parse_bool_setting(request.form.get("include_certs", ""), False)
+      include_fleet = _parse_bool_setting(request.form.get("include_fleet", ""), False)
+
+      links = {int(l["index"]): l for l in load_mqtt_settings(app.config["CONFIG_PATH"])}
+      link = links.get(index)
+      if not link:
+        flash("Pick a link to share.", "error")
+        return redirect(url_for("settings_page") + "#invite")
+
+      fleet = None
+      if include_fleet:
+        settings = load_fleet_settings(app.config["CONFIG_PATH"])
+        keys = [k.strip() for k in str(settings.get("trusted_keys", "")).split(",")
+                if k.strip()]
+        fleet = {"group": settings.get("group", ""),
+                 "updates": settings.get("updates", "auto"),
+                 "trusted_keys": keys}
+
+      try:
+        payload = invite_mod.build_payload(
+          link,
+          inviter_local_id=link.get("local_id", ""),
+          created_by=_live_fleet_value("name") or "a Bacon BBS node",
+          bbs_name=_live_fleet_value("name"),
+          certs=read_link_certs(link) if include_certs else None,
+          sync_nodes=parse_list_input(link.get("bbs_nodes_text", "")),
+          allowed_nodes=parse_list_input(link.get("allowed_nodes_text", "")),
+          fleet=fleet)
+        blob = invite_mod.encrypt_payload(payload, passphrase)
+      except invite_mod.InviteError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("settings_page") + "#invite")
+
+      topic = str(link.get("topic_prefix", "") or "link").strip() or "link"
+      safe = "".join(ch for ch in topic if ch.isalnum() or ch in "-_") or "link"
+      response = app.make_response(blob)
+      response.headers["Content-Type"] = "application/json"
+      response.headers["Content-Disposition"] = (
+        f'attachment; filename="baconbbs-invite-{safe}.bbsinvite"')
+      return response
+
+    @app.route("/invite/import", methods=["POST"])
+    @login_required
+    def invite_import():
+      import invite as invite_mod
+      if not csrf_request_valid():
+        flash("Session expired. Try again.", "error")
+        return redirect(url_for("settings_page") + "#invite")
+      upload = request.files.get("invite_file")
+      if upload is None or not upload.filename:
+        flash("Choose an invite file.", "error")
+        return redirect(url_for("settings_page") + "#invite")
+      blob = upload.read(invite_mod.MAX_BUNDLE_BYTES + 1)
+      try:
+        payload = invite_mod.decrypt_payload(blob, request.form.get("passphrase", ""))
+      except invite_mod.InviteError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("settings_page") + "#invite")
+      return redirect(url_for("invite_review", token=remember_pending_invite(payload)))
+
+    def _invite_context(payload):
+      import invite as invite_mod
+      settings = load_fleet_settings(app.config["CONFIG_PATH"])
+      links = load_mqtt_settings(app.config["CONFIG_PATH"])
+      summary = invite_mod.summarize(
+        payload, links=links,
+        current_group=str(settings.get("group", "")).strip(),
+        trusted_keys=[k.strip() for k in str(settings.get("trusted_keys", "")).split(",")
+                      if k.strip()])
+      suggested = str(payload.get("link", {}).get("topic_prefix", "")).strip()
+      return summary, links, suggested
+
+    @app.route("/invite/review/<token>")
+    @login_required
+    def invite_review(token):
+      import invite as invite_mod
+      payload = take_pending_invite(token)
+      if payload is None:
+        flash("That invite has expired. Upload the file again.", "error")
+        return redirect(url_for("settings_page") + "#invite")
+      summary, links, suggested = _invite_context(payload)
+      return render_template(
+        "invite_review.html", title="Review invite", show_nav=True,
+        token=token, summary=summary, suggested_topic=suggested,
+        default_local_id=suggested_local_id(),
+        next_index=invite_mod.next_free_index([l["index"] for l in links]))
+
+    @app.route("/invite/apply/<token>", methods=["POST"])
+    @login_required
+    def invite_apply(token):
+      import invite as invite_mod
+      if not csrf_request_valid():
+        flash("Session expired. Try again.", "error")
+        return redirect(url_for("settings_page") + "#invite")
+      payload = take_pending_invite(token)
+      if payload is None:
+        flash("That invite has expired. Upload the file again.", "error")
+        return redirect(url_for("settings_page") + "#invite")
+
+      summary, links, _ = _invite_context(payload)
+      if summary["already_have"] is not None:
+        take_pending_invite(token, consume=True)
+        flash(f"This node already has that broker and topic as "
+              f"[mqtt{summary['already_have']}]. Nothing was changed.", "success")
+        return redirect(url_for("settings_page") + "#mqtt")
+
+      arm = _parse_bool_setting(request.form.get("arm_updates", ""), False)
+      index = invite_mod.next_free_index([l["index"] for l in links])
+      config = read_config_file(app.config["CONFIG_PATH"])
+      try:
+        changed = invite_mod.apply_invite(
+          config, payload,
+          local_id=request.form.get("local_id", ""),
+          index=index,
+          cert_writer=store_mqtt_cert,
+          arm_updates=arm,
+          summary=summary)
+      except invite_mod.InviteError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("invite_review", token=token))
+
+      write_config_file(config, app.config["CONFIG_PATH"])
+      take_pending_invite(token, consume=True)
+      # Live, like every other MQTT change -- see reload_links_from_config.
+      request_links_reload_trigger()
+
+      note = (f"Joined {summary['host']} as [mqtt{index}] and connecting now.")
+      if changed["armed_updates"]:
+        note += (" Fleet updates armed"
+                 + (f" (added {', '.join(changed['keys_added'])})."
+                    if changed["keys_added"] else "."))
+      else:
+        note += " Fleet updates were NOT armed."
+      flash(note, "success")
+      return redirect(url_for("settings_page") + "#mqtt")
 
     @app.route("/logout")
     @login_required

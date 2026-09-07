@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card" style="max-width:820px">
+  <h2>Review this invite</h2>
+  <p class="text-muted">
+    Nothing has changed yet. This is what importing would do.
+    {% if summary.created_by %}Sent by <strong>{{ summary.created_by }}</strong>{% if summary.created_at %}, {{ summary.created_at }}{% endif %}.{% endif %}
+  </p>
+
+  {% if summary.already_have is not none %}
+  <p class="text-muted">
+    <strong>This node already has this broker and topic</strong> as
+    <code>[mqtt{{ summary.already_have }}]</code>. Importing will change
+    nothing &mdash; existing links are never overwritten.
+  </p>
+  {% endif %}
+
+  <h3>The connection</h3>
+  <div class="table-scroll">
+    <table class="table">
+      <tr><th style="width:11rem">Broker</th><td>{{ summary.host }}:{{ summary.port }}{% if summary.tls %} (TLS){% endif %}</td></tr>
+      <tr><th>Topic prefix</th><td><code>{{ summary.topic_prefix }}</code></td></tr>
+      <tr><th>Credentials</th><td>{% if summary.has_credentials %}Included in the file{% else %}None &mdash; you will need to add them yourself{% endif %}</td></tr>
+      <tr><th>TLS material</th><td>
+        {% if summary.certs %}{{ summary.certs|join(', ') }}{% else %}None{% endif %}
+      </td></tr>
+      <tr><th>Will sync with</th><td>
+        {% if summary.peers %}{% for peer in summary.peers %}<code>{{ peer }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+        {% else %}Nobody listed{% endif %}
+      </td></tr>
+      {% if summary.allowed_nodes %}
+      <tr><th>Urgent board</th><td>{{ summary.allowed_nodes|join(', ') }} may post</td></tr>
+      {% endif %}
+    </table>
+  </div>
+
+  {% if summary.shares_private_key %}
+  <p class="text-muted">
+    <strong>This invite carries the sender's TLS private key.</strong> Your
+    node will authenticate to that broker as them. That is how a shared
+    client certificate is meant to work, but it does mean the broker cannot
+    tell your two nodes apart.
+  </p>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('invite_apply', token=token) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <h3>This node's name on the link</h3>
+    <div class="form-group">
+      <label for="local_id">Name</label>
+      <input type="text" id="local_id" name="local_id" class="form-control"
+             value="{{ default_local_id }}" required>
+      <p class="text-muted">
+        Becomes <code>mqtt:{{ suggested_topic }}:&lt;name&gt;</code>, which is how
+        the other nodes will address yours. It must be different from every
+        other node on this topic &mdash; two nodes sharing a name read each
+        other's traffic as their own. Letters, numbers, dot, dash and
+        underscore.
+      </p>
+    </div>
+
+    <h3>Software updates</h3>
+    {% if summary.group_conflict %}
+    <p class="text-muted">
+      <strong>Not offered.</strong> This node is enrolled in group
+      <code>{{ summary.current_group }}</code> and this invite is for
+      <code>{{ summary.fleet_group }}</code>. Arming it would move this node
+      into a different fleet, where somebody else's signed target decides
+      what it runs. Everything above still imports; if you really mean to
+      change fleets, do it deliberately with
+      <code>scripts/fleet_sign.py enroll --force</code>.
+    </p>
+    {% elif not summary.can_arm_updates %}
+    <p class="text-muted">
+      This invite carries no signing key, so there is nothing to arm.
+    </p>
+    {% else %}
+    <p class="text-muted">
+      Arming this lets whoever holds the private half of these keys choose
+      which commit this node runs, and it will fetch and apply that
+      automatically. Only tick it for people you would give a shell to.
+    </p>
+    <div class="table-scroll">
+      <table class="table">
+        <tr><th style="width:11rem">Fleet group</th><td><code>{{ summary.fleet_group }}</code></td></tr>
+        <tr><th>Update mode</th><td>{{ summary.fleet_updates }}</td></tr>
+        <tr><th>New keys</th><td>
+          {% if summary.new_keys %}{% for key in summary.new_keys %}<code>{{ key.split(':')[0] }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+          {% else %}None{% endif %}
+        </td></tr>
+        {% if summary.known_keys %}
+        <tr><th>Already trusted</th><td>
+          {% for key in summary.known_keys %}<code>{{ key.split(':')[0] }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+        </td></tr>
+        {% endif %}
+      </table>
+    </div>
+    <div class="form-group">
+      <label>
+        <input type="checkbox" name="arm_updates" value="true">
+        Let this fleet update my node's software
+      </label>
+    </div>
+    {% endif %}
+
+    <button class="btn btn-primary" type="submit">Import</button>
+    <a class="btn" href="{{ url_for('settings_page') }}#invite">Cancel</a>
+  </form>
+</div>
+{% endblock %}
