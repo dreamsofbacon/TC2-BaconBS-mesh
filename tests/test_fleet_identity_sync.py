@@ -235,6 +235,34 @@ class WireTests(unittest.TestCase):
         self.assertIn('message.startswith("BBSID|")', source)
         self.assertIn("apply_synced_fleet_identity", source)
 
+    def test_every_handled_frame_is_classified_as_sync(self):
+        """A frame from a known BBS node is dropped as "non-sync" unless its
+        prefix is in the allow-list at the top of onReceive -- BEFORE
+        process_message is reached. So a handler can be perfect, unit-tested,
+        and never called.
+
+        That is exactly what happened to BBSID: sent, received, logged, and
+        discarded one step above the branch that would have applied it. The
+        tests drove the handler directly and never crossed the gate.
+
+        Derived from the source rather than listed by hand, so the next
+        frame someone adds is checked without anyone remembering to.
+        """
+        import re
+        source = (Path(__file__).parent.parent / "message_processing.py"
+                  ).read_text(encoding="utf-8")
+
+        classified = set(re.findall(r'"([A-Z_]+\|)"', source[
+            source.index("is_sync_message = any("):
+            source.index("msg_type = \"sync\"")]))
+        self.assertIn("BBSID|", classified, "the list itself was not found")
+
+        handled = set(re.findall(r'message\.startswith\("([A-Z_]+\|)"\)', source))
+        missing = sorted(handled - classified)
+        self.assertEqual(
+            missing, [],
+            f"handled but never classified as sync, so never dispatched: {missing}")
+
     def test_it_rides_the_tick_not_a_sync_phase(self):
         """Anything hung off a five-phase phase runs once at the dawn of
         time -- phases_complete is persisted."""
