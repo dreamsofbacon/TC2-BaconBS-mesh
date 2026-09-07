@@ -157,10 +157,11 @@ def _menu_input(kind, message_lower):
 main_menu_handlers = {
     "q": handle_quick_help_command,
     "b": lambda sender_id, interface: handle_help_command(sender_id, interface, 'bbs'),
+    "g": handle_games_command,
+    "h": handle_public_chatter_command,
     "u": lambda sender_id, interface: handle_help_command(sender_id, interface, 'utilities'),
     "p": handle_profile_command,
     "n": handle_ask_nomad_command,
-    "g": handle_games_command,
     "a": handle_apigw_command,
     "s": handle_settings_command,
     "v": handle_node_view_command,
@@ -177,12 +178,14 @@ bbs_menu_handlers = {
 
 
 utilities_menu_handlers = {
-    "s": handle_stats_command,
+    # Stats moved to Settings, Games and Public Chatter to the main menu --
+    # see UTILITIES_MENU_LABELS. Nothing here dispatches for those letters
+    # any more: the on-screen digit for a letter with no current label
+    # never resolves to one (menu_layout drops unlabelled letters before
+    # numbering), so a stale entry here would be unreachable weight, not a
+    # working shortcut.
     "f": handle_fortune_command,
     "w": handle_wall_of_shame_command,
-    "g": handle_games_command,
-    "h": handle_public_chatter_command,
-    "z": handle_games_command,  # legacy alias
     "a": handle_apigw_command,
     "x": handle_help_command
 }
