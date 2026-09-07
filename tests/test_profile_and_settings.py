@@ -71,11 +71,21 @@ class MenuPlacementTests(_Case):
         self.assertIn("Profile", rendered)
         self.assertIn("Settings", rendered)
 
-    def test_the_menu_still_fits_one_meshcore_packet(self):
-        """160 bytes total, and this screen is re-sent on every return to
-        the top. Two more entries must not cost a second chunk."""
+    def test_the_menu_costs_at_most_a_second_meshcore_chunk(self):
+        """This screen is re-sent on every return to the top, so its byte
+        cost is a standing tradeoff, not a one-time one.
+
+        It fit one 160-byte MeshCore chunk through Profile and Settings.
+        Adding Games and Public Chatter as their own main-menu lines (per
+        request), on top of guaranteeing Ask Nomad a line of its own
+        instead of leaving it hideable, pushed a maximally-trimmed config
+        to ~176 bytes -- a second MeshCore chunk (send_message chunks
+        automatically; nothing breaks, it costs one more relayed packet and
+        ~2s of pacing on the smallest transport). Capped at two chunks
+        here so a menu that keeps growing gets noticed before it reaches a
+        third."""
         rendered = ch.build_menu(["Q", "B", "U", "X"], "\U0001F4BEBacon BBS\U0001F4BE (✉️:0)")
-        self.assertLessEqual(len(rendered.encode("utf-8")), 160)
+        self.assertLessEqual(len(rendered.encode("utf-8")), 320)
 
 
 class ProfileScreenTests(_Case):

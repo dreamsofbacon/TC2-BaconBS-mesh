@@ -102,7 +102,7 @@ def _urgent_board_allow_lists(interface) -> list:
 
 main_menu_items = _parse_menu_items(config.get('menu', 'main_menu_items', fallback='Q,B,U,P,N,A,S,X'))
 bbs_menu_items = _parse_menu_items(config.get('menu', 'bbs_menu_items', fallback='M,B,C,J,X'))
-utilities_menu_items = _parse_menu_items(config.get('menu', 'utilities_menu_items', fallback='S,F,W,G,X'))
+utilities_menu_items = _parse_menu_items(config.get('menu', 'utilities_menu_items', fallback='F,W,X'))
 # The G/H/Z repairs that used to run here now live in menu_layout, so the
 # rendered menu and the digits accepted for it are decided by one function
 # rather than by a list mutated at import time and a separate fixed table.
@@ -160,11 +160,11 @@ BBS_MENU_TITLE = "📰BBS Menu📰"
 # They used to be separate tables, which is how "[5] Ask Nomad" once
 # rendered while typing 5 did nothing.
 UTILITIES_MENU_LABELS = {
-    'S': "Stats",
+    # Stats moved to Settings ([4] View Stats) and Games/Public Chatter
+    # moved to the main menu -- see MENU_REQUIRED_AFTER. What is left here
+    # genuinely has nowhere more specific to live.
     'F': "Fortune",
     'W': "Wall of Shame",
-    'G': "Games",
-    'H': "Public Chatter",
     'X': "Back",
 }
 
@@ -179,6 +179,8 @@ BBS_MENU_LABELS = {
 MAIN_MENU_LABELS = {
     'Q': "Quick Commands",
     'B': "BBS",
+    'G': "Games",
+    'H': "Public Chatter",
     'U': "Utilities",
     'P': "Profile",
     'N': "Ask Nomad",
@@ -197,13 +199,34 @@ MENU_LABELS = {
 # Entries added after the first config.ini files were written. An explicit
 # item list would otherwise never show them -- exactly how the API Gateway
 # stayed invisible under Utilities.
+#
+# Ask Nomad is required alongside Profile/Web Fetch/Settings/Node View: it
+# used to be reachable only through Utilities > API Gateway's chooser, which
+# was quietly replaced by a direct jump into Web Fetch (see
+# handle_apigw_command) and left Ask Nomad with no menu path of its own on
+# any config written before this. Web Fetch and Ask Nomad are the two halves
+# of what used to be one combined API Gateway entry; each now gets its own
+# line rather than being buried behind a chooser.
 MENU_REQUIRED = {
     # Profile ahead of the rest: it is the entry a stranger looks for first,
     # and it was defined but never shown -- reachable only as !P, which is
     # the discoverability complaint restated.
-    'main': ('P', 'A', 'S', 'V'),
+    'main': ('P', 'N', 'A', 'S', 'V'),
     'bbs': (),
-    'utilities': ('G', 'H'),
+    # Games and Public Chatter moved to the main menu (see
+    # MENU_REQUIRED_AFTER) -- showing them here too would be the exact
+    # duplication test_api_gateway_no_longer_rendered_under_utilities
+    # already guards against for Web Fetch.
+    'utilities': (),
+}
+
+# A few required entries want a specific neighbor instead of "anywhere
+# before Exit": Games and Public Chatter read as afterthoughts tacked onto
+# the tail of the main menu (behind Profile, Settings, Node View...) if
+# they went through the generic MENU_REQUIRED path above. A returning user
+# looks for the door games right after BBS, not at the end of the list.
+MENU_REQUIRED_AFTER = {
+    'main': (('G', 'B'), ('H', 'G')),
 }
 
 
@@ -233,9 +256,15 @@ def menu_layout(items, menu_name) -> list:
     labels = MENU_LABELS[kind]
     layout = [item.strip().upper() for item in items if item and item.strip()]
 
-    # Legacy config spelling for Games.
-    if kind == 'utilities' and 'Z' in layout and 'G' not in layout:
-        layout[layout.index('Z')] = 'G'
+    for letter, after in MENU_REQUIRED_AFTER.get(kind, ()):
+        if letter in layout:
+            continue
+        if after in layout:
+            layout.insert(layout.index(after) + 1, letter)
+        elif 'X' in layout:
+            layout.insert(layout.index('X'), letter)
+        else:
+            layout.append(letter)
 
     for required in MENU_REQUIRED[kind]:
         if required not in layout:
@@ -735,7 +764,9 @@ def handle_public_chatter_steps(sender_id, message, interface, state):
     step = int(state.get('step', 1))
 
     if choice in ('0', 'x', 'exit'):
-        handle_help_command(sender_id, interface, 'utilities')
+        # Public Chatter is a top-level main-menu entry now, not a Utilities
+        # submenu -- back means the main menu, same as Profile and Settings.
+        handle_help_command(sender_id, interface)
         return
     if choice in ('t', 'time'):
         state.update({'step': 1, 'before_time': '', 'before_id': 0})
@@ -1074,7 +1105,9 @@ def handle_games_command(sender_id, interface):
 def handle_games_steps(sender_id, message, interface):
     choice = message.strip()
     if choice.lower() in ('x', '0', 'exit'):
-        handle_help_command(sender_id, interface, 'utilities')
+        # Games is a top-level main-menu entry now, not a Utilities
+        # submenu -- back means the main menu, same as Profile and Settings.
+        handle_help_command(sender_id, interface)
         return
 
     if choice.lower() == 's':
@@ -1461,6 +1494,7 @@ def _settings_menu_text(sender_id, interface, sender_node_id=None) -> str:
         f"[1] Offline mail relay: {relay}",
         f"[2] Node View: {lens}",
         "[3] About this node",
+        "[4] View Stats",
         "[0] Back",
     ])
 
@@ -1533,6 +1567,9 @@ def handle_settings_steps(sender_id, message, interface, sender_node_id):
     if choice == '3':
         handle_version_command(sender_id, interface)
         handle_settings_command(sender_id, interface, sender_node_id)
+        return
+    if choice == '4':
+        handle_stats_command(sender_id, interface)
         return
     send_message(_settings_menu_text(sender_id, interface, sender_node_id),
                  sender_id, interface)
@@ -1952,7 +1989,11 @@ def handle_zork_steps(sender_id, message, interface):
     if choice.lower() in ('x', 'quit', 'exit'):
         stop_zork_session(sender_id, game_id)
         send_message("Exited game.", sender_id, interface)
-        handle_help_command(sender_id, interface, 'utilities')
+        # Back to the Games menu you launched from, not Utilities -- Games
+        # left Utilities, and this already matched the Scoreboard/Hall of
+        # Fame pattern of returning to handle_games_command rather than
+        # skipping past it to whatever the parent menu used to be.
+        handle_games_command(sender_id, interface)
         return
 
     response = send_zork_command(sender_id, choice, game_id,
@@ -1993,7 +2034,10 @@ def handle_stats_steps(sender_id, message, step, interface):
         _stats_alias = {'1': 'n', '2': 'h', '3': 'r', '0': 'x'}
         choice = _stats_alias.get(message, message)
         if choice == 'x':
-            handle_help_command(sender_id, interface)
+            # Stats lives under Settings now ([4] View Stats), not at the
+            # top level -- back means Settings, the same as Linked Devices'
+            # [0] returns to the Profile screen it opened from.
+            handle_settings_command(sender_id, interface)
             return
         elif choice == 'n':
             current_time = int(time.time())
@@ -2921,7 +2965,7 @@ def handle_quick_help_command(sender_id, interface):
         "!CHP,, - Post Channel\n!CHL - List Channels\n"
         "!VER - This node and its version\n"
         "!WELCOME - What this BBS is\n"
-        "Global menus: !Q !B !U !P !N !A !S !V !X"
+        "Global menus: !Q !B !G !H !U !P !N !A !S !V !X"
     )
     # Only shown to someone who can use them. A moderator's toolkit listed on
     # everyone's help screen is an invitation to try it, and every attempt

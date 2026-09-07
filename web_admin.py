@@ -2207,9 +2207,9 @@ UPDATED_FLOWCHART_CONTENT = """
   <table>
     <thead><tr><th>Menu</th><th>Selections</th></tr></thead>
     <tbody>
-      <tr><td>Main Menu (💾Bacon BBS💾)</td><td><strong>Q</strong> Quick Commands, <strong>B</strong> BBS Submenu, <strong>U</strong> Utilities Menu, <strong>P</strong> Profile, <strong>N</strong> Ask Nomad, <strong>A</strong> Web Fetch, <strong>S</strong> Linked Devices, <strong>X</strong> Exit (configurable via <code>[menu] main_menu_items</code>; numbers are assigned in list order, and a removed letter still works with the <code>!</code> prefix)</td></tr>
+      <tr><td>Main Menu (💾Bacon BBS💾)</td><td><strong>Q</strong> Quick Commands, <strong>B</strong> BBS Submenu, <strong>G</strong> Games, <strong>H</strong> Public Chatter, <strong>U</strong> Utilities Menu, <strong>P</strong> Profile, <strong>N</strong> Ask Nomad, <strong>A</strong> Web Fetch, <strong>S</strong> Settings, <strong>V</strong> Node View, <strong>X</strong> Exit (configurable via <code>[menu] main_menu_items</code>; numbers are assigned in list order, and a removed letter still works with the <code>!</code> prefix)</td></tr>
       <tr><td>BBS Menu (📰)</td><td><strong>M</strong> Mail, <strong>B</strong> Bulletins, <strong>C</strong> Channel Directory, <strong>J</strong> JS8Call gateway, <strong>X</strong> Exit</td></tr>
-      <tr><td>Utilities Menu (🛠️)</td><td><strong>S</strong> Stats, <strong>F</strong> Fortune, <strong>W</strong> Wall of Shame, <strong>G</strong> Games (Zork + Hall of Fame), <strong>X</strong> Exit</td></tr>
+      <tr><td>Utilities Menu (🛠️)</td><td><strong>F</strong> Fortune, <strong>W</strong> Wall of Shame, <strong>X</strong> Exit (Stats moved to Settings, Games and Public Chatter to the main menu)</td></tr>
       <tr><td>Mail</td><td>Read inbox, send to a node short name, delete; long messages chunk automatically.</td></tr>
       <tr><td>Bulletins</td><td>Browse by board, read post, post new (Urgent board may require an allow-listed node).</td></tr>
       <tr><td>Channels</td><td>List directory, view a channel, read &amp; add comments.</td></tr>
@@ -2249,7 +2249,7 @@ UPDATED_FLOWCHART_CONTENT = """
       <tr><td><code>[sync] sync_interval_minutes</code></td><td>How often a full peer sync re-runs (default 5).</td></tr>
       <tr><td><code>[sync] sync_zork_saves</code></td><td>When false, Zork saves stay local to that node and do not appear on peers.</td></tr>
       <tr><td><code>[boards] bulletin_boards</code></td><td>Bulletin board categories (default <code>General,Info,News,Urgent</code>).</td></tr>
-      <tr><td><code>[menu] main_menu_items</code> / <code>bbs_menu_items</code> / <code>utilities_menu_items</code></td><td>Comma-separated menu letters (G is auto-injected for the Games entry).</td></tr>
+      <tr><td><code>[menu] main_menu_items</code> / <code>bbs_menu_items</code> / <code>utilities_menu_items</code></td><td>Comma-separated menu letters. Profile, Ask Nomad, Web Fetch, Settings, Node View, Games and Public Chatter are auto-injected into the main menu even if omitted (Games/Public Chatter right after BBS; the rest before Exit).</td></tr>
       <tr><td><code>BBS_BULLETIN_BOARDS</code></td><td>Env override for boards.</td></tr>
       <tr><td><code>BBS_WEBGUI_USER</code> / <code>BBS_WEBGUI_PASSWORD</code> / <code>BBS_WEBGUI_SECRET</code></td><td>Web admin credentials and Flask session secret.</td></tr>
       <tr><td><code>BBS_WEBGUI_HOST</code> / <code>BBS_WEBGUI_PORT</code></td><td>Bind address (default <code>127.0.0.1:8081</code>).</td></tr>

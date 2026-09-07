@@ -28,31 +28,34 @@ class MainMenuContentsTests(unittest.TestCase):
         """The exact reason these were invisible: config.ini pins the item
         list, so a new entry would never show up on an upgraded node."""
         rendered = ch.build_menu(["Q", "B", "U", "P", "N", "X"], self.MAIN)
+        self.assertIn("Games", rendered)
+        self.assertIn("Public Chatter", rendered)
         self.assertIn("Web Fetch", rendered)
         self.assertIn("Settings", rendered)
         self.assertIn("Node View", rendered)
 
     def test_a_full_config_numbers_every_entry_in_order(self):
+        """Games and Public Chatter land right after BBS, not at the tail
+        with the rest of MENU_REQUIRED -- see MENU_REQUIRED_AFTER."""
         rendered = ch.build_menu(["Q", "B", "U", "P", "N", "X"], self.MAIN)
-        for expected in ("[1] Quick Commands", "[2] BBS", "[3] Utilities",
-                         "[4] Profile", "[5] Ask Nomad", "[6] Web Fetch",
-                         "[7] Settings", "[8] Node View", "[0] Exit"):
+        for expected in ("[1] Quick Commands", "[2] BBS", "[3] Games",
+                         "[4] Public Chatter", "[5] Utilities", "[6] Profile",
+                         "[7] Ask Nomad", "[8] Web Fetch", "[9] Settings",
+                         "[10] Node View", "[0] Exit"):
             self.assertIn(expected, rendered)
 
     def test_a_trimmed_config_closes_the_gap_instead_of_skipping_numbers(self):
-        """The baconbot case. This node hides Ask Nomad on purpose, and
-        the menu used to read [1][2][3][6][7] -- holes that mean nothing to
-        someone who just found the BBS.
-
-        Profile is no longer hideable: it is where a user reads and edits
-        everything about themselves, so it joins Web Fetch, Settings and
-        Node View in MENU_REQUIRED."""
+        """The baconbot case: a config written before Profile, Ask Nomad,
+        Web Fetch, Settings, Node View, Games and Public Chatter existed.
+        The menu used to read [1][2][3][6][7] -- holes that mean nothing to
+        someone who just found the BBS. None of these seven can be hidden
+        by an old or trimmed config any more; every one is either in
+        MENU_REQUIRED or MENU_REQUIRED_AFTER."""
         rendered = ch.build_menu(["Q", "B", "U", "X"], self.MAIN)
-        self.assertNotIn("Ask Nomad", rendered)
-        self.assertIn("[4] Profile", rendered)
-        self.assertIn("[5] Web Fetch", rendered)
-        self.assertIn("[6] Settings", rendered)
-        self.assertIn("[7] Node View", rendered)
+        for expected in ("[3] Games", "[4] Public Chatter", "[6] Profile",
+                         "[7] Ask Nomad", "[8] Web Fetch", "[9] Settings",
+                         "[10] Node View"):
+            self.assertIn(expected, rendered)
 
     def test_numbers_run_1_upward_with_no_gaps_for_any_config(self):
         for items in (["Q", "B", "U", "X"], ["Q", "X"], ["Q", "B", "U", "P", "N", "A", "S", "X"],
@@ -95,18 +98,28 @@ class MainMenuContentsTests(unittest.TestCase):
                     self.assertEqual(ch.MAIN_MENU_LABELS[letter.upper()], label)
 
     def test_no_duplicates_when_config_already_lists_them(self):
-        rendered = ch.build_menu(["Q", "A", "S", "P", "X"], self.MAIN)
+        rendered = ch.build_menu(["Q", "B", "A", "S", "P", "G", "H", "X"], self.MAIN)
         self.assertEqual(rendered.count("Web Fetch"), 1)
         self.assertEqual(rendered.count("Settings"), 1)
         self.assertEqual(rendered.count("Profile"), 1)
+        self.assertEqual(rendered.count("Games"), 1)
+        self.assertEqual(rendered.count("Public Chatter"), 1)
 
-    def test_api_gateway_no_longer_rendered_under_utilities(self):
-        """It moved to the main menu; showing it in both would be confusing."""
+    def test_stats_games_and_chatter_are_gone_from_utilities(self):
+        """All three moved out -- Stats to Settings, Games and Public
+        Chatter to the main menu -- so showing any of them here would be
+        the exact duplication API Gateway's own move already guarded
+        against. Utilities is left with Fortune and Wall of Shame."""
         rendered = ch.build_menu(
-            ["S", "F", "W", "G", "A", "X"], "\U0001F6E0\uFE0FUtilities Menu\U0001F6E0\uFE0F")
+            ["S", "F", "W", "G", "H", "A", "X"],
+            "\U0001F6E0\uFE0FUtilities Menu\U0001F6E0\uFE0F")
+        self.assertNotIn("Stats", rendered)
+        self.assertNotIn("Games", rendered)
+        self.assertNotIn("Public Chatter", rendered)
         self.assertNotIn("API Gateway", rendered)
-        self.assertIn("[1] Stats", rendered)
-        self.assertIn("[5] Public Chatter", rendered)
+        self.assertIn("[1] Fortune", rendered)
+        self.assertIn("[2] Wall of Shame", rendered)
+        self.assertIn("[0] Back", rendered)
 
     def test_js8call_is_hidden_when_not_configured(self):
         with mock.patch.object(ch, "_js8call_configured", return_value=False):
@@ -182,6 +195,28 @@ class SettingsNavigationTests(unittest.TestCase):
         ch.handle_settings_steps(1234, "3", self.iface, "!abc")
         self.assertIn("Bacon BBS", self.sent[0])
 
+    def test_it_lists_view_stats_as_choice_four(self):
+        ch.handle_settings_command(1234, self.iface)
+        self.assertIn("[4] View Stats", self.sent[-1])
+
+    def test_choice_four_opens_stats(self):
+        ch.handle_settings_command(1234, self.iface)
+        self.sent.clear()
+        ch.handle_settings_steps(1234, "4", self.iface, "!abc")
+        self.assertIn("Stats Menu", self.sent[-1])
+        self.assertEqual(ch.get_user_state(1234).get("command"), "STATS")
+
+    def test_stats_back_returns_to_settings_not_the_main_menu(self):
+        """Stats moved into Settings ([4] View Stats), so its own [0] has to
+        follow it there -- it used to jump straight to the main menu, which
+        would now skip past the screen the user actually came from."""
+        ch.handle_settings_command(1234, self.iface)
+        ch.handle_settings_steps(1234, "4", self.iface, "!abc")
+        self.sent.clear()
+        ch.handle_stats_steps(1234, "0", 1, self.iface)
+        self.assertIn("Settings", self.sent[-1])
+        self.assertEqual(ch.get_user_state(1234).get("command"), "SETTINGS")
+
     def test_zero_returns_to_the_main_menu(self):
         ch.handle_settings_command(1234, self.iface)
         self.sent.clear()
@@ -193,6 +228,46 @@ class SettingsNavigationTests(unittest.TestCase):
         self.sent.clear()
         ch.handle_settings_steps(1234, "9", self.iface, "!abc")
         self.assertIn("Settings", self.sent[-1])
+
+
+class GamesAndChatterNavigationTests(unittest.TestCase):
+    """Games and Public Chatter moved off Utilities onto the main menu, so
+    their own 'back' has to mean the main menu now, not the Utilities
+    screen they no longer live under."""
+
+    def setUp(self):
+        self.sent = []
+        self.send_patch = mock.patch.object(
+            ch, "send_message", side_effect=lambda text, *_args: self.sent.append(text))
+        self.send_patch.start()
+        self.addCleanup(self.send_patch.stop)
+        self.iface = _FakeInterface()
+
+    def test_games_back_goes_to_the_main_menu(self):
+        ch.handle_games_command(1234, self.iface)
+        self.sent.clear()
+        ch.handle_games_steps(1234, "0", self.iface)
+        self.assertIn("Bacon BBS", self.sent[-1])
+        self.assertNotIn("Utilities Menu", self.sent[-1])
+
+    def test_public_chatter_back_goes_to_the_main_menu(self):
+        with mock.patch.object(ch, "_chatter_windows_text", return_value="windows"):
+            ch.handle_public_chatter_command(1234, self.iface)
+        self.sent.clear()
+        state = ch.get_user_state(1234)
+        ch.handle_public_chatter_steps(1234, "0", self.iface, state)
+        self.assertIn("Bacon BBS", self.sent[-1])
+        self.assertNotIn("Utilities Menu", self.sent[-1])
+
+    def test_quitting_a_game_returns_to_the_games_menu(self):
+        """Not straight to Utilities, which no longer offers Games at all --
+        and not straight to the main menu either, matching how Scoreboard
+        and Hall of Fame already return to handle_games_command rather than
+        skipping past it."""
+        with mock.patch.object(ch, "stop_zork_session"):
+            ch.update_user_state(1234, {'command': 'ZORK', 'step': 1, 'game_id': 'zork1'})
+            ch.handle_zork_steps(1234, "quit", self.iface)
+        self.assertIn("🎮 Games 🎮", self.sent[-1])
 
 
 class ChannelDirectoryNavigationTests(unittest.TestCase):
@@ -317,16 +392,19 @@ class HiddenEntryTests(unittest.TestCase):
         self.iface = types.SimpleNamespace(bbs_nodes=[], nodes={})
 
     def test_a_hidden_letter_is_refused_bare(self):
-        # Ask Nomad, not Profile: Profile is in MENU_REQUIRED now, so it is
-        # never hidden and cannot demonstrate this rule.
+        # 'b' (BBS), omitted from this items list: every OTHER main-menu
+        # letter is now in MENU_REQUIRED or MENU_REQUIRED_AFTER (Profile,
+        # Ask Nomad, Web Fetch, Settings, Node View, Games, Public Chatter),
+        # so none of them can demonstrate a genuinely hidden entry any more.
+        # An operator choosing to omit BBS itself still can.
         import message_processing as mp
-        with mock.patch.object(ch, "main_menu_items", ["Q", "B", "U", "X"]), \
+        with mock.patch.object(ch, "main_menu_items", ["Q", "U", "X"]), \
                 mock.patch.dict(mp.main_menu_handlers,
-                                {"n": mock.Mock()}, clear=False) as handlers:
+                                {"b": mock.Mock()}, clear=False) as handlers:
             ch.update_user_state(1234, {'command': 'MAIN_MENU', 'step': 1})
             with mock.patch.object(mp, 'handle_help_command') as help_menu:
-                mp.process_message(1234, 'n', self.iface)
-            handlers["n"].assert_not_called()
+                mp.process_message(1234, 'b', self.iface)
+            handlers["b"].assert_not_called()
             help_menu.assert_called_once_with(
                 1234, self.iface, None, notice="Invalid choice.")
 
@@ -351,13 +429,12 @@ class HiddenEntryTests(unittest.TestCase):
     def test_a_digit_follows_the_trimmed_menu(self):
         """A digit means whatever that line of the screen says.
 
-        On this node 4 is Profile and 5 is Web Fetch, because Profile joined
-        MENU_REQUIRED ahead of it. Both are asserted: checking only one would
-        pass if the digits stopped tracking the layout and happened to land
-        right.
+        On this node 3 is Games (inserted right after BBS) and 8 is Web
+        Fetch. Both are asserted: checking only one would pass if the
+        digits stopped tracking the layout and happened to land right.
         """
         import message_processing as mp
-        for digit, letter in (("4", "p"), ("5", "a")):
+        for digit, letter in (("3", "g"), ("8", "a")):
             with self.subTest(digit=digit):
                 handler = mock.Mock()
                 with mock.patch.object(ch, "main_menu_items", ["Q", "B", "U", "X"]), \
@@ -430,8 +507,15 @@ class MenuHandlerWiringTests(unittest.TestCase):
         like any other hidden entry -- !a reaches the same handler."""
         import message_processing as mp
         self.assertIn("a", mp.utilities_menu_handlers)
-        self.assertIn("h", mp.utilities_menu_handlers)
         self.assertIs(mp.main_menu_handlers["a"], ch.handle_apigw_command)
+
+    def test_utilities_no_longer_carries_dead_entries(self):
+        """Stats, Games and Public Chatter left Utilities outright -- unlike
+        'a', which was kept for muscle memory, their old letters here would
+        dispatch to a menu Utilities no longer shows at all."""
+        import message_processing as mp
+        for letter in ("s", "g", "h", "z"):
+            self.assertNotIn(letter, mp.utilities_menu_handlers)
 
 
 class MenuNumberAliasTests(unittest.TestCase):
@@ -468,11 +552,24 @@ class MenuNumberAliasTests(unittest.TestCase):
                 with self.subTest(menu=name, digit=digit):
                     self.assertIn(letter, handlers)
 
-    def test_utilities_numbers_reach_games_and_public_chatter(self):
+    def test_utilities_numbers_now_reach_only_fortune_and_shame(self):
+        """Stats, Games and Public Chatter left Utilities entirely -- see
+        MainMenuContentsTests.test_stats_games_and_chatter_are_gone_from_utilities."""
         items, title = ch.menu_items_for("utilities")
         alias = ch.menu_number_alias(items, title)
-        self.assertEqual(alias["4"], "g")
-        self.assertEqual(alias["5"], "h")
+        self.assertEqual(alias["1"], "f")
+        self.assertEqual(alias["2"], "w")
+        self.assertNotIn("g", alias.values())
+        self.assertNotIn("h", alias.values())
+        self.assertNotIn("s", alias.values())
+
+    def test_main_numbers_reach_games_and_public_chatter(self):
+        """Where Stats/Games/Public Chatter actually live now: Games and
+        Public Chatter on the main menu, right after BBS."""
+        items, title = ch.menu_items_for("main")
+        alias = ch.menu_number_alias(items, title)
+        self.assertEqual(alias["3"], "g")
+        self.assertEqual(alias["4"], "h")
 
     def test_a_hidden_entry_is_given_no_number_at_all(self):
         """Numbers describe the screen. Public Chatter's old [6] alias went
@@ -482,13 +579,13 @@ class MenuNumberAliasTests(unittest.TestCase):
         against a literal digit -- a fixed "6 is unclaimed" only held while
         the main menu happened to be that length, and would go quiet the
         moment a required entry was added rather than catching anything."""
-        items = ["Q", "B", "U", "X"]
+        # 'b' (BBS), omitted here: every other main-menu letter is required
+        # or positionally forced now (see HiddenEntryTests), so none of
+        # them can demonstrate a genuinely absent number any more.
+        items = ["Q", "U", "X"]
         alias = ch.menu_number_alias(items, self.MAIN)
-        # 'n' (Ask Nomad) rather than 'p': Profile is required now, so it
-        # always has a number and would make this assertion vacuous.
-        self.assertNotIn("n", alias.values())
+        self.assertNotIn("b", alias.values())
         self.assertIn("p", alias.values())
-        self.assertNotIn("n", alias.values())
         rendered = set(re.findall(r"\[(\d+)\]", ch.build_menu(items, self.MAIN)))
         self.assertEqual(set(alias), rendered)
 
@@ -645,9 +742,10 @@ class GlobalCommandPrefixTests(unittest.TestCase):
     def test_main_menu_letters_and_numbers_remain_local(self):
         import message_processing as mp
 
+        # '9' is Settings' live position now: Q,B,G,H,U,P,N,A,S,V,X.
         settings = mock.Mock()
         with mock.patch.dict(mp.main_menu_handlers, {'s': settings}, clear=False):
-            for value in ('s', '7'):
+            for value in ('s', '9'):
                 ch.update_user_state(1234, {'command': 'MAIN_MENU', 'step': 1})
                 mp.process_message(1234, value, self.iface)
         self.assertEqual(settings.call_count, 2)
