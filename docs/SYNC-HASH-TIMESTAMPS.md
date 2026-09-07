@@ -1,7 +1,22 @@
 # Timestamp spelling in sync hashes
 
 Scope for generalising the `zork_saves` fix in `f2d1337` to every scope that
-hashes a timestamp. Not yet implemented.
+hashes a timestamp.
+
+**Implemented for `game_scores`, `channels`, `bulletins` and `mail` in
+`5aa5b55` (v0.1.586).** Parts 1 and 2 below are done; part 3 was not needed,
+because part 1 covers those scopes at the source. `public_chatter` is still
+outstanding, deliberately -- see the caveat.
+
+Result on the live fleet: `get_mismatched_peer_scopes()` between our own two
+nodes went from `game_scores` to `public_chatter` alone, which churns by
+design. Chattanooga still disagrees, on `0.1.546`, exactly as the risk
+section predicted.
+
+Two things this document did not anticipate, both found while implementing
+it, both recorded below: the aggregate and the manifest were spelling the
+same rule two different ways, and `_normalize_sync_timestamp` itself was
+interpreter-dependent.
 
 ---
 
@@ -177,6 +192,49 @@ leave the scope when they expire, so this hash churns constantly by design.
 It is also the scope most likely to be mid-flight during any rollout.
 Normalising it is correct but delivers the least, and it carries the most
 noise. Consider shipping it separately from the others.
+
+---
+
+## What implementing it turned up
+
+**The direct cause was one word.** `upsert_synced_game_score` computed
+`normalized_achieved_at`, used it for the tombstone check, and then passed
+the *raw* `achieved_at` into the INSERT. So a peer's spelling went straight
+into the table. `upsert_synced_zork_save` reassigns its parameter and does
+not have the bug, which is the whole difference between the two scopes.
+
+**One rule, spelled twice.** The aggregate normalised `zork_saves` with a
+SQL `CASE` while the manifest used `_normalize_sync_timestamp`. The CASE
+handled only the T-for-space swap; the Python also strips a trailing `Z`.
+So the two functions could disagree about one row -- the exact failure
+`f2d1337` was written to prevent, reintroduced by the fix for it. Latent:
+no stored timestamp carries a `Z`. Both now go through the Python.
+
+**The normaliser was interpreter-dependent, and our nodes run different
+interpreters.** `datetime.fromisoformat` accepts any number of fractional
+digits from 3.11 on, and only 3 or 6 before it. bbs runs 3.13, forgecam
+runs 3.9, so `'2026-08-12T00:17:16.84+00:00'` parsed on one and was
+returned untouched by the other -- two nodes hashing one record
+differently, which is this function's own defect one layer down. Stripping
+the fraction and the offset before parsing removes the dependency and
+changes no result; neither survives `%Y-%m-%d %H:%M:%S` anyway. Verified
+over all 8737 distinct timestamp values from both live databases, run under
+both interpreters: zero disagreements.
+
+That fix is also a warning about how to test it. Three mutations of it
+initially **survived**, because the difference lives inside
+`fromisoformat`: on a modern interpreter, a call-and-compare test passes
+whether the fix is present or not. The test that earns its place patches
+`fromisoformat` and asserts on what reaches it.
+
+**Still open, and a different bug.** `bulletins`, `mail` and
+`channel_comments` each still have records whose manifest hashes differ
+between the two nodes -- one, three and one respectively. It is not
+spelling: `source_timestamp` is *present on bbs and NULL on forgecam*, in a
+third format again (`2026-08-12T00:17:16.848137+00:00`, from a local
+`datetime.now(timezone.utc).isoformat()`). Provenance is not reaching
+forgecam for those records. Dormant, because those scopes' aggregates hash
+no timestamp, and unaffected either way by this work.
 
 ---
 
