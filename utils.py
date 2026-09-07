@@ -439,6 +439,23 @@ def get_remote_role_ceiling() -> str:
     return (_config_raw("roles", "remote_role_ceiling") or "mod").strip().casefold()
 
 
+def get_max_exported_role() -> str:
+    """The most privileged role this node will advertise to the fleet.
+
+    The mirror of remote_role_ceiling, and it exists because the two
+    together were producing perpetual pointless traffic: this node kept
+    announcing its developers every sweep and the peer kept refusing them,
+    forever, because the ceiling is exactly what stops those propagating.
+    Not advertising them at all is the same outcome with none of the
+    airtime -- and it means a node no longer tells the fleet who its
+    admins are, which is worth having on its own.
+
+    Defaults to the ceiling default, so out of the box a node exports
+    precisely what a peer would accept.
+    """
+    return (_config_raw("roles", "max_exported_role") or "mod").strip().casefold()
+
+
 def is_bbs_role_management_enabled() -> bool:
     """Whether Mod and Admin can change roles from inside the BBS.
 

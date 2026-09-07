@@ -54,6 +54,7 @@ from zork_port import (
     has_zork_session,
     parse_game_score,
     resume_zork_session,
+    response_limit_for,
     send_zork_command,
     start_zork_session,
     stop_zork_session,
@@ -1825,7 +1826,8 @@ def handle_zork_steps(sender_id, message, interface):
         handle_help_command(sender_id, interface, 'utilities')
         return
 
-    response = send_zork_command(sender_id, choice, game_id)
+    response = send_zork_command(sender_id, choice, game_id,
+                                 max_chars=response_limit_for(interface))
     send_message(response, sender_id, interface)
     # Capture score if the game output contains one
     parsed = parse_game_score(response)

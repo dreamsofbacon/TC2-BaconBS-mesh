@@ -431,6 +431,39 @@ class RoleWireTests(_RoleCase):
             db_operations.sync_node_roles_to_nodes(["!a"], mock.MagicMock())
         self.assertGreater(len(sent), after_first)
 
+    def test_admins_are_not_broadcast_to_the_fleet(self):
+        """The live nodes were announcing developers every sweep and the
+        peer was refusing them every time -- the ceiling is exactly what
+        stops those propagating, so the traffic could never do anything.
+        Not sending is the same outcome without the frame, and a node no
+        longer tells the fleet who its admins are."""
+        db_operations._advertised_roles.clear()
+        db_operations._roles_last_full_sweep.clear()
+        self.addCleanup(db_operations._advertised_roles.clear)
+        db_operations.set_node_role(OTHER, 'developer')
+        db_operations.set_node_role(SECOND_DEVICE, 'vip')
+        sent = []
+        with mock.patch.object(utils, "_send_one_sync",
+                               side_effect=lambda m, p, i, **k: sent.append(m)),              mock.patch.object(db_operations, "peer_supports",
+                               side_effect=lambda peer, cap: True):
+            db_operations.sync_node_roles_to_nodes(["!a"], mock.MagicMock())
+        joined = " ".join(sent)
+        self.assertNotIn("developer", joined)
+        self.assertIn("vip", joined)
+
+    def test_the_export_ceiling_is_configurable(self):
+        db_operations._advertised_roles.clear()
+        db_operations._roles_last_full_sweep.clear()
+        self.addCleanup(db_operations._advertised_roles.clear)
+        self._config("[roles]\nmax_exported_role = developer\n")
+        db_operations.set_node_role(OTHER, 'developer')
+        sent = []
+        with mock.patch.object(utils, "_send_one_sync",
+                               side_effect=lambda m, p, i, **k: sent.append(m)),              mock.patch.object(db_operations, "peer_supports",
+                               side_effect=lambda peer, cap: True):
+            db_operations.sync_node_roles_to_nodes(["!a"], mock.MagicMock())
+        self.assertIn("developer", " ".join(sent))
+
     def test_the_sweep_is_tracked_per_peer(self):
         """One global timestamp meant the first link to tick consumed the
         sweep for everyone -- sync_node_roles_to_nodes runs once per

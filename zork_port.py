@@ -70,6 +70,25 @@ DEFAULT_STORY_URL = GAMES['zork1']['story_url']
 DEFAULT_STORY_PATH = GAMES['zork1']['story_path']
 MAX_RESPONSE_CHARS = 900
 
+
+def response_limit_for(interface=None) -> int:
+    """How much game output one reply may carry, for THIS transport.
+
+    A flat 900 characters is about six chunks on a radio, which is a fair
+    ceiling there -- a long room description should not monopolise the
+    channel. Over SSH, where a single message carries 8192 bytes, the same
+    cap threw away most of a response for no reason: the player simply lost
+    game text that would have arrived intact.
+
+    Scaled off the transport's own limit with the old value as a floor, so
+    radios behave exactly as before and only the roomy transports gain.
+    """
+    try:
+        from utils import get_max_text_bytes
+        return max(MAX_RESPONSE_CHARS, get_max_text_bytes(interface) * 4)
+    except Exception:
+        return MAX_RESPONSE_CHARS
+
 _config = configparser.ConfigParser()
 _config.read("config.ini")
 
@@ -103,7 +122,7 @@ class ZorkSession:
         except Exception:
             return
 
-    def read_output(self, settle_seconds: float = 1.2) -> str:
+    def read_output(self, settle_seconds: float = 1.2, max_chars: int = 0) -> str:
         chunks = []
         last_data_time = time.time()
 
@@ -117,13 +136,14 @@ class ZorkSession:
                     break
 
         text = "".join(chunks).strip()
-        if len(text) > MAX_RESPONSE_CHARS:
-            text = f"{text[:MAX_RESPONSE_CHARS]}\n\n[Output truncated]"
+        limit = int(max_chars) if max_chars else MAX_RESPONSE_CHARS
+        if len(text) > limit:
+            text = f"{text[:limit]}\n\n[Output truncated]"
         if text:
             self.last_output = text
         return text
 
-    def send(self, command: str) -> str:
+    def send(self, command: str, max_chars: int = 0) -> str:
         if self.process.stdin is None:
             return "Zork session is unavailable."
 
@@ -133,7 +153,7 @@ class ZorkSession:
         except Exception as exc:
             return f"Error sending command to Zork: {exc}"
 
-        return self.read_output()
+        return self.read_output(max_chars=max_chars)
 
     def stop(self) -> None:
         try:
@@ -371,7 +391,8 @@ def start_zork_session(user_id: int, game_id: str = 'zork1') -> str:
     return intro
 
 
-def send_zork_command(user_id: int, command: str, game_id: str = 'zork1') -> str:
+def send_zork_command(user_id: int, command: str, game_id: str = 'zork1',
+                      max_chars: int = 0) -> str:
     with _sessions_lock:
         session = _sessions.get((user_id, game_id))
 
@@ -386,7 +407,7 @@ def send_zork_command(user_id: int, command: str, game_id: str = 'zork1') -> str
             _sessions.pop((user_id, game_id), None)
         return "Game session ended. Go to the Games menu to start a new one."
 
-    output = session.send(command.strip())
+    output = session.send(command.strip(), max_chars=max_chars)
     if not output:
         return "[No output]"
 
