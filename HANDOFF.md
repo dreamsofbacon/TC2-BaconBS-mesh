@@ -4,7 +4,7 @@ State of the deployment, the decisions behind it, and what is still open.
 For the feature backlog see [feature requests.txt](feature%20requests.txt);
 this file is about running the thing.
 
-Last updated 2026-09-07 at commit `b5beb42` (`v0.1.582`).
+Last updated 2026-09-07 at commit `76d6a38` (`v0.1.584`).
 
 ---
 
@@ -19,7 +19,7 @@ Last updated 2026-09-07 at commit `b5beb42` (`v0.1.582`).
 | Path | `/home/bacon/TC2-BaconBS-mesh` | same |
 | Services | `mesh-bbs.service`, `bacon-web-admin.service`, `bacon-ssh.service` | `mesh-bbs.service`, `bacon-web-admin.service` |
 | Bacon BBS SSH | Active, dual-stack port 2222 | Disabled/inactive |
-| Fleet state | Healthy on `b5beb42` | Healthy on `b5beb42` |
+| Fleet state | Healthy on `76d6a38` | Healthy on `76d6a38` |
 
 forgecam's Python 3.9 matters: `meshcore` and the supported AsyncSSH release
 require newer Python, so `requirements.txt` carries environment markers and
@@ -83,6 +83,8 @@ Since (2026-09-05/06):
 | `19caaea` | Node View: read one node, or all of them |
 | `e4738fa` | Node View works in the SSH and web admin processes |
 | `b5beb42` | Relay backoff capped, door output scaled, role export ceiling |
+| `55066c5` | Web Fetch says what it can do; `!VER` |
+| `76d6a38` | `!VER` names the node from any process |
 
 ---
 
@@ -570,6 +572,15 @@ now names the sites that will actually work, and a gateway with no allowed
 hosts refuses at the door instead. The check only fires when *this* node is
 the gateway: a node forwarding to a peer cannot see the peer's allow-list
 and must not invent one.
+
+**A module global set at startup is empty in the other two processes.**
+`get_local_node_id()` is set when a radio link comes up, so it is empty in
+`bacon-ssh` and `bacon-web-admin`; the same is true of anything else stored
+that way. This has now bitten twice -- Node View was inert over SSH, and
+`!VER` shipped naming no node at all -- and both times the live SSH session
+was the only check that caught it. What survives a process boundary is the
+`local_node_identities` table: `get_persisted_local_link_ids()` for a name,
+`get_local_identities_for_scope()` for the lens.
 
 **`!VER` is the answer to "is the fix live yet?"** The version was reachable
 only from the web admin and the Docker build, so the people who would notice
