@@ -1161,12 +1161,52 @@ def _apigw_authorized(sender_id, interface) -> bool:
     return gateway.is_requester_authorized(node_id, getattr(interface, 'allowed_nodes', None))
 
 
+def _web_fetch_prompt(interface, tail: str) -> str:
+    """The URL prompt, naming the sites that will actually work.
+
+    "must be an allowed host" asked the user to guess at a list only the
+    operator can read. Naming it costs a few bytes and turns the prompt
+    into its own answer.
+    """
+    import gateway
+    hosts = gateway.allowed_hosts() if gateway.is_gateway_enabled() else []
+    head = "Enter the URL to fetch"
+    if not hosts:
+        return f"{head}{tail}"
+    budget = max(0, get_max_text_bytes(interface) - len(f"{head} (allowed: )") - len(tail))
+    shown = []
+    for host in hosts:
+        candidate = ", ".join(shown + [host])
+        if shown and len(candidate.encode('utf-8')) > budget:
+            shown.append("...")
+            break
+        shown.append(host)
+    return f"{head} (allowed: {', '.join(shown)}){tail}"
+
+
+def _refuse_web_fetch(sender_id, interface) -> bool:
+    """Say up front when no URL could possibly work, and stay out of the
+    URL prompt. A user who types one anyway waits out a round trip over
+    the radio to be told 'no allowed_hosts configured' -- which is how
+    this feature spent its life looking broken."""
+    import gateway
+    reason = gateway.web_fetch_blocked_reason()
+    if not reason:
+        return False
+    send_message(reason, sender_id, interface)
+    handle_help_command(sender_id, interface)
+    return True
+
+
 def handle_apigw_command(sender_id, interface):
     if not _apigw_authorized(sender_id, interface):
         send_message("API gateway: your node is not on the allow-list.", sender_id, interface)
         handle_help_command(sender_id, interface)
         return
-    send_message(f"Enter the URL to fetch (must be an allowed host), or {CANCEL_HINT} to stop:", sender_id, interface)
+    if _refuse_web_fetch(sender_id, interface):
+        return
+    send_message(_web_fetch_prompt(interface, f", or {CANCEL_HINT} to stop:"),
+                 sender_id, interface)
     update_user_state(sender_id, {'command': 'APIGW', 'step': 2, 'mode': 'http'})
 
 
@@ -1282,8 +1322,10 @@ def handle_apigw_steps(sender_id, message, interface):
             update_user_state(sender_id, {'command': 'APIGW', 'step': 2, 'mode': 'ai'})
             send_message("Type your question for Project Nomad:", sender_id, interface)
         elif choice == '2':
+            if _refuse_web_fetch(sender_id, interface):
+                return
             update_user_state(sender_id, {'command': 'APIGW', 'step': 2, 'mode': 'http'})
-            send_message("Enter the URL to GET (must be an allowed host):", sender_id, interface)
+            send_message(_web_fetch_prompt(interface, ":"), sender_id, interface)
         else:
             send_message("Send 1, 2, or 0 to exit.", sender_id, interface)
         return
@@ -2722,12 +2764,35 @@ def handle_list_channels_command(sender_id, interface):
         send_message("Error processing list channels command.", sender_id, interface)
 
 
+def handle_version_command(sender_id, interface):
+    """Answer "what am I talking to?" -- the node's name and its version.
+
+    The number existed all along, reachable only from the web admin, the
+    Docker build and the version module itself, so nobody on a radio or an
+    SSH session could say which release they had reached. That made "is
+    the fix live yet?" unanswerable from the side that would notice.
+    """
+    from version_info import get_display_version
+    from db_operations import get_local_node_id
+    node_id = str(get_local_node_id() or '').strip()
+    # node_display_name answers "whose content is this?" and so calls the
+    # local node 'this node' -- true, and useless in a sentence whose whole
+    # job is to say WHICH node. Fall back to the id, which is at least
+    # something the user can quote back.
+    name = node_display_name(node_id) if node_id else ''
+    if name in ('this node', 'unknown', ''):
+        name = short_node_id(node_id) if node_id else ''
+    where = f" on {name}" if name else ''
+    send_message(f"Bacon BBS {get_display_version()}{where}", sender_id, interface)
+
+
 def handle_quick_help_command(sender_id, interface):
     response = (
         "✈️QUICK COMMANDS✈️\n"
         "!SM,, - Send Mail\n!CM - Check Mail\n!AU - Relay Directory\n"
         "!PB,, - Post Bulletin\n!CB,, - Check Bulletins\n"
         "!CHP,, - Post Channel\n!CHL - List Channels\n"
+        "!VER - This node and its version\n"
         "Global menus: !Q !B !U !P !N !A !S !V !X"
     )
     # Only shown to someone who can use them. A moderator's toolkit listed on

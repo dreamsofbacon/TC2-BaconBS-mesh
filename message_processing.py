@@ -20,6 +20,7 @@ from command_handlers import (
     handle_read_mail_command, handle_check_mail_command, handle_delete_mail_confirmation, handle_post_bulletin_command,
     handle_check_bulletin_command, handle_read_bulletin_command, handle_read_channel_command,
     handle_post_channel_command, handle_list_channels_command, handle_quick_help_command,
+    handle_version_command,
     handle_zork_command, handle_zork_steps, handle_trivia_steps,
     handle_games_command, handle_games_steps,
     handle_scoreboard_command, handle_scoreboard_steps,
@@ -3009,6 +3010,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 handle_post_channel_command(sender_id, global_message, interface)
             elif global_lower == "chl":
                 handle_list_channels_command(sender_id, interface)
+            elif global_lower in ("ver", "version"):
+                handle_version_command(sender_id, interface)
             elif global_lower.startswith("role,,"):
                 handle_role_command(sender_id, global_message, interface, bbs_nodes)
             elif global_lower == "role":

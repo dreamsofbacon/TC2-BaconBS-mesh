@@ -59,6 +59,31 @@ def _rate_limit_per_node() -> int:
     return _config_int('gateway', 'rate_limit_per_node', 5)
 
 
+def allowed_hosts() -> list:
+    """Sites this node will fetch on a user's behalf. Empty means none.
+
+    Empty is the safe default and also, on a node whose operator never set
+    it, the reason Web Fetch has never worked: every URL is refused. The
+    callers ask this *before* prompting so a user is not invited to type a
+    URL that cannot succeed.
+    """
+    return _csv('gateway', 'allowed_hosts', '')
+
+
+def web_fetch_blocked_reason() -> str:
+    """Why Web Fetch cannot serve any URL here, in a user's words, or ''.
+
+    Only meaningful when this node is the gateway; a requester forwarding
+    to a peer cannot see the peer's list and must not guess at one.
+    """
+    if not is_gateway_enabled():
+        return ""
+    if not allowed_hosts():
+        return ("Web Fetch is not set up on this node -- the operator has "
+                "not allowed any sites yet.")
+    return ""
+
+
 def gateway_allowed_nodes() -> list:
     """Gateway-specific requester allow-list ([gateway] allowed_nodes). When set,
     it RESTRICTS who may use this gateway to exactly these node IDs — independent
@@ -116,11 +141,14 @@ def validate_url(url: str) -> Tuple[bool, str]:
     host = (p.hostname or '').lower()
     if scheme not in _csv('gateway', 'allowed_schemes', 'https'):
         return False, f"scheme '{scheme}' not allowed"
-    allowed_hosts = _csv('gateway', 'allowed_hosts', '')
-    if not allowed_hosts:
-        return False, "no allowed_hosts configured"
-    if host not in [h.lower() for h in allowed_hosts]:
-        return False, f"host '{host}' not in allow-list"
+    hosts = allowed_hosts()
+    if not hosts:
+        # Said in a user's words, not a config file's. This is the reply a
+        # person gets for every URL on a node whose operator never set the
+        # list, and naming the setting told them nothing they could act on.
+        return False, "this node has not been allowed to fetch any sites"
+    if host not in [h.lower() for h in hosts]:
+        return False, f"'{host}' is not on this node's allowed list ({', '.join(hosts)})"
     if _host_is_private(host):
         return False, f"host '{host}' resolves to a private/loopback address"
     return True, ""

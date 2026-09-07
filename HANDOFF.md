@@ -4,7 +4,7 @@ State of the deployment, the decisions behind it, and what is still open.
 For the feature backlog see [feature requests.txt](feature%20requests.txt);
 this file is about running the thing.
 
-Last updated 2026-09-07 at commit `4b944ae` (`v0.1.579`).
+Last updated 2026-09-07 at commit `b5beb42` (`v0.1.582`).
 
 ---
 
@@ -19,7 +19,7 @@ Last updated 2026-09-07 at commit `4b944ae` (`v0.1.579`).
 | Path | `/home/bacon/TC2-BaconBS-mesh` | same |
 | Services | `mesh-bbs.service`, `bacon-web-admin.service`, `bacon-ssh.service` | `mesh-bbs.service`, `bacon-web-admin.service` |
 | Bacon BBS SSH | Active, dual-stack port 2222 | Disabled/inactive |
-| Fleet state | Healthy on `4b944ae` | Healthy on `4b944ae` |
+| Fleet state | Healthy on `b5beb42` | Healthy on `b5beb42` |
 
 forgecam's Python 3.9 matters: `meshcore` and the supported AsyncSSH release
 require newer Python, so `requirements.txt` carries environment markers and
@@ -82,6 +82,7 @@ Since (2026-09-05/06):
 | `e291ada` | Delete a score or profile from the web admin |
 | `19caaea` | Node View: read one node, or all of them |
 | `e4738fa` | Node View works in the SSH and web admin processes |
+| `b5beb42` | Relay backoff capped, door output scaled, role export ceiling |
 
 ---
 
@@ -503,14 +504,14 @@ not the aggregate, which makes their drift *dormant* rather than absent.
 Scoped in full, not started:
 [docs/SYNC-HASH-TIMESTAMPS.md](docs/SYNC-HASH-TIMESTAMPS.md).
 
-**Web Fetch is inoperable and says so in config syntax.** `[gateway]
-allowed_hosts` is empty on the live node, so every fetch returns
-`[ERR] blocked: no allowed_hosts configured` -- an internal setting name
-shown to whoever tried to use the feature.
-
-**No version anywhere a user can see it.** `get_display_version` is never
-called outside the web admin, `version_info` and the Docker build, so a
-person on the radio or over SSH cannot say what they are talking to.
+**Web Fetch has no allowed hosts, and that is now the operator's to fix.**
+`[gateway] allowed_hosts` is still empty on the live node, so Web Fetch
+still fetches nothing -- but it says so up front, in a sentence, and no
+longer parks the user at a URL prompt where nothing they type can work.
+Choosing which sites a node will reach out to is a security decision that
+belongs to whoever runs it; set it in the web admin's gateway settings, or
+set `[gateway] enabled = false`. The default stays empty on purpose: an
+upgrade must not quietly open outbound access on every node in the fleet.
 
 **No post retraction.** `delete_bulletin` is never called from
 `command_handlers.py`, so nobody can withdraw their own bulletin or comment;
@@ -520,9 +521,6 @@ than an account, so removing one person's posts is one at a time.
 **Zork launches without an interpreter installed.** Trivia King degrades
 cleanly when its data is missing; `zork_port` still starts a session when
 `dfrotz` is absent. Same shape of fix applies.
-
-**Game output truncation is wrong.** `get_max_text_bytes(interface)` exists
-for exactly this and the door responses do not consult it.
 
 **Both nodes are bridged over *both* brokers.** mqtt1 and mqtt2 each carry the
 same pair, roughly doubling sync traffic between them. Dropping mqtt2 between
@@ -564,6 +562,22 @@ changes on every commit, which changes the count.
 **Mail relay is opt-in.** Full message bodies go on the air on someone's
 behalf, so the recipient chooses; the preference syncs between nodes via
 `RELAYPREF` behind the `mrp` capability.
+
+**A feature that cannot work says so before the user commits to it.** Web
+Fetch spent its whole life asking for a URL and then refusing it, in the
+vocabulary of a config file, after a round trip over the radio. The prompt
+now names the sites that will actually work, and a gateway with no allowed
+hosts refuses at the door instead. The check only fires when *this* node is
+the gateway: a node forwarding to a peer cannot see the peer's allow-list
+and must not invent one.
+
+**`!VER` is the answer to "is the fix live yet?"** The version was reachable
+only from the web admin and the Docker build, so the people who would notice
+a regression -- on a radio, over SSH -- could not say which release they had
+reached. It reports the node too, by `[node_names]` nickname where there is
+one and by short id otherwise; `node_display_name` calls the local node
+"this node", which is true and useless in a sentence whose job is to say
+*which* node.
 
 **`data/trivia.db` is committed** so the game works on pull. It is CC BY-SA
 4.0 from the Open Trivia Database, and the attribution lives in the file's own
