@@ -4,7 +4,7 @@ State of the deployment, the decisions behind it, and what is still open.
 For the feature backlog see [feature requests.txt](feature%20requests.txt);
 this file is about running the thing.
 
-Last updated 2026-09-07 at commit `76d6a38` (`v0.1.584`).
+Last updated 2026-09-07 at commit `5aa5b55` (`v0.1.586`).
 
 ---
 
@@ -19,7 +19,7 @@ Last updated 2026-09-07 at commit `76d6a38` (`v0.1.584`).
 | Path | `/home/bacon/TC2-BaconBS-mesh` | same |
 | Services | `mesh-bbs.service`, `bacon-web-admin.service`, `bacon-ssh.service` | `mesh-bbs.service`, `bacon-web-admin.service` |
 | Bacon BBS SSH | Active, dual-stack port 2222 | Disabled/inactive |
-| Fleet state | Healthy on `76d6a38` | Healthy on `76d6a38` |
+| Fleet state | Healthy on `5aa5b55` | Healthy on `5aa5b55` |
 
 forgecam's Python 3.9 matters: `meshcore` and the supported AsyncSSH release
 require newer Python, so `requirements.txt` carries environment markers and
@@ -85,6 +85,7 @@ Since (2026-09-05/06):
 | `b5beb42` | Relay backoff capped, door output scaled, role export ceiling |
 | `55066c5` | Web Fetch says what it can do; `!VER` |
 | `76d6a38` | `!VER` names the node from any process |
+| `5aa5b55` | One instant, one hash: the timestamp drift, except public_chatter |
 
 ---
 
@@ -495,16 +496,21 @@ processes sharing `bulletins.db`, so contention is structural. When it fires,
 inbound MQTT frames are dropped, which looks like intermittent sync gaps
 rather than an error.
 
-**Timestamp spelling drift, everywhere except zork.** The same instant is
-written `%Y-%m-%d %H:%M:%S` by a local write and `%Y-%m-%dT%H:%M:%S` by
-`utils.decode_ts_second` when a record arrives from a peer, and the record
-hash is built from that string -- so two nodes holding one identical record
-disagree about it permanently. Fixed for `zork_saves`; `channels`,
-`game_scores` and `public_chatter` still hash a timestamp in both hash
-functions, and `bulletins` and `mail` hash one in the per-record manifest but
-not the aggregate, which makes their drift *dormant* rather than absent.
-Scoped in full, not started:
-[docs/SYNC-HASH-TIMESTAMPS.md](docs/SYNC-HASH-TIMESTAMPS.md).
+**Timestamp spelling drift: fixed except `public_chatter`.** Done for
+`game_scores`, `channels`, `bulletins` and `mail` in `5aa5b55`, and our two
+nodes now mismatch on `public_chatter` alone, which churns by design as rows
+expire. `public_chatter` is deliberately left: its `expires_at` is derived,
+its hash never settles, and it is the one scope whose timestamps never pass
+through `decode_ts_second`, so nothing can introduce drift into it. See
+[docs/SYNC-HASH-TIMESTAMPS.md](docs/SYNC-HASH-TIMESTAMPS.md), which also
+records the two things implementing it turned up.
+
+**Provenance is not reaching forgecam for a handful of records.** One
+bulletin, three mail and one channel comment hash differently between the
+two nodes, and it is not spelling: `source_timestamp` is present on bbs and
+NULL on forgecam. Dormant -- those scopes' aggregates hash no timestamp, so
+the mismatch never surfaces -- but it is a real gap and a different bug from
+the drift. Rows and ids are in the doc above.
 
 **Web Fetch has no allowed hosts, and that is now the operator's to fix.**
 `[gateway] allowed_hosts` is still empty on the live node, so Web Fetch
@@ -685,6 +691,24 @@ A related trap while diagnosing this: `grep -c 'P4'` over the journal
 returned 120 and I reported it. Those were matches inside base64 sync
 payloads, not log lines. Anchor greps on the literal message text before
 believing a count.
+
+### A test that cannot fail on the machine it runs on
+
+Three mutations of the interpreter-independence fix in `5aa5b55` survived a
+test suite that passed. The tests called `_normalize_sync_timestamp` with
+awkward values and compared the answers -- and every one of those answers is
+correct on Python 3.11+ whether the fix is present or not, because the
+behaviour being fixed lives *inside* `datetime.fromisoformat`. The suite
+runs on one interpreter. forgecam runs 3.9.
+
+The pattern generalises past interpreters: **when the thing you fixed is a
+difference between two environments, a test that exercises it in one of them
+proves nothing.** Pin the property that makes the difference irrelevant
+instead. Here that meant patching `fromisoformat` and asserting on what
+reaches it -- no fractional seconds, no UTC offset -- which fails on any
+interpreter the moment the stripping goes away.
+
+The mutation pass is what exposed it. A green suite said the opposite.
 
 ### A fixture too small to be wrong
 
