@@ -4,7 +4,7 @@ State of the deployment, the decisions behind it, and what is still open.
 For the feature backlog see [feature requests.txt](feature%20requests.txt);
 this file is about running the thing.
 
-Last updated 2026-09-07 at commit `03a817a` (`v0.1.591`).
+Last updated 2026-09-07 at commit `bfeb9c0` (`v0.1.593`).
 
 ---
 
@@ -19,7 +19,7 @@ Last updated 2026-09-07 at commit `03a817a` (`v0.1.591`).
 | Path | `/home/bacon/TC2-BaconBS-mesh` | same |
 | Services | `mesh-bbs.service`, `bacon-web-admin.service`, `bacon-ssh.service` | `mesh-bbs.service`, `bacon-web-admin.service` |
 | Bacon BBS SSH | Active, dual-stack port 2222 | Disabled/inactive |
-| Fleet state | Healthy on `03a817a` | Healthy on `03a817a` |
+| Fleet state | Healthy on `bfeb9c0` | Healthy on `bfeb9c0` |
 
 forgecam's Python 3.9 matters: `meshcore` and the supported AsyncSSH release
 require newer Python, so `requirements.txt` carries environment markers and
@@ -100,6 +100,7 @@ Since (2026-09-05/06):
 | `5aa5b55` | One instant, one hash: the timestamp drift, except public_chatter |
 | `48567cf` | A welcome screen, and `[node_names]` grouping on both nodes |
 | `1cd8024` `03a817a` | The BBS name and greeting sync, to nodes you name |
+| `bfeb9c0` | Invite files: hand someone a file and their node joins |
 
 ---
 
@@ -124,6 +125,34 @@ Use only the requested `.local` names:
 A duplicate submission may be rejected as a replay when MQTT delivered the
 same fresh timestamp first. Check the stored target and convergence before
 treating that as failure or signing another instruction.
+
+### Invites, and what they deliberately cannot do
+
+Settings -> Invite & Join exports one encrypted file with everything a new
+node needs to join: broker, credentials, TLS material as file *content*
+(config.ini stores paths, which mean nothing elsewhere), the peer list, and
+optionally the fleet's public signing keys. Importing adds the link and
+`request_links_reload_trigger()` brings it up without a restart.
+
+Three refusals are the design, not caution to be optimised away later:
+
+- **It never overwrites.** Import allocates the next free `[mqttN]` and
+  touches nothing else. A broker+topic already present is reported and
+  changes nothing. Deduplication is on broker AND topic, because one broker
+  can carry several unrelated fleets on different prefixes.
+- **It never arms updates on its own.** `invite.apply_invite` refuses to
+  enrol without an explicit `arm_updates`, which only comes from a tick on
+  the review screen next to the key ids. An invite for a *different* fleet
+  group cannot arm at all. Keys are added, never replacing the list.
+- **`local_id` is not copied.** Two nodes sharing a name on one broker read
+  each other's traffic as their own; the importer names itself.
+
+The file carries a broker password and, for mutual TLS, a client private
+key -- so it is encrypted (PBKDF2-SHA256, 600k iterations, into Fernet,
+which authenticates). Send the passphrase by another route. Verified
+against the live config on 2026-09-07: the real bundle for
+`mqtt.nerdtunnel.net` is 8KB, contains neither secret in the clear, and
+carries all three PEM files.
 
 ### When the nodes stop trusting the signing key
 
