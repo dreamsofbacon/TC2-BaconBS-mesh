@@ -1213,12 +1213,20 @@ def decode_ts_minute(token: str) -> str:
 
 
 def decode_ts_second(token: str) -> str:
-    """Decode a wire timestamp token to ``YYYY-MM-DDTHH:MM:SS`` if it's epoch
+    """Decode a wire timestamp token to ``YYYY-MM-DD HH:MM:SS`` if it's epoch
     form; otherwise return the token unchanged.
+
+    The space, not a 'T'. Every local writer uses the space form, so a 'T'
+    here meant a record made locally and the same record received from a
+    peer were stored as two different strings for one instant -- which the
+    sync hashes were built from. Agreeing with the writers stops new drift
+    entering the database at all; it does nothing for rows already stored
+    or for a peer still sending the other spelling, which is why the hashes
+    normalise as well.
     """
     if token and _EPOCH_SEC_PATTERN.match(token):
         try:
-            return datetime.fromtimestamp(int(token[1:])).strftime("%Y-%m-%dT%H:%M:%S")
+            return datetime.fromtimestamp(int(token[1:])).strftime("%Y-%m-%d %H:%M:%S")
         except (OSError, ValueError, OverflowError):
             return token
     return token

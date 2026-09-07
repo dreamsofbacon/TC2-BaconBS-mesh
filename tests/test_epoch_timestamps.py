@@ -25,11 +25,20 @@ class EncoderDecoderTests(unittest.TestCase):
         self.assertEqual(utils.decode_ts_minute(token), iso)
 
     def test_encode_ts_second_roundtrip(self):
-        iso = "2026-05-17T18:42:31"
+        # Decoding lands on the SPACE form, which is what every local writer
+        # uses. A round trip through the wire must not change the spelling of
+        # an instant, or a record made here and the same record received from
+        # a peer are two different strings and the sync hashes disagree.
+        iso = "2026-05-17 18:42:31"
         token = utils.encode_ts_second(iso, use_epoch=True)
         self.assertTrue(token.startswith("s"), token)
         self.assertTrue(token[1:].isdigit(), token)
         self.assertEqual(utils.decode_ts_second(token), iso)
+
+    def test_the_t_form_never_comes_back_off_the_wire(self):
+        """The T form is what the far side used to store. Pin its absence."""
+        token = utils.encode_ts_second("2026-05-17T18:42:31", use_epoch=True)
+        self.assertNotIn("T", utils.decode_ts_second(token))
 
     def test_encode_passthrough_when_not_epoch(self):
         iso = "2026-05-17 18:42"
