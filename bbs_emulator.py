@@ -24,6 +24,7 @@ import secrets
 import threading
 import time
 from collections import deque
+from datetime import datetime
 from types import SimpleNamespace
 from typing import Optional
 
@@ -229,6 +230,32 @@ _sessions: dict = {}
 _synthetic_counter = 0
 
 
+def _mesh_client_last_heard_epoch(client) -> Optional[int]:
+    """The freshest "when was this node last active" signal available.
+
+    Only Meshtastic reports last_heard_epoch. MeshCore and MQTT-bridged
+    nodes leave it NULL and are recorded only through last_seen (a roster
+    presence sweep) -- get_mesh_clients' own seen_within_seconds filter
+    already treats last_seen as the best available signal for exactly
+    those nodes, for exactly this reason. Stats asks the same "how
+    recently" question, so it uses the same fallback rather than reading
+    those nodes as never active.
+    """
+    raw = client.get("last_heard_epoch")
+    if raw:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
+    last_seen = str(client.get("last_seen") or "").strip()
+    if last_seen:
+        try:
+            return int(datetime.strptime(last_seen, "%Y-%m-%d %H:%M:%S").timestamp())
+        except ValueError:
+            pass
+    return None
+
+
 def _roster_nodes():
     """Seed interface.nodes from the stored roster.
 
@@ -247,7 +274,7 @@ def _roster_nodes():
                 num = int(client.get("node_num") or 0)
             except (TypeError, ValueError):
                 num = 0
-            nodes[node_id] = {
+            entry = {
                 "num": num,
                 "user": {
                     "id": node_id,
@@ -255,6 +282,28 @@ def _roster_nodes():
                     "longName": client.get("long_name") or "",
                 },
             }
+            # Settings -> View Stats reads these off a live Meshtastic
+            # interface's own node dict shape -- hwModel and role nested
+            # under 'user', lastHeard at the top level -- and over
+            # SSH/web-admin, where interface.nodes IS this synthetic
+            # roster rather than a real radio's, those keys were simply
+            # absent from every entry: every node showed "Unknown" for
+            # hardware and role, and zero in every recent-activity window,
+            # even though mesh_clients holds real, persisted values for
+            # all three. Set only when there is a genuine value, so a
+            # client this data was never recorded for still correctly
+            # falls back to Stats' own "Unknown" default rather than
+            # claiming a value of "" or 0.
+            hw_model = client.get("hw_model")
+            if hw_model:
+                entry["user"]["hwModel"] = hw_model
+            role = client.get("role")
+            if role:
+                entry["user"]["role"] = role
+            last_heard = _mesh_client_last_heard_epoch(client)
+            if last_heard is not None:
+                entry["lastHeard"] = last_heard
+            nodes[node_id] = entry
     except Exception:
         logging.exception("Emulator could not read the mesh client roster")
     return nodes
