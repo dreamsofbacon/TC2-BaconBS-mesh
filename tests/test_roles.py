@@ -686,9 +686,18 @@ class ModerationTests(_RoleCase):
         return "\n".join(self.sent)
 
     def _open_bulletin(self):
+        # BULLETIN_READ step 3 now indexes into the positional list built
+        # when the board was listed, the same list handle_bb_steps stores
+        # in state -- a raw database id is no longer accepted directly,
+        # since ids skip whatever was deleted and no longer line up with
+        # what the reader was shown as "[1]", "[2]", etc.
+        bulletins = db_operations.get_bulletins('General')
         utils.update_user_state(4242, {'command': 'BULLETIN_READ', 'step': 3,
-                                       'board': 'General', 'boards': ['General']})
-        return self._say(str(self.bulletin_id))
+                                       'board': 'General', 'boards': ['General'],
+                                       'bulletins': bulletins})
+        position = next(i for i, b in enumerate(bulletins, start=1)
+                        if b[0] == self.bulletin_id)
+        return self._say(str(position))
 
     def _bulletins(self):
         return db_operations.get_db_connection().execute(

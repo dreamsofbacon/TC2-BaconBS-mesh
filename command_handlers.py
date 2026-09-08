@@ -1031,7 +1031,13 @@ def handle_node_view_steps(sender_id, message, interface, state) -> None:
     if choice.isdigit():
         index = int(choice) - 1
         if 0 <= index < len(options):
-            set_view_scope(sender_id, options[index]['ids'])
+            chosen_ids = options[index]['ids']
+            # Compared before overwriting: "All nodes" carries [] and an
+            # unset scope reads back as None/[], so both sides normalize
+            # through the same set() rather than needing a special case
+            # for the default.
+            unchanged = set(chosen_ids) == set(get_view_scope(sender_id) or [])
+            set_view_scope(sender_id, chosen_ids)
             # Redraw the page the choice is ON, not the page it was made
             # from. Numbers are global so that [1] All nodes is always [1]
             # and the "!V=all" every notice ends with stays true -- but on
@@ -1039,8 +1045,15 @@ def handle_node_view_steps(sender_id, message, interface, state) -> None:
             # picking a number from a later page would otherwise redraw a
             # screen with no star anywhere on it. Selecting something and
             # being shown no confirmation reads as the key not working.
+            #
+            # Re-selecting the already-active option moves no star at all,
+            # which is the one case that redraw doesn't cover -- a live
+            # beta test read the identical screen as "nothing happened."
+            notice = (f"Node View remains {options[index]['label']}."
+                     if unchanged else None)
             _send_node_view_page(sender_id, interface,
-                                 _node_view_page_of(options, index, interface))
+                                 _node_view_page_of(options, index, interface),
+                                 notice=notice)
             return
 
     _send_node_view_page(sender_id, interface, page, notice="Invalid choice.")
@@ -1190,6 +1203,12 @@ def _launch_game(sender_id, interface, game_id, game_name):
             send_message(sync_notice, sender_id, interface)
         send_message(f"{game_name} resumed. Send X to exit.", sender_id, interface)
     elif has_zork_save(sender_id, game_id):
+        # start_zork_session does real work here before it returns anything:
+        # spawn a cold dfrotz process, then a restore/look handshake against
+        # it. On a slow start that's several seconds of total silence, which
+        # a beta tester read as the BBS having dropped the request rather
+        # than being busy.
+        send_message("Loading your saved game...", sender_id, interface)
         intro = start_zork_session(sender_id, game_id)
         send_message(intro, sender_id, interface)
         if sync_notice:
@@ -1688,9 +1707,25 @@ def handle_profile_steps(sender_id, message, interface, sender_node_id=None):
         if is_cancel(choice):
             handle_profile_command(sender_id, interface)
             return
+        if choice.lower() == 'clear':
+            # A blank line can never actually reach here to mean "clear
+            # it" -- ssh_server.py treats an empty line typed at the BBS
+            # prompt as "just redraw," so it never calls process_message at
+            # all, and the same is true sending an empty payload over
+            # Meshtastic/MeshCore. A beta tester found that a blank
+            # submission silently did nothing and had no way to remove an
+            # existing bio. This is the documented way to do it instead.
+            update_user_bio(sender_id, '')
+            send_message("Bio cleared.", sender_id, interface)
+            handle_profile_command(sender_id, interface,
+                                   sender_node_id=sender_node_id)
+            return
         bio = choice[:100]
         update_user_bio(sender_id, bio)
-        send_message("Bio updated!", sender_id, interface)
+        notice = "Bio updated!"
+        if len(choice) > 100:
+            notice = "Bio updated! (trimmed to 100 chars)"
+        send_message(notice, sender_id, interface)
         handle_profile_command(sender_id, interface,
                                sender_node_id=sender_node_id)
         return
@@ -1698,7 +1733,7 @@ def handle_profile_steps(sender_id, message, interface, sender_node_id=None):
         handle_help_command(sender_id, interface)
         return
     if choice.lower() in ('e', '1'):
-        send_message(f"Enter your bio (max 100 chars), or {CANCEL_HINT} to stop:", sender_id, interface)
+        send_message(f"Enter your bio (max 100 chars), CLEAR to remove it, or {CANCEL_HINT} to stop:", sender_id, interface)
         update_user_state(sender_id, {'command': 'PROFILE', 'step': 2})
         return
     if choice.lower() in ('d', '2'):
@@ -1949,9 +1984,17 @@ def _handle_list_devices(sender_id, interface, sender_node_id):
     detail = get_linked_nodes_detail(account_id)
     alias = get_account_alias(account_id)
     lines = [f"\U0001F517 Account alias: {alias or '(none set)'}"]
-    for i, (node_id, network, _linked_at) in enumerate(detail):
+    for i, (node_id, network, linked_at) in enumerate(detail):
         marker = " (this device)" if node_id == sender_node_id else ""
-        lines.append(f"{i + 1:02d}. {node_id} [{network}]{marker}")
+        # linked_at was already fetched and thrown away, which is most of
+        # what a live beta test asked for here: with several opaque
+        # "ssh:<uuid>" entries and only one marked as "this device", there
+        # was nothing to go on for deciding which OLD one is safe to
+        # unlink. The date alone -- not a full timestamp, which would not
+        # fit several devices into one screen -- is enough to tell them
+        # apart.
+        when = f" -- linked {linked_at[:10]}" if linked_at else ""
+        lines.append(f"{i + 1:02d}. {node_id} [{network}]{marker}{when}")
     send_message("\n".join(lines), sender_id, interface)
     handle_account_command(sender_id, interface)
 
@@ -1985,8 +2028,9 @@ def _handle_start_unlink(sender_id, interface, sender_node_id):
         handle_account_command(sender_id, interface)
         return
     lines = ["Reply with the number of the device to unlink:"]
-    for i, (node_id, network, _linked_at) in enumerate(detail):
-        lines.append(f"{i + 1:02d}. {node_id} [{network}]")
+    for i, (node_id, network, linked_at) in enumerate(detail):
+        when = f" -- linked {linked_at[:10]}" if linked_at else ""
+        lines.append(f"{i + 1:02d}. {node_id} [{network}]{when}")
     send_message("\n".join(lines), sender_id, interface)
     _account_state(sender_id, 5, devices=detail)
 
@@ -2169,9 +2213,16 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
                 if lens:
                     header = f"{lens}{LINE_BREAK}{header}"
                 send_message(header, sender_id, interface)
-                for bulletin in bulletins:
-                    send_message(f"[{bulletin[0]}] {bulletin[1]}", sender_id, interface)
-                update_user_state(sender_id, {'command': 'BULLETIN_READ', 'step': 3, 'board': board_name})
+                # Positional, not the raw database id -- an id skips
+                # whatever was deleted or never synced here, so "[8]" next
+                # to "[23]" looked like a bulletin number a reader could
+                # type, and "2" for the second item in the list came back
+                # "Invalid bulletin number." A beta tester hit this on the
+                # live General board.
+                for i, bulletin in enumerate(bulletins, start=1):
+                    send_message(f"[{i}] {bulletin[1]}", sender_id, interface)
+                update_user_state(sender_id, {'command': 'BULLETIN_READ', 'step': 3,
+                                              'board': board_name, 'bulletins': bulletins})
             else:
                 empty = f"No bulletins in {board_name}."
                 if lens:
@@ -2191,12 +2242,15 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
             update_user_state(sender_id, {'command': 'BULLETIN_POST', 'step': 4, 'board': board_name})
 
     elif step == 3:
+        bulletins = state.get('bulletins', [])
         try:
-            bulletin_id = int(message)
+            index = int(message) - 1
+            if index < 0 or index >= len(bulletins):
+                raise ValueError
         except ValueError:
             send_message("Invalid bulletin number. Please try again.", sender_id, interface)
             return
-        bulletin = get_bulletin_content(bulletin_id)
+        bulletin = get_bulletin_content(bulletins[index][0])
         if bulletin is None:
             send_message("Bulletin not found. Please try again.", sender_id, interface)
             return

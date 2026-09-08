@@ -241,6 +241,28 @@ class PickerTests(_Screen):
         screen = self.pick(str(last))
         self.assertIn(f"*{options[last - 1]['label']}", screen)
 
+    def test_reselecting_the_active_option_says_so_instead_of_looking_stuck(self):
+        """Picking the option already starred moves no star at all, which
+        the redraw alone can't distinguish from the keypress being ignored
+        -- a live beta test read the identical screen back as broken."""
+        self.bulletin("theirs", PEER)
+        self.open_picker()
+        self.pick("3")
+        screen = self.pick("3")
+        self.assertIn("Node View remains Chattanooga.", screen)
+        self.assertIn("*Chattanooga", screen)
+
+    def test_picking_a_new_option_gives_no_remains_notice(self):
+        self.bulletin("theirs", PEER)
+        self.open_picker()
+        screen = self.pick("3")
+        self.assertNotIn("remains", screen)
+
+    def test_reselecting_all_nodes_also_says_so(self):
+        self.open_picker()
+        screen = self.pick("1")
+        self.assertIn("Node View remains All nodes.", screen)
+
     def test_prev_steps_back_one_page_not_to_the_start(self):
         """Jumping to page 0 made anything past page two unreachable
         backwards -- you could walk forward to page three and then only
