@@ -1205,6 +1205,16 @@ def _launch_game(sender_id, interface, game_id, game_name):
     if has_zork_session(sender_id, game_id):
         intro = resume_zork_session(sender_id, game_id)
         send_message(intro, sender_id, interface)
+        if not has_zork_session(sender_id, game_id):
+            # The process had already died between the check above and the
+            # resume attempt. resume_zork_session's own text already says
+            # so ("Your previous session ended...") -- the bug was piling a
+            # false "Zork I resumed. Send X to exit." on top of that, and
+            # then parking the session in ZORK state anyway, where the next
+            # command would hit "No active game session" with no
+            # explanation of what happened to the one that just "resumed".
+            handle_games_command(sender_id, interface)
+            return
         if sync_notice:
             send_message(sync_notice, sender_id, interface)
         send_message(f"{game_name} resumed. Send X to exit.", sender_id, interface)
@@ -1217,12 +1227,23 @@ def _launch_game(sender_id, interface, game_id, game_name):
         send_message("Loading your saved game...", sender_id, interface)
         intro = start_zork_session(sender_id, game_id)
         send_message(intro, sender_id, interface)
+        if not has_zork_session(sender_id, game_id):
+            # No interpreter installed, the story file missing with
+            # autodownload off, or the interpreter process itself failed to
+            # spawn -- start_zork_session's own text already explains
+            # which. The same false "Saved game restored." used to follow
+            # it regardless, and the save was never actually touched.
+            handle_games_command(sender_id, interface)
+            return
         if sync_notice:
             send_message(sync_notice, sender_id, interface)
         send_message(f"Saved game restored. Send X to exit.", sender_id, interface)
     else:
         intro = start_zork_session(sender_id, game_id)
         send_message(intro, sender_id, interface)
+        if not has_zork_session(sender_id, game_id):
+            handle_games_command(sender_id, interface)
+            return
         if sync_notice:
             send_message(sync_notice, sender_id, interface)
         send_message(

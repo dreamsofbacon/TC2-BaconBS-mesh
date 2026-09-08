@@ -219,7 +219,7 @@ class ZorkSaveSyncTests(unittest.TestCase):
         config_path = self._write_sync_config(enabled=False)
 
         with mock.patch.dict(os.environ, {"BBS_CONFIG_PATH": config_path}, clear=False), \
-             mock.patch.object(command_handlers, "has_zork_session", return_value=False), \
+             mock.patch.object(command_handlers, "has_zork_session", side_effect=[False, True]), \
              mock.patch.object(command_handlers, "has_zork_save", return_value=False), \
              mock.patch.object(command_handlers, "start_zork_session", return_value="intro"), \
              mock.patch.object(command_handlers, "send_message") as send_message_mock, \
