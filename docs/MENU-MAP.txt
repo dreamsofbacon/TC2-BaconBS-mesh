@@ -1,0 +1,99 @@
+Bacon BBS - menu map
+====================
+
+Every path from the main menu. Stops at each game's own launch item --
+what happens inside Zork, Trivia King, etc. is that game's own interface,
+not this BBS's menu tree. Numbers/letters shown are the canonical set from
+example_config.ini; a given node's config.ini may configure a smaller
+subset (main_menu_items, bbs_menu_items, utilities_menu_items), with
+required entries (Profile, Ask Nomad, Web Fetch, Settings, Node View)
+inserted automatically if left out. !<letter> reaches any main-menu item
+from anywhere, and !cancel/!exit/!x/!0 backs out of any in-progress form.
+
+[1] Quick Commands
+    -- reference only, not a menu: lists the !SM/!CM/!R/!AU/!PB/!CB/!CHP/
+       !CHL/!VER/!WELCOME shortcuts and (for a moderator) !ROLE/!WHO.
+
+[2] BBS
+    [1] Mail
+        [1] Read
+            (numbered list of messages)
+              -> [1] Keep  [2] Delete  [3] Reply
+        [2] Send
+            -> recipient -> subject -> body (END to send)
+        [3] Relay Directory
+            (numbered list of opted-in recipients)
+              -> [W]rite (jumps into Send, recipient pre-filled)
+    [2] Bulletins
+        (board list: General / Info / News / Urgent, per [boards] config)
+          -> [1] Read
+                 (numbered list of posts) -> select a number to view
+                 (moderator only: [D]elete this post)
+             [2] Post
+                 -> subject -> body (END to post)
+    [3] Channel Dir
+        [1] View
+            (numbered list of channels) -> select a number
+              -> [1] View comments  [2] Comment  [0] Exit
+        [2] Post
+            -> channel name -> URL/PSK (optional)
+    [4] JS8CALL  (only if a JS8Call link is configured)
+        -- group/direct/urgent message paths for that transport
+
+[3] Games
+    [1] Trivia King        -- launches the door
+    [2] Zork I              -- launches the interpreter
+    [3] Zork II              "
+    [4] Zork III             "
+    [5] Hitchhiker's Guide   "
+    [6] Deadline              "
+    [7] Enchanter             "
+    [8] Planetfall            "
+    [9] Starcross             "
+    [S]cores
+        (per-title top-5 standings, picked from the same numbered list)
+    [H]all of Fame
+        (all-time best per title)
+
+[4] Public Chatter
+    -- duration picker (how far back to read)
+      -> the feed itself: [M]ore  [F]ilter  [T]ime  [0] Back
+         [F]ilter -> per-channel toggle list -> [A]ll  [D]one
+
+[5] Utilities
+    [F] Fortune
+    [W] Wall of Shame
+
+[6] Profile
+    [1] Edit bio
+    [2] Linked Devices
+        [1] Request link code
+        [2] Enter a code
+        [3] List my devices
+        [4] Set shared alias
+        [5] Unlink a device
+        [6] Request code, delayed (dual-boot)
+
+[7] Ask Nomad
+    -- straight to the question prompt (Utilities > API Gateway > Ask
+       Project Nomad, before this shortcut existed)
+
+[8] Web Fetch
+    -- straight to the URL prompt (allow-listed HTTP GET via the gateway)
+
+[9] Settings
+    [1] Offline mail relay: On/Off (toggle)
+    [2] Node View            -- same picker as [10] below
+    [3] About this node
+    [4] View Stats
+        [1] Nodes  [2] Hardware  [3] Roles
+
+[10] Node View
+    [1] All nodes   (always first, always the way back to everything)
+    [2] This node
+    [3+] Named peers with content (only ones that actually have any)
+    -- also reachable as !V from any state, including mid-form; narrows
+       what Mail/Bulletins/Channel Dir/Public Chatter show without
+       stopping anything from syncing.
+
+[0] Exit

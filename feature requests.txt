@@ -23,7 +23,7 @@ Last reviewed: 2026-09-07. Status is based on the live `baconbot` SSH beta-test 
 
 ## Active: Product and Operations
 
-- [ ] Publish a simple indented text map of system menu paths, stopping at each game launch item.
+- [x] Publish a simple indented text map of system menu paths, stopping at each game launch item. (docs/MENU-MAP.txt)
 - [ ] Add configurable first-connection welcome content: BBS public name, affiliated-node names, and Web Admin editing.
 - [ ] Add Web Admin dependency-install support per operating system.
 - [ ] Improve connected-device inventory collection and display actual hardware/role information.
