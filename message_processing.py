@@ -3033,11 +3033,23 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             else:
                 handle_comment_moderate_steps(sender_id, message, interface, state, bbs_nodes)
                 return
-        if state and state.get('command') in ('GAMES_MENU', 'ZORK'):
+        if state and state.get('command') in ('GAMES_MENU', 'ZORK', 'TRIVIA'):
+            # An active door session owns its input outright -- checked here,
+            # before the bang-prefixed global-command router further down,
+            # not just the later bare-letter one. ZORK already got this; a
+            # live gap remained for TRIVIA specifically, since it relied only
+            # on the later door_session check (which guards the bare-letter
+            # `handlers` lookup, not the '!' branch at all). A Trivia King
+            # session sent a bang-prefixed Quick Command -- !CM, say -- and
+            # it was intercepted as the global command instead of reaching
+            # the game as input, exactly the "quick keys steal game input"
+            # complaint this closes for both games rather than just one.
             if state['command'] == 'GAMES_MENU':
                 handle_games_steps(sender_id, message, interface)
-            else:
+            elif state['command'] == 'ZORK':
                 handle_zork_steps(sender_id, message, interface)
+            else:
+                handle_trivia_steps(sender_id, message, interface)
             return
         if state and state.get('command') == 'MAIL':
             # Mail is dispatched ahead of the global-prefix branch, which

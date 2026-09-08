@@ -627,6 +627,35 @@ class GameInputRoutingTests(unittest.TestCase):
         handle_zork.assert_called_once_with(1234, '!CM', self.iface)
         check_mail.assert_not_called()
 
+    def test_trivia_receives_inputs_that_overlap_global_quick_keys(self):
+        """Trivia King itself uses N for 'next question' -- the main menu
+        also uses N for Ask Nomad, S for Settings. A live session must not
+        let either steal a letter that means something different mid-game.
+        Verified empirically rather than trusted from reading the dispatch
+        order: ZORK gets its protection from an unconditional early return,
+        but TRIVIA falls through much further into the function, relying
+        on TRIVIA never populating the `handlers` dict that a MENU/
+        MAIN_MENU state's single-letter lookup uses -- a different
+        mechanism reaching the same place, worth its own proof."""
+        import message_processing as mp
+
+        for command in ('n', 's', 'x'):
+            with self.subTest(command=command), \
+                    mock.patch.object(mp, 'handle_trivia_steps') as handle_trivia:
+                ch.update_user_state(1234, {'command': 'TRIVIA', 'step': 1})
+                mp.process_message(1234, command, self.iface)
+                handle_trivia.assert_called_once_with(1234, command, self.iface)
+
+    def test_trivia_treats_prefixed_commands_as_game_input(self):
+        import message_processing as mp
+
+        ch.update_user_state(1234, {'command': 'TRIVIA', 'step': 1})
+        with mock.patch.object(mp, 'handle_trivia_steps') as handle_trivia, \
+                mock.patch.object(mp, 'handle_check_mail_command') as check_mail:
+            mp.process_message(1234, '!CM', self.iface)
+        handle_trivia.assert_called_once_with(1234, '!CM', self.iface)
+        check_mail.assert_not_called()
+
     def test_games_menu_receives_shortcut_letters_before_main_menu(self):
         import message_processing as mp
 

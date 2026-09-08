@@ -31,7 +31,7 @@ Last reviewed: 2026-09-07. Status is based on the live `baconbot` SSH beta-test 
 - [ ] Investigate the single-node status icon behavior.
 - [ ] Ensure games fail gracefully when the interpreter is unavailable.
 - [ ] Review game text truncation/terminal formatting.
-- [ ] Review global quick keys so game input cannot accidentally navigate to BBS settings.
+- [x] Review global quick keys so game input cannot accidentally navigate to BBS settings. (v0.1.609: Zork already had this -- an unconditional early return before the bang-prefix router. Trivia King didn't: bare letters were safe (it never populates the `handlers` dict a MENU/MAIN_MENU state's single-letter lookup uses), but a bang-prefixed Quick Command like !CM was still intercepted as the global command mid-game instead of reaching the game as input. Both games now get the same early, unconditional claim on their input.)
 - [ ] Consider combining Linux services where that improves deployment and failure isolation.
 - [ ] Restructure modules where it reduces complexity without disrupting the running system.
 - [ ] Extend MeshCore support with user account rooms and relayed room text.
