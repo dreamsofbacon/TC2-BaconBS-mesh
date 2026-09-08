@@ -150,7 +150,7 @@ class PickerTests(_Screen):
         self.assertIn("[1]*All nodes", self.open_picker())
 
     def test_all_nodes_is_always_number_one(self):
-        """Every hidden-count notice says !V=all, so the way back has to be
+        """Every hidden-count notice says !V to change, so the way back has to be
         in the same place on every page."""
         for _ in range(12):
             self.bulletin(f"b{_}", f"mqtt:baconbbsvt:peer{_}")
@@ -352,7 +352,7 @@ class MailIndicatorTests(_Screen):
         """A bare V at a mail prompt is read as a message number, so only
         !V escapes. The wording is the mitigation, not decoration."""
         utils.set_view_scope(SENDER, [PEER])
-        self.assertIn("!V=all", self.read_mail())
+        self.assertIn("!V to change", self.read_mail())
 
     def test_the_way_out_actually_works_from_the_mailbox(self):
         """The notice is a promise, and it was false here. Mail is

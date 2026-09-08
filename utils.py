@@ -1070,6 +1070,15 @@ def scope_notice(user_id, hidden: int = 0, *, noun: str = '',
     an item number and never reaches the main menu handlers. The '!' branch
     dispatches from any state, so this is the only escape that always
     works. The wording is the mitigation, not decoration.
+
+    The hint used to read "!V=all", implying !V sets the scope to All by
+    itself. It doesn't -- it opens the picker, same as every other bang
+    shortcut, and leaves whatever was narrowed in place until a number is
+    picked. A live beta test called this out exactly: entering !V left
+    Chattanooga selected instead of switching to All. Rather than make one
+    bang letter uniquely act instead of navigate -- which every other
+    shortcut in this BBS does not do -- the hint now says what !V actually
+    does.
     """
     scope = get_view_scope(user_id)
     if not scope:
@@ -1090,7 +1099,7 @@ def scope_notice(user_id, hidden: int = 0, *, noun: str = '',
     if hidden > 0:
         what = f" {noun}" if noun else ""
         notice += f" {hidden} more{what} from other nodes."
-    return f"{notice} !V=all"
+    return f"{notice} !V to change"
 
 
 def home_network(node_id) -> str:

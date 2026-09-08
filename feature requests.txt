@@ -5,21 +5,21 @@ Last reviewed: 2026-09-07. Status is based on the live `baconbot` SSH beta-test 
 ## Active: User Experience and Defects
 
 - [x] Fix `!CB`: it currently redraws the main menu instead of checking bulletins or opening the Bulletin Menu. (v0.1.601)
-- [ ] Fix the Node View hint `!V=all`: `!V` opens the selector but does not reset the view to All nodes.
+- [x] Fix the Node View hint `!V=all`: `!V` opens the selector but does not reset the view to All nodes. (v0.1.607: rather than make !V uniquely act instead of navigate -- inconsistent with every other bang shortcut -- the hint now reads "!V to change", describing what it actually does)
 - [x] Make interactive-fiction output flush promptly after restore and after commands. Delayed output can make Zork I/Zork II appear unresponsive. (v0.1.604: an immediate "Loading your saved game..." acknowledgement now goes out before the restore handshake, per the report's own suggested remedy)
 - [x] Add an explicit back/cancel option to the mail message-number prompt. `0` currently says "Invalid message number." (v0.1.601)
 - [x] Make post-send navigation explicit. After mail `END`, one `0` gives an unexplained acknowledgement and a second returns to main. (v0.1.601: mail now returns to the Mail Menu automatically after a send)
-- [ ] Standardize every composer: advertise `!cancel`, confirm cancellation, and return to the immediate parent menu.
-- [ ] Clarify channel creation's URL/PSK field with a format example, purpose, and optional/required status.
+- [x] Standardize every composer: advertise `!cancel`, confirm cancellation, and return to the immediate parent menu. (the four named instances -- channel creation, channel comments, device unlink, Project Nomad questions -- are all fixed: the first three shipped earlier this session, Project Nomad in v0.1.607, which also registers it so the bang form of cancel reaches the handler instead of being submitted as the question)
+- [x] Clarify channel creation's URL/PSK field with a format example, purpose, and optional/required status. (v0.1.607: the prompt now gives a Meshtastic URL / MeshCore PSK example and says the field isn't required)
 - [x] Improve profile bio validation: reject or explicitly warn on truncation and add a documented clear-bio action. (v0.1.604)
 - [x] Clarify `!R` eligibility: it works after the latest mail is opened and kept, but that prerequisite is undisclosed. (v0.1.603: `!R` now falls back to the newest ordinary mailbox message, so that prerequisite no longer exists)
 - [x] Make bulletin lists use contiguous selection numbers or label sparse values as record IDs. (v0.1.604)
-- [ ] Add a `[0] Back` prompt to individual scoreboards and channel details reached through `!CHL`.
-- [ ] Clarify Public Chatter filtering: no selected channels means all channels, while selected channels make an exclusive filter.
+- [x] Add a `[0] Back` prompt to individual scoreboards and channel details reached through `!CHL`. (v0.1.607)
+- [x] Clarify Public Chatter filtering: no selected channels means all channels, while selected channels make an exclusive filter. (v0.1.607: the filter screen's own "(* = shown)" legend now stars every channel when nothing is chosen, since that's genuinely what's being shown -- no extra bytes spent on new text)
 - [ ] Improve linked-device listings with user-readable labels and last-used/created information so a device can be safely unlinked. (v0.1.604 added the linked-at date to both listings; user-readable labels, beyond the raw node id, are still open)
 - [x] Explain node-statistics freshness and unknown hardware/role records. (v0.1.602: Stats now reports real hardware model/role and non-zero recent-activity counts over SSH and web admin instead of `Unknown`/all-zero)
 - [ ] Ensure Project Nomad uses BBS terms such as "Bulletins" and "Channels," not "forums."
-- [ ] Explain Planetfall's restored state or offer an explicit resume/new-game choice.
+- [x] Explain Planetfall's restored state or offer an explicit resume/new-game choice. (v0.1.606: traced live -- not a real restored/leaked save at all, ruled out via a byte-identical story file and a fresh-account repro. It was the installed dfrotz build producing a non-deterministic garbage Moves figure on Planetfall's own opening status line specifically. Fixed by zeroing Score/Moves on a freshly spawned session before any restore check runs.)
 
 ## Active: Product and Operations
 

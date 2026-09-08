@@ -685,7 +685,13 @@ def _chatter_filter_text(state: dict) -> str:
     # noise, and it cost bytes on a screen that has 160 of them.
     lines = ["Channels  (* = shown)"]
     for number, option in enumerate(options, 1):
-        mark = '*' if option['value'] in chosen else ' '
+        # An empty `chosen` means no filter at all -- every channel is
+        # actually being shown, same as the web feed -- but the screen
+        # used to star nothing, which read as "these are all hidden" on a
+        # legend that says * means shown. A live beta test read it exactly
+        # that way. Starring everything when nothing is chosen keeps the
+        # legend true without spending a single extra byte on new text.
+        mark = '*' if (not chosen or option['value'] in chosen) else ' '
         lines.append(f"[{number}]{mark}{option['label']}")
     # Nothing selected means no constraint, the same as the web feed: the
     # first press narrows to one thing rather than needing the rest turned
@@ -1455,11 +1461,12 @@ def handle_ask_nomad_command(sender_id, interface):
         send_message("API gateway: your node is not on the allow-list.", sender_id, interface)
         handle_help_command(sender_id, interface)
         return
-    send_message("Type your question for Project Nomad:", sender_id, interface)
+    send_message(f"Type your question for Project Nomad, or {CANCEL_HINT} to stop:",
+                 sender_id, interface)
     update_user_state(sender_id, {'command': 'ASK_NOMAD', 'step': 1})
 
 
-ASK_NOMAD_FOLLOWUP = "Reply with another question, or [0] for the main menu."
+ASK_NOMAD_FOLLOWUP = f"Reply with another question, or [0]/{CANCEL_HINT} for the main menu."
 
 
 def deliver_ask_nomad_reply(body, sender_id, interface) -> bool:
@@ -1497,8 +1504,16 @@ def _prompt_ask_nomad_followup(sender_id, interface) -> None:
 
 def handle_ask_nomad_steps(sender_id, message, interface):
     choice = message.strip()
-    if choice.lower() in ('0', 'x', 'exit'):
-        handle_help_command(sender_id, interface)  # back to the main menu
+    # is_cancel() catches the bang form (!cancel, !exit, !x, !0); a beta
+    # test found that typing it here got submitted AS the question instead
+    # of cancelling -- only bare 0/x/exit were recognized, and even those
+    # returned to the main menu with no word said about what happened to
+    # the question in progress. This is that word.
+    if is_cancel(choice) or choice.lower() in ('0', 'x', 'exit'):
+        send_message("Question cancelled.", sender_id, interface)
+        handle_help_command(sender_id, interface)  # back to the main menu --
+        # the immediate parent here, since Ask Nomad is itself a main-menu
+        # shortcut ('N'), not a nested submenu.
         return
     if not choice:
         send_message("Empty question — cancelled.", sender_id, interface)
@@ -1531,12 +1546,14 @@ def handle_scoreboard_steps(sender_id, message, interface):
         return
     scores = get_game_scoreboard(game_id, limit=5)
     if not scores:
-        send_message(f"No scores yet for {info['name']}. Be first!", sender_id, interface)
+        send_message(f"No scores yet for {info['name']}. Be first!\n[0] Back",
+                     sender_id, interface)
     else:
         lines = [f"🏆 {info['name']}"]
         for rank, (short_name, score, max_score, moves) in enumerate(scores, 1):
             ms = f"/{max_score}" if max_score else ""
             lines.append(f"{rank}. {short_name} {score}{ms} {moves}mv")
+        lines.append("[0] Back")
         send_message("\n".join(lines), sender_id, interface)
     update_user_state(sender_id, {'command': 'SCOREBOARD', 'step': 1})
 
@@ -2727,7 +2744,12 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
             handle_channel_directory_command(sender_id, interface)
             return
         channel_name = message
-        send_message(f"Send the channel URL or PSK, or {CANCEL_HINT} to stop:", sender_id, interface)
+        send_message(
+            "Send the channel URL or PSK, e.g. a Meshtastic channel URL "
+            f"(https://meshtastic.org/e/#...) or a MeshCore PSK/passphrase. "
+            f"Not required -- send \"none\" if you don't have one, or "
+            f"{CANCEL_HINT} to stop:",
+            sender_id, interface)
         update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 4, 'channel_name': channel_name})
 
     elif step == 4:
@@ -2984,7 +3006,7 @@ def handle_read_channel_command(sender_id, message, state, interface):
             return
 
         channel_name, channel_url = channels[message_number]
-        response = f"Channel Name: {channel_name}\nChannel URL: {channel_url}"
+        response = f"Channel Name: {channel_name}\nChannel URL: {channel_url}\n[0] Back"
         send_message(response, sender_id, interface)
 
         update_user_state(sender_id, None)
