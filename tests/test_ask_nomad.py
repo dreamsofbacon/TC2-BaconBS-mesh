@@ -59,7 +59,7 @@ class AskNomadShortcutTests(unittest.TestCase):
         with mock.patch.object(command_handlers, "_apigw_authorized", return_value=True), \
              mock.patch.object(command_handlers, "send_message") as sm:
             command_handlers.handle_ask_nomad_command(111, self.interface)
-        self.assertIn("Type your question for Project Nomad:", _sent(sm))
+        self.assertIn("Type your question for Project Nomad, or !cancel to stop:", _sent(sm))
         self.assertEqual(command_handlers.get_user_state(111), {"command": "ASK_NOMAD", "step": 1})
 
     def test_unauthorized_node_rejected_to_main_menu(self):
@@ -77,7 +77,7 @@ class AskNomadShortcutTests(unittest.TestCase):
             message_processing.process_message(
                 111, "!n", self.interface, is_sync_message=False, sender_node_id="!aaa11111",
             )
-        self.assertIn("Type your question for Project Nomad:", _sent(sm))
+        self.assertIn("Type your question for Project Nomad, or !cancel to stop:", _sent(sm))
         self.assertEqual(command_handlers.get_user_state(111), {"command": "ASK_NOMAD", "step": 1})
 
     def test_bare_n_opens_the_menu_rather_than_dispatching(self):
@@ -104,7 +104,7 @@ class AskNomadShortcutTests(unittest.TestCase):
             message_processing.process_message(
                 111, "n", self.interface, is_sync_message=False, sender_node_id="!aaa11111",
             )
-        self.assertIn("Type your question for Project Nomad:", _sent(sm))
+        self.assertIn("Type your question for Project Nomad, or !cancel to stop:", _sent(sm))
         self.assertEqual(command_handlers.get_user_state(111),
                          {"command": "ASK_NOMAD", "step": 1})
 
@@ -114,6 +114,42 @@ class AskNomadShortcutTests(unittest.TestCase):
             with mock.patch.object(command_handlers, "handle_help_command") as hh:
                 command_handlers.handle_ask_nomad_steps(111, choice, self.interface)
             hh.assert_called_once_with(111, self.interface)  # no menu_name -> main menu
+
+    def test_exit_choices_confirm_the_cancellation(self):
+        """Bare 0/x/exit used to bounce straight to the main menu with no
+        word said about what happened to the question in progress -- a
+        beta test flagged this exact gap for Nomad specifically."""
+        for choice in ("0", "x", "exit"):
+            with mock.patch.object(command_handlers, "send_message") as sm, \
+                 mock.patch.object(command_handlers, "handle_help_command"):
+                command_handlers.handle_ask_nomad_steps(111, choice, self.interface)
+            self.assertIn("Question cancelled.", _sent(sm))
+
+    def test_the_bang_form_of_cancel_is_recognized_not_submitted(self):
+        """The actual bug: !cancel typed here used to be submitted to
+        Project Nomad AS the question, since only bare 0/x/exit were
+        checked."""
+        for word in ("!cancel", "!exit", "!x", "!0"):
+            with mock.patch.object(command_handlers, "send_message") as sm, \
+                 mock.patch.object(command_handlers, "_apigw_submit") as submit, \
+                 mock.patch.object(command_handlers, "handle_help_command"):
+                command_handlers.handle_ask_nomad_steps(111, word, self.interface)
+            submit.assert_not_called()
+            self.assertIn("Question cancelled.", _sent(sm))
+
+    def test_a_bang_cancel_reaches_the_handler_through_the_real_router(self):
+        """Not just the handler in isolation -- _TEXT_PROMPTS has to route
+        ASK_NOMAD step 1 here, or a bang-prefixed message is intercepted as
+        a global command before handle_ask_nomad_steps ever sees it."""
+        command_handlers.update_user_state(111, {"command": "ASK_NOMAD", "step": 1})
+        with mock.patch.object(command_handlers, "send_message") as sm, \
+             mock.patch.object(command_handlers, "_apigw_submit") as submit:
+            message_processing.process_message(
+                111, "!cancel", self.interface, is_sync_message=False,
+                sender_node_id="!aaa11111",
+            )
+        submit.assert_not_called()
+        self.assertIn("Question cancelled.", _sent(sm))
 
     def test_empty_question_cancels_to_main_menu(self):
         with mock.patch.object(command_handlers, "send_message") as sm, \

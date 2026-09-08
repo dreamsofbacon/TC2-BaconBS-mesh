@@ -152,6 +152,11 @@ _TEXT_PROMPTS = {
     # step 2 above, in handle_read_mail_command -- same reasoning, same fix.
     'CHECK_MAIL': (1,),
     'APIGW': (2,),
+    # Ask Nomad ('N' on the main menu, and its own post-reply follow-up
+    # prompt) had the same gap: "!cancel" typed at the question prompt
+    # fell through to here as a global command, matched nothing, and was
+    # submitted to Project Nomad as the question itself.
+    'ASK_NOMAD': (1,),
 }
 
 

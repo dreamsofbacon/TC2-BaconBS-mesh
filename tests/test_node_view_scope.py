@@ -537,21 +537,21 @@ class ScopeNoticeTests(_DbCase):
 
     def test_a_narrowed_scope_names_the_node(self):
         utils.set_view_scope(7, [PEER])
-        self.assertEqual(utils.scope_notice(7), "Node view: Chattanooga. !V=all")
+        self.assertEqual(utils.scope_notice(7), "Node view: Chattanooga. !V to change")
 
     def test_our_own_scope_reads_as_this_node(self):
         utils.set_view_scope(7, [RADIO, BRIDGE])
-        self.assertEqual(utils.scope_notice(7), "Node view: this node. !V=all")
+        self.assertEqual(utils.scope_notice(7), "Node view: this node. !V to change")
 
     def test_the_hidden_count_is_stated(self):
         utils.set_view_scope(7, [PEER])
         self.assertEqual(utils.scope_notice(7, 2),
-                         "Node view: Chattanooga. 2 more from other nodes. !V=all")
+                         "Node view: Chattanooga. 2 more from other nodes. !V to change")
 
     def test_mail_says_mail(self):
         utils.set_view_scope(7, [PEER])
         self.assertEqual(utils.scope_notice(7, 2, noun='mail'),
-                         "Node view: Chattanooga. 2 more mail from other nodes. !V=all")
+                         "Node view: Chattanooga. 2 more mail from other nodes. !V to change")
 
     def test_the_escape_hatch_is_prefixed(self):
         """At a mail or bulletin prompt a bare letter is read as an item
@@ -559,13 +559,13 @@ class ScopeNoticeTests(_DbCase):
         wording is the mitigation, not decoration."""
         utils.set_view_scope(7, [PEER])
         notice = utils.scope_notice(7, 1)
-        self.assertIn("!V=all", notice)
+        self.assertIn("!V to change", notice)
 
     def test_a_grouped_scope_names_the_node_once(self):
         self.config_path.write_text(
             f"[node_names]\nChattanooga = {PEER}, {PEER_RADIO}\n", encoding="utf-8")
         utils.set_view_scope(7, [PEER, PEER_RADIO])
-        self.assertEqual(utils.scope_notice(7), "Node view: Chattanooga. !V=all")
+        self.assertEqual(utils.scope_notice(7), "Node view: Chattanooga. !V to change")
 
 
 if __name__ == "__main__":
