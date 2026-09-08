@@ -426,6 +426,62 @@
     applyTransform();
   }
 
+  /* ── Dependency install buttons ───────────────────────────────── */
+  /* Settings > Dependencies. Unlike everything else on this page, a click
+     here runs a real, fixed command on the node (see web_admin.py's
+     install_python_dependencies/install_interpreter) -- there is no
+     request body to build, on purpose: the button's data-install-endpoint
+     is the only thing that varies, and each endpoint picks its own
+     hardcoded command server-side regardless of anything the client
+     sends. The result div's id is the button's id with "-btn" replaced
+     by "-result", matching settings.html's naming. */
+  function initDependencyInstallButtons() {
+    document.querySelectorAll('[data-install-endpoint]').forEach(function (btn) {
+      var resultEl = document.getElementById(btn.id.replace(/-btn$/, '-result'));
+      btn.addEventListener('click', function () {
+        var endpoint = btn.getAttribute('data-install-endpoint');
+        var originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Installing…';
+        if (resultEl) { resultEl.hidden = true; resultEl.textContent = ''; }
+        fetch(endpoint, {
+          method: 'POST',
+          headers: { 'X-CSRF-Token': BBS._csrfToken || '' },
+        })
+          .then(function (r) { return r.json().then(function (data) { return { r: r, data: data }; }); })
+          .then(function (result) {
+            var data = result.data;
+            if (data.ok) {
+              if (BBS.toast) BBS.toast(data.detail || 'Installed', 'success');
+            } else if (BBS.toast) {
+              BBS.toast(data.detail || 'Install failed', 'error');
+            }
+            if (resultEl) {
+              resultEl.hidden = false;
+              resultEl.textContent = data.detail || (data.ok ? 'Done.' : 'Failed.');
+              resultEl.className = data.ok ? 'text-success' : 'text-danger';
+            }
+            // A page reload picks up the now-current dependency status
+            // (installed/missing, whether the button should still show)
+            // rather than this code trying to patch the table in place.
+            if (data.ok) setTimeout(function () { window.location.reload(); }, 1500);
+          })
+          .catch(function () {
+            if (BBS.toast) BBS.toast('Install request failed', 'error');
+            if (resultEl) {
+              resultEl.hidden = false;
+              resultEl.textContent = 'Request failed.';
+              resultEl.className = 'text-danger';
+            }
+          })
+          .finally(function () {
+            btn.disabled = false;
+            btn.textContent = originalText;
+          });
+      });
+    });
+  }
+
   /* ── Init ──────────────────────────────────────────────────── */
   function init() {
     initTheme();
@@ -437,6 +493,7 @@
     initBoardSelector();
     initFlowchart();
     initCopyValues();
+    initDependencyInstallButtons();
   }
 
   /* ── Click-to-copy ─────────────────────────────────────────── */

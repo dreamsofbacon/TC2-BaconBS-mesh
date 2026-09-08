@@ -310,6 +310,111 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertEqual(api_response.status_code, 200)
         self.assertTrue(self.force_check_trigger_path.exists())
 
+    def test_install_python_dependencies_api_reuses_fleet_updates_own_pip_call(self):
+        """One place decides how `pip install -r requirements.txt` is
+        built and run -- this must go through it, not a second copy."""
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        with mock.patch("fleet_update.install_requirements",
+                        return_value=(True, "dependencies up to date")) as install:
+            api_response = self.post_with_csrf(
+                client, "/api/dependencies/install-python", json_data={})
+        install.assert_called_once_with()
+        self.assertEqual(api_response.status_code, 200)
+        data = api_response.get_json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["detail"], "dependencies up to date")
+
+    def test_install_python_dependencies_api_surfaces_a_real_failure(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        with mock.patch("fleet_update.install_requirements",
+                        return_value=(False, "network unreachable")):
+            api_response = self.post_with_csrf(
+                client, "/api/dependencies/install-python", json_data={})
+        self.assertEqual(api_response.status_code, 200)
+        data = api_response.get_json()
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["detail"], "network unreachable")
+
+    def test_install_python_dependencies_api_requires_login(self):
+        app = create_app()
+        client = app.test_client()
+        csrf_token = self.get_csrf_token(client)
+        api_response = client.post("/api/dependencies/install-python",
+                                   headers={"X-CSRF-Token": csrf_token})
+        self.assertEqual(api_response.status_code, 302)
+
+    def test_install_python_dependencies_api_requires_csrf(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+        api_response = client.post("/api/dependencies/install-python")
+        self.assertEqual(api_response.status_code, 403)
+
+    def test_install_interpreter_api_runs_the_fixed_linux_command(self):
+        """The actual security property: nothing in the request -- not the
+        JSON body, not a header -- can change what command runs. It is
+        exactly install_interpreter()'s own hardcoded table entry."""
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        with mock.patch("platform.system", return_value="Linux"), \
+                mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+            api_response = self.post_with_csrf(
+                client, "/api/dependencies/install-interpreter",
+                json_data={"cmd": "rm -rf /", "package": "anything-at-all"})
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0],
+                         ["sudo", "-n", "apt-get", "install", "-y", "frotz"])
+        data = api_response.get_json()
+        self.assertTrue(data["ok"])
+
+    def test_install_interpreter_api_explains_a_missing_passwordless_sudo(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        with mock.patch("platform.system", return_value="Linux"), \
+                mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(
+                returncode=1, stdout="",
+                stderr="sudo: a password is required")
+            api_response = self.post_with_csrf(
+                client, "/api/dependencies/install-interpreter", json_data={})
+        data = api_response.get_json()
+        self.assertFalse(data["ok"])
+        self.assertIn("passwordless", data["detail"])
+        self.assertIn("sudo apt install frotz", data["detail"])
+
+    def test_install_interpreter_api_declines_on_windows_without_running_anything(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        with mock.patch("platform.system", return_value="Windows"), \
+                mock.patch("subprocess.run") as run:
+            api_response = self.post_with_csrf(
+                client, "/api/dependencies/install-interpreter", json_data={})
+        run.assert_not_called()
+        data = api_response.get_json()
+        self.assertFalse(data["ok"])
+        self.assertIn("config.ini", data["detail"])
+
+    def test_install_interpreter_api_requires_login(self):
+        app = create_app()
+        client = app.test_client()
+        csrf_token = self.get_csrf_token(client)
+        api_response = client.post("/api/dependencies/install-interpreter",
+                                   headers={"X-CSRF-Token": csrf_token})
+        self.assertEqual(api_response.status_code, 302)
+
     def test_resolve_zork_save_api_creates_trigger_file(self):
         app = create_app()
         client = app.test_client()

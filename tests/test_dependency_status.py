@@ -121,5 +121,69 @@ class FailureIsolationTests(unittest.TestCase):
         self.assertIn("interpreter_hint", result)
 
 
+class InstallPythonDependenciesTests(unittest.TestCase):
+    """web_admin.install_python_dependencies() -- the function underneath
+    the API route, tested directly rather than only through Flask."""
+
+    def test_reuses_fleet_updates_own_install_requirements(self):
+        with mock.patch("fleet_update.install_requirements",
+                        return_value=(True, "up to date")) as install:
+            ok, detail = web_admin.install_python_dependencies()
+        install.assert_called_once_with()
+        self.assertTrue(ok)
+        self.assertEqual(detail, "up to date")
+
+
+class InstallInterpreterTests(unittest.TestCase):
+    """web_admin.install_interpreter() -- every OS branch, and every way
+    the underlying command can fail, checked directly."""
+
+    def test_the_command_table_has_no_windows_entry(self):
+        """The one thing that must never happen: attempting to run
+        something on an OS with no safe single-command install."""
+        self.assertNotIn("Windows", web_admin._INTERPRETER_INSTALL_COMMANDS)
+
+    def test_darwin_runs_brew_with_no_sudo(self):
+        with mock.patch("platform.system", return_value="Darwin"), \
+                mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+            ok, detail = web_admin.install_interpreter()
+        run.assert_called_once_with(["brew", "install", "frotz"],
+                                    capture_output=True, text=True, timeout=300)
+        self.assertTrue(ok)
+
+    def test_a_missing_command_binary_is_reported_plainly(self):
+        with mock.patch("platform.system", return_value="Linux"), \
+                mock.patch("subprocess.run", side_effect=FileNotFoundError()):
+            ok, detail = web_admin.install_interpreter()
+        self.assertFalse(ok)
+        self.assertIn("PATH", detail)
+
+    def test_a_timeout_is_reported_plainly(self):
+        import subprocess
+        with mock.patch("platform.system", return_value="Linux"), \
+                mock.patch("subprocess.run",
+                          side_effect=subprocess.TimeoutExpired(cmd="apt-get", timeout=300)):
+            ok, detail = web_admin.install_interpreter()
+        self.assertFalse(ok)
+        self.assertIn("timed out", detail.lower())
+
+    def test_a_generic_failure_surfaces_truncated_stderr(self):
+        with mock.patch("platform.system", return_value="Linux"), \
+                mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(returncode=1, stdout="",
+                                         stderr="E: Unable to locate package frotz")
+            ok, detail = web_admin.install_interpreter()
+        self.assertFalse(ok)
+        self.assertIn("Unable to locate package frotz", detail)
+
+    def test_success_reports_ok(self):
+        with mock.patch("platform.system", return_value="Linux"), \
+                mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+            ok, detail = web_admin.install_interpreter()
+        self.assertTrue(ok)
+
+
 if __name__ == "__main__":
     unittest.main()

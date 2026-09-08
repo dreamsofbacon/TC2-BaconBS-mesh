@@ -1326,14 +1326,14 @@
 <section class="card settings-panel" id="dependencies" data-settings-panel="dependencies" style="max-width:900px">
   <h2>Dependencies</h2>
   <p class="text-muted">
-    What this node's Python environment and OS actually have, read-only.
-    This never installs anything itself &mdash; an admin-password-gated
-    button that shells out to apt/brew with root privilege would be a
-    second, unsigned way to run code on this node, which is exactly what
-    <a href="{{ url_for('fleet_page') }}">Fleet</a>'s signed instructions
-    exist to be the only way to do. Each missing piece below shows the
-    same command <a href="https://github.com/dreamsofbacon/TC2-BaconBS-mesh#readme">README.md</a>
-    already documents for it.
+    What this node's Python environment and OS actually have. The Install
+    buttons below run a real, fixed command on this node when clicked --
+    unlike everything else this project runs, that command is <strong>not</strong>
+    a signed <a href="{{ url_for('fleet_page') }}">Fleet</a> instruction, so
+    treat this page's password accordingly. Each command is exactly the one
+    <a href="https://github.com/dreamsofbacon/TC2-BaconBS-mesh#readme">README.md</a>
+    already documents, hardcoded here too -- there is nothing on this page
+    for a request to redirect into running something else.
   </p>
 
   <h3>Detected OS: {{ dependencies.os }} &mdash; Python {{ dependencies.python_version }}</h3>
@@ -1357,7 +1357,15 @@
     </table>
   </div>
   {% if dependencies.packages|selectattr("installed", "equalto", false)|list %}
-  <p><strong>To install any missing Python package:</strong> <code>{{ dependencies.pip_hint }}</code></p>
+  <p>
+    <button type="button" class="btn btn-primary" id="install-python-deps-btn"
+            data-install-endpoint="/api/dependencies/install-python">
+      Install missing Python packages
+    </button>
+    <span class="text-muted">Runs <code>{{ dependencies.pip_hint }}</code> in
+      this node's own venv &mdash; no elevated privilege needed.</span>
+  </p>
+  <div id="install-python-deps-result" hidden></div>
   {% endif %}
 
   <h3>Interactive fiction interpreter</h3>
@@ -1369,9 +1377,27 @@
     {% else %}
       <span class="text-danger">not found</span> &mdash; those games will show
       a clear error instead of launching until this is installed.
-      <br><strong>Install:</strong> <code>{{ dependencies.interpreter_hint }}</code>
     {% endif %}
   </p>
+  {% if not dependencies.interpreter_installed %}
+    {% if dependencies.os in ("Linux", "Darwin") %}
+    <p>
+      <button type="button" class="btn btn-primary" id="install-interpreter-btn"
+              data-install-endpoint="/api/dependencies/install-interpreter">
+        Install frotz
+      </button>
+      <span class="text-muted">Runs <code>{{ dependencies.interpreter_hint }}</code>.
+        {% if dependencies.os == "Linux" %}Needs passwordless <code>sudo</code>
+        for this exact command, configured ahead of time (see README.md) --
+        it fails cleanly rather than hanging if that isn't set up.{% endif %}
+      </span>
+    </p>
+    <div id="install-interpreter-result" hidden></div>
+    {% else %}
+    <p class="text-muted">No one-command install on {{ dependencies.os }}.
+      <strong>Manual step:</strong> {{ dependencies.interpreter_hint }}</p>
+    {% endif %}
+  {% endif %}
 </section>
 
 <section class="card settings-panel" id="diagnostics" data-settings-panel="diagnostics" style="max-width:900px">
