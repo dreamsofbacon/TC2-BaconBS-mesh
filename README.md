@@ -65,6 +65,29 @@ Bacon BBS uses a custom five-phase distributed sync protocol designed for lossy,
 - To run the test suite: `pip install -r requirements-dev.txt`, then `pytest`
 - **dfrotz** (optional, required for games): `sudo apt install frotz`
 
+Settings > Dependencies in the web admin reports which of the above this
+node actually has, and can install the missing pieces itself:
+
+- **Python packages** -- installs into this node's own venv with no
+  elevated privilege needed (the same `pip install -r requirements.txt`
+  the venv is already owned to run).
+- **dfrotz/frotz** -- on Linux, this runs `sudo apt-get install -y frotz`
+  non-interactively (`sudo -n`), which needs passwordless sudo for that
+  exact command configured ahead of time, or it fails cleanly with an
+  explanation instead of hanging on a password prompt nothing can answer.
+  Opt in with a sudoers line (replace `bacon` with the service account):
+  ```
+  bacon ALL=(root) NOPASSWD: /usr/bin/apt-get install -y frotz
+  ```
+  On macOS it runs `brew install frotz` directly (Homebrew's normal,
+  unprivileged setup needs no sudo for this). There is no one-command
+  install on Windows; the panel says so and points at the manual step.
+
+  This is a real, unsigned way to run a command on the node from the web
+  admin -- unlike everything else here, it does not go through Fleet's
+  signed-instruction mechanism (see docs/FLEET-UPDATES.md). Treat the web
+  admin password accordingly if you enable the sudoers line above.
+
 ---
 
 ## Installation

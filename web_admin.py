@@ -623,17 +623,19 @@ def dependency_status() -> dict:
   """What this node's Python environment and OS actually have, matched
   against requirements.txt and README.md's manual install instructions.
 
-  Diagnostic only -- this never runs an installer itself. This project
-  treats "who can execute code on this node" as its central security
-  boundary (see docs/FLEET-UPDATES.md's "What the signature is actually
-  protecting"): the fleet update mechanism exists specifically because an
-  admin-password-gated but UNsigned way to make this node run new code is
-  a real attack surface, not a convenience. A web button that shells out
-  to apt/brew with root privilege would be exactly that, a second one.
-  This shows what is missing and the same command README.md already
-  documents for it, surfaced where a fresh deployment is actually being
-  configured instead of only in a file an operator has to already know to
-  read.
+  This function itself never runs anything -- read-only detection. The
+  install actions the Dependencies panel offers alongside it
+  (install_python_dependencies, install_interpreter, below) are a
+  deliberate, explicit exception to this project's usual rule that "who
+  can execute code on this node" is a signed-fleet-instruction-only
+  question (see docs/FLEET-UPDATES.md's "What the signature is actually
+  protecting"): an admin-password-gated but unsigned way to run code here
+  is a real, accepted second path, not a convenience nobody thought about.
+  Each action is a single fixed, hardcoded command -- never built from
+  request input -- and the interpreter install additionally requires the
+  operator to have opted in with passwordless sudo for that one exact
+  command (README.md documents how); without it, it fails cleanly rather
+  than hanging on a password prompt that can never come.
   """
   try:
     import importlib.util
@@ -689,6 +691,70 @@ def dependency_status() -> dict:
     return {"os": "Unknown", "python_version": "", "packages": [],
             "pip_hint": "pip install -r requirements.txt",
             "interpreter_installed": False, "interpreter_hint": ""}
+
+
+def install_python_dependencies() -> tuple:
+  """pip install -r requirements.txt, into this node's own venv.
+
+  Reuses fleet_update.install_requirements() rather than a second copy of
+  the same subprocess call -- one place decides how that command is built
+  and run. No elevation needed: the venv is owned by the service user
+  already, same as every ordinary fleet update's own dependency step.
+  Returns (ok, detail).
+  """
+  import fleet_update
+  return fleet_update.install_requirements()
+
+
+# Every command below is complete and hardcoded at the point it is used --
+# never assembled from a package name, a form field, or anything else
+# request-controlled. That is what keeps this a fixed, auditable action
+# rather than a general-purpose "run a command" endpoint wearing a
+# dependency-installer's clothes.
+_INTERPRETER_INSTALL_COMMANDS = {
+  "Linux": ["sudo", "-n", "apt-get", "install", "-y", "frotz"],
+  "Darwin": ["brew", "install", "frotz"],
+}
+
+
+def install_interpreter() -> tuple:
+  """Install the Z-machine interpreter (frotz/dfrotz) for this OS.
+
+  `sudo -n` (non-interactive) on Linux: it fails immediately with a clear
+  stderr if passwordless sudo for this exact command was never configured,
+  rather than a web request hanging on a password prompt nothing can ever
+  answer. That opt-in is a real, separate thing an operator has to set up
+  (README.md documents the sudoers line) -- this does not attempt to grant
+  itself privilege it wasn't already given.
+
+  Returns (ok, detail).
+  """
+  import platform as _platform
+  import subprocess as _subprocess
+
+  system = _platform.system()
+  cmd = _INTERPRETER_INSTALL_COMMANDS.get(system)
+  if cmd is None:
+    return False, ("No supported one-command install for this OS. Build or "
+                   "download a dfrotz/frotz binary and point [zork] "
+                   "interpreter in config.ini at it.")
+  try:
+    result = _subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+  except FileNotFoundError:
+    return False, f"'{cmd[0]}' is not on this node's PATH."
+  except _subprocess.TimeoutExpired:
+    return False, "Install command timed out."
+  if result.returncode != 0:
+    stderr = (result.stderr or "").strip()
+    if system == "Linux" and ("password is required" in stderr.lower()
+                              or "a password is required" in stderr.lower()
+                              or "sudo:" in stderr.lower()):
+      return False, ("This node's service user does not have passwordless "
+                     "sudo for apt-get install -- see README.md for the "
+                     "sudoers line to add, or run by hand: "
+                     "sudo apt install frotz")
+    return False, (stderr[:400] or "Install command failed.")
+  return True, "frotz installed."
 
 
 # A decrypted invite waiting for its review screen. Held in memory rather
@@ -6326,6 +6392,33 @@ def create_app(runtime_interface=None) -> Flask:
     def api_sync_force_check():
       request_force_check_trigger()
       return jsonify({"ok": True, "message": "Force mismatch check requested"})
+
+    @app.post("/api/dependencies/install-python")
+    @login_required
+    def api_install_python_dependencies():
+      """No request body is read -- there is nothing here for a caller to
+      influence. The command is exactly install_python_dependencies()'s
+      own fixed `pip install -r requirements.txt`, every time."""
+      try:
+        ok, detail = install_python_dependencies()
+      except Exception as exc:
+        logging.warning("Dependency install (python) failed: %s", exc)
+        return jsonify({"ok": False, "detail": str(exc)[:400]}), 500
+      return jsonify({"ok": ok, "detail": detail})
+
+    @app.post("/api/dependencies/install-interpreter")
+    @login_required
+    def api_install_interpreter():
+      """Same guarantee as the python-packages endpoint: no request body,
+      nothing here for a caller to steer -- install_interpreter() picks
+      one fixed, hardcoded command from a 2-entry table keyed on this
+      node's own detected OS."""
+      try:
+        ok, detail = install_interpreter()
+      except Exception as exc:
+        logging.warning("Dependency install (interpreter) failed: %s", exc)
+        return jsonify({"ok": False, "detail": str(exc)[:400]}), 500
+      return jsonify({"ok": ok, "detail": detail})
 
     @app.post("/api/sync/resync-peer")
     @login_required
