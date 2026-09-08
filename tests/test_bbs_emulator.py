@@ -232,6 +232,99 @@ class InterfaceContractTests(_Scratch):
             session.sender_node_id)
 
 
+class RosterTelemetryTests(_Scratch):
+    """Settings -> View Stats reads hwModel/role/lastHeard off a real
+    Meshtastic interface's own node shape. Over SSH and the web admin,
+    interface.nodes IS _roster_nodes()'s synthetic build from mesh_clients
+    -- and until now it never carried any of the three, so every node
+    showed "Unknown" hardware and role and zero activity in every recent
+    window, even though mesh_clients holds real values for all three.
+    """
+
+    def _client(self, node_id, **overrides):
+        row = {
+            "link_name": "primary", "node_id": node_id, "node_num": 12345,
+            "protocol": "meshtastic", "short_name": "abc", "long_name": "ABC Node",
+            "hw_model": "", "role": "", "battery_level": None,
+            "last_heard_epoch": None,
+        }
+        row.update(overrides)
+        db_operations.upsert_mesh_clients([row])
+
+    def test_hw_model_and_role_are_carried_through(self):
+        self._client("!abc", hw_model="TBEAM", role="CLIENT")
+        node = bbs_emulator._roster_nodes()["!abc"]
+        self.assertEqual(node["user"]["hwModel"], "TBEAM")
+        self.assertEqual(node["user"]["role"], "CLIENT")
+
+    def test_a_client_with_no_recorded_hardware_still_falls_back_to_unknown(self):
+        """Not "", not 0 -- an absent key, so handlers' own .get(..., 'Unknown')
+        default still fires instead of a falsy value masquerading as one."""
+        self._client("!abc")
+        node = bbs_emulator._roster_nodes()["!abc"]
+        self.assertNotIn("hwModel", node["user"])
+        self.assertNotIn("role", node["user"])
+
+    def test_meshtastic_last_heard_epoch_is_carried_through(self):
+        import time
+        now = int(time.time())
+        self._client("!abc", last_heard_epoch=now)
+        node = bbs_emulator._roster_nodes()["!abc"]
+        self.assertEqual(node["lastHeard"], now)
+
+    def test_meshcore_nodes_fall_back_to_last_seen(self):
+        """Only Meshtastic reports last_heard_epoch; MeshCore/MQTT nodes are
+        tracked only through the roster-presence sweep (last_seen). Reading
+        ONLY last_heard_epoch would show these nodes as never active."""
+        self._client("!mc", protocol="meshcore", last_heard_epoch=None)
+        node = bbs_emulator._roster_nodes()["!mc"]
+        self.assertIsNotNone(node.get("lastHeard"))
+        self.assertGreater(node["lastHeard"], 0)
+
+    def test_a_client_with_no_activity_recorded_at_all_has_no_lastheard_key(self):
+        conn = db_operations.get_db_connection()
+        conn.execute(
+            "INSERT INTO mesh_clients (link_name, node_id, node_num, protocol,"
+            " short_name, long_name, hw_model, role, battery_level,"
+            " last_heard_epoch, first_seen, last_seen)"
+            " VALUES ('primary', '!nolast', 1, 'meshtastic', 'x', 'X', '', '',"
+            " NULL, NULL, '2026-01-01 00:00:00', '')")
+        conn.commit()
+        node = bbs_emulator._roster_nodes()["!nolast"]
+        self.assertNotIn("lastHeard", node)
+
+    def test_stats_reports_real_hardware_and_roles_over_a_session(self):
+        """End to end: driving the actual Settings -> View Stats flow a
+        beta tester would use, not the roster builder in isolation."""
+        self._client("!abc", hw_model="TBEAM", role="CLIENT")
+        self._client("!def", hw_model="HELTEC_V3", role="ROUTER")
+        session = self.session()
+        session.send("!S")
+        chunks, error = session.send("4")
+        self.assertIsNone(error)
+        body = self.text_of(chunks)
+        chunks, error = session.send("2")
+        self.assertIsNone(error)
+        body += self.text_of(chunks)
+        self.assertIn("TBEAM", body)
+        self.assertIn("HELTEC_V3", body)
+        self.assertNotIn("Unknown: 2", body)
+
+    def test_stats_counts_recent_meshtastic_activity(self):
+        import time
+        now = int(time.time())
+        self._client("!abc", last_heard_epoch=now)
+        session = self.session()
+        session.send("!S")
+        chunks, error = session.send("4")
+        self.assertIsNone(error)
+        body = self.text_of(chunks)
+        chunks, error = session.send("1")
+        self.assertIsNone(error)
+        body += self.text_of(chunks)
+        self.assertIn("Last hour: 1", body)
+
+
 class LifecycleTests(_Scratch):
     def test_closing_clears_menu_state(self):
         session = bbs_emulator.start_session()
