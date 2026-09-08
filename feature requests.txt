@@ -1,100 +1,79 @@
-The following are ideas and are ment to be implimented later on or not at all(planning):
-    create a simple indented text file, that shows the entire menu path for the system. not including each sub program's menus (each game stops at the menu item to launch that game)
-    add a system for seperating out channels and bulletins based on upload node. so messages uploaded to a node are seperate from things uploaded to a sister node.
-    Speed up database propigation between nodes.
-    Test 3 or more nodes
-        test 3 or more nodes across multiple networks
-    add a system for having the server dm a user to get dms for mail sent to them via the users device profile configuration.
-    add a spot for a welcome message at the top of the first connection
-        allowing the user to change the public name of the bbs, and having each of its affiliated nodes names listed on the welcome page as well.
-        allow the user to configure this completely from the web ui
-    add web admin options for installing dependencies automatically for your given OS (fontz)
-    add system for pulling device node information from connected device, and creating a database of these settings.
-    add trivia game.
-    docker container updated (it is still the original version currently)
-    add more themes
-    status icon does not appear when only 1 node is configured.
-    games currently continue to try and play even if interpreter is not installed.
-    game tructaction is not correct
-    when in game, typing s brings you to settings
-        redo quick keys
-    combine linux services into 1 service
-    
-    
-    
+# Feature Requests and Verification Status
 
-The following are Features that should be added to the program(active)
-    add and test project nomad support.
-    restructure program to work modularly
-    
-   
-The following items have been implimented but not fully tested
-    [ ] enhanced user system and implimentation to support aliasing and device groups and create a test list, if you don't know if something is tested, assume it has not.
-    [ ] API Gateway (HTTP GET relay, Ollama/OpenAI AI relay, store-and-forward mailbox, per-node rate limiting, allow-list lock-down)
-    [ ] Native MeshCore radio support (serial/TCP/BLE companion connection)
-        [ ] Verified against real MeshCore companion hardware (unit-tested with mocks only; both live nodes currently run Meshtastic serial)
-    [ ] Dual-radio bridge mode (one node running both a Meshtastic and a MeshCore radio, bridging BBS sync between the two networks)
-        [ ] Verified against real second-radio hardware (never run against actual hardware; extensively unit-tested with fake interfaces only)
-        [ ] One radio going down degrades to single-network operation instead of halting both, confirmed in the field
-        [ ] Account-aware urgent-board permission across both radios, confirmed in the field
-    [ ] Device Configuration section in web admin Settings (pick each radio's type/connection details from the GUI)
-        [ ] A config change made through the GUI confirmed to take effect after a mesh-bbs service restart
-    [ ] Multi-device user accounts / aliasing system (Profile > Linked Devices)
-        [ ] Request a link code from an already-linked device
-        [ ] Enter a code from a second device and confirm it links successfully
-        [ ] List linked devices shows the correct devices and networks
-        [ ] Set a shared account alias
-        [ ] Alias appears on a bulletin post instead of the device's own short name
-        [ ] Alias appears on a mail message instead of the device's own short name
-        [ ] Alias appears on a channel comment instead of the device's own short name
-        [ ] Unlink a device via the [Y]es/[N]o confirmation step
-        [ ] Refuses to unlink an account's last remaining device
-        [ ] Rate limit trips after too many link-code requests in an hour
-        [ ] Rate limit trips after too many failed code submissions in an hour
-        [ ] Expired link code is rejected
-        [ ] Urgent board posting permission granted to a linked sibling device
-        [ ] API gateway access granted to a linked sibling device
-        [ ] Web admin Accounts list page
-        [ ] Web admin Account detail page: set alias, force-link, force-unlink
-        [ ] Settings page "Account Linking" tunables actually change rate-limit behavior
-    [ ] Project Nomad AI relay dialect (API Gateway > Ask Project Nomad)
-        [ ] A real query sent to a live Project Nomad endpoint with a correct reply received back over the mesh
-        [ ] Ask Nomad homescreen shortcut ('N' on the main menu) jumps straight to the question prompt
-        [ ] After a reply, asking a follow-up question immediately works without re-navigating the menu
-        [ ] After a reply, sending 0 returns to the main menu (not Utilities)
-        [ ] Follow-up prompt appears for a mesh-relayed reply (asking through a peer gateway), not just the local-gateway fast path
-    [ ] Pico "Option B" op_log subscriber cache node (device-side CircuitPython code)
-        [ ] Bring-up and sync verified on real Raspberry Pi Pico hardware wired to a Meshtastic radio
-    [ ] MQTT internet-bridge sync mode (bridge to a BBS node unreachable over RF, via an MQTT broker; open-ended multiple simultaneous links per node)
-        [ ] Verified against a real MQTT broker (unit-tested with a fake paho client only; never run against real Mosquitto/etc.)
-        [ ] Two live nodes bridged via MQTT confirmed to sync content with radios disconnected (proves it's not sneaking through RF)
-        [ ] Three or more simultaneous links on one node (radio + 2 MQTT) confirmed in the field, not just unit-tested
-        [ ] A broker going unreachable at startup or mid-run degrades only that link, confirmed in the field
-        [ ] MQTT link's turbo pacing confirmed not to affect a co-located radio's own pacing, in the field
-        [ ] Account-aware urgent-board permission for an MQTT-linked sibling device
+Last reviewed: 2026-09-07. Status is based on the live `baconbot` SSH beta-test sessions and recent field validation notes. Detailed UX findings are in `BBS-BETA-TEST-REPORT-2026-09-07.md`.
 
-The following are features that have all ready been added to the program. (closed)
-    [  Private Mail (send, reply, delete, mailbox)
-    [  Bulletin Boards (post, read, per-board Urgent posting permission)
-    [  Channel Directory with threaded comments
-    [  User Profiles (short name, bio, activity stats)
-    [  Interactive Games (Zork I-III, Hitchhiker's Guide to the Galaxy, Enchanter, Planetfall, Starcross via dfrotz) with cross-mesh save sync
-    [ ] Five-phase distributed sync protocol
-        [ ] Mail, Bulletins, Channels, Profiles, Game saves priority ordering
-        [ ] SYNCSTATE hash-manifest reconciliation and HASHMISS gap-fill retries
-        [ ] Tombstone-based deletion propagation
-        [ ] Capability negotiation between heterogeneous peers
-    [?] JS8Call Bridge (group, direct, and urgent radio messages)
-    [  Node Statistics, Wall of Shame, and Fortune Teller utilities
-    [  Web Admin Dashboard (bulletins/mail/channels tables, live transmission log, sync status, peer hash graph)
-    [ ] Gateway subscriber mode (pull-only WANT/HASHMISS peers excluded from push-sync/hash-repair)
-    [ ] GUI-configurable database size cap with mesh-wide oldest-content pruning
-    [ ] Automatic database maintenance (WAL checkpointing, log table pruning)
-    [ ] Remote node update tooling (PowerShell/SSH deploy to Linux nodes)
+## Active: User Experience and Defects
 
+- [x] Fix `!CB`: it currently redraws the main menu instead of checking bulletins or opening the Bulletin Menu. (v0.1.601)
+- [ ] Fix the Node View hint `!V=all`: `!V` opens the selector but does not reset the view to All nodes.
+- [x] Make interactive-fiction output flush promptly after restore and after commands. Delayed output can make Zork I/Zork II appear unresponsive. (v0.1.604: an immediate "Loading your saved game..." acknowledgement now goes out before the restore handshake, per the report's own suggested remedy)
+- [x] Add an explicit back/cancel option to the mail message-number prompt. `0` currently says "Invalid message number." (v0.1.601)
+- [x] Make post-send navigation explicit. After mail `END`, one `0` gives an unexplained acknowledgement and a second returns to main. (v0.1.601: mail now returns to the Mail Menu automatically after a send)
+- [ ] Standardize every composer: advertise `!cancel`, confirm cancellation, and return to the immediate parent menu.
+- [ ] Clarify channel creation's URL/PSK field with a format example, purpose, and optional/required status.
+- [x] Improve profile bio validation: reject or explicitly warn on truncation and add a documented clear-bio action. (v0.1.604)
+- [x] Clarify `!R` eligibility: it works after the latest mail is opened and kept, but that prerequisite is undisclosed. (v0.1.603: `!R` now falls back to the newest ordinary mailbox message, so that prerequisite no longer exists)
+- [x] Make bulletin lists use contiguous selection numbers or label sparse values as record IDs. (v0.1.604)
+- [ ] Add a `[0] Back` prompt to individual scoreboards and channel details reached through `!CHL`.
+- [ ] Clarify Public Chatter filtering: no selected channels means all channels, while selected channels make an exclusive filter.
+- [ ] Improve linked-device listings with user-readable labels and last-used/created information so a device can be safely unlinked. (v0.1.604 added the linked-at date to both listings; user-readable labels, beyond the raw node id, are still open)
+- [x] Explain node-statistics freshness and unknown hardware/role records. (v0.1.602: Stats now reports real hardware model/role and non-zero recent-activity counts over SSH and web admin instead of `Unknown`/all-zero)
+- [ ] Ensure Project Nomad uses BBS terms such as "Bulletins" and "Channels," not "forums."
+- [ ] Explain Planetfall's restored state or offer an explicit resume/new-game choice.
 
+## Active: Product and Operations
 
-    advanced features
+- [ ] Publish a simple indented text map of system menu paths, stopping at each game launch item.
+- [ ] Add configurable first-connection welcome content: BBS public name, affiliated-node names, and Web Admin editing.
+- [ ] Add Web Admin dependency-install support per operating system.
+- [ ] Improve connected-device inventory collection and display actual hardware/role information.
+- [ ] Add more themes.
+- [ ] Investigate the single-node status icon behavior.
+- [ ] Ensure games fail gracefully when the interpreter is unavailable.
+- [ ] Review game text truncation/terminal formatting.
+- [ ] Review global quick keys so game input cannot accidentally navigate to BBS settings.
+- [ ] Consider combining Linux services where that improves deployment and failure isolation.
+- [ ] Restructure modules where it reduces complexity without disrupting the running system.
+- [ ] Extend MeshCore support with user account rooms and relayed room text.
 
-    advance meshcore support
-        allow the user to add rooms to there user accounts, and act as a relay between text in each room.
+## Needs Verification
+
+- [ ] Multi-device accounts: successfully link a second device, set/observe a shared alias, unlink with confirmation, protect the final device, and test rate/expiry limits.
+- [ ] SSH account lifecycle: registration, repeated login/session limits, password reset/change flows, and account linking across client identities.
+- [ ] Gateway: live allow-listed HTTP GET, store-and-forward, rate limiting, and a peer-gateway Nomad follow-up.
+- [ ] Broaden field verification of native MeshCore companion hardware across TCP and BLE transports. The MeshCore serial secondary radio is live on Burlington.
+- [ ] Verify dual-radio bridging against a real second radio and an end-to-end Meshtastic-to-MeshCore content transfer.
+- [ ] Pico subscriber cache on real Raspberry Pi Pico hardware.
+- [ ] MQTT bridge: three or more simultaneous links, failure isolation, transport pacing isolation, and linked-account permissions in the field.
+- [ ] JS8Call group, direct, and urgent message paths.
+- [ ] Cross-node separation/read-scope behavior for channels and bulletins across three or more nodes and multiple networks.
+
+## Verified Delivered
+
+- [x] Private mail: inbox, compose, reply, mailbox retention, relay directory, direct recipient validation, and sender-side delivery acknowledgement.
+- [x] Bulletin Boards: board selection, read, post, read-back, and Urgent permission architecture.
+- [x] Channel Directory: browse, create, read-back, threaded comments, and comment read-back.
+- [x] User Profiles: short name, bio, activity stats, and linked-device menu.
+- [x] Games: Trivia King and interactive fiction titles (Zork I-III, Hitchhiker's Guide, Deadline, Enchanter, Planetfall, Starcross) launch; Trivia scoring persists.
+- [x] Public Chatter: duration selection, pagination, filtering, and time selector.
+- [x] MeshCore interface: companion serial/TCP/BLE configuration, contact inventory, encrypted direct-message mapping, broadcast-channel mapping, receive event conversion, and automatic 160-byte frame enforcement/chunking.
+- [x] MeshCore serial companion hardware: Burlington runs it as its live secondary radio alongside Meshtastic; it is separately identified in diagnostics and uses its own peer/sync configuration.
+- [x] MeshCore public chatter: captured real traffic is normalized; sender prefixes are conservatively parsed when present; direct-message identity wins when supplied by the protocol; path length is shown as hop count; and MeshCore channel names remain distinct from Meshtastic channels with the same index.
+- [x] MeshCore-aware accounts and ACLs: MeshCore identities can link to an account without colliding with Meshtastic numeric IDs, and account permissions apply to linked MeshCore siblings.
+- [x] MeshCore Web Admin and status support: companion-radio configuration, per-radio diagnostics/status, MeshCore protocol identity, advertised device role, and MeshCore-specific channel names are represented in the UI.
+- [x] Dual-radio bridge software behavior: independent per-radio sync links share the local database, enforce each transport's frame limit, and isolate a failed radio link from the other interface.
+- [x] SSH account behavior: shared-gate and direct registration/login flows, a stable per-account sender number, cross-session Zork-save restoration, one-session-per-account protection, and unsolicited late-reply delivery are live-verified.
+- [x] SSH access control: self-registered SSH identities cannot post to Urgent, access web admin or fleet authority, or impersonate a radio/MQTT identity; an account must link an allowed real device to gain Urgent permission.
+- [x] Fleet updates: signed target verification, per-node enrollment status, healthy state reporting, companion-service restart, and the deployed `bacon-ssh` restart path.
+- [x] Encrypted invite export/import: broker connection details, certificates, and optional fleet public keys are packaged without secrets in clear text; the live `mqtt.nerdtunnel.net` bundle was verified.
+- [x] Cross-node timestamp normalization: zork saves, game scores, channels, bulletins, and mail use normalized timestamps for sync hashing and ordering; live owned-node drift reduced to the intentionally churning public-chatter scope.
+- [x] Synced deletion infrastructure: tombstone-aware delete functions and Web Admin score/profile deletion preserve cross-node deletes instead of letting reconciliation restore records.
+- [x] Welcome and naming: configurable BBS greeting/name replication and node-name grouping are deployed; SSH Node View was verified against distinct Chattanooga and local content scopes.
+- [x] Utilities: Fortune and Wall of Shame.
+- [x] Project Nomad: live answer, follow-up question, and return-to-main-menu path.
+- [x] Five-phase distributed sync: prioritized mail/bulletins/channels/profiles/game saves, SYNCSTATE/HASHMISS reconciliation, tombstones, and capability negotiation.
+- [x] MQTT bridge: real broker operation and live node-to-node sync with RF disconnected; concurrent radio and MQTT links supported.
+- [x] SSH access: account registration/login, mail relay path, session/rate protections, and Web Admin configuration.
+- [x] API Gateway: allow-listed HTTP/AI relay, store-and-forward mailbox, and rate limiting.
+- [x] Web Admin: dashboard, account controls, radio configuration, sync controls, database maintenance, and remote update tooling.
+- [x] Docker deployment artifacts and service installation scripts.
