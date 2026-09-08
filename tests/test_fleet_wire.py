@@ -337,6 +337,89 @@ class NodeVersionTests(unittest.TestCase):
             self.assertEqual(status["target_commit"], COMMIT)
             self.assertEqual(status["rollout_state"], "probation")
 
+    def test_a_reason_is_recorded_alongside_the_state(self):
+        with _FleetNode():
+            db_operations.record_node_version(
+                "!peer1", "0.1.999", COMMIT[:7], COMMIT, "failed",
+                "refused: target does not compile")
+            status = db_operations.get_node_versions()[0]
+            self.assertEqual(status["rollout_detail"],
+                             "refused: target does not compile")
+
+    def test_a_later_report_with_no_reason_clears_the_old_one(self):
+        """Unlike rollout_state, which a legacy peer's blank field must not
+        stamp out, a stale reason from a past failure has to actually clear
+        once that peer reports something else -- otherwise a node that
+        recovered would still show last week's refusal forever."""
+        with _FleetNode():
+            db_operations.record_node_version(
+                "!peer1", "0.1.999", COMMIT[:7], COMMIT, "failed",
+                "fetch failed: connection refused")
+            db_operations.record_node_version(
+                "!peer1", "0.1.999", COMMIT[:7], COMMIT, "healthy", "")
+            status = db_operations.get_node_versions()[0]
+            self.assertEqual(status["rollout_detail"], "")
+
+
+class FleetStatusReasonWireTests(unittest.TestCase):
+    """The reason text, specifically, crossing the actual FLEETSTATUS frame
+    -- not just the DB layer underneath it."""
+
+    def test_the_new_eight_field_frame_carries_a_reason(self):
+        with _FleetNode():
+            message_processing.process_message(
+                None,
+                f"FLEETSTATUS|!peer1|0.1.999|{COMMIT[:7]}|{COMMIT}|failed|"
+                "refused: bad import|1700000000",
+                _Iface(), is_sync_message=True, sender_node_id="!peer1")
+            status = db_operations.get_node_versions()[0]
+            self.assertEqual(status["rollout_state"], "failed")
+            self.assertEqual(status["rollout_detail"], "refused: bad import")
+
+    def test_the_old_seven_field_frame_still_parses_with_no_reason(self):
+        """A peer that has not picked up this change yet sends the
+        original shape -- it must still be accepted, just with an empty
+        reason, not dropped as malformed."""
+        with _FleetNode():
+            message_processing.process_message(
+                None,
+                f"FLEETSTATUS|!peer1|0.1.999|{COMMIT[:7]}|{COMMIT}|failed|1700000000",
+                _Iface(), is_sync_message=True, sender_node_id="!peer1")
+            status = db_operations.get_node_versions()[0]
+            self.assertEqual(status["rollout_state"], "failed")
+            self.assertEqual(status["rollout_detail"], "")
+
+    def test_a_pipe_or_newline_in_the_reason_cannot_corrupt_the_frame(self):
+        """send_fleet_status_to_bbs_nodes is what has to guarantee this --
+        a literal '|' reaching the frame builder would shift every field
+        after it, and a newline would let a second, forged-looking frame
+        ride along inside what should be one message. Sanitized before it
+        is ever interpolated in, not left to whatever wrote the reason."""
+        import utils
+        with mock.patch.object(db_operations, "peer_supports", return_value=True), \
+                mock.patch.object(utils, "_send_one_sync") as send:
+            utils.send_fleet_status_to_bbs_nodes(
+                "!local", "0.1.999", COMMIT[:7], COMMIT, "failed",
+                ["!peer1"], _Iface(),
+                rollout_detail="refused: bad|import\nsecond line")
+        message = send.call_args.args[0]
+        self.assertEqual(len(message.split("|")), 8)
+        self.assertNotIn("\n", message)
+
+    def test_an_overlong_reason_cannot_blow_the_frame_over_budget(self):
+        """_send_one_sync drops the whole frame outright if it exceeds the
+        transport's byte limit -- an unbounded error message could take
+        the entire advisory status report down with it on a radio link,
+        not just get truncated on its own."""
+        import utils
+        with mock.patch.object(db_operations, "peer_supports", return_value=True), \
+                mock.patch.object(utils, "_send_one_sync") as send:
+            utils.send_fleet_status_to_bbs_nodes(
+                "!local", "0.1.999", COMMIT[:7], COMMIT, "failed",
+                ["!peer1"], _Iface(), rollout_detail="x" * 500)
+        message = send.call_args.args[0]
+        self.assertLess(len(message.encode("utf-8")), 220)
+
 
 class AdvertisementTests(unittest.TestCase):
     def test_server_advertises_stored_target_and_running_version(self):
@@ -367,7 +450,80 @@ class AdvertisementTests(unittest.TestCase):
                 ["!peer1", "!peer2"], mock.ANY)
             send_status.assert_called_once_with(
                 "!local", mock.ANY, mock.ANY, COMMIT, mock.ANY,
-                ["!peer1", "!peer2"], mock.ANY)
+                ["!peer1", "!peer2"], mock.ANY, rollout_detail=mock.ANY)
+
+    def test_a_refused_update_advertises_its_own_reason_verbatim(self):
+        """apply_target() writes 'detail' straight into update_state.json
+        on a refusal -- that is already the exact reason, and it should
+        cross the wire untouched, not get re-derived from nothing."""
+        _install_fake_meshtastic_package()
+        import server
+
+        with _FleetNode() as node:
+            blob = node.instruction()
+            payload, _ = fleet_update.decode_instruction(blob)
+            db_operations.store_fleet_target(payload, blob)
+            with mock.patch.object(
+                    fleet_update, "read_update_state",
+                    return_value={"state": "failed", "detail":
+                                 "refused: target does not compile"}), \
+                    mock.patch.object(server, "send_fleet_status_to_bbs_nodes",
+                                      return_value=1) as send_status, \
+                    mock.patch.object(server, "get_local_node_id",
+                                      return_value="!local"):
+                server._advertise_fleet_state(
+                    {"fleet": {"group": GROUP, "updates": "auto"}},
+                    ["!peer1"], _Iface())
+            self.assertEqual(send_status.call_args.kwargs["rollout_detail"],
+                             "refused: target does not compile")
+
+    def test_a_crash_loop_revert_synthesizes_a_reason(self):
+        """update_guard.py's own state file has no 'detail' key at all --
+        it writes failed_commit/restored_commit/attempts instead. Without
+        this, a crash-looped peer would advertise "rolled_back" and
+        nothing else, the exact gap this feature exists to close."""
+        _install_fake_meshtastic_package()
+        import server
+
+        with _FleetNode() as node:
+            blob = node.instruction()
+            payload, _ = fleet_update.decode_instruction(blob)
+            db_operations.store_fleet_target(payload, blob)
+            with mock.patch.object(
+                    fleet_update, "read_update_state",
+                    return_value={"state": "rolled_back",
+                                 "restored_commit": "deadbeef1234",
+                                 "attempts": 3}), \
+                    mock.patch.object(server, "send_fleet_status_to_bbs_nodes",
+                                      return_value=1) as send_status, \
+                    mock.patch.object(server, "get_local_node_id",
+                                      return_value="!local"):
+                server._advertise_fleet_state(
+                    {"fleet": {"group": GROUP, "updates": "auto"}},
+                    ["!peer1"], _Iface())
+            reason = send_status.call_args.kwargs["rollout_detail"]
+            self.assertIn("3", reason)
+            self.assertIn("deadbeef1234", reason)
+
+    def test_a_healthy_state_advertises_no_spurious_reason(self):
+        _install_fake_meshtastic_package()
+        import server
+
+        with _FleetNode() as node:
+            blob = node.instruction()
+            payload, _ = fleet_update.decode_instruction(blob)
+            db_operations.store_fleet_target(payload, blob)
+            with mock.patch.object(
+                    fleet_update, "read_update_state",
+                    return_value={"state": "healthy"}), \
+                    mock.patch.object(server, "send_fleet_status_to_bbs_nodes",
+                                      return_value=1) as send_status, \
+                    mock.patch.object(server, "get_local_node_id",
+                                      return_value="!local"):
+                server._advertise_fleet_state(
+                    {"fleet": {"group": GROUP, "updates": "auto"}},
+                    ["!peer1"], _Iface())
+            self.assertEqual(send_status.call_args.kwargs["rollout_detail"], "")
 
     def test_server_does_not_advertise_when_fleet_is_off(self):
         _install_fake_meshtastic_package()

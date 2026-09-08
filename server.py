@@ -1329,10 +1329,26 @@ def _advertise_fleet_state(system_config: dict, bbs_nodes, interface) -> int:
         rollout_state = str(update_state.get('state') or (
             'healthy' if target and str(target.get('commit', '')).startswith(commit)
             else 'pending'))
+        # apply_target() writes 'detail' straight into update_state on a
+        # refusal (a failed fetch, a rejected smoke-test) -- that one is
+        # already there for the taking. update_guard.py's crash-loop
+        # revert writes a differently-shaped state file with no 'detail'
+        # key at all, so rolled_back/rollback_failed get a reason
+        # synthesized from the fields it DOES write, rather than going out
+        # with nothing to say for itself.
+        rollout_detail = str(update_state.get('detail') or '')
+        if not rollout_detail:
+            if rollout_state == 'rolled_back':
+                restored = str(update_state.get('restored_commit') or '')[:12]
+                attempts = update_state.get('attempts')
+                rollout_detail = (f"crash-looped {attempts}x, reverted to {restored}"
+                                  if attempts else f"crash-looped, reverted to {restored}")
+            elif rollout_state == 'rollback_failed':
+                rollout_detail = "crash-looped and the revert itself failed"
         sent += send_fleet_status_to_bbs_nodes(
             node_id, app_version, commit,
             str((target or {}).get('commit') or ''), rollout_state,
-            peers, interface)
+            peers, interface, rollout_detail=rollout_detail)
         return sent
     except Exception:
         logging.debug("Fleet state advertisement failed", exc_info=True)
