@@ -220,6 +220,38 @@ def _missing_interpreter_message() -> str:
     )
 
 
+_STATUS_LINE_COUNTER_RE = re.compile(r'\b(Score|Moves):\s*-?\d+')
+
+
+def _zeroed_fresh_status_line(text: str) -> str:
+    """Force a brand-new game's opening Score/Moves display to 0.
+
+    A freshly spawned interpreter process, before any save is restored and
+    before any command is sent, should always open at Score: 0, Moves: 0 --
+    there is no game state yet for it to report anything else. On the
+    installed dfrotz build, Planetfall's own opening status line has shown
+    a different nonzero Moves figure on every single launch of the exact
+    same byte-for-byte story file -- confirmed with a raw `dfrotz` CLI
+    invocation, no Python involved, so it is not this session's save/restore
+    logic misfiring. It is an interpreter-side quirk specific to that
+    title's status-line rendering, but we are the ones putting it in front
+    of a player, and "Moves: 4599" on a game someone just started reads as
+    someone else's save loading by mistake.
+
+    Only the first line that mentions Score or Moves is touched, and only
+    those two counters. A time-based game like Deadline shows "Time:
+    HH:MM" instead, which is part of its actual story premise, not a turn
+    counter, and is left alone.
+    """
+    lines = text.split('\n')
+    for i, line in enumerate(lines):
+        if 'Score:' in line or 'Moves:' in line:
+            lines[i] = _STATUS_LINE_COUNTER_RE.sub(
+                lambda m: f"{m.group(1)}: 0", line)
+            break
+    return '\n'.join(lines)
+
+
 def _ensure_story_file(game_id: str = 'zork1') -> tuple[bool, str]:
     game = GAMES.get(game_id, GAMES['zork1'])
     # For zork1 only, honour legacy env-var / config overrides
@@ -353,7 +385,10 @@ def start_zork_session(user_id: int, game_id: str = 'zork1') -> str:
     with _sessions_lock:
         _sessions[(user_id, game_id)] = session
 
-    intro = session.read_output()
+    # Only shown to the player if no save exists below -- a restore
+    # discards this and shows the post-restore "look" output instead, so
+    # zeroing it here can never mask a real, restored move count.
+    intro = _zeroed_fresh_status_line(session.read_output())
 
     save_blob = get_zork_save(user_id, game_id)
     if save_blob:
