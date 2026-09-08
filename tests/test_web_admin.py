@@ -166,9 +166,20 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.assertIn("Sync Settings", page)
         self.assertIn("Admin Credentials", page)
         self.assertIn("Diagnostics", page)
+        self.assertIn("Dependencies", page)
         self.assertIn("test-version", page)
         self.assertIn("Peer Hash Graph", page)
         self.assertIn("Resolve Save by Best Candidate", page)
+
+    def test_settings_page_shows_dependency_status(self):
+        app = create_app()
+        client = app.test_client()
+        self.assertEqual(self.login(client).status_code, 302)
+
+        page = client.get("/settings").get_data(as_text=True)
+        self.assertIn("Python packages", page)
+        self.assertIn("flask", page)
+        self.assertIn("interpreter", page.lower())
 
     def test_diagnostics_shows_db_size_and_mailbox_depth(self):
         app = create_app()
