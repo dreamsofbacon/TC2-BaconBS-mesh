@@ -404,10 +404,12 @@ class MailRelayDatabaseTests(unittest.TestCase):
                          {"command": "MAIL", "step": 1})
         self.assertIn("Mail Menu", send.call_args.args[0])
 
-    def test_a_fresh_message_still_gets_the_send_another_prompt(self):
-        """The auto-return above is specific to replies. Composing brand
-        new mail is untouched -- this is a regression guard, not a
-        statement that step 8's own missing prompt is fine."""
+    def test_a_fresh_message_also_returns_to_the_mail_menu_automatically(self):
+        """Extended from the reply-only fix: a live beta test re-found the
+        exact same gap for plain compose-and-send, because step 8 was still
+        there for it -- a state with no prompt of its own. There is nothing
+        left to ask once mail is sent, reply or not; step 8 is gone
+        entirely now, not just skipped for replies."""
         state = {
             "command": "MAIL", "step": 7,
             "recipient_id": "!first", "recipient_name": "First",
@@ -416,12 +418,13 @@ class MailRelayDatabaseTests(unittest.TestCase):
         db_operations.apply_synced_mail_relay_preference(
             "!first", True, "2026-09-07T10:00:00+00:00")
 
-        with mock.patch.object(command_handlers, "send_message"):
+        with mock.patch.object(command_handlers, "send_message") as send:
             command_handlers.handle_mail_steps(
                 111, "END", 7, state, self.interface, [])
 
         self.assertEqual(command_handlers.get_user_state(111),
-                         {"command": "MAIL", "step": 8})
+                         {"command": "MAIL", "step": 1})
+        self.assertIn("Mail Menu", send.call_args.args[0])
 
     def test_mailbox_reply_also_collapses_repeated_subject_prefixes(self):
         state = {

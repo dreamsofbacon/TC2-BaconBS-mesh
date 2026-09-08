@@ -126,10 +126,31 @@ _MAIL_TEXT_STEPS = (3, 5, 7)
 
 _TEXT_PROMPTS = {
     'PROFILE': (2,),
-    'ACCOUNT': (2, 4),
+    # 5 and 6 are the unlink flow's own number-pick and Y/N confirm. Missing
+    # here, a bare "!cancel" typed at either never reached ACCOUNT's own
+    # step handling at all -- it looked like a global command, matched
+    # nothing, and fell to the catch-all: the main menu, with no word said
+    # about what happened to the unlink in progress.
+    'ACCOUNT': (2, 4, 5, 6),
     'BULLETIN_POST': (4,),
     'BULLETIN_POST_CONTENT': (5,),
-    'CHANNEL_DIRECTORY': (3, 4),
+    # 7 is channel-comment composing. Same gap: its prompt is not printed
+    # from a step in this table, so "!cancel" while writing a comment
+    # skipped past the comment flow entirely.
+    'CHANNEL_DIRECTORY': (3, 4, 7),
+    # Steps 3, 5 and 7 (recipient/subject/body entry) already have their
+    # own guard at the top of handle_mail_steps -- `if step in (3, 5, 7)
+    # and is_cancel(message)` -- and are routed there unconditionally by
+    # _MAIL_TEXT_STEPS below, so they never reach this table at all; listing
+    # them here would be dead weight. 2 is different: it is the "reply with
+    # a number to read it" prompt, which is NOT in _MAIL_TEXT_STEPS, so a
+    # bang-prefixed "!cancel" there falls all the way through to here. "0"
+    # bare already worked (see handle_mail_steps' own check for it); this
+    # is what makes the bang form of the same escape work too.
+    'MAIL': (2,),
+    # The !CM numbered list has the identical "0"-as-back handling as MAIL
+    # step 2 above, in handle_read_mail_command -- same reasoning, same fix.
+    'CHECK_MAIL': (1,),
     'APIGW': (2,),
 }
 
@@ -3026,7 +3047,14 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 is_cancel(message_lower) and _in_text_prompt(state)):
             global_lower = message_lower[1:]
             global_message = message_strip[1:]
-            if global_lower.startswith("sm,,"):
+            # Bare (no ",,args") reaches the same handler as the full form,
+            # not the default "redraw the main menu" -- each of these four
+            # already prints its own "!XX,,field,,field" format line when
+            # message.split(",,", N) comes up short, which bare input always
+            # does. Matching only the ",," form meant that help text was
+            # unreachable: !CB alone looked like a dead command instead of
+            # showing the syntax needed to use it.
+            if global_lower == "sm" or global_lower.startswith("sm,,"):
                 handle_send_mail_command(sender_id, global_message, interface, bbs_nodes)
             elif global_lower == "au":
                 handle_active_users_command(sender_id, interface)
@@ -3034,11 +3062,11 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 handle_check_mail_command(sender_id, interface)
             elif global_lower == "r":
                 handle_quick_reply_command(sender_id, interface)
-            elif global_lower.startswith("pb,,"):
+            elif global_lower == "pb" or global_lower.startswith("pb,,"):
                 handle_post_bulletin_command(sender_id, global_message, interface, bbs_nodes)
-            elif global_lower.startswith("cb,,"):
+            elif global_lower == "cb" or global_lower.startswith("cb,,"):
                 handle_check_bulletin_command(sender_id, global_message, interface)
-            elif global_lower.startswith("chp,,"):
+            elif global_lower == "chp" or global_lower.startswith("chp,,"):
                 handle_post_channel_command(sender_id, global_message, interface)
             elif global_lower == "chl":
                 handle_list_channels_command(sender_id, interface)

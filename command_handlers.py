@@ -2289,6 +2289,15 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             handle_mail_command(sender_id, interface, notice="Invalid choice.")
 
     elif step == 2:
+        if is_cancel(message) or message.strip() == '0':
+            # "0" is consistently the back command everywhere else in this
+            # BBS, but it was also a syntactically valid message id here --
+            # int("0") never raised, so it fell all the way to
+            # get_mail_content(0, ...) and came back as "Mail not found"
+            # with the session silently cleared. Treat it as the back
+            # command it looks like before trying it as an id.
+            handle_mail_command(sender_id, interface)
+            return
         try:
             mail_id = int(message)
         except ValueError:
@@ -2303,8 +2312,7 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             update_user_state(sender_id, {'command': 'MAIL', 'step': 4, 'mail_id': mail_id, 'unique_id': unique_id, 'sender': sender, 'subject': subject, 'content': content})
         except TypeError:
             logging.info(f"Node {sender_id} tried to access non-existent message")
-            send_message("Mail not found", sender_id, interface)
-            update_user_state(sender_id, None)
+            send_message("Mail not found. Reply 0 to go back.", sender_id, interface)
 
     elif step == 3:
         sender_node_id = get_node_id_from_num(sender_id, interface)
@@ -2381,28 +2389,16 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             unique_id = add_mail(get_node_id_from_num(sender_id, interface), sender_short_name, recipient_id, subject, content, bbs_nodes, interface)
             send_message(f"Mail has been posted to the mailbox of {recipient_name}.\n(╯°□°)╯📨📬", sender_id, interface)
 
-            if is_reply:
-                # A reply only ever starts from a mail-related screen (an
-                # opened message, its delete confirmation, or !R from
-                # anywhere) -- once it's sent there is nothing left to ask;
-                # land back on the mailbox rather than the invisible "Send
-                # another? [Y/N]" gate below, which never printed its own
-                # prompt and left the next keypress meaning something the
-                # user could not see.
-                handle_mail_command(sender_id, interface)
-            else:
-                update_user_state(sender_id, None)
-                update_user_state(sender_id, {'command': 'MAIL', 'step': 8})
+            # Whether this was a reply or a fresh message, there is nothing
+            # left to ask once it is sent -- land back on the mailbox
+            # rather than the old step-8 "Send another? [Y/N]" gate, which
+            # never printed a prompt of its own and left the next keypress
+            # meaning something the user could not see (typing "y" opened
+            # the mail menu; anything else silently cleared the session).
+            handle_mail_command(sender_id, interface)
         else:
             state['content'] += message + "\n"
             update_user_state(sender_id, state)
-
-    elif step == 8:
-        if message.lower() == "y":
-            handle_mail_command(sender_id, interface)
-        else:
-            send_message("Okay, feel free to send another command.", sender_id, interface)
-            update_user_state(sender_id, None)
 
     elif step == 9:
         entries = state.get('directory', [])
@@ -2619,7 +2615,7 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
             send_message(controls, sender_id, interface)
             return
         if choice == 'c':
-            send_message("Send your comment. Send END on a new message when finished.", sender_id, interface)
+            send_message(f"Send your comment. Send END when finished, or {CANCEL_HINT} to stop.", sender_id, interface)
             update_user_state(sender_id, {
                 'command': 'CHANNEL_DIRECTORY',
                 'step': 7,
@@ -2631,6 +2627,16 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
         send_message("Invalid choice. Use 1, 2, or 0.", sender_id, interface)
 
     elif step == 7:
+        if is_cancel(message):
+            send_message("Comment cancelled.", sender_id, interface)
+            send_message("[1]View comments [2]Comment [0]Exit", sender_id, interface)
+            update_user_state(sender_id, {
+                'command': 'CHANNEL_DIRECTORY',
+                'step': 6,
+                'channel_id': state.get('channel_id'),
+                'channel_name': state.get('channel_name')
+            })
+            return
         if message.strip().lower() == 'end':
             content = state.get('comment_content', '').strip()
             if not content:
@@ -2733,12 +2739,20 @@ def handle_check_mail_command(sender_id, interface):
 
 
 def handle_read_mail_command(sender_id, message, state, interface):
+    if is_cancel(message) or message.strip() == '0':
+        # "0" is consistently the back command everywhere else in this BBS,
+        # but this list is numbered from 1 (see handle_check_mail_command's
+        # "01.", "02." ...), so "0" fell outside the valid range and this
+        # screen's only response was "Invalid message number. Please try
+        # again." forever, with no way out but disconnecting.
+        handle_mail_command(sender_id, interface)
+        return
     try:
         mail = state.get('mail', [])
         message_number = int(message) - 1
 
         if message_number < 0 or message_number >= len(mail):
-            send_message("Invalid message number. Please try again.", sender_id, interface)
+            send_message("Invalid message number, or 0 to go back. Please try again.", sender_id, interface)
             return
 
         mail_id = mail[message_number][0]
