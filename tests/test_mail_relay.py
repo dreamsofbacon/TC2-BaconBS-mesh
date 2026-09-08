@@ -327,6 +327,78 @@ class MailRelayDatabaseTests(unittest.TestCase):
         self.assertIn("!CM", send.call_args.args[0])
         self.assertIsNone(command_handlers.get_user_state(111))
 
+    def test_quick_reply_falls_back_to_ordinary_mail_with_no_relay_delivery(self):
+        """The actual bug a live beta test hit: two messages were sitting in
+        the inbox, readable the ordinary way, and !R reported nothing --
+        because ordinary Mail -> Read / !CM never touch mail_dm_deliveries
+        at all. This is not a niche case; it is most mail."""
+        db_operations.add_mail(
+            "!origin", "Origin", "!sender", "Hello", "Body text", [], None)
+
+        with mock.patch.object(command_handlers, "send_message") as send:
+            command_handlers.handle_quick_reply_command(111, self.interface)
+
+        state = command_handlers.get_user_state(111)
+        self.assertEqual(state["command"], "MAIL")
+        self.assertEqual(state["step"], 7)
+        self.assertEqual(state["subject"], "Re: Hello")
+        self.assertIn("Origin", send.call_args.args[0])
+
+    def test_quick_reply_prefers_the_relay_delivery_when_both_exist(self):
+        """Approved design: try the relay-DM record (it carries a precise
+        delivered_at) before falling back to plain mailbox order.
+
+        The relay record here marks the OLDER of two messages as delivered,
+        while a genuinely more recent message exists with no delivery
+        record at all -- so the ordinary-mailbox fallback would, on its
+        own, point at the newer one. Picking "Older" proves the relay path
+        is actually consulted first, not that the two happen to agree."""
+        account_id = db_operations.create_account()
+        db_operations.link_node_to_account("!sender", account_id, "meshtastic")
+        db_operations.set_account_mail_relay(account_id, True)
+        older_id = db_operations.add_mail(
+            "!older", "Older", "!sender", "Older subject", "Body", [], None)
+        db_operations.add_mail(
+            "!newer", "Newer", "!sender", "Newer subject", "Body", [], None)
+        conn = db_operations.get_db_connection()
+        conn.execute(
+            "UPDATE mail_dm_deliveries SET state = 'delivered', delivered_at = ? "
+            "WHERE mail_unique_id = ? AND target_node_id = ?",
+            ("2026-09-07T13:00:00+00:00", older_id, "!sender"))
+        conn.commit()
+
+        with mock.patch.object(command_handlers, "send_message") as send:
+            command_handlers.handle_quick_reply_command(111, self.interface)
+
+        self.assertEqual(command_handlers.get_user_state(111)["subject"],
+                         "Re: Older subject")
+
+    def test_quick_reply_skips_an_incomplete_ordinary_message(self):
+        """The relay-delivery path already excludes incomplete mail; the
+        ordinary-mailbox fallback must not reopen that hole."""
+        complete_id = db_operations.add_mail(
+            "!first", "First", "!sender", "Complete", "Body", [], None)
+        incomplete_id = db_operations.add_mail(
+            "!second", "Second", "!sender", "Incomplete", "Part", [], None)
+        db_operations.apply_mail_expected_content_length(incomplete_id, 200)
+
+        with mock.patch.object(command_handlers, "send_message") as send:
+            command_handlers.handle_quick_reply_command(111, self.interface)
+
+        self.assertEqual(command_handlers.get_user_state(111)["subject"],
+                         "Re: Complete")
+
+    def test_still_says_no_mail_when_every_message_is_incomplete(self):
+        incomplete_id = db_operations.add_mail(
+            "!second", "Second", "!sender", "Incomplete", "Part", [], None)
+        db_operations.apply_mail_expected_content_length(incomplete_id, 200)
+
+        with mock.patch.object(command_handlers, "send_message") as send:
+            command_handlers.handle_quick_reply_command(111, self.interface)
+
+        self.assertIn("!CM", send.call_args.args[0])
+        self.assertIsNone(command_handlers.get_user_state(111))
+
     def test_quick_reply_stays_pinned_when_newer_mail_arrives(self):
         account_id = db_operations.create_account()
         db_operations.link_node_to_account("!sender", account_id, "meshtastic")

@@ -18,7 +18,7 @@ from db_operations import (
     get_account_id_for_node,
     count_hidden_bulletins, count_hidden_mail, count_hidden_channel_comments,
     get_bulletin_content, get_bulletins,
-    get_mail, get_mail_content, get_latest_delivered_mail,
+    get_mail, get_mail_content, get_latest_delivered_mail, get_latest_mailbox_message,
     add_channel, get_channels, get_sender_id_by_mail_id,
     get_channel_categories, get_channels_by_name, get_channel_by_id,
     add_channel_comment, get_channel_comments,
@@ -469,11 +469,22 @@ def _begin_mail_reply(sender_id, interface, mail_id: int, sender: str, subject: 
 
 
 def handle_quick_reply_command(sender_id, interface):
+    """Jump straight into replying to whatever mail is newest.
+
+    Tries the relay-DM delivery record first -- it carries a precise
+    delivered_at -- then falls back to whatever is actually newest in the
+    ordinary mailbox. Most mail is read the ordinary way (Mail -> Read,
+    !CM) and never touches the relay-delivery table at all, so relying on
+    that alone left this shortcut reporting nothing despite readable mail
+    sitting in the inbox -- confirmed on a live beta test.
+    """
     sender_node_id = get_node_id_from_num(sender_id, interface)
     mail = get_latest_delivered_mail(sender_node_id)
     if mail is None:
+        mail = get_latest_mailbox_message(sender_node_id)
+    if mail is None:
         send_message(
-            "No delivered mail is available for quick reply. Send !CM to check your mailbox.",
+            "No mail to reply to yet. Send !CM to check your mailbox.",
             sender_id, interface,
         )
         return

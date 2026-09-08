@@ -4521,6 +4521,39 @@ def get_latest_delivered_mail(recipient_id: str) -> Optional[dict]:
     return dict(zip(keys, row))
 
 
+def get_latest_mailbox_message(recipient_id: str) -> Optional[dict]:
+    """The newest complete message actually sitting in this mailbox.
+
+    get_latest_delivered_mail is quick reply's first choice -- it carries a
+    precise delivered_at -- but it is scoped to the opt-in offline-relay-DM
+    feature specifically. Mail read the ordinary way (Mail -> Read, !CM)
+    never touches that table at all, so a live beta test found the shortcut
+    reporting nothing despite two readable messages sitting in the inbox.
+    This is the fallback that makes "reply to the mail I just got" mean
+    what it sounds like it means: whatever is actually newest here,
+    relayed or not.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    recipient_ids = _mail_recipient_scope(c, recipient_id)
+    if not recipient_ids:
+        return None
+    placeholders = ','.join('?' for _ in recipient_ids)
+    c.execute(
+        f"""SELECT id, sender_short_name, subject
+            FROM mail
+            WHERE recipient IN ({placeholders})
+              AND COALESCE(content_complete, 1) = 1
+            ORDER BY id DESC
+            LIMIT 1""",
+        recipient_ids,
+    )
+    row = c.fetchone()
+    if not row:
+        return None
+    return {'mail_id': row[0], 'sender_short_name': row[1], 'subject': row[2]}
+
+
 def mark_mail_dm_delivered(delivery_id: int) -> None:
     conn = get_db_connection()
     conn.execute(
