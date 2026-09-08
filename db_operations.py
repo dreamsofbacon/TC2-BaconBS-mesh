@@ -1594,6 +1594,14 @@ def _ensure_fleet_tables(cursor) -> None:
     if 'rollout_state' not in node_version_columns:
         cursor.execute(
             "ALTER TABLE node_versions ADD COLUMN rollout_state TEXT NOT NULL DEFAULT ''")
+    if 'rollout_detail' not in node_version_columns:
+        # Advisory rollout_state was a bare word -- "failed" and nothing
+        # else -- so diagnosing a peer stuck on a stale commit meant asking
+        # its operator to SSH in and read update_state.json or the journal
+        # by hand. This carries the same short reason apply_target() and
+        # update_guard.py already compute locally out over the wire.
+        cursor.execute(
+            "ALTER TABLE node_versions ADD COLUMN rollout_detail TEXT NOT NULL DEFAULT ''")
 
 
 def _ensure_mail_dm_delivery_table(cursor) -> None:
@@ -7260,16 +7268,23 @@ def last_fleet_issued_at(group: str) -> str:
 
 
 def record_node_version(node_id: str, app_version: str, commit_hash: str,
-                        target_commit: str = '', rollout_state: str = '') -> None:
-    """Remember what a peer says it is running. Advisory only."""
+                        target_commit: str = '', rollout_state: str = '',
+                        rollout_detail: str = '') -> None:
+    """Remember what a peer says it is running. Advisory only.
+
+    rollout_detail is the short reason behind a non-healthy rollout_state
+    (a refused smoke-test, a failed fetch, a crash-loop revert) -- empty
+    for a peer still on the old FLEETSTATUS wire format, or when the state
+    itself needs no explanation (healthy, pending).
+    """
     if not str(node_id or '').strip():
         return
     conn = get_db_connection()
     conn.execute(
         """INSERT INTO node_versions
                (node_id, app_version, commit_hash, target_commit,
-                rollout_state, reported_at)
-           VALUES (?, ?, ?, ?, ?, ?)
+                rollout_state, rollout_detail, reported_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(node_id) DO UPDATE SET
                app_version = excluded.app_version,
                commit_hash = excluded.commit_hash,
@@ -7277,10 +7292,11 @@ def record_node_version(node_id: str, app_version: str, commit_hash: str,
                    THEN excluded.target_commit ELSE node_versions.target_commit END,
                rollout_state = CASE WHEN excluded.rollout_state != ''
                    THEN excluded.rollout_state ELSE node_versions.rollout_state END,
+               rollout_detail = excluded.rollout_detail,
                reported_at = excluded.reported_at""",
         (str(node_id).strip(), str(app_version or ''), str(commit_hash or ''),
          str(target_commit or ''), str(rollout_state or ''),
-         datetime.now(timezone.utc).isoformat()))
+         str(rollout_detail or ''), datetime.now(timezone.utc).isoformat()))
     conn.commit()
 
 
@@ -7289,8 +7305,8 @@ def get_node_versions() -> list:
     conn = get_db_connection()
     rows = conn.execute(
         """SELECT node_id, app_version, commit_hash, target_commit,
-              rollout_state, reported_at
+              rollout_state, rollout_detail, reported_at
            FROM node_versions ORDER BY reported_at DESC""").fetchall()
     return [dict(zip(('node_id', 'app_version', 'commit_hash', 'target_commit',
-                      'rollout_state', 'reported_at'), r))
+                      'rollout_state', 'rollout_detail', 'reported_at'), r))
             for r in rows]

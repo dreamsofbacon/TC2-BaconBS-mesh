@@ -2127,15 +2127,33 @@ def send_node_version_to_bbs_nodes(node_id, app_version, commit, bbs_nodes, inte
 
 
 def send_fleet_status_to_bbs_nodes(node_id, app_version, commit, target_commit,
-                                   rollout_state, bbs_nodes, interface):
-    """Send advisory rollout state to peers that understand it."""
+                                   rollout_state, bbs_nodes, interface,
+                                   rollout_detail=''):
+    """Send advisory rollout state to peers that understand it.
+
+    rollout_detail is the short reason behind a non-healthy state -- a
+    refused smoke-test, a failed fetch, a crash-loop revert. Without it,
+    an operator watching a peer stuck on a stale commit saw the single
+    word "failed" and nothing else; getting the real reason meant asking
+    them to SSH in and read update_state.json or the journal by hand.
+
+    Sanitized and capped to a small fixed budget before it goes anywhere
+    near the wire: it is interpolated into a '|'-delimited frame, so a
+    literal '|' or a newline in the detail text would corrupt the split on
+    the receiving end, and _send_one_sync drops the WHOLE frame outright
+    if it exceeds the transport's byte limit -- an unbounded error message
+    could silently take the entire advisory status report down with it on
+    a radio link, not just truncate.
+    """
     try:
         from db_operations import peer_supports
     except Exception:
         return 0
+    safe_detail = (str(rollout_detail or '')
+                   .replace('|', '/').replace('\n', ' ').replace('\r', ' ')[:48])
     message = (
         f"FLEETSTATUS|{node_id}|{app_version}|{commit}|{target_commit}|"
-        f"{rollout_state}|{int(time.time())}"
+        f"{rollout_state}|{safe_detail}|{int(time.time())}"
     )
     sent = 0
     for peer_id in bbs_nodes or []:

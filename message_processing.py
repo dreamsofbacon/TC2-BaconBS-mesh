@@ -2602,18 +2602,26 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
         elif message.startswith("FLEETSTATUS|"):
             # Advisory only, like NODEVER. The signed target remains the sole
             # authority for deciding what code this node runs.
-            parts = message.split("|", 6)
+            #
+            # maxsplit=7 accepts both the original 7-field frame (no reason
+            # text, just node/version/commit/target/state/timestamp) from a
+            # peer that hasn't picked up the rollout_detail field yet, and
+            # the current 8-field one with a reason inserted before the
+            # timestamp -- so a fleet mid-rollout, with some peers still on
+            # the old wire format, never misparses either shape.
+            parts = message.split("|", 7)
             allowed_states = {
                 'pending', 'applying', 'probation', 'healthy', 'failed',
                 'pinned', 'confirmed', 'rolled_back', 'rollback_failed',
             }
-            if (len(parts) == 7 and parts[1].strip()
+            if (len(parts) in (7, 8) and parts[1].strip()
                     and parts[5].strip() in allowed_states):
+                detail = parts[6].strip() if len(parts) == 8 else ''
                 try:
                     from db_operations import record_node_version
                     record_node_version(
                         parts[1].strip(), parts[2].strip(), parts[3].strip(),
-                        parts[4].strip(), parts[5].strip())
+                        parts[4].strip(), parts[5].strip(), detail)
                 except Exception:
                     logging.debug("FLEETSTATUS: could not record peer status",
                                   exc_info=True)
