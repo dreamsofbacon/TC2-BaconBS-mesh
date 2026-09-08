@@ -604,6 +604,93 @@ def _welcome_preview() -> dict:
     return {"meshcore": "", "meshtastic": "", "ssh": "", "nodes": []}
 
 
+# (display name, importable module, minimum Python needed or None, why it
+# matters). Mirrors requirements.txt's own comments on which packages carry
+# a Python-version environment marker and why.
+_PYTHON_DEPENDENCIES = [
+  ("meshtastic", "meshtastic", None, "Meshtastic radio support"),
+  ("meshcore", "meshcore", (3, 10), "MeshCore radio support"),
+  ("paho-mqtt", "paho.mqtt.client", None, "MQTT bridge links"),
+  ("pypubsub", "pubsub", None, "event bus (a meshtastic dependency, imported directly too)"),
+  ("flask", "flask", None, "the web admin itself"),
+  ("pyserial", "serial", None, "serial port discovery"),
+  ("cryptography", "cryptography", None, "fleet update signature verification -- a hard requirement, not optional"),
+  ("asyncssh", "asyncssh", (3, 10), "the SSH-facing BBS (optional -- off unless [ssh] enables it)"),
+]
+
+
+def dependency_status() -> dict:
+  """What this node's Python environment and OS actually have, matched
+  against requirements.txt and README.md's manual install instructions.
+
+  Diagnostic only -- this never runs an installer itself. This project
+  treats "who can execute code on this node" as its central security
+  boundary (see docs/FLEET-UPDATES.md's "What the signature is actually
+  protecting"): the fleet update mechanism exists specifically because an
+  admin-password-gated but UNsigned way to make this node run new code is
+  a real attack surface, not a convenience. A web button that shells out
+  to apt/brew with root privilege would be exactly that, a second one.
+  This shows what is missing and the same command README.md already
+  documents for it, surfaced where a fresh deployment is actually being
+  configured instead of only in a file an operator has to already know to
+  read.
+  """
+  try:
+    import importlib.util
+    import platform as _platform
+    import sys as _sys
+
+    system = _platform.system()  # 'Linux', 'Darwin', 'Windows', or ''
+    py_version = _sys.version_info[:2]
+
+    packages = []
+    for name, module, min_version, why in _PYTHON_DEPENDENCIES:
+      if min_version is not None and py_version < min_version:
+        packages.append({
+          "name": name, "installed": None, "why": why,
+          "note": (f"needs Python {min_version[0]}.{min_version[1]}+ "
+                   f"(this node runs {py_version[0]}.{py_version[1]})"),
+        })
+        continue
+      try:
+        found = importlib.util.find_spec(module) is not None
+      except Exception:
+        found = False
+      packages.append({"name": name, "installed": found, "why": why, "note": ""})
+
+    interpreter_installed = False
+    try:
+      import zork_port
+      interpreter_installed = zork_port._get_interpreter_command() is not None
+    except Exception:
+      pass
+
+    if system == "Darwin":
+      interpreter_hint = "brew install frotz"
+    elif system == "Windows":
+      interpreter_hint = ("no single command -- build or download a "
+                          "dfrotz/frotz binary and point [zork] interpreter "
+                          "in config.ini at it")
+    else:
+      # Linux, and anything else posix-like this project doesn't have a
+      # more specific hint for -- apt is what both live nodes actually run.
+      interpreter_hint = "sudo apt install frotz"
+
+    return {
+      "os": system or "Unknown",
+      "python_version": f"{py_version[0]}.{py_version[1]}",
+      "packages": packages,
+      "pip_hint": "pip install -r requirements.txt",
+      "interpreter_installed": interpreter_installed,
+      "interpreter_hint": interpreter_hint,
+    }
+  except Exception:
+    logging.debug("could not build dependency status", exc_info=True)
+    return {"os": "Unknown", "python_version": "", "packages": [],
+            "pip_hint": "pip install -r requirements.txt",
+            "interpreter_installed": False, "interpreter_hint": ""}
+
+
 # A decrypted invite waiting for its review screen. Held in memory rather
 # than in the session cookie because it contains a broker password and, for
 # a mutual-TLS broker, a private key -- neither belongs in something the
@@ -5194,6 +5281,7 @@ def create_app(runtime_interface=None) -> Flask:
         accounts=account_settings,
         bbs=bbs_settings,
         welcome_preview=_welcome_preview(),
+        dependencies=dependency_status(),
         mqtt_links=mqtt_settings,
         sync_peers=sync_peers,
         peer_link_targets=peer_link_targets,

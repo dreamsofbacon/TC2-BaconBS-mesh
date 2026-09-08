@@ -56,6 +56,10 @@
         <span class="settings-nav-title">Admin Credentials</span>
         <span class="settings-nav-hint">Web admin login</span>
       </a>
+      <a class="settings-nav-link" href="#dependencies" data-panel-link="dependencies">
+        <span class="settings-nav-title">Dependencies</span>
+        <span class="settings-nav-hint">What's installed, what's missing, and how to add it</span>
+      </a>
       <a class="settings-nav-link" href="#diagnostics" data-panel-link="diagnostics">
         <span class="settings-nav-title">Diagnostics</span>
         <span class="settings-nav-hint">Sync state, database counts</span>
@@ -1317,6 +1321,57 @@
     </div>
     <button class="btn btn-primary" type="submit">Save SSH Settings</button>
   </form>
+</section>
+
+<section class="card settings-panel" id="dependencies" data-settings-panel="dependencies" style="max-width:900px">
+  <h2>Dependencies</h2>
+  <p class="text-muted">
+    What this node's Python environment and OS actually have, read-only.
+    This never installs anything itself &mdash; an admin-password-gated
+    button that shells out to apt/brew with root privilege would be a
+    second, unsigned way to run code on this node, which is exactly what
+    <a href="{{ url_for('fleet_page') }}">Fleet</a>'s signed instructions
+    exist to be the only way to do. Each missing piece below shows the
+    same command <a href="https://github.com/dreamsofbacon/TC2-BaconBS-mesh#readme">README.md</a>
+    already documents for it.
+  </p>
+
+  <h3>Detected OS: {{ dependencies.os }} &mdash; Python {{ dependencies.python_version }}</h3>
+
+  <h3>Python packages</h3>
+  <div class="table-scroll">
+    <table class="table">
+      <tr><th>Package</th><th>Status</th><th>Used for</th></tr>
+      {% for pkg in dependencies.packages %}
+      <tr>
+        <td><code>{{ pkg.name }}</code></td>
+        <td>
+          {% if pkg.installed == true %}<span class="text-success">installed</span>
+          {% elif pkg.installed == false %}<span class="text-danger">missing</span>
+          {% else %}<span class="text-muted">not applicable ({{ pkg.note }})</span>
+          {% endif %}
+        </td>
+        <td class="text-muted">{{ pkg.why }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% if dependencies.packages|selectattr("installed", "equalto", false)|list %}
+  <p><strong>To install any missing Python package:</strong> <code>{{ dependencies.pip_hint }}</code></p>
+  {% endif %}
+
+  <h3>Interactive fiction interpreter</h3>
+  <p>
+    <strong>dfrotz/frotz:</strong>
+    {% if dependencies.interpreter_installed %}
+      <span class="text-success">found</span> &mdash; Zork, Planetfall, and the
+      other interactive-fiction titles will launch.
+    {% else %}
+      <span class="text-danger">not found</span> &mdash; those games will show
+      a clear error instead of launching until this is installed.
+      <br><strong>Install:</strong> <code>{{ dependencies.interpreter_hint }}</code>
+    {% endif %}
+  </p>
 </section>
 
 <section class="card settings-panel" id="diagnostics" data-settings-panel="diagnostics" style="max-width:900px">
