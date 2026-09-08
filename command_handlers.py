@@ -1225,7 +1225,7 @@ def _launch_game(sender_id, interface, game_id, game_name):
         # a beta tester read as the BBS having dropped the request rather
         # than being busy.
         send_message("Loading your saved game...", sender_id, interface)
-        intro = start_zork_session(sender_id, game_id)
+        intro = start_zork_session(sender_id, game_id, max_chars=response_limit_for(interface))
         send_message(intro, sender_id, interface)
         if not has_zork_session(sender_id, game_id):
             # No interpreter installed, the story file missing with
@@ -1239,7 +1239,7 @@ def _launch_game(sender_id, interface, game_id, game_name):
             send_message(sync_notice, sender_id, interface)
         send_message(f"Saved game restored. Send X to exit.", sender_id, interface)
     else:
-        intro = start_zork_session(sender_id, game_id)
+        intro = start_zork_session(sender_id, game_id, max_chars=response_limit_for(interface))
         send_message(intro, sender_id, interface)
         if not has_zork_session(sender_id, game_id):
             handle_games_command(sender_id, interface)

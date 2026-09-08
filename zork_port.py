@@ -352,7 +352,15 @@ def resume_zork_session(user_id: int, game_id: str = 'zork1') -> str:
     return "Session resumed. Enter your next command."
 
 
-def start_zork_session(user_id: int, game_id: str = 'zork1') -> str:
+def start_zork_session(user_id: int, game_id: str = 'zork1', max_chars: int = 0) -> str:
+    """max_chars scales the launch text (intro, or the restore/look output
+    for a saved game) to the caller's transport, same as send_zork_command
+    already does per turn. Without it this always fell back to the flat
+    900-char radio ceiling -- fine for a short Zork I opening, but SSH
+    carries 8192 bytes per message, and a longer opening scene (Planetfall
+    runs several times that before the player has typed a single command)
+    was truncated there for no reason ordinary play already avoided.
+    """
     with _sessions_lock:
         if (user_id, game_id) in _sessions:
             return resume_zork_session(user_id, game_id)
@@ -388,7 +396,7 @@ def start_zork_session(user_id: int, game_id: str = 'zork1') -> str:
     # Only shown to the player if no save exists below -- a restore
     # discards this and shows the post-restore "look" output instead, so
     # zeroing it here can never mask a real, restored move count.
-    intro = _zeroed_fresh_status_line(session.read_output())
+    intro = _zeroed_fresh_status_line(session.read_output(max_chars=max_chars))
 
     save_blob = get_zork_save(user_id, game_id)
     if save_blob:
@@ -406,9 +414,9 @@ def start_zork_session(user_id: int, game_id: str = 'zork1') -> str:
                     session.process.stdin.flush()
                 except Exception as exc:
                     print(f"[zork] Failed to send restore command for user {user_id}: {exc}")
-            restore_output = session.read_output()
+            restore_output = session.read_output(max_chars=max_chars)
             if restore_output:
-                look_output = session.send("look")
+                look_output = session.send("look", max_chars=max_chars)
                 result = look_output if look_output else restore_output
                 session.last_output = result
                 return result
