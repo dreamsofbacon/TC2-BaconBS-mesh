@@ -117,14 +117,15 @@
   }
 
   function channelKey(entry) {
-    // Network-qualified: meshcore channel 2 and meshtastic channel 2 are
-    // unrelated and must never share a colour or a filter.
-    return networkKey(entry) + "/" + entry.channel_index;
+    // A channel index is local to its network and receiving radio.
+    // Remote observations must not collapse into a local conversation.
+    return networkKey(entry) + "/" + entry.channel_index + "/" + (entry.capture_node_id || "unknown");
   }
 
   function channelLabel(entry) {
     return (entry.network || "Unknown") + " / "
-      + (entry.channel_name || "Channel " + entry.channel_index);
+      + (entry.network === "meshcore" && /^(#?public)$/i.test(entry.channel_name || "") ? "#Public" : (entry.channel_name || "Channel " + entry.channel_index + " (name unknown)"))
+      + " · " + (entry.capture_node_id || "Unknown receiving node");
   }
 
   function matches(entry) {

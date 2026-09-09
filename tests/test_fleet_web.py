@@ -47,6 +47,7 @@ class _Node:
         self.env = mock.patch.dict(os.environ, {
             "BBS_FLEET_APPLY_TRIGGER_PATH": self.trigger,
             "BBS_CONFIG_PATH": self.config,
+            "BBS_DB_PATH": os.path.join(self.dir, "bulletins.db"),
             "BBS_WEBGUI_SECRET": "test-secret",
         })
         self.env.start()

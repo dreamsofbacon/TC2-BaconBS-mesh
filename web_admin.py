@@ -4935,6 +4935,13 @@ def create_app(runtime_interface=None) -> Flask:
           }
           for s in services_raw
         )
+      try:
+        stale = time.time() - os.path.getmtime(snapshot_path) > 75
+      except OSError:
+        stale = True
+      if stale:
+        for entry in entries:
+          entry.update(connected=False, reconnecting=False, stale=True)
       return entries
 
     def build_settings_diagnostics() -> dict[str, str]:
@@ -5416,8 +5423,24 @@ def create_app(runtime_interface=None) -> Flask:
     @app.route("/")
     def index():
         if session.get("logged_in"):
-            return redirect(url_for("table_list", table="bulletins"))
+            return redirect(url_for("dashboard"))
         return redirect(url_for("login"))
+
+    @app.get("/dashboard")
+    @login_required
+    def dashboard():
+        with get_db_connection() as conn:
+            counts = {name: conn.execute("SELECT COUNT(*) FROM " + name).fetchone()[0]
+                      for name in ("bulletins", "channels", "mesh_clients")}
+            recent = conn.execute(
+                "SELECT id, board, subject, sender_short_name, date FROM bulletins "
+                "ORDER BY date DESC, id DESC LIMIT 6"
+            ).fetchall()
+            boards = conn.execute(
+                "SELECT board, COUNT(*) AS count FROM bulletins GROUP BY board ORDER BY count DESC, board LIMIT 6"
+            ).fetchall()
+        return render_template("dashboard.html", title="Overview", show_nav=True,
+                               counts=counts, recent=recent, boards=boards)
 
     def _bounded_int_arg(name: str, default: int, minimum: int, maximum: int) -> int:
       try:
@@ -5915,7 +5938,7 @@ def create_app(runtime_interface=None) -> Flask:
             if username == app.config["ADMIN_USER"] and password == app.config["ADMIN_PASSWORD"]:
                 session["logged_in"] = True
                 flash("Login successful.", "success")
-                return redirect(url_for("table_list", table="bulletins"))
+                return redirect(url_for("dashboard"))
             flash("Invalid username or password.", "error")
 
         return render_template("login.html", title="Login", show_nav=False)
@@ -6966,29 +6989,32 @@ def create_app(runtime_interface=None) -> Flask:
       return device
 
     @app.route("/system/meshtastic")
+    @app.route("/radios")
     @login_required
     def meshtastic_device():
-      config = read_config_file(app.config["CONFIG_PATH"])
-      devices = [_describe_configured_device(config, "interface", "Radio", get_runtime_interface())]
-      interface2_type = config.get("interface2", "type", fallback="").strip().lower()
-      interface2_enabled = bool(interface2_type) and config.getboolean("interface2", "enabled", fallback=True)
-      if interface2_enabled:
-        devices[0]["label"] = "Radio 1 (primary)"
-        devices.append(_describe_configured_device(config, "interface2", "Radio 2 (secondary, bridge mode)"))
-      title = "MeshCore Companion Radio" if devices[0]["device_mode"] == "meshcore" and len(devices) == 1 else "Radio Device"
-      return render_template(
-        "meshtastic_device.html",
-        title=title,
-        show_nav=True,
-        devices=devices,
-        # Back-compat: single-radio deployments' templates/tooling may still
-        # reference the old flat vars directly instead of devices[0].
-        device_mode=devices[0]["device_mode"],
-        meshcore_transport=devices[0].get("meshcore_transport"),
-        meshcore_endpoint=devices[0].get("meshcore_endpoint"),
-        device_host=devices[0].get("device_host"),
-        device_url=devices[0].get("device_url"),
-      )
+      return render_template("radios.html", title="Radios", show_nav=True)
+
+    @app.get("/api/radios")
+    @login_required
+    def radios_api():
+      from radio_admin import read_radios
+      return jsonify(radios=read_radios(read_config_file(app.config["CONFIG_PATH"])))
+
+    @app.post("/api/radios/operations")
+    @login_required
+    def radio_operation_submit():
+      from radio_admin import submit
+      try:
+        return jsonify(submit(request.get_json(silent=True))), 202
+      except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
+    @app.get("/api/radios/operations/<operation_id>")
+    @login_required
+    def radio_operation_status(operation_id):
+      from radio_admin import operation
+      result = operation(operation_id)
+      return (jsonify(result), 200) if result else (jsonify(error="Operation not found"), 404)
 
     @app.route("/system/flowchart")
     @login_required

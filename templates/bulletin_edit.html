@@ -32,10 +32,15 @@
       <label for="local_only">local_only</label>
       <input type="text" id="local_only" name="local_only" value="{{ row['local_only'] }}" class="form-control" required>
     </div>
+    {% include "partials/bulletin_preview.html" %}
     <div class="row-actions">
       <button class="btn btn-primary" type="submit">Save Changes</button>
       <a class="btn" href="{{ url_for('table_list', table=table_name) }}">Back</a>
     </div>
   </form>
 </div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='js/bulletin-preview.js', v=asset_version) }}"></script>
 {% endblock %}

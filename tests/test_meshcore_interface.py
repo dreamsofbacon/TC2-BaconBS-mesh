@@ -113,6 +113,12 @@ class MeshCoreInterfaceTests(unittest.TestCase):
         self.interface.close()
         self.factory_patch.stop()
 
+    def test_selected_channel_does_not_mutate_default(self):
+        default = self.interface.channel_index
+        self.interface.sendText('Selected', 0, wantAck=False, channelIndex=3)
+        self.assertEqual(_FakeMeshCoreFactory.last_core.commands.channel_sent[-1], (3, 'Selected'))
+        self.assertEqual(self.interface.channel_index, default)
+
     def test_exposes_meshtastic_shaped_node_inventory(self):
         self.assertIn(PEER_KEY, self.interface.nodes)
         self.assertEqual(
@@ -216,7 +222,7 @@ class MeshCoreInterfaceTests(unittest.TestCase):
         self.assertIs(iface, self.interface)
         self.assertEqual(packet["to"], 0)
         self.assertEqual(packet["channel_index"], 0)
-        self.assertEqual(packet["channel_name"], "Public")
+        self.assertEqual(packet["channel_name"], "")
         self.assertTrue(packet["public_chatter_only"])
         self.assertNotIn("fromId", packet)
 

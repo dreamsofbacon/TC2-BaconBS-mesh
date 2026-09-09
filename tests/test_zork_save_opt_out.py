@@ -32,6 +32,9 @@ PEER = "mqtt:baconbbsvt:Chattanooga"
 
 class ZorkSaveOptOutTests(unittest.TestCase):
     def setUp(self):
+        enabled = mock.patch.object(db_operations, "is_zork_save_sync_enabled", return_value=True)
+        enabled.start()
+        self.addCleanup(enabled.stop)
         db_operations.thread_local.connection = sqlite3.connect(":memory:")
         db_operations.initialize_database()
         db_operations._ensure_zork_saves_table()

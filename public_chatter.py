@@ -219,11 +219,6 @@ def normalize_broadcast(
             channel_name = str(known.get(channel_index) or '')
         except Exception:
             channel_name = ''
-    if not channel_name and channel_index == 0:
-        # An unnamed primary channel. Both transports have a conventional
-        # name for it; db_operations.channel_name_placeholders knows these
-        # are stand-ins, so a real name learned later replaces them.
-        channel_name = 'Public' if network == 'meshcore' else 'LongFast'
     sender_node_id = packet.get('fromId') or None
     sender_name = str(packet.get('sender_name') or '')
     native_id = packet.get('id', packet.get('message_hash'))

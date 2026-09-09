@@ -26,10 +26,15 @@
       <label for="content">Content</label>
       <textarea id="content" name="content" class="form-control" rows="8">{{ request.form.get('content', '') }}</textarea>
     </div>
+    {% include "partials/bulletin_preview.html" %}
     <div class="row-actions">
       <button type="submit" class="btn btn-primary">Create Bulletin</button>
       <a class="btn" href="{{ url_for('table_list', table='bulletins') }}">Cancel</a>
     </div>
   </form>
 </div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='js/bulletin-preview.js', v=asset_version) }}"></script>
 {% endblock %}

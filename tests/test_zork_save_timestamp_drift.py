@@ -76,6 +76,9 @@ class ManifestAgreementTests(unittest.TestCase):
     """Two nodes, one save, two spellings -- one hash."""
 
     def setUp(self):
+        enabled = mock.patch.object(db_operations, "is_zork_save_sync_enabled", return_value=True)
+        enabled.start()
+        self.addCleanup(enabled.stop)
         self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.env_patch = mock.patch.dict(
             os.environ,

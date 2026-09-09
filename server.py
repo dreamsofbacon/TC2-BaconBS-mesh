@@ -37,6 +37,7 @@ from config_init import (
     get_mqtt_interfaces, get_mqtt_interface_by_name,
 )
 from radio_link import RadioLink
+from radio_admin import RadioAdminWorker, describe as describe_admin_radio
 from db_operations import (
     sync_node_roles_to_nodes,
     sync_fleet_identity_to_nodes,
@@ -662,7 +663,7 @@ def _meshtastic_channel_names(interface) -> dict:
             index = int(getattr(channel, 'index', 0))
             name = str(getattr(channel.settings, 'name', '') or '').strip()
             if not name and index == 0:
-                name = preset or 'LongFast'
+                name = preset or ''
             if name:
                 names[index] = name
         except Exception:
@@ -681,12 +682,17 @@ def _attach_channel_names(interface) -> None:
     # MeshCore has already filled this in from the radio. Do not overwrite it
     # -- but do fall through, because the logging and the backfill below
     # apply to whoever populated it.
-    if not getattr(interface, 'channel_names', None):
+    if str(getattr(interface, 'protocol_name', '')).casefold() != 'meshcore':
         try:
             interface.channel_names = _meshtastic_channel_names(interface)
         except Exception:
             logging.debug("Could not read channel names", exc_info=True)
             return
+    if not hasattr(interface, 'channel_names'):
+        interface.channel_names = {}
+    if getattr(interface, '_bbs_channel_names_seen', None) == interface.channel_names:
+        return
+    interface._bbs_channel_names_seen = dict(interface.channel_names)
     if interface.channel_names:
         logging.info(
             "Channel names: %s",
@@ -695,7 +701,8 @@ def _attach_channel_names(interface) -> None:
             from db_operations import backfill_channel_names
             backfill_channel_names(
                 str(getattr(interface, 'protocol_name', 'Meshtastic')).casefold(),
-                interface.channel_names)
+                interface.channel_names,
+                capture_node_id=getattr(interface, 'public_chatter_capture_node_id', ''))
         except Exception:
             logging.debug("Channel name backfill failed", exc_info=True)
 
@@ -817,6 +824,8 @@ def write_runtime_diagnostics_snapshot(links, system_config: dict) -> None:
     for link in links:
         iface = getattr(link, 'interface', link)
         name = getattr(link, 'name', 'primary')
+        if iface is not None and name in ('primary', 'secondary'):
+            _attach_channel_names(iface)
         bbs_key = getattr(link, 'bbs_nodes_key', 'bbs_nodes')
         allowed_key = getattr(link, 'allowed_nodes_key', 'allowed_nodes')
         entry = _describe_radio(iface, system_config, bbs_nodes_key=bbs_key, allowed_nodes_key=allowed_key)
@@ -838,6 +847,9 @@ def write_runtime_diagnostics_snapshot(links, system_config: dict) -> None:
         'bbs_nodes': primary.get('bbs_nodes', []),
         'allowed_nodes': primary.get('allowed_nodes', []),
         'radios': radios,
+        'radio_admin': [describe_admin_radio(link,
+            'meshcore' if str(system_config.get('interface_type' if link.name == 'primary' else 'interface2_type', '')).startswith('meshcore') else 'meshtastic')
+            for link in links if isinstance(link, RadioLink) and link.enabled and link.name in ('primary', 'secondary')],
         'services': _describe_services(),
         'sync_in_progress': bool(sync_progress.get('in_progress', False)),
         'sync_progress_percent': int(sync_progress.get('progress_percent', 0)),
@@ -2208,7 +2220,9 @@ def main():
         for link in links:
             _seed_link_from_db(link)
 
+        radio_admin_worker = RadioAdminWorker()
         while True:
+            radio_admin_worker.tick(links)
             global _last_main_loop_tick
             _last_main_loop_tick = time.time()
             now = time.time()

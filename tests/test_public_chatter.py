@@ -91,11 +91,11 @@ class PublicChatterTests(unittest.TestCase):
         self.assertIsNone(
             normalize_broadcast(packet, self.interface, captured_at=self.now))
 
-    def test_meshtastic_channel_zero_defaults_to_longfast(self):
+    def test_meshtastic_channel_zero_without_metadata_is_unknown(self):
         observation = normalize_broadcast(
             self.packet(channel_name=""), self.interface, captured_at=self.now
         )
-        self.assertEqual(observation["channel_name"], "LongFast")
+        self.assertEqual(observation["channel_name"], "")
 
     def test_schema_has_query_and_expiry_indexes(self):
         indexes = {
@@ -223,12 +223,12 @@ class MeshtasticBroadcastAddressTests(unittest.TestCase):
             observation, "a LongFast broadcast was dropped by the capture guard")
         self.assertEqual(observation["content"], "Hello mesh")
 
-    def test_it_is_labelled_longfast_on_channel_zero(self):
+    def test_unnamed_channel_zero_is_not_mislabelled(self):
         observation = normalize_broadcast(
             self._packet(self.MESHTASTIC_BROADCAST), self.interface,
             captured_at=self.now)
         self.assertEqual(observation["network"], "meshtastic")
-        self.assertEqual(observation["channel_name"], "LongFast")
+        self.assertEqual(observation["channel_name"], "")
 
     def test_the_synthesised_conventions_still_work(self):
         """MeshCore and the MQTT bridge address broadcasts to 0."""
