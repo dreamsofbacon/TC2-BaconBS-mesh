@@ -2346,6 +2346,34 @@ class ContentChangeNudgesSyncTests(_WebAdminHarness):
             conn.execute("SELECT COUNT(*) FROM bulletins WHERE subject='kept'").fetchone()[0], 1)
 
 
+class DevServerThreadingTests(unittest.TestCase):
+    """The `if __name__ == "__main__":` block only runs the process is
+    launched as a script, which pytest never does -- source inspection is
+    the pragmatic way to pin this down, the same pattern already used in
+    tests/test_fleet_wire.py for a different startup-time property.
+
+    Why this matters: Werkzeug's dev server defaults to one request at a
+    time. web_admin.py holds no live external connection of its own (it
+    only reads/writes local config and the database -- mesh-bbs.service
+    is the one with real reconnect/isolation logic for a flaky network),
+    so nothing here is supposed to block. But if anything ever did, single-
+    threaded meant one stuck request took the whole admin UI down for
+    every other user too, and silently: the process itself never crashes
+    or exits, so systemd's Restart=always never has anything to catch.
+    """
+
+    def test_app_run_is_threaded(self):
+        source = (Path(__file__).resolve().parent.parent
+                  / "web_admin.py").read_text(encoding="utf-8")
+        marker = source.index('if __name__ == "__main__":')
+        block = source[marker:marker + 1500]
+        # The exact call, not just the two substrings independently -- the
+        # surrounding comment explaining why also contains the literal
+        # text "threaded=True", so checking for it loosely would still
+        # pass even with the real keyword argument removed from the code.
+        self.assertIn("app.run(host=host, port=port, threaded=True)", block)
+
+
 class SyncPeerInventoryTests(unittest.TestCase):
     """Peers are configured in [sync], [sync2] and one [sync_mqttN] per
     broker, and tracked separately in peer_sync_state -- so there was no one

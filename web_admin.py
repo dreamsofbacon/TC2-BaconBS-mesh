@@ -7796,4 +7796,16 @@ if __name__ == "__main__":
     app = create_app()
     port = int(os.getenv("BBS_WEBGUI_PORT", "8081"))
     host = os.getenv("BBS_WEBGUI_HOST", "127.0.0.1")
-    app.run(host=host, port=port)
+    # threaded=True: Werkzeug's dev server otherwise handles one request at
+    # a time. This process is never designed to hold a live external
+    # connection itself (it reads/writes local config and the database;
+    # mesh-bbs.service is the one with real reconnect/isolation logic for
+    # a flaky network), so nothing here is SUPPOSED to block -- but if
+    # anything ever did (a slow DNS lookup with no timeout, one client
+    # hammering an expensive page), single-threaded meant that one stuck
+    # request took the entire admin UI down for everyone else too, and
+    # silently: the process never crashes or exits, so systemd's
+    # Restart=always never has anything to catch. A materva outage
+    # correlated with the web admin going unresponsive and staying that
+    # way is exactly what that looks like from the outside.
+    app.run(host=host, port=port, threaded=True)
