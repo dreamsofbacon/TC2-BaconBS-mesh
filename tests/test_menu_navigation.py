@@ -236,6 +236,9 @@ class GamesAndChatterNavigationTests(unittest.TestCase):
     screen they no longer live under."""
 
     def setUp(self):
+        mail = mock.patch.object(ch, "get_mail", return_value=[])
+        mail.start()
+        self.addCleanup(mail.stop)
         self.sent = []
         self.send_patch = mock.patch.object(
             ch, "send_message", side_effect=lambda text, *_args: self.sent.append(text))
@@ -305,7 +308,7 @@ class ApiGatewayNavigationTests(unittest.TestCase):
 
     def test_cancel_returns_to_main_menu(self):
         sent = []
-        with mock.patch.object(ch, "send_message", side_effect=lambda text, *_args: sent.append(text)):
+        with mock.patch.object(ch, "get_mail", return_value=[]), mock.patch.object(ch, "send_message", side_effect=lambda text, *_args: sent.append(text)):
             ch.update_user_state(1234, {'command': 'APIGW', 'step': 2, 'mode': 'ai'})
             ch.handle_apigw_steps(1234, "!cancel", _FakeInterface())
         self.assertIn("Bacon BBS", sent[-1])

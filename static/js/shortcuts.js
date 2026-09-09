@@ -24,41 +24,84 @@
   var _qsTimer    = null;
   var _qsCurrent  = -1;
 
+  var _qsVersion = 0;
+  var _qsOpener = null;
+  var destinations = [];
+  var recentKey = 'bbs_recent_pages';
+
+  function recentPages() {
+    try {
+      var saved = JSON.parse(sessionStorage.getItem(recentKey) || '[]');
+      return Array.isArray(saved) ? saved.filter(function(url) {
+        return destinations.some(function(item) { return item.url === url; });
+      }).slice(0, 5) : [];
+    } catch (e) { return []; }
+  }
+
+  function localResults(q) {
+    var groups = {};
+    if (!q) {
+      groups.Recent = recentPages().map(function(url) {
+        return destinations.find(function(item) { return item.url === url; });
+      });
+    }
+    groups['Go to'] = destinations.filter(function(item) {
+      return item.title.toLowerCase().includes(q.toLowerCase());
+    });
+    return groups;
+  }
+
   function openQS() {
-    _qsModal = _qsModal || document.getElementById('qs-modal');
     if (!_qsModal) return;
+    if (!_qsModal.classList.contains('open')) _qsOpener = document.activeElement;
     _qsModal.classList.add('open');
-    _qsInput = _qsModal.querySelector('#qs-input');
-    _qsResults = _qsModal.querySelector('#qs-results');
-    if (_qsInput) { _qsInput.value = ''; _qsInput.focus(); }
-    if (_qsResults) _qsResults.innerHTML = '<p class="qs-hint">Type to search bulletins, mail, channels, clients&hellip;</p>';
+    _qsModal.setAttribute('aria-hidden', 'false');
+    clearTimeout(_qsTimer);
+    _qsVersion++;
+    _qsInput.value = '';
+    renderResults(localResults(''), '');
+    _qsInput.focus();
   }
 
   function closeQS() {
-    if (_qsModal) _qsModal.classList.remove('open');
+    clearTimeout(_qsTimer);
+    _qsVersion++;
+    if (_qsModal && _qsModal.classList.contains('open')) {
+      _qsModal.classList.remove('open');
+      _qsModal.setAttribute('aria-hidden', 'true');
+      if (_qsOpener && _qsOpener.isConnected) _qsOpener.focus();
+    }
   }
 
   function runSearch(q) {
-    if (!_qsResults) return;
-    if (!q || q.length < 2) {
-      _qsResults.innerHTML = '<p class="qs-hint">Type to search bulletins, mail, channels, clients&hellip;</p>';
-      return;
-    }
-    _qsResults.innerHTML = '<p class="qs-hint">Searching&hellip;</p>';
-    var csrfToken = (window.BBS && window.BBS._csrfToken) || '';
-    fetch('/api/quick-search?q=' + encodeURIComponent(q), {
-      headers: { 'X-CSRF-Token': csrfToken }
-    })
-      .then(function(r) { return r.json(); })
+    var version = ++_qsVersion;
+    var groups = localResults(q);
+    renderResults(groups, q);
+    if (q.length < 2) return;
+    fetch('/api/quick-search?q=' + encodeURIComponent(q))
+      .then(function(r) {
+        if (!r.ok) throw new Error('Search unavailable');
+        return r.json();
+      })
       .then(function(data) {
-        renderResults(data);
+        if (version !== _qsVersion) return;
+        (data.results || []).forEach(function(item) {
+          var group = item.type || 'Content';
+          if (!groups[group]) groups[group] = [];
+          groups[group].push({title: item.label, sub: item.sub, url: item.url});
+        });
+        renderResults(groups, q);
       })
       .catch(function() {
-        _qsResults.innerHTML = '<p class="qs-empty">Search unavailable.</p>';
+        if (version !== _qsVersion) return;
+        var notice = document.createElement('p');
+        notice.className = 'qs-empty';
+        notice.textContent = 'Content search unavailable. Page shortcuts still work.';
+        _qsResults.appendChild(notice);
       });
   }
 
-  function renderResults(data) {
+  function renderResults(data, q) {
     if (!_qsResults) return;
     _qsResults.innerHTML = '';
     var hasAny = false;
@@ -72,14 +115,14 @@
       lbl.className = 'qs-group-label';
       lbl.textContent = group;
       grp.appendChild(lbl);
-
       items.forEach(function(item) {
+        // Only local destinations may be opened by the palette.
+        if (!item.url || !item.url.startsWith('/') || item.url.startsWith('//') || item.url.includes('\\')) return;
         var a = document.createElement('a');
         a.className = 'qs-result';
-        a.href = item.url || '#';
+        a.href = item.url;
         a.innerHTML = '<div><div>' + escHtml(item.title || '') + '</div>' +
-          (item.sub ? '<div class="qs-result-sub">' + escHtml(item.sub) + '</div>' : '') +
-          '</div>';
+          (item.sub ? '<div class="qs-result-sub">' + escHtml(item.sub) + '</div>' : '') + '</div>';
         a.addEventListener('click', closeQS);
         grp.appendChild(a);
       });
@@ -142,20 +185,28 @@
       return;
     }
 
-    if (inInput) return;
-
-    /* QS modal navigation */
+    /* QS modal navigation also works while the search input has focus. */
     if (_qsModal && _qsModal.classList.contains('open')) {
+      if (e.key === 'Tab') {
+        var focusable = [_qsInput].concat(Array.from(_qsResults.querySelectorAll('.qs-result')));
+        var index = focusable.indexOf(document.activeElement);
+        var next = (index + (e.shiftKey ? -1 : 1) + focusable.length) % focusable.length;
+        e.preventDefault();
+        focusable[next].focus();
+        return;
+      }
       if (e.key === 'ArrowDown') { e.preventDefault(); qsNavigate(1); return; }
       if (e.key === 'ArrowUp')   { e.preventDefault(); qsNavigate(-1); return; }
       if (e.key === 'Enter') {
         if (_qsCurrent >= 0 && _qsResults) {
           var items = _qsResults.querySelectorAll('.qs-result');
-          if (items[_qsCurrent]) { items[_qsCurrent].click(); return; }
+          if (items[_qsCurrent]) { e.preventDefault(); items[_qsCurrent].click(); return; }
         }
       }
       return;
     }
+
+    if (inInput) return;
 
     /* ? opens shortcut help */
     if (e.key === '?') { openHelp(); return; }
@@ -200,9 +251,23 @@
     _qsInput   = qsInp;
     _qsResults = qsModal && qsModal.querySelector('#qs-results');
 
+    document.querySelectorAll('.nav-links a, .nav-dropdown-menu a').forEach(function(a) {
+      var url = a.getAttribute('href');
+      if (!url || !url.startsWith('/') || a.target === '_blank' || destinations.some(function(item) { return item.url === url; })) return;
+      destinations.push({title: a.textContent.replace(a.querySelector('.nav-symbol') ? a.querySelector('.nav-symbol').textContent : '', '').trim(), url: url});
+    });
+    var current = destinations.find(function(item) { return item.url === window.location.pathname; });
+    if (current) {
+      try { sessionStorage.setItem(recentKey, JSON.stringify([current.url].concat(recentPages().filter(function(url) { return url !== current.url; })).slice(0, 5))); } catch (e) {}
+    }
+    var searchButton = document.getElementById('quick-search-button');
+    if (searchButton) searchButton.addEventListener('click', openQS);
+
     if (qsInp) {
       qsInp.addEventListener('input', function() {
         clearTimeout(_qsTimer);
+        _qsVersion++;
+        _qsCurrent = -1;
         _qsTimer = setTimeout(function() { runSearch(qsInp.value.trim()); }, 280);
       });
     }

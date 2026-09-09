@@ -43,7 +43,7 @@ def _declared(path):
 def _imported():
     stdlib = set(sys.stdlib_module_names)
     files = [p for p in REPO.rglob("*.py")
-             if ".venv" not in p.parts and "node_modules" not in p.parts]
+             if not {".venv", "venv", "node_modules"}.intersection(p.parts)]
     local = {p.stem for p in files}
     found = {}
     for f in files:

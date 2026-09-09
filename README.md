@@ -23,6 +23,9 @@ Forked from [TC²-BBS-mesh](https://github.com/TheCommsChannel/TC2-BBS-mesh) wit
 - **Consent-Based Durable Mail Relay** — Relay is off by default and syncs across BBS peers when enabled from Profile; eligible offline devices remain queued until heard again, while revocation cancels pending delivery
 - **Per-Link Reconnect** — Drop and re-establish any single radio or MQTT link from Web Admin → Settings → Links & Services, without restarting the service or disturbing the other links
 - **Fortune Teller** — Random fortunes from a configurable text file
+- **Operations Overview** — A new landing page with live link health, recent bulletins, board activity, and content totals, plus grouped sidebar navigation and responsive layouts across the admin UI
+- **Quick Navigation** — Open Search or press Ctrl/Cmd+K to search pages and content, revisit recent pages in this browser tab, and navigate with arrow keys and Enter
+- **Live Bulletin Preview** — Preview new and edited bulletins as plain text, with separate UTF-8 byte counts for subject and body
 - **Web Admin Dashboard** — Full moderation interface at `localhost:8081` with real-time sync monitoring, peer hash visualizations, transmission logs, and manual sync controls
 
 ---
@@ -819,7 +822,7 @@ code execution, and the signature is the only thing protecting it.
 
 ## Emulator
 
-**Tools &rarr; Emulator** in the web admin types at the BBS the way a mesh
+**Administration → Emulator** in the web admin types at the BBS the way a mesh
 user would. It drives the real command handlers rather than a stand-in, so
 the reply is what a radio would have received &mdash; shown as the separate
 packets it would have arrived in, with byte counts, which is the one thing
@@ -888,3 +891,9 @@ and the decisions that look like tidying opportunities but are not.
 ## License
 
 GNU General Public License v3.0
+
+### Unified radio administration
+
+Use **Network → Radios** for Meshtastic and MeshCore status, named channels, contacts or known nodes, supported identity controls, and local channel messaging. Public Chatter now includes an administrator composer with explicit local radio/channel selection. MQTT-only operation remains supported.
+
+See [Radios and public chatter](docs/RADIOS.md) for setup of one or both networks, send-result meanings, service upgrade instructions, and the hardware validation checklist.

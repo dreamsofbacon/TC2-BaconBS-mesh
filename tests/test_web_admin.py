@@ -122,6 +122,31 @@ class WebAdminSettingsTests(unittest.TestCase):
         self.login(client)
         return client.get("/settings").get_data(as_text=True)
 
+    def test_dashboard_requires_login_and_is_authenticated_landing_page(self):
+        client = create_app().test_client()
+        self.assertEqual(client.get("/dashboard").status_code, 302)
+        self.assertTrue(self.login(client).headers["Location"].endswith("/dashboard"))
+        self.assertTrue(client.get("/").headers["Location"].endswith("/dashboard"))
+        page = client.get("/dashboard").get_data(as_text=True)
+        self.assertIn("Your community starts here", page)
+        self.assertIn("Waiting for status", page)
+        self.assertIn("Persisted roster", page)
+
+    def test_dashboard_latest_bulletins_are_bounded_and_escape_content(self):
+        client = create_app().test_client()
+        self.login(client)
+        with sqlite3.connect(self.db_path) as conn:
+            for n in range(8):
+                conn.execute("INSERT INTO bulletins (board,sender_short_name,date,subject,content,unique_id) VALUES (?,?,?,?,?,?)",
+                             ("General", "Test", "2026-09-09 10:00:00", f"<b>Update {n}</b>", "Body", f"overview-{n}"))
+        response = client.get("/dashboard")
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertEqual(page.count('class="activity-item"'), 6)
+        self.assertIn("&lt;b&gt;Update 7&lt;/b&gt;", page)
+        self.assertNotIn("Update 0", page)
+        self.assertIn("8 posts", page)
+
     def test_every_settings_nav_link_has_a_panel_and_vice_versa(self):
         """The sidebar is the only way to reach a section once panels are
         tabbed, so a link with no panel is a dead end and a panel with no
@@ -223,7 +248,7 @@ class WebAdminSettingsTests(unittest.TestCase):
         restarted_client = restarted_app.test_client()
         login_response = self.login(restarted_client, password="newpass")
         self.assertEqual(login_response.status_code, 302)
-        self.assertTrue(login_response.headers["Location"].endswith("/bulletins"))
+        self.assertTrue(login_response.headers["Location"].endswith("/dashboard"))
 
     def test_sync_settings_update_config_and_runtime_interface(self):
         runtime_interface = FakeInterface()
@@ -886,9 +911,10 @@ class WebAdminSettingsTests(unittest.TestCase):
         response = client.get("/system/meshtastic")
         self.assertEqual(response.status_code, 200)
         page = response.get_data(as_text=True)
-        self.assertIn("MeshCore Companion Radio", page)
-        self.assertIn("192.0.2.20:5000", page)
-        self.assertIn("contact list", page)
+        self.assertIn("Radios", page)
+        radios = client.get("/api/radios").get_json()["radios"]
+        self.assertEqual(radios[0]["network"], "meshcore")
+        self.assertEqual(radios[0]["state"], "configured")
 
     def test_radio_device_page_shows_both_radios_in_bridge_mode(self):
         config = configparser.ConfigParser()
@@ -909,11 +935,10 @@ class WebAdminSettingsTests(unittest.TestCase):
         response = client.get("/system/meshtastic")
         self.assertEqual(response.status_code, 200)
         page = response.get_data(as_text=True)
-        self.assertIn("Radio 1 (primary)", page)
-        self.assertIn("Radio 2 (secondary", page)
-        self.assertIn("MeshCore Companion Radio", page)
-        self.assertIn("192.0.2.30:5000", page)
-        self.assertIn("bridge mode", page)
+        self.assertIn("Radios", page)
+        radios = client.get("/api/radios").get_json()["radios"]
+        self.assertEqual([(r["id"], r["network"]) for r in radios],
+                         [("primary", "meshtastic"), ("secondary", "meshcore")])
 
     def test_radio_device_page_single_radio_unchanged_without_interface2(self):
         """No [interface2] at all -- must render exactly as before dual-radio
@@ -933,7 +958,8 @@ class WebAdminSettingsTests(unittest.TestCase):
         page = response.get_data(as_text=True)
         self.assertNotIn("Radio 1 (primary)", page)
         self.assertNotIn("bridge mode", page)
-        self.assertIn("Meshtastic Device", page)
+        self.assertIn("Radios", page)
+        self.assertEqual(len(client.get("/api/radios").get_json()["radios"]), 1)
 
     def test_settings_diagnostics_shows_per_radio_breakdown_in_bridge_mode(self):
         with open(self.runtime_diag_path, "w", encoding="utf-8") as snapshot_file:

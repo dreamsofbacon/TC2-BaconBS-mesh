@@ -287,8 +287,10 @@
           var links = Array.isArray(data.links) ? data.links : [];
           notifyTransitions(links);
           render(links);
+          document.dispatchEvent(new CustomEvent('bbs:links', {detail: links}));
         })
         .catch(function() {
+          document.dispatchEvent(new CustomEvent('bbs:links-unavailable'));
           // Keep whatever badges are already shown rather than flashing to
           // empty on a single failed poll.
         });

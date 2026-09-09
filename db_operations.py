@@ -1330,14 +1330,12 @@ def channel_name_placeholders(channel_index: int) -> list:
     """
     index = int(channel_index)
     placeholders = ['', f'Channel {index}']
-    if index == 0:
-        # The two defaults the capture path substitutes for an unnamed
-        # primary channel, one per transport.
-        placeholders.extend(['Public', 'LongFast'])
+    # Public and LongFast can be real names. Old releases also guessed them,
+    # but there is no provenance flag to distinguish those rows safely.
     return placeholders
 
 
-def backfill_channel_names(network: str, names: dict) -> int:
+def backfill_channel_names(network: str, names: dict, capture_node_id=None) -> int:
     """Replace placeholder channel labels with the radio's real names.
 
     Every row stores the label known when it was captured, so anything heard
@@ -1362,11 +1360,13 @@ def backfill_channel_names(network: str, names: dict) -> int:
         if not placeholders:
             continue
         marks = ','.join('?' for _ in placeholders)
+        scope_sql = ' AND capture_node_id = ?' if capture_node_id is not None else ''
+        scope_values = [str(capture_node_id)] if capture_node_id is not None else []
         cursor.execute(
             f"""UPDATE public_chatter SET channel_name = ?
                  WHERE network = ? AND channel_index = ?
-                   AND channel_name IN ({marks})""",
-            [label, str(network or '').casefold(), int(index)] + placeholders,
+                   AND channel_name IN ({marks}){scope_sql}""",
+            [label, str(network or '').casefold(), int(index)] + placeholders + scope_values,
         )
         updated += cursor.rowcount
     conn.commit()

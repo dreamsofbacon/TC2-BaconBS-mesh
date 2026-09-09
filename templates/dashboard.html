@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="overview-heading">
+  <div><div class="eyebrow">YOUR MESH, AT A GLANCE</div><h1>Network overview</h1><p class="text-muted">A local view of your community, connections, and latest updates.</p></div>
+  <a class="btn btn-primary" href="{{ url_for('bulletin_new') }}">＋ New bulletin</a>
+</header>
+<div class="overview-metrics">
+  <a class="metric-card" href="{{ url_for('table_list', table='bulletins') }}"><span>Bulletins</span><strong>{{ counts.bulletins }}</strong><small>Community posts <span aria-hidden="true">↗</span></small></a>
+  <a class="metric-card" href="{{ url_for('table_list', table='channels') }}"><span>Channels</span><strong>{{ counts.channels }}</strong><small>Shared directory <span aria-hidden="true">↗</span></small></a>
+  <a class="metric-card" href="{{ url_for('clients_summary') }}"><span>Known clients</span><strong>{{ counts.mesh_clients }}</strong><small>Persisted roster · not online count <span aria-hidden="true">↗</span></small></a>
+  <a class="metric-card metric-connection" href="{{ url_for('meshtastic_device') }}"><span>Connected links</span><strong id="overview-link-count">—</strong><small id="overview-link-summary">Waiting for status</small></a>
+</div>
+<div class="overview-grid">
+  <section class="card overview-feed">
+    <div class="section-heading"><div><div class="eyebrow">COMMUNITY</div><h2>Latest bulletins</h2></div><a href="{{ url_for('table_list', table='bulletins') }}">View all →</a></div>
+    {% for post in recent %}
+    <a class="activity-item" href="{{ url_for('table_edit', table='bulletins', row_id=post.id) }}">
+      <span class="activity-avatar" aria-hidden="true">{{ (post.sender_short_name or '?')[:1]|upper }}</span>
+      <div class="activity-copy"><div><span class="board-tag">{{ post.board }}</span><time title="{{ post.date }}">{{ post.date|relative_age }}</time></div><h3>{{ post.subject or 'Untitled bulletin' }}</h3><span class="text-muted">{{ post.sender_short_name or 'Anonymous' }}</span></div><span class="activity-arrow" aria-hidden="true">↗</span>
+    </a>
+    {% else %}
+    <div class="overview-empty"><span class="empty-symbol" aria-hidden="true">▤</span><h3>Your community starts here</h3><p>Post a welcome message, a field update, or something worth sharing.</p><a class="btn" href="{{ url_for('bulletin_new') }}">Write the first bulletin</a></div>
+    {% endfor %}
+    <p class="snapshot-note">Content snapshot at page load. <a href="{{ url_for('dashboard') }}">Refresh overview</a></p>
+  </section>
+  <div class="overview-aside">
+    <section class="card"><div class="section-heading"><div><div class="eyebrow">CONNECTIONS</div><h2>Link health</h2></div><span class="live-indicator">5s refresh</span></div><div id="overview-links"><p class="text-muted">Checking local links…</p></div><p id="overview-updated" class="snapshot-note" role="status"></p><a class="overview-footer-link" href="{{ url_for('meshtastic_device') }}">Manage radios →</a></section>
+    <section class="card"><div class="eyebrow">EXPLORE</div><h2>On the air</h2><a class="quick-action" href="{{ url_for('public_chatter_page') }}"><span><strong>Public chatter</strong><small>Follow conversations across your networks</small></span>→</a><a class="quick-action" href="{{ url_for('system_transmissions') }}"><span><strong>Transmission log</strong><small>Inspect recent traffic and sync events</small></span>→</a><a class="quick-action" href="{{ url_for('emulator_page') }}"><span><strong>BBS emulator</strong><small>Try the experience your radio users see</small></span>→</a></section>
+  </div>
+</div>
+{% if boards %}<section class="card"><div class="section-heading"><div><div class="eyebrow">BULLETIN BOARDS</div><h2>Where the conversation happens</h2></div></div><div class="board-overview">{% for board in boards %}<div><strong>{{ board.board }}</strong><span>{{ board.count }} post{{ '' if board.count == 1 else 's' }}</span></div>{% endfor %}</div></section>{% endif %}
+{% endblock %}
+{% block extra_scripts %}<script src="{{ url_for('static', filename='js/overview.js', v=asset_version) }}"></script>{% endblock %}

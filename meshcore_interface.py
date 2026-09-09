@@ -231,6 +231,7 @@ class MeshCoreInterface:
         if self._meshcore is None:
             return
         names: dict[int, str] = {}
+        fingerprints = {}
         for index in range(MAX_CHANNELS):
             try:
                 event = await self._meshcore.commands.get_channel(index)
@@ -243,7 +244,10 @@ class MeshCoreInterface:
             name = str((event.payload or {}).get("channel_name") or "").strip()
             if name:
                 names[index] = name
+                import hashlib
+                fingerprints[index] = hashlib.sha256(repr(event.payload).encode()).hexdigest()
         self.channel_names = names
+        self.channel_fingerprints = fingerprints
         if names:
             logging.info(
                 "MeshCore channel names: %s",
@@ -381,7 +385,7 @@ class MeshCoreInterface:
             # slot has no name configured.
             "channel_name": self.channel_names.get(
                 channel_index,
-                "Public" if channel_index == 0 else f"Channel {channel_index}"),
+                ""),
             "sender_timestamp": payload.get("sender_timestamp"),
             "message_hash": payload.get("txt_hash"),
             # How far it travelled. MeshCore has every repeater append its
@@ -454,12 +458,12 @@ class MeshCoreInterface:
                 )
             return await self._meshcore.commands.send_msg(destination, text)
 
-    async def _send_channel(self, text: str):
+    async def _send_channel(self, text: str, channel_index=None):
         if self._meshcore is None or self._send_lock is None:
             raise ConnectionError("MeshCore interface is not connected")
         async with self._send_lock:
             return await self._meshcore.commands.send_chan_msg(
-                self.channel_index, text
+                self.channel_index if channel_index is None else channel_index, text
             )
 
     def sendText(
@@ -468,6 +472,7 @@ class MeshCoreInterface:
         destinationId: Any,
         wantAck: bool = True,
         wantResponse: bool = False,
+        channelIndex=None,
     ) -> SimpleNamespace:
         del wantResponse
         encoded = text.encode("utf-8")
@@ -478,7 +483,7 @@ class MeshCoreInterface:
         is_broadcast = destinationId in (0, 255, "0", "255")
         if is_broadcast:
             future = asyncio.run_coroutine_threadsafe(
-                self._send_channel(text), self._loop
+                self._send_channel(text, channelIndex), self._loop
             )
         else:
             destination = self._resolve_destination(destinationId)
@@ -496,6 +501,38 @@ class MeshCoreInterface:
             else str(expected_ack or int(time.time()))
         )
         return SimpleNamespace(id=send_id)
+
+    def admin_operation(self, action, **values):
+        """Run supported controls on the connection-owning asyncio loop."""
+        async def run():
+            if self._meshcore is None or self._send_lock is None:
+                raise ConnectionError("MeshCore is disconnected")
+            async with self._send_lock:
+                commands = self._meshcore.commands
+                if action == 'identity':
+                    result = await commands.set_name(values['name'])
+                elif action == 'remove_contact':
+                    result = await commands.remove_contact(values['contact'])
+                elif action == 'refresh':
+                    await self._meshcore.ensure_contacts()
+                    self._refresh_nodes()
+                    await self._refresh_channel_names()
+                    return
+                else:
+                    raise ValueError("Unsupported MeshCore operation")
+                if result is None or result.type != EventType.OK:
+                    raise IOError("MeshCore did not confirm the operation")
+                if action == 'identity':
+                    self._meshcore.self_info['name'] = values['name']
+                elif action == 'remove_contact':
+                    self._meshcore.contacts.pop(values['contact'], None)
+                    self._refresh_nodes()
+        future = asyncio.run_coroutine_threadsafe(run(), self._loop)
+        try:
+            return future.result(timeout=self.send_timeout_seconds)
+        except TimeoutError:
+            future.cancel()
+            raise
 
     def getMyNodeInfo(self) -> dict[str, Any]:
         if self._meshcore is None:

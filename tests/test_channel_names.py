@@ -13,6 +13,7 @@ config.ini, because an index is what the radio addresses and a name can be
 edited out from under it.
 """
 import re
+from datetime import datetime, timezone, timedelta
 import sqlite3
 import sys
 import types
@@ -68,9 +69,9 @@ class CaptureUsesTheRealNameTests(unittest.TestCase):
         observation = observe(_Interface({3: "Other"}), channel_index=2)
         self.assertEqual(observation["channel_name"], "")
 
-    def test_the_primary_channel_keeps_its_conventional_name(self):
+    def test_unnamed_primary_channel_is_not_guessed(self):
         self.assertEqual(
-            observe(_Interface(), channel_index=0)["channel_name"], "Public")
+            observe(_Interface(), channel_index=0)["channel_name"], "")
 
     def test_a_real_name_replaces_the_conventional_one(self):
         self.assertEqual(
@@ -93,10 +94,10 @@ class PlaceholderTests(unittest.TestCase):
     def test_an_empty_label_is_a_placeholder(self):
         self.assertIn("", db_operations.channel_name_placeholders(2))
 
-    def test_both_transports_defaults_for_the_primary_are_placeholders(self):
+    def test_conventional_names_are_not_assumed_to_be_placeholders(self):
         primary = db_operations.channel_name_placeholders(0)
-        self.assertIn("Public", primary)
-        self.assertIn("LongFast", primary)
+        self.assertNotIn("Public", primary)
+        self.assertNotIn("LongFast", primary)
 
     def test_those_defaults_are_not_placeholders_on_other_channels(self):
         """A channel someone actually named "Public" must keep that name."""
@@ -130,9 +131,9 @@ class BackfillTests(unittest.TestCase):
         db_operations.add_public_chatter(
             unique_id=unique_id, network=network, channel_index=channel_index,
             channel_name=channel_name, sender_node_id=None, sender_name="",
-            content="hello", message_timestamp="2026-09-02T14:00:00Z",
-            captured_at="2026-09-02T14:00:00Z", capture_node_id="!c",
-            expires_at="2026-09-09T14:00:00Z", hops=None)
+            content="hello", message_timestamp=datetime.now(timezone.utc).isoformat(),
+            captured_at=datetime.now(timezone.utc).isoformat(), capture_node_id="!c",
+            expires_at=(datetime.now(timezone.utc) + timedelta(days=7)).isoformat(), hops=None)
 
     def names(self):
         return {row[0] for row in db_operations.thread_local.connection.execute(
@@ -168,10 +169,10 @@ class BackfillTests(unittest.TestCase):
         db_operations.backfill_channel_names("meshcore", {2: "Roanoke VA"})
         self.assertEqual(self.names(), {"Channel 3"})
 
-    def test_the_primary_conventional_names_are_replaced(self):
+    def test_a_real_public_name_is_not_rewritten_after_rename(self):
         self.add("u1", 0, "Public")
         db_operations.backfill_channel_names("meshcore", {0: "Home"})
-        self.assertEqual(self.names(), {"Home"})
+        self.assertEqual(self.names(), {"Public"})
 
     def test_several_channels_in_one_pass(self):
         self.add("u1", 2, "Channel 2")
@@ -234,9 +235,9 @@ class MeshtasticChannelTableTests(unittest.TestCase):
             self.node([self.channel(0, "")], modem_preset=3))
         self.assertEqual(names, {0: "MediumSlow"})
 
-    def test_an_unnamed_primary_with_no_preset_says_longfast(self):
+    def test_an_unnamed_primary_with_no_preset_is_unknown(self):
         names = server._meshtastic_channel_names(self.node([self.channel(0, "")]))
-        self.assertEqual(names, {0: "LongFast"})
+        self.assertEqual(names, {})
 
     def test_an_unnamed_secondary_is_left_out(self):
         """It has no conventional name, so its number is the honest label."""

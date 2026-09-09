@@ -1,4 +1,5 @@
 import os
+import asyncio
 import sqlite3
 import tempfile
 import unittest
@@ -73,6 +74,7 @@ class SSHBindTests(unittest.IsolatedAsyncioTestCase):
 
 class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        self.connections = []
         self.temp_dir = tempfile.TemporaryDirectory()
         db_operations.thread_local.connection = sqlite3.connect(":memory:")
         db_operations.initialize_database()
@@ -89,6 +91,10 @@ class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.port = self.listener.get_port()
 
     async def asyncTearDown(self):
+        for connection in self.connections:
+            connection.close()
+        for connection in self.connections:
+            await asyncio.wait_for(connection.wait_closed(), timeout=5)
         self.listener.close()
         await self.listener.wait_closed()
         for token in list(bbs_emulator._sessions):
@@ -103,6 +109,7 @@ class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
         connection = await asyncssh.connect(
             "127.0.0.1", port=self.port, username=username,
             password=password, known_hosts=None)
+        self.connections.append(connection)
         process = await connection.create_process(term_type="xterm")
         return connection, process
 
@@ -112,7 +119,7 @@ class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
         welcome = await process.stdout.readuntil("> ")
         self.assertIn("Account Caller created", welcome)
         self.assertIn("Bacon BBS", welcome)
-        process.stdin.write("2\x7f3\n")
+        process.stdin.write("2\x7f5\n")
         utilities = await process.stdout.readuntil("> ")
         self.assertIn("\b \b", utilities)
         self.assertIn("Utilities Menu", utilities)

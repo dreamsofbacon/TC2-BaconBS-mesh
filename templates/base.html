@@ -7,9 +7,10 @@
   <title>{{ title }} — {{ title_suffix|default('Bacon BBS Admin') }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css', v=asset_version) }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css', v=asset_version) }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/operations.css', v=asset_version) }}">
   {% block extra_head %}{% endblock %}
 </head>
-<body>
+<body{% if show_nav %} class="operations-layout"{% endif %}>
 <a href="#main-content" class="skip-link">Skip to content</a>
 <div class="page-wrapper">
 
@@ -23,76 +24,28 @@
         <rect y="14" width="18" height="2" rx="1"/>
       </svg>
     </button>
-    <a href="{{ url_for('table_list', table='bulletins') }}" class="nav-brand" aria-label="Bacon BBS Home">Bacon BBS</a>
+    <a href="{{ url_for('dashboard') }}" class="nav-brand" aria-label="Bacon BBS Home"><span class="brand-mark" aria-hidden="true">B</span> Bacon BBS</a>
     <div class="nav-links" role="list">
-      <!-- Content group -->
-      <a href="{{ url_for('table_list', table='bulletins') }}"
-         class="nav-link{% if request.endpoint == 'table_list' and request.view_args.get('table') == 'bulletins' %} active{% endif %}"
-         role="listitem">Bulletins</a>
-      <a href="{{ url_for('table_list', table='channels') }}"
-         class="nav-link{% if request.endpoint == 'table_list' and request.view_args.get('table') == 'channels' %} active{% endif %}"
-         role="listitem">Channels</a>
-      <a href="{{ url_for('table_list', table='mail') }}"
-         class="nav-link{% if request.endpoint == 'table_list' and request.view_args.get('table') == 'mail' %} active{% endif %}"
-         role="listitem">Mail</a>
-        <a href="{{ url_for('public_chatter_page') }}"
-           class="nav-link{% if request.endpoint == 'public_chatter_page' %} active{% endif %}"
-           role="listitem">Chatter</a>
-      <span class="nav-sep" aria-hidden="true"></span>
-      <!-- Admin group -->
-      <a href="{{ url_for('clients_summary') }}"
-         class="nav-link{% if request.endpoint == 'clients_summary' or request.endpoint == 'client_profile' %} active{% endif %}"
-         role="listitem">Clients</a>
-      <a href="{{ url_for('fleet_page') }}"
-         class="nav-link{% if request.endpoint == 'fleet_page' %} active{% endif %}"
-         role="listitem">Fleet</a>
-      <a href="{{ url_for('accounts_list') }}"
-         class="nav-link{% if request.endpoint == 'accounts_list' or request.endpoint == 'account_detail' %} active{% endif %}"
-         role="listitem">Accounts</a>
-      <a href="{{ url_for('settings_page') }}"
-         class="nav-link{% if request.endpoint == 'settings_page' %} active{% endif %}"
-         role="listitem">Settings</a>
-      <span class="nav-sep" aria-hidden="true"></span>
-      <!-- Tools dropdown -->
-      {% set tools_active = request.endpoint in ['emulator_page', 'system_transmissions', 'system_flowchart', 'meshtastic_device', 'scores_page', 'deleted_content'] %}
-      <div class="nav-dropdown" id="tools-dropdown">
-        <button class="nav-link nav-dropdown-toggle{% if tools_active %} active{% endif %}"
-                id="tools-dropdown-btn"
-                type="button"
-                aria-haspopup="true"
-                aria-expanded="false"
-                aria-controls="tools-dropdown-menu">
-          Tools
-          <svg viewBox="0 0 10 6" fill="currentColor" width="9" height="9" aria-hidden="true" style="opacity:0.6"><path d="M1 1l4 4 4-4"/></svg>
-        </button>
-        <div class="nav-dropdown-menu" id="tools-dropdown-menu" role="menu">
-          <a href="{{ url_for('emulator_page') }}"
-             class="nav-dropdown-item{% if request.endpoint == 'emulator_page' %} active{% endif %}"
-             role="menuitem">Emulator</a>
-          <a href="{{ url_for('system_transmissions') }}"
-             class="nav-dropdown-item{% if request.endpoint == 'system_transmissions' %} active{% endif %}"
-             role="menuitem">Transmissions</a>
-          <a href="{{ url_for('system_flowchart') }}"
-             class="nav-dropdown-item{% if request.endpoint == 'system_flowchart' %} active{% endif %}"
-             role="menuitem">Docs</a>
-          <a href="{{ url_for('meshtastic_device') }}"
-             class="nav-dropdown-item{% if request.endpoint == 'meshtastic_device' %} active{% endif %}"
-             role="menuitem">Meshtastic</a>
-          <a href="{{ url_for('scores_page') }}"
-             class="nav-dropdown-item{% if request.endpoint == 'scores_page' %} active{% endif %}"
-             role="menuitem">Game Scores</a>
-          <a href="{{ url_for('deleted_content') }}"
-             class="nav-dropdown-item{% if request.endpoint in ['deleted_content'] %} active{% endif %}"
-             role="menuitem">Deleted</a>
-          <a href="{{ url_for('mesh_ui_index') }}"
-             class="nav-dropdown-item"
-             role="menuitem"
-             target="_blank"
-             rel="noopener noreferrer">Mesh UI ↗</a>
-        </div>
-      </div>
+      <span class="nav-section-label">Workspace</span>
+      <a href="{{ url_for('dashboard') }}" class="nav-link{% if request.endpoint == 'dashboard' %} active{% endif %}"><span class="nav-symbol" aria-hidden="true">◫</span>Overview</a>
+      <a href="{{ url_for('table_list', table='bulletins') }}" class="nav-link{% if request.view_args.get('table') == 'bulletins' %} active{% endif %}"><span class="nav-symbol" aria-hidden="true">▤</span>Bulletins</a>
+      <a href="{{ url_for('table_list', table='channels') }}" class="nav-link{% if request.view_args.get('table') == 'channels' %} active{% endif %}"><span class="nav-symbol" aria-hidden="true">#</span>Channels</a>
+      <a href="{{ url_for('table_list', table='mail') }}" class="nav-link{% if request.view_args.get('table') == 'mail' %} active{% endif %}"><span class="nav-symbol" aria-hidden="true">✉</span>Mail</a>
+      <a href="{{ url_for('public_chatter_page') }}" class="nav-link{% if request.endpoint == 'public_chatter_page' %} active{% endif %}"><span class="nav-symbol" aria-hidden="true">≋</span>Public chatter</a>
+      <span class="nav-section-label">Network</span>
+      {% for endpoint, label, symbol in [('meshtastic_device','Radios','⌁'), ('clients_summary','Clients','◎'), ('fleet_page','Fleet','◇'), ('system_transmissions','Transmissions','↗')] %}
+      <a href="{{ url_for(endpoint) }}" class="nav-link{% if request.endpoint == endpoint %} active{% endif %}"><span class="nav-symbol" aria-hidden="true">{{ symbol }}</span>{{ label }}</a>
+      {% endfor %}
+      <span class="nav-section-label">Administration</span>
+      {% for endpoint, label, symbol in [('accounts_list','Accounts','⊙'), ('settings_page','Settings','⚙'), ('emulator_page','Emulator','›_'), ('scores_page','Game scores','☆'), ('system_flowchart','Documentation','▧'), ('deleted_content','Deleted','⊖')] %}
+      <a href="{{ url_for(endpoint) }}" class="nav-link{% if request.endpoint == endpoint %} active{% endif %}"><span class="nav-symbol" aria-hidden="true">{{ symbol }}</span>{{ label }}</a>
+      {% endfor %}
+      <a href="{{ url_for('mesh_ui_index') }}" class="nav-link" target="_blank" rel="noopener noreferrer"><span class="nav-symbol" aria-hidden="true">↗</span>Mesh UI</a>
+      <div class="sidebar-footnote">Built for the mesh.<br>Connected beyond the internet.</div>
     </div>
     <div class="nav-right">
+      <div class="workspace-context"><span class="text-muted">Workspace /</span> {{ title }}</div>
+      <button id="quick-search-button" class="btn btn-sm" type="button" title="Search and jump to a page (Ctrl/Cmd+K)">Search</button>
       <span class="version-chip" title="Running version">{{ app_version_display }}</span>
       <div id="link-status" class="link-status" role="status" aria-live="polite"></div>
       <div id="sync-pill" class="sync-pill" title="Sync status — hold 1.2s to force manual sync" role="status" aria-live="polite">Sync 0% | --:--</div>
@@ -122,7 +75,8 @@
     </button>
   </div>
   <div class="drawer-section">
-    <div class="drawer-section-label">Content</div>
+    <div class="drawer-section-label">Workspace</div>
+    <a href="{{ url_for('dashboard') }}" class="drawer-link">Overview</a>
     <a href="{{ url_for('table_list', table='bulletins') }}" class="drawer-link">Bulletins</a>
     <a href="{{ url_for('table_list', table='channels') }}" class="drawer-link">Channels</a>
     <a href="{{ url_for('table_list', table='mail') }}" class="drawer-link">Mail</a>
@@ -130,6 +84,8 @@
   </div>
   <div class="drawer-section">
     <div class="drawer-section-label">Admin</div>
+    <a href="{{ url_for('fleet_page') }}" class="drawer-link">Fleet</a>
+    <a href="{{ url_for('scores_page') }}" class="drawer-link">Game scores</a>
     <a href="{{ url_for('clients_summary') }}" class="drawer-link">Clients</a>
     <a href="{{ url_for('accounts_list') }}" class="drawer-link">Accounts</a>
     <a href="{{ url_for('settings_page') }}" class="drawer-link">Settings</a>
@@ -137,7 +93,7 @@
     <a href="{{ url_for('system_transmissions') }}" class="drawer-link">Transmissions</a>
     <a href="{{ url_for('system_flowchart') }}" class="drawer-link">Docs</a>
     <a href="{{ url_for('deleted_content') }}" class="drawer-link">Deleted</a>
-    <a href="{{ url_for('meshtastic_device') }}" class="drawer-link">Meshtastic</a>
+    <a href="{{ url_for('meshtastic_device') }}" class="drawer-link">Radios</a>
     <a href="{{ url_for('mesh_ui_index') }}" class="drawer-link" target="_blank" rel="noopener">Mesh UI ↗</a>
   </div>
   <div class="drawer-section">
@@ -170,9 +126,9 @@
     <div class="modal-header">
       <svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16" aria-hidden="true"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.099zm-5.242 1.656a5.5 5.5 0 1 1 0-11 5.5 5.5 0 0 1 0 11z"/></svg>
       <span id="qs-title" class="sr-only">Quick search</span>
-      <input type="text" id="qs-input" placeholder="Search bulletins, mail, channels, clients…" autocomplete="off" aria-label="Search query" spellcheck="false">
+      <input type="text" id="qs-input" placeholder="Search pages, bulletins, mail, channels…" autocomplete="off" aria-label="Search query" spellcheck="false">
     </div>
-    <div class="modal-body" id="qs-results" role="listbox" aria-label="Search results"></div>
+    <div class="modal-body" id="qs-results" aria-label="Search results"></div>
     <div class="modal-footer">
       <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
       <span><kbd>↵</kbd> open</span>

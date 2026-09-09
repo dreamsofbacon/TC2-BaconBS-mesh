@@ -149,6 +149,11 @@
     </div>
   </header>
 
+  <details class="card" style="margin-bottom:20px">
+    <summary>Send to a local radio channel</summary>
+    <p class="text-muted">History includes observations from other BBS nodes. Sending is available only through a connected local radio and an explicitly selected channel.</p>
+    {% include "radio_composer.html" %}
+  </details>
   <section class="chatter-controls" aria-label="Chatter filters">
     <section class="chatter-legend" id="chatter-legend"
              title="Click to filter; pick several to combine"
@@ -176,5 +181,6 @@
   <div id="chatter-state" class="chatter-state" role="status">Loading messages...</div>
   <div id="chatter-feed" class="chatter-feed" aria-live="polite"></div>
 </div>
+<script src="{{ url_for('static', filename='js/radio-admin.js', v=asset_version) }}" defer></script>
 <script src="{{ url_for('static', filename='js/public-chatter.js', v=asset_version) }}" defer></script>
 {% endblock %}
