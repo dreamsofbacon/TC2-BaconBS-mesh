@@ -3,6 +3,7 @@ import logging
 import os
 import random
 import re
+import sqlite3
 import threading
 import time
 
@@ -61,6 +62,7 @@ from zork_port import (
     stop_zork_session,
 )
 import trivia_port
+import baconfall_port
 
 # Ordered list of playable games (matches GAMES keys in zork_port)
 GAME_LIST = list(GAMES.items())  # [(game_id, {name, ...}), ...]
@@ -1197,6 +1199,9 @@ def handle_games_steps(sender_id, message, interface):
 
 
 def _launch_game(sender_id, interface, game_id, game_name):
+    if game_id == baconfall_port.game.GAME_ID:
+        handle_baconfall_steps(sender_id, None, interface)
+        return
     if game_id == trivia_port.GAME_ID:
         send_message(trivia_port.start(sender_id), sender_id, interface)
         update_user_state(sender_id, {'command': 'TRIVIA', 'step': 1, 'game_id': game_id})
@@ -2133,6 +2138,29 @@ def handle_zork_steps(sender_id, message, interface):
         short_name = get_node_short_name(node_id, interface) or str(sender_id)
         upsert_game_score(sender_id, game_id, short_name, score, max_score, moves)
     update_user_state(sender_id, {'command': 'ZORK', 'step': 1, 'game_id': game_id})
+
+
+def handle_baconfall_steps(sender_id, message, interface):
+    """Baconfall owns its input and saves before acknowledging each turn."""
+    try:
+        node_id = get_node_id_from_num(sender_id, interface)
+        short_name = get_node_short_name(node_id, interface) or str(sender_id)
+        response, leave, _ = baconfall_port.play(sender_id, message, short_name)
+    except baconfall_port.SaveUnavailable as exc:
+        send_message(str(exc), sender_id, interface)
+        handle_games_command(sender_id, interface)
+        return
+    except sqlite3.Error:
+        logging.exception('Baconfall could not save a turn for %s', sender_id)
+        send_message('Baconfall could not save this turn. Your previous save is intact; please try again.',
+                     sender_id, interface)
+        return
+    send_message(response, sender_id, interface)
+    if leave:
+        handle_games_command(sender_id, interface)
+    else:
+        update_user_state(sender_id, {'command': 'BACONFALL', 'step': 1,
+                                     'game_id': baconfall_port.game.GAME_ID})
 
 
 def handle_trivia_steps(sender_id, message, interface):
