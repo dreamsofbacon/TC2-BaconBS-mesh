@@ -26,6 +26,7 @@ from db_operations import (
     upsert_game_score, get_game_scoreboard, get_user_game_scores, get_hall_of_fame,
     create_account, get_account_id_for_node, get_linked_node_ids,
     get_linked_nodes_detail, link_node_to_account, unlink_node,
+    get_mesh_client_names,
     get_account_alias, set_account_alias, create_link_code, redeem_link_code,
     record_link_attempt, link_rate_limit_ok, account_authorized,
     SSH_NODE_PREFIX,
@@ -2013,6 +2014,41 @@ def _handle_submit_link_code(sender_id, interface, sender_node_id, code):
     handle_account_command(sender_id, interface)
 
 
+def _linked_device_label(node_id, roster) -> str:
+    """What to call one of a user's linked devices, so they can tell their
+    own apart well enough to unlink the right one.
+
+    Everything here comes from what the node already stores -- the radio
+    roster in mesh_clients (a device's own advertised name and hardware
+    model), and the id's own shape. Nothing new to collect, and nothing a
+    user has to set: a device that has never told the mesh its name has no
+    name for us to show, and no amount of asking here would produce one.
+
+    mesh_clients rather than interface.nodes, because this screen runs in
+    bacon-ssh, a different process from the one holding the radio link --
+    that roster is empty here, the same separate-process gap that once
+    left Node View inert over SSH. The persisted table is what survives
+    the boundary.
+
+    An SSH account identity is never in the roster (it is not a device any
+    radio has heard), so it falls back to the shortened id -- which at
+    least differs visibly between entries, where seven full 36-character
+    "ssh:<uuid>" strings did not. That was the live beta test's actual
+    complaint.
+    """
+    entry = (roster or {}).get(str(node_id)) or {}
+    name = (entry.get('short_name') or entry.get('long_name') or '').strip()
+    hardware = (entry.get('hw_model') or '').strip()
+    # UNSET is what a Meshtastic device reports before anyone configures
+    # it -- real, and useless to print. 27 of this node's own roster say
+    # it.
+    if name and hardware and hardware.upper() != 'UNSET':
+        return f"{name} ({hardware})"
+    if name:
+        return name
+    return short_node_id(node_id)
+
+
 def _handle_list_devices(sender_id, interface, sender_node_id):
     account_id = get_account_id_for_node(sender_node_id)
     if account_id is None:
@@ -2020,6 +2056,7 @@ def _handle_list_devices(sender_id, interface, sender_node_id):
         handle_account_command(sender_id, interface)
         return
     detail = get_linked_nodes_detail(account_id)
+    roster = get_mesh_client_names([row[0] for row in detail])
     alias = get_account_alias(account_id)
     lines = [f"\U0001F517 Account alias: {alias or '(none set)'}"]
     for i, (node_id, network, linked_at) in enumerate(detail):
@@ -2032,7 +2069,8 @@ def _handle_list_devices(sender_id, interface, sender_node_id):
         # fit several devices into one screen -- is enough to tell them
         # apart.
         when = f" -- linked {linked_at[:10]}" if linked_at else ""
-        lines.append(f"{i + 1:02d}. {node_id} [{network}]{marker}{when}")
+        label = _linked_device_label(node_id, roster)
+        lines.append(f"{i + 1:02d}. {label} [{network}]{marker}{when}")
     send_message("\n".join(lines), sender_id, interface)
     handle_account_command(sender_id, interface)
 
@@ -2065,10 +2103,12 @@ def _handle_start_unlink(sender_id, interface, sender_node_id):
         send_message("You only have one device linked -- nothing to unlink.", sender_id, interface)
         handle_account_command(sender_id, interface)
         return
+    roster = get_mesh_client_names([row[0] for row in detail])
     lines = ["Reply with the number of the device to unlink:"]
     for i, (node_id, network, linked_at) in enumerate(detail):
         when = f" -- linked {linked_at[:10]}" if linked_at else ""
-        lines.append(f"{i + 1:02d}. {node_id} [{network}]{when}")
+        label = _linked_device_label(node_id, roster)
+        lines.append(f"{i + 1:02d}. {label} [{network}]{when}")
     send_message("\n".join(lines), sender_id, interface)
     _account_state(sender_id, 5, devices=detail)
 

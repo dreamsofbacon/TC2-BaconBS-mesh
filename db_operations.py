@@ -5115,6 +5115,39 @@ def upsert_synced_mesh_clients(source_link: str, source_node: str, rows: list[di
     conn.commit()
 
 
+def get_mesh_client_names(node_ids) -> dict:
+    """short_name/long_name/hw_model for specific nodes, keyed by node_id.
+
+    For labelling a handful of known ids -- a user's linked devices, at
+    most six of them -- where pulling the whole roster to index it in
+    Python would read a thousand-plus rows to use a few. Same reasoning as
+    get_mesh_clients' own filtering: keep it in SQL.
+
+    Only ids the roster actually knows come back, so every caller has to
+    handle a missing key. An SSH account identity is never in here: it is
+    not a device any radio has ever heard.
+    """
+    ids = [str(node_id) for node_id in (node_ids or []) if str(node_id or '').strip()]
+    if not ids:
+        return {}
+    conn = get_db_connection()
+    c = conn.cursor()
+    placeholders = ','.join('?' for _ in ids)
+    c.execute(
+        f"""SELECT node_id, short_name, long_name, hw_model
+            FROM mesh_clients WHERE node_id IN ({placeholders})""",
+        ids,
+    )
+    return {
+        str(row[0]): {
+            'short_name': str(row[1] or ''),
+            'long_name': str(row[2] or ''),
+            'hw_model': str(row[3] or ''),
+        }
+        for row in c.fetchall()
+    }
+
+
 def get_mesh_clients(
     link_name: Optional[str] = None,
     seen_within_seconds: Optional[int] = None,
