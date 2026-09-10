@@ -6295,7 +6295,8 @@ def get_account(account_id: str):
 # ---------------------------------------------------------------------------
 
 def upsert_game_score(user_id: int, game_id: str, short_name: str,
-                      score: int, max_score: int, moves: int) -> None:
+                      score: int, max_score: int, moves: int, *, commit: bool = True) -> None:
+    """Promote a high score; commit=False joins a caller-owned transaction."""
     conn = get_db_connection()
     c = conn.cursor()
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -6329,7 +6330,8 @@ def upsert_game_score(user_id: int, game_id: str, short_name: str,
                                                         END''',
         (str(user_id), game_id, short_name, score, max_score, moves, now)
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def get_game_scoreboard(game_id: str, limit: int = 5) -> list:

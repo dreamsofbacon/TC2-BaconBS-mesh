@@ -22,7 +22,7 @@ from command_handlers import (
     handle_check_bulletin_command, handle_read_bulletin_command, handle_read_channel_command,
     handle_post_channel_command, handle_list_channels_command, handle_quick_help_command,
     handle_version_command, handle_welcome_command,
-    handle_zork_command, handle_zork_steps, handle_trivia_steps,
+    handle_zork_command, handle_zork_steps, handle_trivia_steps, handle_baconfall_steps,
     handle_games_command, handle_games_steps,
     handle_scoreboard_command, handle_scoreboard_steps,
     handle_profile_command, handle_profile_steps,
@@ -3033,7 +3033,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             else:
                 handle_comment_moderate_steps(sender_id, message, interface, state, bbs_nodes)
                 return
-        if state and state.get('command') in ('GAMES_MENU', 'ZORK', 'TRIVIA'):
+        if state and state.get('command') in ('GAMES_MENU', 'ZORK', 'TRIVIA', 'BACONFALL'):
             # An active door session owns its input outright -- checked here,
             # before the bang-prefixed global-command router further down,
             # not just the later bare-letter one. ZORK already got this; a
@@ -3048,6 +3048,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 handle_games_steps(sender_id, message, interface)
             elif state['command'] == 'ZORK':
                 handle_zork_steps(sender_id, message, interface)
+            elif state['command'] == 'BACONFALL':
+                handle_baconfall_steps(sender_id, message, interface)
             else:
                 handle_trivia_steps(sender_id, message, interface)
             return
@@ -3149,7 +3151,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             # Active door sessions own their input, including shortcuts that
             # collide with top-level commands (Trivia King uses N for the next
             # question; the main menu uses N for Ask Nomad).
-            door_session = state and state.get('command') in ('ZORK', 'TRIVIA')
+            door_session = state and state.get('command') in ('ZORK', 'TRIVIA', 'BACONFALL')
             # `handlers` guard is ours: an empty handler map means no menu is
             # active, and X should not then bounce the user to the main menu.
             if (handlers and message_lower == 'x' and not door_session
@@ -3220,6 +3222,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     handle_games_steps(sender_id, message, interface)
                 elif command == 'ZORK':
                     handle_zork_steps(sender_id, message, interface)
+                elif command == 'BACONFALL':
+                    handle_baconfall_steps(sender_id, message, interface)
                 elif command == 'TRIVIA':
                     handle_trivia_steps(sender_id, message, interface)
                 elif command == 'SCOREBOARD':
