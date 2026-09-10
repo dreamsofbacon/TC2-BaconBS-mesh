@@ -1,6 +1,6 @@
 # Radios and public chatter
 
-Open **Radios** to inspect the radios attached to this BBS. Each panel identifies the network and local slot, connection state, channel names, contacts or known nodes, and supported identity controls. The old `/system/meshtastic` address still opens Radios.
+Open **More → Radios** to inspect the radios attached to this BBS. Each panel identifies the network and local slot, connection state, channel names, contacts or known nodes, and supported identity controls. The old `/system/meshtastic` address still opens Radios.
 
 A configured connection is not necessarily connected. **Configured** means the web service has no recent report from the BBS. **Unavailable** means the BBS has no usable connection, and **reconnecting** means recovery is in progress. Controls require a current connected report. One radio may recover while the other remains usable.
 

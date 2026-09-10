@@ -17,7 +17,7 @@
 {% if show_nav %}
 <nav class="top-nav" aria-label="Main navigation">
   <div class="top-nav-inner">
-    <a href="{{ url_for('dashboard') }}" class="nav-brand" aria-label="Bacon BBS Home"><svg class="station-mark" viewBox="0 0 36 30" width="36" height="30" aria-hidden="true"><path d="M2 15h5l4-10 7 20 7-20 4 10h5" fill="none" stroke="currentColor" stroke-width="3"/></svg><span>BACON<span class="brand-descriptor">BULLETIN BOARD SYSTEM</span></span></a>
+    <a href="{{ url_for('dashboard') }}" class="nav-brand" aria-label="Bacon BBS Home"><span class="bbs-monogram" aria-hidden="true">B/</span><span>BACON<span class="brand-descriptor">BULLETIN BOARD SYSTEM</span></span></a>
     <div class="nav-right">
       <button id="quick-search-button" class="btn btn-sm" type="button" title="Search and jump to a page (Ctrl/Cmd+K)">Search</button>
       <span class="version-chip" title="Running version">{{ app_version_display }}</span>
@@ -34,9 +34,9 @@
       <a href="{{ url_for('logout') }}" class="btn btn-sm">Logout</a>
     </div>
   </div>
-  <div class="station-navigation">
+  <div class="bbs-navigation">
     <div class="nav-links">
-      {% for endpoint, label, table in [('dashboard','Station',none), ('table_list','Bulletins','bulletins'), ('public_chatter_page','Chatter',none), ('table_list','Mail','mail'), ('table_list','Channels','channels'), ('meshtastic_device','Radios',none)] %}
+      {% for endpoint, label, table in [('dashboard','Home',none), ('table_list','Bulletins','bulletins'), ('public_chatter_page','Chatter',none), ('table_list','Mail','mail'), ('table_list','Channels','channels'), ('scores_page','Scores',none)] %}
       {% set destination = url_for(endpoint, table=table) if table else url_for(endpoint) %}
       {% set selected = request.path == destination or (table and request.path.startswith(destination + '/')) %}
       <a href="{{ destination }}" class="nav-link{% if selected %} active{% endif %}"{% if selected %} aria-current="page"{% endif %}>{{ label }}</a>
@@ -44,14 +44,14 @@
       <div class="nav-dropdown" id="tools-dropdown">
         <button class="nav-link nav-dropdown-toggle" id="tools-dropdown-btn" type="button" aria-expanded="false" aria-controls="tools-dropdown-menu">More <span aria-hidden="true">⌄</span></button>
         <div class="nav-dropdown-menu" id="tools-dropdown-menu">
-          {% for endpoint, label in [('clients_summary','Clients'), ('fleet_page','Fleet'), ('accounts_list','Accounts'), ('settings_page','Settings'), ('system_transmissions','Transmissions'), ('emulator_page','Emulator'), ('scores_page','Game scores'), ('system_flowchart','Documentation'), ('deleted_content','Deleted')] %}
+          {% for endpoint, label in [('clients_summary','Clients'), ('fleet_page','Fleet'), ('accounts_list','Accounts'), ('settings_page','Settings'), ('system_transmissions','Transmissions'), ('emulator_page','Emulator'), ('meshtastic_device','Radios'), ('system_flowchart','Documentation'), ('deleted_content','Deleted')] %}
           <a href="{{ url_for(endpoint) }}" class="nav-dropdown-item{% if request.endpoint == endpoint %} active{% endif %}"{% if request.endpoint == endpoint %} aria-current="page"{% endif %}>{{ label }}</a>
           {% endfor %}
           <a href="{{ url_for('mesh_ui_index') }}" class="nav-dropdown-item" target="_blank" rel="noopener noreferrer">Mesh UI ↗</a>
         </div>
       </div>
     </div>
-    <span class="station-page-name">{{ title }}</span>
+    <span class="bbs-page-name">{{ title }}</span>
   </div>
 </nav>
 {% endif %}

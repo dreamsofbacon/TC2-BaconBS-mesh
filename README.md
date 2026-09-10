@@ -894,6 +894,6 @@ GNU General Public License v3.0
 
 ### Unified radio administration
 
-Use **Radios** for Meshtastic and MeshCore status, named channels, contacts or known nodes, supported identity controls, and local channel messaging. Public Chatter now includes an administrator composer with explicit local radio/channel selection. MQTT-only operation remains supported.
+Use **More → Radios** for Meshtastic and MeshCore status, named channels, contacts or known nodes, supported identity controls, and local channel messaging. Public Chatter now includes an administrator composer with explicit local radio/channel selection. MQTT-only operation remains supported.
 
 See [Radios and public chatter](docs/RADIOS.md) for setup of one or both networks, send-result meanings, service upgrade instructions, and the hardware validation checklist.
