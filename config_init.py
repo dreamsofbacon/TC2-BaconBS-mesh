@@ -481,7 +481,15 @@ def initialize_config(config_file: str = None) -> dict[str, Any]:
     # same thing, so it resolves to 'none' rather than a KeyError.
     interface_type = (
         config.get('interface', 'type', fallback='none').strip().lower() or 'none')
-    _primary = _read_interface_settings(config['interface'])
+    # ...and reading the connection settings must not then undo that with a
+    # KeyError, which is exactly what config['interface'] did. Every key
+    # _read_interface_settings touches has its own fallback, so an empty
+    # section is all it needs. Deliberately NOT config.add_section(): this
+    # parser is handed back to the caller, and web_admin.py:4230 plus two
+    # tests branch on whether [interface] is present.
+    _primary = _read_interface_settings(
+        config['interface'] if config.has_section('interface')
+        else configparser.ConfigParser()['DEFAULT'])
     hostname = _primary['hostname']
     port = _primary['port']
     tcp_port = _primary['tcp_port']
