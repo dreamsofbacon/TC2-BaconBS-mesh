@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<div style="max-width:1100px;margin:auto">
+  <h1>Radios</h1>
+  <p class="text-muted">Your local Meshtastic and MeshCore connections. Manage each radio while Bacon BBS keeps running.</p>
+  <p><a class="btn" href="{{ url_for('public_chatter_page') }}">Open public chatter</a> <a class="btn" href="{{ url_for('settings_page') }}#devices">Connection settings</a></p>
+  <p id="radio-state" role="status">Loading local radios…</p>
+  <div id="radio-panels"></div>
+  <section class="card">
+    <h2>Send a channel message</h2>
+    <p class="text-muted">Choose a local destination below. A submitted message has been handed to the radio; delivery to listeners is not confirmed.</p>
+    {% include "radio_composer.html" %}
+  </section>
+</div>
+<script src="{{ url_for('static', filename='js/radio-admin.js', v=asset_version) }}" defer></script>
+{% endblock %}

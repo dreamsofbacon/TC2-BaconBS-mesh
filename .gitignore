@@ -44,3 +44,6 @@ _build_version.py
 
 # Scratch helper written when submitting a fleet blob by hand.
 _fleet_apply.sh
+
+# Local radio command mailbox, never synchronized between nodes.
+radio_admin.db*

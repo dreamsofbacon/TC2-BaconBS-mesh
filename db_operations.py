@@ -1337,7 +1337,7 @@ def channel_name_placeholders(channel_index: int) -> list:
     return placeholders
 
 
-def backfill_channel_names(network: str, names: dict) -> int:
+def backfill_channel_names(network: str, names: dict, capture_node_id=None) -> int:
     """Replace placeholder channel labels with the radio's real names.
 
     Every row stores the label known when it was captured, so anything heard
@@ -1362,11 +1362,18 @@ def backfill_channel_names(network: str, names: dict) -> int:
         if not placeholders:
             continue
         marks = ','.join('?' for _ in placeholders)
+        # A radio only knows what ITS OWN channels are called. Without this
+        # scope a node relabels chatter another node captured on a different
+        # mesh, where the same index is a different channel entirely.
+        # None means every row, which is what pre-scoping callers meant.
+        scope_sql = ' AND capture_node_id = ?' if capture_node_id is not None else ''
+        scope_values = [str(capture_node_id)] if capture_node_id is not None else []
         cursor.execute(
             f"""UPDATE public_chatter SET channel_name = ?
                  WHERE network = ? AND channel_index = ?
-                   AND channel_name IN ({marks})""",
-            [label, str(network or '').casefold(), int(index)] + placeholders,
+                   AND channel_name IN ({marks}){scope_sql}""",
+            [label, str(network or '').casefold(), int(index)]
+            + placeholders + scope_values,
         )
         updated += cursor.rowcount
     conn.commit()

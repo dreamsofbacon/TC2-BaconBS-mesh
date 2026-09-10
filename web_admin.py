@@ -4935,6 +4935,16 @@ def create_app(runtime_interface=None) -> Flask:
           }
           for s in services_raw
         )
+      try:
+        stale = time.time() - os.path.getmtime(snapshot_path) > 75
+      except OSError:
+        stale = True
+      if stale:
+        # server.py rewrites this snapshot every cycle. If it has gone quiet
+        # the file still holds whatever was true when it stopped, and
+        # reporting that as 'connected' is how a dead radio looked healthy.
+        for entry in entries:
+          entry.update(connected=False, reconnecting=False, stale=True)
       return entries
 
     def build_settings_diagnostics() -> dict[str, str]:
@@ -6964,6 +6974,33 @@ def create_app(runtime_interface=None) -> Flask:
       else:
         device.update(device_mode="serial")
       return device
+
+    @app.get("/radios")
+    @login_required
+    def radios_page():
+      return render_template("radios.html", title="Radios", show_nav=True)
+
+    @app.get("/api/radios")
+    @login_required
+    def radios_api():
+      from radio_admin import read_radios
+      return jsonify(radios=read_radios(read_config_file(app.config["CONFIG_PATH"])))
+
+    @app.post("/api/radios/operations")
+    @login_required
+    def radio_operation_submit():
+      from radio_admin import submit
+      try:
+        return jsonify(submit(request.get_json(silent=True))), 202
+      except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
+    @app.get("/api/radios/operations/<operation_id>")
+    @login_required
+    def radio_operation_status(operation_id):
+      from radio_admin import operation
+      result = operation(operation_id)
+      return (jsonify(result), 200) if result else (jsonify(error="Operation not found"), 404)
 
     @app.route("/system/meshtastic")
     @login_required

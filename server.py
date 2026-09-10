@@ -37,6 +37,7 @@ from config_init import (
     get_mqtt_interfaces, get_mqtt_interface_by_name,
 )
 from radio_link import RadioLink
+from radio_admin import RadioAdminWorker, describe as describe_admin_radio
 from db_operations import (
     sync_node_roles_to_nodes,
     sync_fleet_identity_to_nodes,
@@ -838,6 +839,17 @@ def write_runtime_diagnostics_snapshot(links, system_config: dict) -> None:
         'bbs_nodes': primary.get('bbs_nodes', []),
         'allowed_nodes': primary.get('allowed_nodes', []),
         'radios': radios,
+        # What the web admin's Radios page reads: it cannot touch the
+        # hardware itself, so the live view has to come through here.
+        'radio_admin': [
+            describe_admin_radio(
+                link,
+                'meshcore' if str(system_config.get(
+                    'interface_type' if link.name == 'primary' else 'interface2_type',
+                    '')).startswith('meshcore') else 'meshtastic')
+            for link in links
+            if isinstance(link, RadioLink) and link.enabled
+            and link.name in ('primary', 'secondary')],
         'services': _describe_services(),
         'sync_in_progress': bool(sync_progress.get('in_progress', False)),
         'sync_progress_percent': int(sync_progress.get('progress_percent', 0)),
@@ -2208,7 +2220,12 @@ def main():
         for link in links:
             _seed_link_from_db(link)
 
+        # Only this process talks to the radios, so only this process may
+        # dispatch an operator's radio command. The web admin writes them to
+        # a durable mailbox and this drains it; see radio_admin.py.
+        radio_admin_worker = RadioAdminWorker()
         while True:
+            radio_admin_worker.tick(links)
             global _last_main_loop_tick
             _last_main_loop_tick = time.time()
             now = time.time()
