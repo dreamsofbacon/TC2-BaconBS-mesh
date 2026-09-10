@@ -13,6 +13,7 @@ Forked from [TC²-BBS-mesh](https://github.com/TheCommsChannel/TC2-BBS-mesh) wit
 - **Channel Directory** — Named discussion channels with threaded comments
 - **User Profiles** — Short name, bio, activity statistics, and an explicit account-wide offline mail relay setting
 - **Interactive Games** — Zork I–III, Hitchhiker's Guide to the Galaxy, Enchanter, Planetfall, Starcross (via dfrotz); per-user save states synced across the mesh
+- **Baconfall: The Last Sizzle** — an original bacon fantasy door game: three heroes, branching expeditions, tactical combat, relic builds, four bosses, automatic local saves, and shared high scores. [How to play](docs/BACONFALL.md)
 - **Trivia King** — a single-player multiple-choice quiz door, scored to the shared scoreboard. Ships with a question set at `data/trivia.db` (override with `BBS_TRIVIA_DB`); top it up with `scripts/fetch_trivia_questions.py`. Questions come from the [Open Trivia Database](https://opentdb.com) under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
 - **JS8Call Bridge** — Optional integration with JS8Call for group, direct, and urgent radio messages
 - **Node Statistics** — View node counts, hardware types, and roles on the mesh

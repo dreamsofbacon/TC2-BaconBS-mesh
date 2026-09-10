@@ -63,6 +63,10 @@ GAMES: dict[str, dict] = {
         'story_path': os.path.join('data', 'starcross.z3'),
         'story_url': 'https://raw.githubusercontent.com/historicalsource/starcross/master/COMPILED/starcross.z3',
     },
+    'baconfall': {
+        'name': 'Baconfall: The Last Sizzle',
+        'door': True,
+    },
 }
 
 # Legacy constants kept for any external references

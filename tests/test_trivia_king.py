@@ -191,7 +191,7 @@ class WiringTests(unittest.TestCase):
         import pathlib
         source = (pathlib.Path(__file__).resolve().parent.parent
                   / "message_processing.py").read_text(encoding="utf-8")
-        self.assertIn("('ZORK', 'TRIVIA')", source)
+        self.assertIn("('ZORK', 'TRIVIA', 'BACONFALL')", source)
 
     def test_the_old_name_is_gone(self):
         import pathlib
