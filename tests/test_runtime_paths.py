@@ -40,3 +40,22 @@ def test_relative_trigger_paths_resolve_under_repo_root(monkeypatch, tmp_path):
     assert expected.read_text(encoding="utf-8") == "!0408b778"
 
     expected.unlink()
+
+def test_a_config_with_no_interface_section_is_not_a_crash(tmp_path):
+    """A fresh checkout has no config.ini -- CI is the honest example, and
+    so is an MQTT-only mirror or an install whose radio has not been picked
+    yet. initialize_config already promised in a comment that a missing
+    [interface] section resolves to type 'none'; it then raised KeyError on
+    the very next line reading that same section's connection settings.
+    """
+    empty = tmp_path / "config.ini"
+    empty.write_text("[sync]\nbbs_nodes =\n", encoding="utf-8")
+
+    config = config_init.initialize_config(str(empty))
+
+    assert config["interface_type"] == "none"
+    assert config["hostname"] is None
+    assert config["port"] is None
+    # The parser handed back must not have grown the section: web_admin
+    # branches on whether it is there to decide if a radio was configured.
+    assert not config["config"].has_section("interface")
