@@ -1,0 +1,29 @@
+# Taken from materva's PR #5, which is where it proved its worth: within
+# hours of that PR opening, this workflow caught a KeyError in
+# initialize_config that no developer checkout can hit, because every
+# developer checkout has a config.ini and a fresh clone does not.
+#
+# Landed separately from the rest of that PR so the repository has a
+# regression gate now rather than whenever the dashboard work settles.
+name: Regression tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest tests -q
