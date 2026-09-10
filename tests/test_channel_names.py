@@ -17,6 +17,7 @@ import sqlite3
 import sys
 import types
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 # server.py reaches config_init, which imports the real radio libraries.
@@ -127,12 +128,20 @@ class BackfillTests(unittest.TestCase):
             del db_operations.thread_local.connection
 
     def add(self, unique_id, channel_index, channel_name, network="meshcore"):
+        # Relative to now, never a literal date. get_public_chatter_filters
+        # only reports the last 168 hours, so a fixture stamped with the day
+        # the test was written passes until exactly a week later and then
+        # fails for a reason that has nothing to do with the code under test.
+        # That is what happened to the duplicate-label test below.
+        now = datetime.now(timezone.utc)
+        seen = (now - timedelta(hours=1)).isoformat().replace('+00:00', 'Z')
+        gone = (now + timedelta(days=6)).isoformat().replace('+00:00', 'Z')
         db_operations.add_public_chatter(
             unique_id=unique_id, network=network, channel_index=channel_index,
             channel_name=channel_name, sender_node_id=None, sender_name="",
-            content="hello", message_timestamp="2026-09-02T14:00:00Z",
-            captured_at="2026-09-02T14:00:00Z", capture_node_id="!c",
-            expires_at="2026-09-09T14:00:00Z", hops=None)
+            content="hello", message_timestamp=seen,
+            captured_at=seen, capture_node_id="!c",
+            expires_at=gone, hops=None)
 
     def names(self):
         return {row[0] for row in db_operations.thread_local.connection.execute(
