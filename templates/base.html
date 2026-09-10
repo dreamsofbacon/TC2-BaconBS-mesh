@@ -54,7 +54,7 @@
          role="listitem">Settings</a>
       <span class="nav-sep" aria-hidden="true"></span>
       <!-- Tools dropdown -->
-      {% set tools_active = request.endpoint in ['emulator_page', 'system_transmissions', 'system_flowchart', 'meshtastic_device', 'scores_page', 'deleted_content'] %}
+      {% set tools_active = request.endpoint in ['emulator_page', 'system_transmissions', 'system_flowchart', 'meshtastic_device', 'radios_page', 'scores_page', 'deleted_content'] %}
       <div class="nav-dropdown" id="tools-dropdown">
         <button class="nav-link nav-dropdown-toggle{% if tools_active %} active{% endif %}"
                 id="tools-dropdown-btn"
@@ -78,6 +78,8 @@
           <a href="{{ url_for('meshtastic_device') }}"
              class="nav-dropdown-item{% if request.endpoint == 'meshtastic_device' %} active{% endif %}"
              role="menuitem">Meshtastic</a>
+          <a href="{{ url_for('radios_page') }}"
+             class="nav-dropdown-item{% if request.endpoint == 'radios_page' %} active{% endif %}">Radios</a>
           <a href="{{ url_for('scores_page') }}"
              class="nav-dropdown-item{% if request.endpoint == 'scores_page' %} active{% endif %}"
              role="menuitem">Game Scores</a>
@@ -138,6 +140,7 @@
     <a href="{{ url_for('system_flowchart') }}" class="drawer-link">Docs</a>
     <a href="{{ url_for('deleted_content') }}" class="drawer-link">Deleted</a>
     <a href="{{ url_for('meshtastic_device') }}" class="drawer-link">Meshtastic</a>
+    <a href="{{ url_for('radios_page') }}" class="drawer-link">Radios</a>
     <a href="{{ url_for('mesh_ui_index') }}" class="drawer-link" target="_blank" rel="noopener">Mesh UI ↗</a>
   </div>
   <div class="drawer-section">
