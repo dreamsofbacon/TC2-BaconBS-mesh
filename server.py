@@ -41,6 +41,7 @@ from radio_admin import RadioAdminWorker, describe as describe_admin_radio
 from db_operations import (
     sync_node_roles_to_nodes,
     sync_fleet_identity_to_nodes,
+    sync_accounts_to_nodes,
     initialize_database,
     install_connection_log_handler,
     sync_full_database_to_nodes,
@@ -1248,6 +1249,19 @@ def deliver_due_mail_dms(links, active_window_seconds: int = 900, retry_base_sec
                     "Mail DM %s delivered to %s via %s.",
                     str(entry['mail_unique_id'])[:8], node_id, link.name,
                 )
+                # Every node queues this mail, so any peer that can also hear
+                # this radio has its own copy pending. Tell them it landed.
+                try:
+                    from utils import send_mail_delivery_receipt_to_bbs_nodes
+                    send_mail_delivery_receipt_to_bbs_nodes(
+                        entry['mail_unique_id'], node_id,
+                        datetime.now(timezone.utc).isoformat(),
+                        list(getattr(link.interface, 'bbs_nodes', []) or []),
+                        link.interface)
+                except Exception:
+                    # A missed receipt costs a duplicate DM, never a lost
+                    # message, so this must not fail the delivery it follows.
+                    logging.debug("mail DM receipt broadcast failed", exc_info=True)
             else:
                 delay = _mail_dm_retry_delay(entry.get('attempts') or 0,
                                              retry_base_seconds)
@@ -2024,6 +2038,15 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
         sync_fleet_identity_to_nodes(sorted(current_bbs_nodes), link.interface)
     except Exception:
         logging.debug(f"[{link.name}] identity advertisement failed", exc_info=True)
+
+    # Accounts ride the same tick, for the same two reasons, and with the
+    # same change-driven cost: who exists on this BBS and which radios are
+    # theirs, so a peer can recognise a person it has never heard from and
+    # relay their mail. Identity only -- never credentials.
+    try:
+        sync_accounts_to_nodes(sorted(current_bbs_nodes), link.interface)
+    except Exception:
+        logging.debug(f"[{link.name}] account advertisement failed", exc_info=True)
 
     link.next_node_sync_check = now + 5
 

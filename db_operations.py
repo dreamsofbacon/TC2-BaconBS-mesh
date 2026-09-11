@@ -1481,6 +1481,20 @@ def _ensure_accounts_tables(cursor) -> None:
         cursor.execute("ALTER TABLE accounts ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
     if 'role_updated_at' not in _account_cols:
         cursor.execute("ALTER TABLE accounts ADD COLUMN role_updated_at TEXT NOT NULL DEFAULT ''")
+    if 'alias_updated_at' not in _account_cols:
+        # Account sync resolves each field on its own timestamp, so an alias
+        # needs one of its own -- role and mail relay already had theirs.
+        # Seeded from created_at so accounts that predate sync still compare
+        # sensibly instead of every peer's alias looking newer than theirs.
+        cursor.execute("ALTER TABLE accounts ADD COLUMN alias_updated_at TEXT NOT NULL DEFAULT ''")
+        cursor.execute("UPDATE accounts SET alias_updated_at = created_at WHERE alias_normalized != ''")
+    if 'sync_origin' not in _account_cols:
+        # 'local' for an account made here, 'peer' for one learned over the
+        # air. A peer account never carries password material (see
+        # apply_synced_account_identity), so this is what tells the SSH login
+        # path that there is nothing to log in to rather than leaving it to
+        # infer that from a NULL hash.
+        cursor.execute("ALTER TABLE accounts ADD COLUMN sync_origin TEXT NOT NULL DEFAULT 'local'")
     # Two accounts sharing a number would share their Zork saves and scores,
     # so let the database refuse it rather than trusting the probe below.
     cursor.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_sender_num
@@ -4445,15 +4459,30 @@ def _mail_recipient_scope(cursor, recipient_id) -> list[str]:
     return linked_ids or [normalized_id]
 
 
+# Every node queues a delivery when a mail arrives, including the copies that
+# arrive by sync -- which is what lets whichever node can actually hear the
+# recipient's radio be the one that delivers. The cost is that two nodes which
+# both hear it would both send. A node that did not originate the mail
+# therefore waits this long before its first attempt, giving the originator's
+# delivery receipt time to arrive and stand its copy down. Duplicates are
+# still possible if a receipt is lost; a duplicate mail DM is a far smaller
+# harm than a message nobody delivers, so this errs toward sending.
+MAIL_RELAY_REMOTE_GRACE_SECONDS = 90
+
+
 def enqueue_mail_dm_deliveries(unique_id: str, settle_seconds: int = 10) -> int:
     """Snapshot relay targets for one mail without backfilling future links."""
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT recipient FROM mail WHERE unique_id = ?", (str(unique_id),))
+    c.execute("SELECT recipient, source_node_id FROM mail WHERE unique_id = ?", (str(unique_id),))
     mail_row = c.fetchone()
     if not mail_row:
         return 0
     recipient_id = str(mail_row[0])
+    source_node_id = str(mail_row[1] or '')
+    local_node_id = str(get_local_node_id() or '')
+    if source_node_id and local_node_id and source_node_id != local_node_id:
+        settle_seconds = int(settle_seconds) + MAIL_RELAY_REMOTE_GRACE_SECONDS
     c.execute("SELECT account_id FROM linked_nodes WHERE node_id = ?", (recipient_id,))
     account_row = c.fetchone()
     account_id = str(account_row[0]) if account_row else None
@@ -4578,6 +4607,31 @@ def mark_mail_dm_delivered(delivery_id: int) -> None:
         (datetime.now(timezone.utc).isoformat(), int(delivery_id)),
     )
     conn.commit()
+
+
+def mark_mail_dm_delivered_elsewhere(mail_unique_id: str, target_node_id: str,
+                                     delivered_at: str = '') -> int:
+    """Stand down our copy: another node already put this mail on that radio.
+
+    Only touches rows still pending. A receipt that arrives after we sent our
+    own copy changes nothing -- the duplicate has already gone out, and
+    rewriting history here would only lose the record that we sent it.
+    """
+    normalized_uid = str(mail_unique_id or '').strip()
+    normalized_target = str(target_node_id or '').strip()
+    if not normalized_uid or not normalized_target:
+        return 0
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """UPDATE mail_dm_deliveries
+           SET state = 'delivered_elsewhere', delivered_at = ?, last_error = ''
+           WHERE mail_unique_id = ? AND target_node_id = ? AND state = 'pending'""",
+        (str(delivered_at or datetime.now(timezone.utc).isoformat()),
+         normalized_uid, normalized_target),
+    )
+    conn.commit()
+    return max(0, c.rowcount)
 
 
 def cancel_mail_dm_delivery(delivery_id: int, reason: str) -> None:
@@ -5618,6 +5672,242 @@ def get_account_id_for_node(node_id: str) -> Optional[str]:
     c.execute("SELECT account_id FROM linked_nodes WHERE node_id = ?", (str(node_id),))
     row = c.fetchone()
     return row[0] if row else None
+
+
+# ---------------------------------------------------------------------------
+# Account sync.
+#
+# An account is identity, not credentials. Everything below travels between
+# nodes EXCEPT password_hash/password_salt, which never leave the node the
+# account was created on. That is the whole security position: a peer that is
+# compromised, or simply lying, can learn who exists and can be relayed mail
+# -- it cannot obtain anything that logs in as them, here or anywhere.
+# apply_synced_account_identity never writes those columns, so the guarantee
+# does not depend on what a sender chose to put in the frame.
+#
+# Frames are unsigned and anything on the broker can send one, exactly as for
+# roles (see apply_synced_node_role). The same three defences apply for the
+# same reasons: last-writer-wins by timestamp, refusal of stamps far enough
+# ahead to pin a value forever, and a ceiling on what a peer may assert. Two
+# more are specific to accounts:
+#
+#   A peer may never take an alias a local account already holds, and never
+#   re-home a device already linked to a different local account. Those are
+#   how impersonation would work -- claim the name, or claim the radio -- and
+#   either would let a peer redirect a person's mail to itself. The cost is
+#   that two nodes which independently created the same alias keep
+#   disagreeing about who owns it. That is visible and recoverable; silent
+#   impersonation is neither.
+# ---------------------------------------------------------------------------
+
+# Same value and same reasoning as ROLE_FUTURE_TOLERANCE_SECONDS, which is
+# defined further down this file: tolerate ordinary clock skew across the
+# fleet, refuse a stamp far enough ahead to win last-writer-wins forever.
+ACCOUNT_FUTURE_TOLERANCE_SECONDS = 300
+
+
+def _account_stamp_is_sane(stamp: str, label: str, account_id: str) -> bool:
+    """Reject a timestamp far enough ahead to win last-writer-wins forever."""
+    if not stamp:
+        return False
+    horizon = (datetime.now(timezone.utc)
+               + timedelta(seconds=ACCOUNT_FUTURE_TOLERANCE_SECONDS)
+               ).isoformat(timespec='microseconds')
+    if stamp > horizon:
+        logging.warning("Refused account %s for %s: stamped %s, which is in the future",
+                        label, str(account_id)[:12], stamp)
+        return False
+    return True
+
+
+def _is_account_id(value) -> bool:
+    """A uuid4().hex, which is what create_account and create_ssh_account mint.
+
+    Checked on the way in because an account id becomes a table key, a
+    linked_nodes value, and the tail of an 'ssh:<id>' node id. A peer free to
+    choose arbitrary text here could collide with those namespaces.
+    """
+    text = str(value or '').strip().casefold()
+    return len(text) == 32 and all(ch in '0123456789abcdef' for ch in text)
+
+
+def get_accounts_for_sync() -> list:
+    """Every local account as identity only -- never password material."""
+    conn = get_db_connection()
+    keys = ('account_id', 'alias', 'alias_updated_at', 'sender_num', 'created_at',
+            'mail_relay_enabled', 'mail_relay_updated_at', 'role', 'role_updated_at')
+    rows = conn.execute(
+        "SELECT account_id, alias, alias_updated_at, sender_num, created_at,"
+        " mail_relay_enabled, mail_relay_updated_at, role, role_updated_at"
+        " FROM accounts ORDER BY created_at, account_id").fetchall()
+    return [dict(zip(keys, row)) for row in rows]
+
+
+def get_account_links_for_sync() -> list:
+    conn = get_db_connection()
+    rows = conn.execute(
+        "SELECT node_id, account_id, network, linked_at FROM linked_nodes"
+        " ORDER BY node_id").fetchall()
+    return [dict(zip(('node_id', 'account_id', 'network', 'linked_at'), row))
+            for row in rows]
+
+
+def apply_synced_account_identity(account_id, alias, alias_updated_at,
+                                  sender_num=None, created_at='') -> bool:
+    """Create or update a peer-learned account's identity. Never credentials.
+
+    True when something actually changed, so a caller can log a real event
+    rather than the steady state of every peer re-asserting what we hold.
+    """
+    from utils import is_account_sync_enabled
+    if not is_account_sync_enabled():
+        return False
+    if not _is_account_id(account_id):
+        logging.warning("Refused account with a malformed id: %r", str(account_id)[:40])
+        return False
+    account_id = str(account_id).strip().casefold()
+    conn = get_db_connection()
+    c = conn.cursor()
+    changed = False
+
+    c.execute("SELECT alias_normalized, alias_updated_at, sender_num FROM accounts"
+              " WHERE account_id = ?", (account_id,))
+    existing = c.fetchone()
+    if existing is None:
+        # No password columns are written here, and nothing else writes them
+        # for a peer account either. sync_origin says so out loud so the SSH
+        # login path is not left inferring it from a NULL hash.
+        c.execute("INSERT INTO accounts (account_id, alias, alias_normalized,"
+                  " created_at, sync_origin) VALUES (?, ?, ?, ?, ?)",
+                  (account_id, '', '',
+                   str(created_at or datetime.now(timezone.utc).isoformat()), 'peer'))
+        existing = ('', '', None)
+        changed = True
+
+    clean_alias = str(alias or '').strip()[:20]
+    normalized = normalize_alias(clean_alias)
+    stamp = str(alias_updated_at or '').strip()
+    if normalized and _account_stamp_is_sane(stamp, 'alias', account_id):
+        current_alias, current_stamp, _ = existing
+        if normalized != current_alias and stamp > str(current_stamp or ''):
+            owner = alias_owner(clean_alias)
+            if owner is not None and owner != account_id:
+                logging.warning(
+                    "Account %s claims alias %r, held here by %s; keeping the local owner.",
+                    account_id[:12], clean_alias, str(owner)[:12])
+            else:
+                c.execute("UPDATE accounts SET alias = ?, alias_normalized = ?,"
+                          " alias_updated_at = ? WHERE account_id = ?",
+                          (clean_alias, normalized, stamp, account_id))
+                changed = True
+
+    # Adopt the peer's number so scores, Zork saves and profiles -- all keyed
+    # by it -- describe one person fleet-wide rather than one per node. If it
+    # is already spoken for here, leave it alone: get_account_sender_num will
+    # allocate a free one on demand, and a wrong-but-unique number is
+    # recoverable where a shared one silently merges two people's saves.
+    if sender_num not in (None, '', 0):
+        try:
+            wanted = int(sender_num)
+        except (TypeError, ValueError):
+            wanted = None
+        if wanted is not None and existing[2] is None:
+            holder = c.execute("SELECT account_id FROM accounts WHERE sender_num = ?",
+                               (wanted,)).fetchone()
+            if holder is None:
+                c.execute("UPDATE accounts SET sender_num = ? WHERE account_id = ?",
+                          (wanted, account_id))
+                changed = True
+            elif str(holder[0]) != account_id:
+                logging.info("Account %s wants sender_num %s, held locally; allocating our own.",
+                             account_id[:12], wanted)
+    conn.commit()
+    return changed
+
+
+def apply_synced_account_meta(account_id, mail_relay_enabled, mail_relay_updated_at,
+                              role, role_updated_at) -> bool:
+    """Relay consent and role for an account we already know.
+
+    Separate from identity on purpose: these are the two fields worth
+    refusing on their own terms, and an identity frame that was rejected must
+    not carry them in behind it.
+    """
+    from utils import is_account_sync_enabled, get_remote_role_ceiling
+    if not is_account_sync_enabled() or not _is_account_id(account_id):
+        return False
+    account_id = str(account_id).strip().casefold()
+    conn = get_db_connection()
+    c = conn.cursor()
+    row = c.execute("SELECT mail_relay_updated_at, role_updated_at FROM accounts"
+                    " WHERE account_id = ?", (account_id,)).fetchone()
+    if row is None:
+        return False
+    changed = False
+
+    relay_stamp = str(mail_relay_updated_at or '').strip()
+    if _account_stamp_is_sane(relay_stamp, 'mail relay', account_id) and \
+            relay_stamp > str(row[0] or ''):
+        c.execute("UPDATE accounts SET mail_relay_enabled = ?, mail_relay_updated_at = ?"
+                  " WHERE account_id = ?",
+                  (1 if str(mail_relay_enabled).strip() in ('1', 'true', 'True') else 0,
+                   relay_stamp, account_id))
+        changed = True
+
+    role_stamp = str(role_updated_at or '').strip()
+    normalized_role = normalize_role(role)
+    if normalized_role != ROLE_UNREGISTERED and \
+            _account_stamp_is_sane(role_stamp, 'role', account_id) and \
+            role_stamp > str(row[1] or ''):
+        ceiling = normalize_role(get_remote_role_ceiling())
+        if role_rank(normalized_role) > role_rank(ceiling):
+            # The same ceiling per-node roles use. An account role covers
+            # every device linked to it, so accepting this unchecked would be
+            # a broader grant than the node role it mirrors.
+            logging.warning("Refused role %s for account %s from a peer: above the ceiling %s",
+                            normalized_role, account_id[:12], ceiling)
+        else:
+            c.execute("UPDATE accounts SET role = ?, role_updated_at = ? WHERE account_id = ?",
+                      (normalized_role, role_stamp, account_id))
+            changed = True
+    conn.commit()
+    return changed
+
+
+def apply_synced_account_link(node_id, account_id, network, linked_at) -> bool:
+    """Attach a device to a peer-learned account.
+
+    A device already linked to a different account here is left alone. That
+    link is what routes a person's mail to a radio, so honouring a remote
+    re-assignment would let any node on the broker redirect it.
+    """
+    from utils import is_account_sync_enabled
+    if not is_account_sync_enabled() or not _is_account_id(account_id):
+        return False
+    account_id = str(account_id).strip().casefold()
+    normalized_node = str(node_id or '').strip()
+    if not normalized_node:
+        return False
+    conn = get_db_connection()
+    c = conn.cursor()
+    if c.execute("SELECT 1 FROM accounts WHERE account_id = ?",
+                 (account_id,)).fetchone() is None:
+        return False
+    row = c.execute("SELECT account_id FROM linked_nodes WHERE node_id = ?",
+                    (normalized_node,)).fetchone()
+    if row is not None:
+        if str(row[0]) != account_id:
+            logging.warning(
+                "Refused to move device %s to account %s: linked to %s here.",
+                normalized_node[:24], account_id[:12], str(row[0])[:12])
+        return False
+    c.execute("INSERT INTO linked_nodes (node_id, account_id, network, linked_at)"
+              " VALUES (?, ?, ?, ?)",
+              (normalized_node, account_id,
+               str(network or '').strip()[:16] or 'unknown',
+               str(linked_at or datetime.now(timezone.utc).isoformat())))
+    conn.commit()
+    return True
 
 
 def get_mail_relay_preference(node_id: str) -> bool:
@@ -6992,6 +7282,93 @@ def sync_node_roles_to_nodes(bbs_nodes: list, interface, force: bool = False) ->
             if send_node_role_to_bbs_nodes(
                     node_id, role, updated_at, [peer_id], interface):
                 _advertised_roles[key] = updated_at
+                sent += 1
+    return sent
+
+
+# How far ahead of us a peer's account stamp may be: see
+# ACCOUNT_FUTURE_TOLERANCE_SECONDS near the apply functions.
+ACCOUNT_READVERTISE_SECONDS = 900.0
+
+# What we have already told each peer, so the steady state costs no airtime.
+# (peer, account_id) -> the stamps last sent.
+_advertised_accounts: dict = {}
+_advertised_account_links: dict = {}
+_accounts_last_full_sweep: dict = {}
+
+
+def sync_accounts_to_nodes(bbs_nodes: list, interface, force: bool = False) -> int:
+    """Advertise local accounts and their devices to peers.
+
+    Rides the periodic tick for the same reason roles do: the five-phase sync
+    is gated on `phases_complete`, which is persisted, so on an established
+    fleet P4 finished forever and anything hung off it never runs again.
+
+    Change-driven, with a slow full sweep so a peer that was offline when
+    something changed still converges -- there is no hash scope behind these
+    frames, so being said again is the only way they heal.
+
+    Identity only. The frames this sends carry no password material; see the
+    account sync block above for why that is the whole point.
+    """
+    if not bbs_nodes or not interface:
+        return 0
+    from utils import (is_account_sync_enabled, send_account_to_bbs_nodes,
+                       send_account_meta_to_bbs_nodes,
+                       send_account_link_to_bbs_nodes, get_max_exported_role)
+    if not is_account_sync_enabled():
+        return 0
+    export_ceiling = normalize_role(get_max_exported_role())
+
+    now = time.time()
+    sweeping = set()
+    for peer_id in bbs_nodes:
+        if now - _accounts_last_full_sweep.get(str(peer_id), 0.0) >= ACCOUNT_READVERTISE_SECONDS:
+            sweeping.add(str(peer_id))
+            _accounts_last_full_sweep[str(peer_id)] = now
+
+    sent = 0
+    for account in get_accounts_for_sync():
+        account_id = str(account.get('account_id') or '')
+        if not account_id:
+            continue
+        # One fingerprint for the whole account: if nothing a peer would act
+        # on has moved, say nothing at all.
+        stamps = (str(account.get('alias_updated_at') or ''),
+                  str(account.get('mail_relay_updated_at') or ''),
+                  str(account.get('role_updated_at') or ''),
+                  str(account.get('sender_num') or ''))
+        for peer_id in bbs_nodes:
+            key = (str(peer_id), account_id)
+            if (not force and str(peer_id) not in sweeping
+                    and _advertised_accounts.get(key) == stamps):
+                continue
+            delivered = send_account_to_bbs_nodes(account, [peer_id], interface)
+            outbound = dict(account)
+            if role_rank(outbound.get('role')) > role_rank(export_ceiling):
+                # The mirror of remote_role_ceiling, exactly as node roles do
+                # it: a peer would refuse this anyway, and not sending means
+                # we no longer tell the fleet who our admins are. Blank, not
+                # downgraded -- an empty role normalises to UNREGISTERED,
+                # which the receiver skips rather than applying.
+                outbound['role'] = ''
+            delivered += send_account_meta_to_bbs_nodes(outbound, [peer_id], interface)
+            if delivered:
+                _advertised_accounts[key] = stamps
+                sent += delivered
+
+    for link in get_account_links_for_sync():
+        node_id = str(link.get('node_id') or '')
+        account_id = str(link.get('account_id') or '')
+        if not node_id or not account_id:
+            continue
+        for peer_id in bbs_nodes:
+            key = (str(peer_id), node_id)
+            if (not force and str(peer_id) not in sweeping
+                    and _advertised_account_links.get(key) == account_id):
+                continue
+            if send_account_link_to_bbs_nodes(link, [peer_id], interface):
+                _advertised_account_links[key] = account_id
                 sent += 1
     return sent
 
