@@ -52,7 +52,7 @@ def get_max_text_bytes(interface=None) -> int:
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat', 'role', 'bbsid')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state, 'role'=user roles, 'bbsid'=fleet BBS name/greeting
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat', 'role', 'bbsid', 'acct', 'mdlv')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state, 'role'=user roles, 'bbsid'=fleet BBS name/greeting, 'acct'=fleet accounts (identity only, never credentials), 'mdlv'=mail relay delivery receipts
 
 # Single-char scope codes used by the 'scc' wire capability.  Senders gate
 # encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
@@ -2024,6 +2024,113 @@ def send_mail_relay_preference_to_bbs_nodes(node_id, enabled, updated_at, bbs_no
     sent = 0
     for peer_id in bbs_nodes or []:
         if peer_supports(peer_id, 'mrp'):
+            _send_one_sync(message, peer_id, interface)
+            sent += 1
+    return sent
+
+
+def send_mail_delivery_receipt_to_bbs_nodes(mail_unique_id, target_node_id,
+                                           delivered_at, bbs_nodes, interface):
+    """Tell peers this mail already reached that radio, so they stand down.
+
+    Advisory: a lost receipt costs a duplicate DM, never a lost message. The
+    receiving side only cancels deliveries still pending, so a late receipt
+    is harmless.
+    """
+    try:
+        from db_operations import peer_supports
+    except Exception:
+        return 0
+    message = "MAILDLV|{0}|{1}|{2}".format(
+        str(mail_unique_id), str(target_node_id), str(delivered_at))
+    sent = 0
+    for peer_id in bbs_nodes or []:
+        if peer_supports(peer_id, 'mdlv'):
+            _send_one_sync(message, peer_id, interface)
+            sent += 1
+    return sent
+
+
+def is_account_sync_enabled() -> bool:
+    """Whether this node shares accounts with, and accepts them from, peers."""
+    return _config_bool("accounts", "sync_accounts", True)
+
+
+def send_account_to_bbs_nodes(account, bbs_nodes, interface):
+    """Advertise one account's identity: who exists, not how they log in.
+
+    Deliberately carries no password_hash or password_salt. Those stay on the
+    node that minted the account, so a peer learning this frame can address
+    mail to the person and can never authenticate as them.
+
+    Split from the meta frame below to stay inside a MeshCore packet: alias
+    is capped at 20 characters and an account id is 32, so the worst case
+    here is a little under 100 bytes.
+    """
+    try:
+        from db_operations import peer_supports
+    except Exception:
+        return 0
+    message = "ACCT|{0}|{1}|{2}|{3}|{4}".format(
+        str(account.get('account_id', '')),
+        str(account.get('alias', ''))[:20],
+        str(account.get('alias_updated_at', '')),
+        '' if account.get('sender_num') in (None, '') else int(account['sender_num']),
+        str(account.get('created_at', '')),
+    )
+    sent = 0
+    for peer_id in bbs_nodes or []:
+        if peer_supports(peer_id, 'acct'):
+            _send_one_sync(message, peer_id, interface)
+            sent += 1
+    return sent
+
+
+def send_account_meta_to_bbs_nodes(account, bbs_nodes, interface):
+    """Advertise an account's relay consent and role.
+
+    Its own frame because the receiver refuses these on their own terms: a
+    role above the remote ceiling is dropped while the identity it arrived
+    beside is still perfectly acceptable.
+    """
+    try:
+        from db_operations import peer_supports
+    except Exception:
+        return 0
+    message = "ACCTMETA|{0}|{1}|{2}|{3}|{4}".format(
+        str(account.get('account_id', '')),
+        1 if account.get('mail_relay_enabled') else 0,
+        str(account.get('mail_relay_updated_at', '')),
+        str(account.get('role', '')),
+        str(account.get('role_updated_at', '')),
+    )
+    sent = 0
+    for peer_id in bbs_nodes or []:
+        if peer_supports(peer_id, 'acct'):
+            _send_one_sync(message, peer_id, interface)
+            sent += 1
+    return sent
+
+
+def send_account_link_to_bbs_nodes(link, bbs_nodes, interface):
+    """Advertise that a device belongs to an account.
+
+    This is what lets a node that has never heard of someone still recognise
+    their radio and relay mail to it.
+    """
+    try:
+        from db_operations import peer_supports
+    except Exception:
+        return 0
+    message = "ACCTLINK|{0}|{1}|{2}|{3}".format(
+        str(link.get('node_id', '')),
+        str(link.get('account_id', '')),
+        str(link.get('network', '')),
+        str(link.get('linked_at', '')),
+    )
+    sent = 0
+    for peer_id in bbs_nodes or []:
+        if peer_supports(peer_id, 'acct'):
             _send_one_sync(message, peer_id, interface)
             sent += 1
     return sent

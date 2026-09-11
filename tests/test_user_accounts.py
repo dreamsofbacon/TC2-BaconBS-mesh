@@ -57,7 +57,16 @@ class AccountsSchemaTests(unittest.TestCase):
                     "sender_num",
                     # The account is the authority for every device someone
                     # has linked, so a role lives here rather than per node.
-                    "role", "role_updated_at"})
+                    "role", "role_updated_at",
+                    # Both arrived with account sync. alias_updated_at
+                    # resolves which of two nodes' claims on a name wins,
+                    # the way role_updated_at already did for roles.
+                    "alias_updated_at",
+                    # 'local' or 'peer'. A peer-learned account carries no
+                    # password material, so this states outright that there
+                    # is nothing here to log in with, rather than leaving the
+                    # SSH path to infer it from a NULL hash.
+                    "sync_origin"})
         cols = {row[1] for row in conn.execute("PRAGMA table_info(linked_nodes)")}
         self.assertEqual(cols, {"node_id", "account_id", "network", "linked_at"})
 

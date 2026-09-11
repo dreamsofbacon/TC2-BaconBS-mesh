@@ -76,6 +76,8 @@ from db_operations import (
     get_zork_save_row_by_user_and_game,
     get_sync_tombstone_deleted_at,
     get_node_role, ROLE_BANNED, apply_synced_node_role,
+    apply_synced_account_identity, apply_synced_account_meta,
+    apply_synced_account_link, mark_mail_dm_delivered_elsewhere,
     get_recent_sync_tombstones,
     has_sync_tombstone,
     rollback_db_connection,
@@ -2635,6 +2637,44 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             # apply_synced_node_role: unsigned frame, so it caps what can be
             # granted and refuses anything older than a local decision.
             apply_synced_node_role(parts[1].strip(), parts[2], parts[3].strip())
+        elif message.startswith("MAILDLV|"):
+            parts = message.split("|", 3)
+            if len(parts) != 4 or not parts[1] or not parts[2]:
+                logging.warning(f"Malformed MAILDLV ignored: {message}")
+                return
+            # Advisory only, and it can only ever cancel work: see
+            # mark_mail_dm_delivered_elsewhere. A forged one costs the
+            # recipient one undelivered DM that they can still read in their
+            # mailbox the ordinary way.
+            mark_mail_dm_delivered_elsewhere(parts[1].strip(), parts[2].strip(),
+                                             parts[3].strip())
+        elif message.startswith("ACCT|"):
+            parts = message.split("|", 5)
+            if len(parts) != 6 or not parts[1]:
+                logging.warning(f"Malformed ACCT ignored: {message}")
+                return
+            # What a peer may assert about an account lives entirely in
+            # apply_synced_account_identity: unsigned frame, so it validates
+            # the id, refuses to displace a local alias, and never writes
+            # password material no matter what this frame contains.
+            apply_synced_account_identity(parts[1].strip(), parts[2],
+                                          parts[3].strip(), parts[4].strip(),
+                                          parts[5].strip())
+        elif message.startswith("ACCTMETA|"):
+            parts = message.split("|", 5)
+            if len(parts) != 6 or not parts[1] or parts[2] not in ('0', '1'):
+                logging.warning(f"Malformed ACCTMETA ignored: {message}")
+                return
+            apply_synced_account_meta(parts[1].strip(), parts[2] == '1',
+                                      parts[3].strip(), parts[4].strip(),
+                                      parts[5].strip())
+        elif message.startswith("ACCTLINK|"):
+            parts = message.split("|", 4)
+            if len(parts) != 5 or not parts[1] or not parts[2]:
+                logging.warning(f"Malformed ACCTLINK ignored: {message}")
+                return
+            apply_synced_account_link(parts[1].strip(), parts[2].strip(),
+                                      parts[3].strip(), parts[4].strip())
         elif message.startswith("BBSID|"):
             parts = message.split("|", 3)
             if len(parts) != 4 or not parts[1] or not parts[3]:
@@ -3286,6 +3326,7 @@ def on_receive(packet, interface):
                                    "CHANNEL|", "DELETE_CHANNEL|", "CHANNELCOMMENT|", "CHANNELCOMMENTCONT|", "CHANNELCOMMENTMETA|", "DELETE_CHANNELCOMMENT|",
                                    "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
                                    "PROFILESYNC|", "RELAYPREF|", "SCORESYNC|", "ROLE|", "BBSID|",
+                                   "ACCT|", "ACCTMETA|", "ACCTLINK|", "MAILDLV|",
                                    "FLEETVER|", "FLEETVERCONT|", "NODEVER|", "FLEETSTATUS|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|", "HASHZGAP|",
                                    "HAVE|", "WANT|", "EVENT|", "PEERGOSSIP|",
