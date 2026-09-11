@@ -70,6 +70,14 @@ class PublicChatterWebTests(unittest.TestCase):
         self.assertEqual(len(data["entries"]), 1)
         self.assertEqual(data["entries"][0]["content"], "<img src=x onerror=alert(1)>")
 
+    def test_radios_page_includes_public_chatter_panel(self):
+        self.login()
+        page = self.client.get("/radios")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Public Chatter", page.data)
+        self.assertIn(b"radio-panels", page.data)
+        self.assertIn(b"chatter-feed", page.data)
+
     def test_invalid_channel_filter_is_rejected(self):
         self.login()
         response = self.client.get("/api/public/chatter?channel=LongFast")

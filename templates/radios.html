@@ -1,16 +1,329 @@
 {% extends "base.html" %}
+{% block extra_head %}
+<style>
+  .radio-chatter-shell {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px 0 40px;
+  }
+
+  .radio-chatter-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: center;
+    margin-bottom: 18px;
+  }
+
+  .radio-chatter-header h1 {
+    margin: 0;
+    font-size: clamp(1.8rem, 3vw, 2.5rem);
+  }
+
+  .radio-chatter-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.45fr);
+    gap: 18px;
+    align-items: start;
+  }
+
+  .panel {
+    border: 1px solid var(--card-border, #2b3748);
+    border-radius: var(--radius-lg, 14px);
+    background: var(--card-bg, #121821);
+    box-shadow: 0 10px 24px rgba(9, 13, 18, 0.18);
+    padding: 18px;
+  }
+
+  .panel h2, .panel h3 {
+    margin-top: 0;
+  }
+
+  .panel-header-line {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+
+  .panel-header-line h2 {
+    margin-bottom: 0;
+  }
+
+  .muted {
+    color: var(--muted, #9aa8ba);
+  }
+
+  .radio-list {
+    display: grid;
+    gap: 12px;
+  }
+
+  #radio-state {
+    margin: 0 0 12px;
+    color: var(--muted, #9aa8ba);
+  }
+
+  #radio-panels {
+    display: grid;
+    gap: 12px;
+  }
+
+  #radio-panels .card {
+    margin-top: 0 !important;
+  }
+
+  .chatter-shell {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .chatter-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-end;
+    margin-bottom: 14px;
+  }
+
+  .chatter-header h1 {
+    margin: 0;
+    font-size: clamp(1.5rem, 2vw, 2rem);
+  }
+
+  .chatter-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 1.3fr);
+    gap: 12px;
+    align-items: start;
+    margin-bottom: 14px;
+  }
+
+  .chatter-legend {
+    grid-column: 1;
+  }
+
+  .chatter-history-group {
+    grid-column: 2;
+  }
+
+  .chatter-search-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+  }
+
+  .chatter-search-group label {
+    display: inline;
+    margin: 0;
+    white-space: nowrap;
+  }
+
+  .chatter-search-group .form-control {
+    width: min(240px, 44vw);
+  }
+
+  .history-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .history-row .form-control {
+    width: 62px;
+    flex: 0 0 auto;
+  }
+
+  .chatter-presets {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    flex: 1;
+  }
+
+  .chatter-presets .btn {
+    padding-left: 4px;
+    padding-right: 4px;
+    text-align: center;
+  }
+
+  .chatter-feed {
+    display: grid;
+    gap: 10px;
+  }
+
+  .chatter-entry {
+    border-left: 3px solid var(--cc, var(--accent-color, #d6a84b));
+    padding: 12px 14px;
+    background: var(--surface-raised, #17191d);
+    border-radius: 8px;
+  }
+
+  .chatter-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    font-size: 13px;
+    color: var(--text-muted, #9ca3af);
+    margin-bottom: 7px;
+    align-items: center;
+  }
+
+  .chatter-node { color: var(--cc, inherit); }
+  .chatter-swatch {
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
+    flex: 0 0 auto;
+    background: var(--cc, var(--text-faint, #6b7a8d));
+  }
+  .chatter-swatch.is-round { border-radius: 50%; }
+  .cc-none { --cc: var(--text-faint, #6b7a8d); }
+
+  .chatter-legend {
+    display: grid;
+    align-items: center;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 4px 10px;
+    padding: 6px 10px;
+    min-width: 0;
+    border: 1px solid var(--border, #2b3645);
+    border-radius: var(--radius-md, 8px);
+    background: var(--surface, #161d27);
+  }
+  .legend-title {
+    font-size: 10px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--text-faint, #6b7a8d);
+    margin: 0;
+    white-space: nowrap;
+  }
+  #legend-clear { grid-column: 3; grid-row: 1 / span 2; align-self: center; }
+  .legend-items { display: flex; flex-wrap: wrap; gap: 4px; }
+  .legend-chip {
+    display: flex; align-items: center; gap: 6px; font-size: 12px; font-family: inherit;
+    color: inherit; text-align: left; background: none; cursor: pointer; border: 1px solid transparent;
+    border-radius: var(--radius-pill, 999px); padding: 2px 8px;
+  }
+  .legend-chip[aria-pressed="true"] {
+    background: var(--surface-3, #243044);
+    border-color: var(--cc, var(--border-focus, #5b8def));
+  }
+  .legend-swatch { width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; background: var(--cc, var(--text-faint, #6b7a8d)); }
+  .legend-swatch.is-round { border-radius: 50%; }
+  .legend-count { color: var(--text-faint, #6b7a8d); }
+  .legend-empty { font-size: 12px; color: var(--text-faint, #6b7a8d); }
+
+  .cc-0 { --cc:#6aa9ff; } .cc-1 { --cc:#2dd4bf; } .cc-2 { --cc:#7ddb5c; }
+  .cc-3 { --cc:#c3cf3a; } .cc-4 { --cc:#f2c14e; } .cc-5 { --cc:#f08a3c; }
+  .cc-6 { --cc:#ef6b6b; } .cc-7 { --cc:#ec6bb0; } .cc-8 { --cc:#b07bea; }
+  .cc-9 { --cc:#8b93f0; }
+
+  .chatter-message { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+  .chatter-state { padding: 24px 12px; text-align: center; color: var(--text-muted, #9ca3af); }
+
+  @media (max-width: 920px) {
+    .radio-chatter-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 720px) {
+    .radio-chatter-header,
+    .chatter-header,
+    .panel-header-line {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+    .chatter-controls {
+      grid-template-columns: 1fr;
+    }
+    .chatter-history-group,
+    .chatter-legend { grid-column: 1; }
+    .chatter-search-group {
+      width: 100%;
+    }
+    .chatter-search-group .form-control {
+      width: auto;
+      flex: 1;
+    }
+  }
+</style>
+{% endblock %}
 {% block content %}
-<div style="max-width:1100px;margin:auto">
-  <h1>Radios</h1>
-  <p class="text-muted">Your local Meshtastic and MeshCore connections. Manage each radio while Bacon BBS keeps running.</p>
-  <p><a class="btn" href="{{ url_for('public_chatter_page') }}">Open public chatter</a> <a class="btn" href="{{ url_for('settings_page') }}#devices">Connection settings</a></p>
-  <p id="radio-state" role="status">Loading local radios…</p>
-  <div id="radio-panels"></div>
-  <section class="card">
+<div class="radio-chatter-shell">
+  <header class="radio-chatter-header">
+    <div>
+      <p class="muted" style="margin:0 0 4px; text-transform:uppercase; letter-spacing:.08em; font-size:11px;">Bacon BBS radio dashboard</p>
+      <h1>Radios &amp; Public Chatter</h1>
+    </div>
+    <div>
+      <a class="btn" href="{{ url_for('settings_page') }}#devices">Connection settings</a>
+    </div>
+  </header>
+
+  <div class="radio-chatter-grid">
+    <section class="panel" aria-labelledby="radio-panel-heading">
+      <div class="panel-header-line">
+        <h2 id="radio-panel-heading">Local radios</h2>
+      </div>
+      <p id="radio-state" role="status">Loading local radios…</p>
+      <div id="radio-panels"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="chatter-panel-heading">
+      <div class="panel-header-line">
+        <h2 id="chatter-panel-heading">Public chatter</h2>
+      </div>
+      <div class="chatter-shell">
+        <div class="chatter-header">
+          <div>
+            <h1>Public Chatter</h1>
+          </div>
+          <div class="form-group chatter-search-group">
+            <label for="chatter-search">Search</label>
+            <input class="form-control" id="chatter-search" type="search" placeholder="Message or sender">
+          </div>
+        </div>
+
+        <section class="chatter-controls" aria-label="Chatter filters">
+          <section class="chatter-legend" id="chatter-legend" title="Click to filter; pick several to combine" aria-label="Colour legend and filters" hidden>
+            <h2 class="legend-title">Channels</h2>
+            <div class="legend-items" id="legend-channels"></div>
+            <h2 class="legend-title">Heard by</h2>
+            <div class="legend-items" id="legend-nodes"></div>
+            <button type="button" class="btn btn-sm" id="legend-clear" hidden>Clear</button>
+          </section>
+
+          <div class="form-group chatter-history-group">
+            <label for="chatter-hours">History (hours)</label>
+            <div class="history-row">
+              <input class="form-control" id="chatter-hours" type="number" min="1" max="168" value="24">
+              <div class="chatter-presets" aria-label="History presets">
+                {% for value, label in [(1,'1h'),(3,'3h'),(6,'6h'),(24,'24h'),(72,'3d'),(168,'7d')] %}
+                <button class="btn btn-sm" type="button" data-hours="{{ value }}">{{ label }}</button>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div id="chatter-state" class="chatter-state" role="status">Loading messages...</div>
+        <div id="chatter-feed" class="chatter-feed" aria-live="polite"></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="panel" style="margin-top:18px;">
     <h2>Send a channel message</h2>
-    <p class="text-muted">Choose a local destination below. A submitted message has been handed to the radio; delivery to listeners is not confirmed.</p>
+    <p class="muted">Choose a local destination below. A submitted message has been handed to the radio; delivery to listeners is not confirmed.</p>
     {% include "radio_composer.html" %}
   </section>
 </div>
 <script src="{{ url_for('static', filename='js/radio-admin.js', v=asset_version) }}" defer></script>
+<script src="{{ url_for('static', filename='js/public-chatter.js', v=asset_version) }}" defer></script>
 {% endblock %}
