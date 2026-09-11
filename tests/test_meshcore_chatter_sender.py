@@ -16,7 +16,7 @@ Every sample below is real traffic captured off the air.
 import sys
 import types
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 if "meshtastic" not in sys.modules:
     sys.modules["meshtastic"] = types.SimpleNamespace(BROADCAST_NUM=0)
@@ -143,7 +143,13 @@ class NormalizationTests(unittest.TestCase):
         A packet with no native id hashes its content, so this is the case
         where it actually bites.
         """
-        sent_at = 1788451200          # fixed, so both sides agree on time
+        # Both sides must agree on the time, but it must also still be
+        # inside public_chatter's 168-hour retention window: a literal
+        # epoch passes until exactly a week after it was written and
+        # then normalize_broadcast returns None for an expired packet,
+        # which is a failure about the calendar, not about hashing.
+        sent_at = int((datetime.now(timezone.utc)
+                       - timedelta(hours=1)).timestamp())
         observation = self.observe("brown dog: Test", sender_timestamp=sent_at)
 
         # Exactly what the old code -- which never parsed a prefix -- hashed.
