@@ -5440,8 +5440,8 @@ def create_app(runtime_interface=None) -> Flask:
     @login_required
     def public_chatter_page():
       return render_template(
-        "public_chatter.html",
-        title="Public Chatter",
+        "radios.html",
+        title="Radio & Public Chatter",
         title_suffix="Bacon BBS",
         show_nav=True,
       )
@@ -6978,7 +6978,12 @@ def create_app(runtime_interface=None) -> Flask:
     @app.get("/radios")
     @login_required
     def radios_page():
-      return render_template("radios.html", title="Radios", show_nav=True)
+      return render_template(
+        "radios.html",
+        title="Radio & Public Chatter",
+        title_suffix="Bacon BBS",
+        show_nav=True,
+      )
 
     @app.get("/api/radios")
     @login_required
