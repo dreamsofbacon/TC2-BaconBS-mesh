@@ -359,8 +359,8 @@ HELP_TIPS = {
     'settings': "Tip: [5] turns these tips off.",
     'BULLETIN_MENU': "Tip: pick a board, then a number to read it.",
     'MAIL': "Tip: [0] backs out of any prompt.",
-    'CHANNEL_DIR': "Tip: a channel is a topic. Open one to reply.",
-    'GAMES': "Tip: games keep your score. X leaves a game.",
+    'CHANNEL_DIRECTORY': "Tip: a channel is a topic. Open one to reply.",
+    'GAMES_MENU': "Tip: games keep your score. X leaves a game.",
     'PUBLIC_CHATTER': "Tip: this is live mesh traffic, not BBS posts.",
 }
 
@@ -514,7 +514,7 @@ def handle_mail_command(sender_id, interface, notice=None):
     response = "✉️Mail Menu✉️\nWhat would you like to do with mail?\n[1]Read [2]Send [3]Relay Directory [0]Back"
     if notice:
         response = f"{notice}{LINE_BREAK}{response}"
-    send_message(response, sender_id, interface)
+    send_message(with_help_tip(response, sender_id, 'MAIL'), sender_id, interface)
     update_user_state(sender_id, {'command': 'MAIL', 'step': 1})
 
 
@@ -690,7 +690,8 @@ def _chatter_windows_text() -> str:
 
 
 def handle_public_chatter_command(sender_id, interface):
-    send_message(_chatter_windows_text(), sender_id, interface)
+    send_message(with_help_tip(_chatter_windows_text(), sender_id, 'PUBLIC_CHATTER'),
+                 sender_id, interface)
     update_user_state(sender_id, {
         'command': 'PUBLIC_CHATTER', 'step': 1,
         'channels': [],
@@ -1196,7 +1197,8 @@ def handle_bulletin_command(sender_id, interface):
         f"📰Bulletin Menu📰\nWhich board would you like to enter?\n{board_options}"
         "\nReply with board number, name, or first letter.\n[0] Back"
     )
-    send_message(response, sender_id, interface)
+    send_message(with_help_tip(response, sender_id, 'BULLETIN_MENU'),
+                 sender_id, interface)
     update_user_state(sender_id, {'command': 'BULLETIN_MENU', 'step': 1, 'boards': boards})
 
 
@@ -1229,7 +1231,7 @@ def handle_games_command(sender_id, interface):
     sync_notice = get_zork_save_sync_notice()
     if sync_notice:
         menu += f"\n\n{sync_notice}"
-    send_message(menu, sender_id, interface)
+    send_message(with_help_tip(menu, sender_id, 'GAMES_MENU'), sender_id, interface)
     update_user_state(sender_id, {'command': 'GAMES_MENU', 'step': 1})
 
 
@@ -2742,7 +2744,8 @@ def handle_wall_of_shame_command(sender_id, interface):
 
 def handle_channel_directory_command(sender_id, interface):
     response = "📚CHANNEL DIRECTORY📚\nWhat would you like to do?\n[1]View [2]Post [0]Back"
-    send_message(response, sender_id, interface)
+    send_message(with_help_tip(response, sender_id, 'CHANNEL_DIRECTORY'),
+                 sender_id, interface)
     update_user_state(sender_id, {'command': 'CHANNEL_DIRECTORY', 'step': 1})
 
 
