@@ -2,7 +2,7 @@
 {% block content %}
 <header class="bbs-masthead">
   <h1 class="bbs-wordmark">BACON<span>BBS</span></h1>
-  <div class="bbs-intro"><p>Leave a message. Start a conversation.<br>Give someone a high score to chase.</p><a class="btn btn-primary" href="{{ url_for('bulletin_new') }}">POST SOMETHING <span aria-hidden="true">↗</span></a></div>
+  <div class="bbs-intro"><p>Leave a message. Start a conversation. Give someone a high score to chase.</p></div>
 </header>
 <div class="board-ticker" aria-label="Board totals"><span class="ticker-label">ON THE BOARD</span><a href="{{ url_for('table_list', table='bulletins') }}"><strong>{{ counts.bulletins }}</strong> posts</a><a href="{{ url_for('table_list', table='channels') }}"><strong>{{ counts.channels }}</strong> channels</a><a href="{{ url_for('clients_summary') }}" title="Persisted roster · not online count"><strong>{{ counts.mesh_clients }}</strong> known clients</a></div>
 <div class="overview-grid">
