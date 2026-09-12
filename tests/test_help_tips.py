@@ -141,6 +141,50 @@ class MenuTests(_Case):
         self.assertLessEqual(len(self.last.encode('utf-8')), 320)
 
 
+class EveryDefinedTipIsActuallyShownTests(_Case):
+    """A tip nobody displays is worse than no tip: it looks done.
+
+    Five of the nine shipped defined-but-unwired -- Bulletins, Mail, Channel
+    Dir, Games and Public Chatter -- and two of those had keys that did not
+    even match the screen's user_states command, so no amount of reading the
+    dict would have shown it. This drives each screen for real and asserts
+    the tip reaches the user, and the last test fails if a tip is ever added
+    to HELP_TIPS without a screen to show it on.
+    """
+
+    SCREENS = {
+        'main': lambda self: ch.handle_help_command(1234, self.iface),
+        'bbs': lambda self: ch.handle_help_command(1234, self.iface, 'bbs'),
+        'utilities': lambda self: ch.handle_help_command(1234, self.iface, 'utilities'),
+        'settings': lambda self: ch.handle_settings_command(1234, self.iface, "!abc"),
+        'BULLETIN_MENU': lambda self: ch.handle_bulletin_command(1234, self.iface),
+        'MAIL': lambda self: ch.handle_mail_command(1234, self.iface),
+        'CHANNEL_DIRECTORY': lambda self: ch.handle_channel_directory_command(1234, self.iface),
+        'GAMES_MENU': lambda self: ch.handle_games_command(1234, self.iface),
+        'PUBLIC_CHATTER': lambda self: ch.handle_public_chatter_command(1234, self.iface),
+    }
+
+    def test_each_screen_shows_its_own_tip(self):
+        for key, open_screen in self.SCREENS.items():
+            with self.subTest(screen=key):
+                self.sent.clear()
+                open_screen(self)
+                self.assertTrue(self.sent, f"{key} sent nothing")
+                self.assertIn(ch.HELP_TIPS[key], " ".join(self.sent))
+
+    def test_each_screen_drops_its_tip_when_switched_off(self):
+        db_operations.set_help_tips_enabled(1234, False)
+        for key, open_screen in self.SCREENS.items():
+            with self.subTest(screen=key):
+                self.sent.clear()
+                open_screen(self)
+                self.assertNotIn(ch.HELP_TIPS[key], " ".join(self.sent))
+
+    def test_no_tip_is_defined_without_a_screen_to_show_it(self):
+        self.assertEqual(set(ch.HELP_TIPS), set(self.SCREENS),
+                         "a tip exists that no screen displays, or vice versa")
+
+
 class SettingsScreenTests(_Case):
     def test_the_screen_reports_the_current_state(self):
         ch.handle_settings_command(1234, self.iface, "!abc")
