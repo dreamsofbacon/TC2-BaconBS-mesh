@@ -220,13 +220,13 @@ class AccountMenuTests(unittest.TestCase):
         self.assertEqual(command_handlers.get_user_state(1), {"command": "ACCOUNT", "step": 1})
 
     def test_settings_relay_opt_in_bootstraps_account(self):
-        """The relay toggle moved from Profile to Settings -- it is what the
-        BBS does with your mail, not who you are. Opting in must still
-        create the account it needs."""
+        """The relay toggle is [3] on the merged Settings & Profile screen,
+        behind bio and linked devices. Opting in must still create the
+        account it needs."""
         command_handlers.update_user_state(1, {"command": "SETTINGS", "step": 1})
         with mock.patch.object(command_handlers, "send_message"):
             command_handlers.handle_settings_steps(
-                1, "1", self.interface, "!aaa11111"
+                1, "3", self.interface, "!aaa11111"
             )
             state = command_handlers.get_user_state(1)
             self.assertEqual(state["step"], 2)
@@ -238,8 +238,9 @@ class AccountMenuTests(unittest.TestCase):
         self.assertTrue(db_operations.get_mail_relay_preference("!aaa11111"))
 
     def test_the_old_profile_number_still_reaches_the_toggle(self):
-        """Someone who learned [3] on the Profile screen should land where
-        the toggle went, not on 'Invalid choice.'"""
+        """[3] meant the relay toggle on the old Profile screen and still
+        does on the merged one. A session left in the retired PROFILE state
+        must land on it rather than 'Invalid choice.'"""
         command_handlers.update_user_state(1, {"command": "PROFILE", "step": 1})
         with mock.patch.object(command_handlers, "send_message") as sm:
             command_handlers.handle_profile_steps(
@@ -247,9 +248,27 @@ class AccountMenuTests(unittest.TestCase):
             )
         sent = _sent(sm)
         self.assertTrue(sent, "[3] sent nothing at all -- it dead-ends")
-        self.assertIn("Settings", sent[0])
+        self.assertIn("relay", sent[0].lower())
         self.assertEqual(
             command_handlers.get_user_state(1)["command"], "SETTINGS")
+
+    def test_a_half_written_bio_is_not_read_as_a_relay_confirmation(self):
+        """PROFILE step 2 was the bio composer; SETTINGS step 2 is the relay
+        Y/N. Passing one state to the other verbatim answered 'no' to a
+        question the user was never asked, and threw away what they typed."""
+        db_operations.auto_upsert_user_profile(1, "bac", "bacon")
+        command_handlers.update_user_state(1, {"command": "PROFILE", "step": 2})
+        with mock.patch.object(command_handlers, "send_message") as sm:
+            command_handlers.handle_profile_steps(
+                1, "radios and bacon", self.interface, sender_node_id="!aaa11111"
+            )
+        sent = _sent(sm)
+        # The text was taken as a bio, not as an answer to a question nobody
+        # asked. (The screen redrawn afterwards mentions the relay because it
+        # lists it -- that is the menu, not a prompt.)
+        self.assertIn("Bio updated", sent[0])
+        self.assertNotIn("[Y/N]", " ".join(sent))
+        self.assertEqual(db_operations.get_user_profile(1)[6], "radios and bacon")
 
 
 class AccountRoutingIntegrationTests(unittest.TestCase):

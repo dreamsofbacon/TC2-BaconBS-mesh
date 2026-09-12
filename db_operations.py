@@ -890,6 +890,16 @@ def initialize_database():
                     messages_sent INTEGER NOT NULL DEFAULT 0,
                     bio TEXT NOT NULL DEFAULT ''
                 );''')
+    # Help tips are on until someone turns them off, so the column defaults
+    # to 1 and an absent row reads as enabled too (see get_help_tips_enabled).
+    # Deliberately NOT part of the profiles sync hash, which covers
+    # user_id/short_name/long_name/bio only: this is a per-person display
+    # choice on the node they are using, not a fact about them that other
+    # nodes need, and adding it to the hash would make every existing
+    # profile disagree across the fleet at once.
+    c.execute("PRAGMA table_info(user_profiles)")
+    if 'help_tips' not in {row[1] for row in c.fetchall()}:
+        c.execute("ALTER TABLE user_profiles ADD COLUMN help_tips INTEGER NOT NULL DEFAULT 1")
     c.execute('''CREATE TABLE IF NOT EXISTS game_scores (
                     user_id TEXT NOT NULL,
                     game_id TEXT NOT NULL,
@@ -5397,6 +5407,50 @@ def get_user_profile(user_id: int):
         (str(user_id),)
     )
     return c.fetchone()
+
+
+def get_help_tips_enabled(user_id) -> bool:
+    """Whether to show this person the one-line hint under a menu.
+
+    Enabled unless they have said otherwise, including for someone with no
+    profile row yet -- a stranger is exactly who the tips are for, and they
+    reach a menu before anything creates their profile.
+    """
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT help_tips FROM user_profiles WHERE user_id = ?",
+                           (str(user_id),)).fetchone()
+    except sqlite3.Error:
+        # A database that predates the column -- same tolerance get_node_role
+        # extends to its own tables. Tips are advice, so the safe failure is
+        # to show them rather than to take a menu screen down with an
+        # exception.
+        logging.debug("help_tips column unavailable", exc_info=True)
+        return True
+    return True if row is None else bool(row[0])
+
+
+def set_help_tips_enabled(user_id, enabled: bool) -> None:
+    """Record the choice, creating the row if this is their first setting.
+
+    Does NOT touch last_seen: profile sync compares it, and turning tips off
+    is not a reason to win a reconcile against a peer holding a newer bio.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("UPDATE user_profiles SET help_tips = ? WHERE user_id = ?",
+                  (1 if enabled else 0, str(user_id)))
+    except sqlite3.Error:
+        logging.debug("help_tips column unavailable", exc_info=True)
+        return
+    if c.rowcount == 0:
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute(
+            """INSERT INTO user_profiles (user_id, first_seen, last_seen, help_tips)
+               VALUES (?, ?, ?, ?)""",
+            (str(user_id), now, now, 1 if enabled else 0))
+    conn.commit()
 
 
 def update_user_bio(user_id: int, bio: str) -> None:

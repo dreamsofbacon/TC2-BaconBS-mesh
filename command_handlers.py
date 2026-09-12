@@ -27,6 +27,7 @@ from db_operations import (
     upsert_game_score, get_game_scoreboard, get_user_game_scores, get_hall_of_fame,
     create_account, get_account_id_for_node, get_linked_node_ids,
     get_linked_nodes_detail, link_node_to_account, unlink_node,
+    get_help_tips_enabled, set_help_tips_enabled,
     get_mesh_client_names,
     get_account_alias, set_account_alias, create_link_code, redeem_link_code,
     record_link_attempt, link_rate_limit_ok, account_authorized,
@@ -185,10 +186,16 @@ MAIN_MENU_LABELS = {
     'G': "Games",
     'H': "Public Chatter",
     'U': "Utilities",
-    'P': "Profile",
     'N': "Ask Nomad",
     'A': "Web Fetch",
-    'S': "Settings",
+    # One entry, not two. Profile and Settings were split on "who you are"
+    # against "what the BBS does for you", which is a real distinction and
+    # a poor one to make someone guess at from the main menu: both answers
+    # to "change something about me" now live behind one door, headed
+    # inside. 'P' is deliberately gone rather than aliased -- menu_layout
+    # drops letters with no label, so a config.ini still listing it simply
+    # renumbers instead of rendering a blank line. !P still works.
+    'S': "Settings & Profile",
     'V': "Node View",
     'X': "Exit",
 }
@@ -214,7 +221,7 @@ MENU_REQUIRED = {
     # Profile ahead of the rest: it is the entry a stranger looks for first,
     # and it was defined but never shown -- reachable only as !P, which is
     # the discoverability complaint restated.
-    'main': ('P', 'N', 'A', 'S', 'V'),
+    'main': ('N', 'A', 'S', 'V'),
     'bbs': (),
     # Games and Public Chatter moved to the main menu (see
     # MENU_REQUIRED_AFTER) -- showing them here too would be the exact
@@ -327,6 +334,63 @@ def _js8call_configured() -> bool:
     current.read(os.getenv('BBS_CONFIG_PATH', 'config.ini'))
     return bool(current.get('js8call', 'db_file', fallback='').strip())
 
+# ---------------------------------------------------------------------------
+# Help tips: one short line under a menu, saying the thing a newcomer asks.
+#
+# On for everyone until they turn them off, because the people who need them
+# are the ones who do not yet know there is a setting. Settings & Profile
+# carries the switch.
+#
+# Every tip is kept to roughly one line for a reason that is not tidiness.
+# The main menu is already 176 bytes and a MeshCore packet is 160, so it
+# arrives as two transmissions with 2s of pacing between them; a long tip
+# buys a third. Tips are therefore short, and turning them off genuinely
+# reclaims airtime rather than just tidying the screen.
+#
+# Keyed by the same names menu_layout uses ('main', 'bbs', 'utilities') plus
+# the user_states 'command' of the screens that are not built by build_menu.
+# A screen with no entry here simply gets no tip.
+# ---------------------------------------------------------------------------
+
+HELP_TIPS = {
+    'main': "Tip: reply with a number. !Q lists shortcuts.",
+    'bbs': "Tip: Bulletins are notices. Channels are topics with replies.",
+    'utilities': "Tip: these are the odds and ends. [0] goes back.",
+    'settings': "Tip: [5] turns these tips off.",
+    'BULLETIN_MENU': "Tip: pick a board, then a number to read it.",
+    'MAIL': "Tip: [0] backs out of any prompt.",
+    'CHANNEL_DIR': "Tip: a channel is a topic. Open one to reply.",
+    'GAMES': "Tip: games keep your score. X leaves a game.",
+    'PUBLIC_CHATTER': "Tip: this is live mesh traffic, not BBS posts.",
+}
+
+
+def help_tip(sender_id, key) -> str:
+    """The tip line for one screen, or '' when it should not be shown.
+
+    Returns the empty string rather than None so callers can join it
+    unconditionally, and so a screen with tips switched off is byte-identical
+    to what it was before tips existed.
+    """
+    tip = HELP_TIPS.get(key)
+    if not tip:
+        return ''
+    try:
+        if not get_help_tips_enabled(sender_id):
+            return ''
+    except Exception:
+        # A database that predates the column, or is momentarily unavailable.
+        # Showing the tip is the safer failure: it is advice, not an action.
+        logging.debug("could not read help tip preference", exc_info=True)
+    return tip
+
+
+def with_help_tip(text, sender_id, key) -> str:
+    """Append the screen's tip to a message, if that user wants tips."""
+    tip = help_tip(sender_id, key)
+    return f"{text}{LINE_BREAK}{tip}" if tip else text
+
+
 def handle_help_command(sender_id, interface, menu_name=None, notice=None):
     if menu_name:
         update_user_state(sender_id, {'command': 'MENU', 'menu': menu_name, 'step': 1})
@@ -347,6 +411,7 @@ def handle_help_command(sender_id, interface, menu_name=None, notice=None):
         response = build_menu(main_menu_items, f"💾Bacon BBS💾 (✉️:{len(mail)})")
     if notice:
         response = f"{notice}{LINE_BREAK}{response}"
+    response = with_help_tip(response, sender_id, menu_name or 'main')
     send_message(response, sender_id, interface)
 
 
@@ -1586,24 +1651,80 @@ def handle_scoreboard_steps(sender_id, message, interface):
 
 
 def _settings_menu_text(sender_id, interface, sender_node_id=None) -> str:
-    """Settings is what the BBS DOES for you; Profile is who you are.
+    """Who you are and what the BBS does for you, on one screen.
 
-    Built fresh each time rather than held as a constant, because every
-    line reports a current value -- a menu that says "Offline relay" without
+    These were two menus. The split was deliberate -- identity in Profile,
+    behaviour in Settings -- and the note that used to sit on
+    handle_profile_command warned that an earlier combined version "made
+    neither easy to find". That warning is about a flat list of unrelated
+    entries, so this is not one: your details come first as plain lines, then
+    the things you can change, headed so the eye can skip to them.
+
+    Built fresh each time rather than held as a constant, because every line
+    reports a current value -- a menu that says "Offline relay" without
     saying whether it is on makes the user open it to find out.
     """
     node_id = sender_node_id or get_node_id_from_num(sender_id, interface)
+    lines = []
+
+    profile = get_user_profile(sender_id)
+    if profile:
+        _, short_name, _long_name, first_seen, _last_seen, msg_count, bio = profile
+        lines.append(f"👤 {short_name}")
+        # The alias, when set, is the name that actually appears on this
+        # person's posts; short_name is whatever their radio reports. Shown
+        # only when they differ, which is when "why does my name look like
+        # that?" arises.
+        alias, devices = '', 0
+        try:
+            account_id = get_account_id_for_node(node_id) if node_id else None
+            if account_id:
+                alias = (get_account_alias(account_id) or '').strip()
+                devices = len(get_linked_node_ids(account_id) or [])
+        except Exception:
+            logging.debug("could not read account details for profile", exc_info=True)
+        if alias and alias != short_name:
+            lines.append(f"Posts as: {alias}")
+
+        stats = f"Since:{(first_seen or '?')[:10]} Msgs:{msg_count}"
+        try:
+            role = normalize_role(get_node_role(node_id)) if node_id else ''
+        except Exception:
+            role = ''
+        if role and role != ROLE_UNREGISTERED:
+            stats += f" Role:{role}"
+        lines.append(stats)
+
+        scores = get_user_game_scores(sender_id)
+        if scores:
+            parts = []
+            for game_id, score, max_score in scores[:3]:
+                gname = GAMES.get(game_id, {}).get('name', game_id)[:8]
+                ms = f"/{max_score}" if max_score else ""
+                parts.append(f"{gname}:{score}{ms}")
+            lines.append("Scores: " + " ".join(parts))
+        if bio:
+            lines.append(f"Bio: {bio}")
+    else:
+        lines.append("👤 You")
+        devices = 0
+
     relay = "On" if (node_id and get_mail_relay_preference(node_id)) else "Off"
     scope = get_view_scope(sender_id)
     lens = "All nodes" if not scope else _scope_label(scope)
-    return LINE_BREAK.join([
-        "⚙️ Settings",
-        f"[1] Offline mail relay: {relay}",
-        f"[2] Node View: {lens}",
-        "[3] About this node",
-        "[4] View Stats",
-        "[0] Back",
-    ])
+    tips = "On" if get_help_tips_enabled(sender_id) else "Off"
+    device_note = f" ({devices})" if devices > 1 else ""
+
+    lines.append("⚙️ Settings")
+    lines.append("[1] Edit bio")
+    lines.append(f"[2] Linked devices{device_note}")
+    lines.append(f"[3] Offline mail relay: {relay}")
+    lines.append(f"[4] Node View: {lens}")
+    lines.append(f"[5] Help tips: {tips}")
+    lines.append("[6] About this node")
+    lines.append("[7] View Stats")
+    lines.append("[0] Back")
+    return LINE_BREAK.join(lines)
 
 
 def _scope_label(scope) -> str:
@@ -1622,19 +1743,27 @@ def _scope_label(scope) -> str:
 
 
 def handle_settings_command(sender_id, interface, sender_node_id=None):
-    send_message(_settings_menu_text(sender_id, interface, sender_node_id),
-                 sender_id, interface)
+    send_message(with_help_tip(
+        _settings_menu_text(sender_id, interface, sender_node_id),
+        sender_id, 'settings'), sender_id, interface)
     update_user_state(sender_id, {'command': 'SETTINGS', 'step': 1})
 
 
-def handle_settings_steps(sender_id, message, interface, sender_node_id):
+def handle_settings_steps(sender_id, message, interface, sender_node_id=None):
+    """Input for the combined Settings & Profile screen.
+
+    Step 2 is the relay confirmation, step 3 is the bio composer. The bio
+    used to live in PROFILE's own step 2; both states are still accepted so a
+    session that was mid-edit when this shipped does not lose what it typed.
+    """
     state = get_user_state(sender_id) or {}
-    choice = message.strip().lower()
+    choice = message.strip()
+    lowered = choice.lower()
 
     if state.get('step') == 2:
-        # Confirming the relay toggle. Kept here rather than in Profile: it
-        # changes what the BBS does with your mail, not who you are.
-        if choice not in ('y', 'yes'):
+        # Confirming the relay toggle: it changes what the BBS does with
+        # your mail, so it asks first.
+        if lowered not in ('y', 'yes'):
             send_message("Relay setting unchanged.", sender_id, interface)
             handle_settings_command(sender_id, interface, sender_node_id)
             return
@@ -1654,10 +1783,39 @@ def handle_settings_steps(sender_id, message, interface, sender_node_id):
         handle_settings_command(sender_id, interface, sender_node_id)
         return
 
-    if choice in ('0', 'x', 'back', 'exit'):
+    if state.get('step') == 3:
+        if is_cancel(choice):
+            handle_settings_command(sender_id, interface, sender_node_id)
+            return
+        if lowered == 'clear':
+            # A blank line can never reach here to mean "clear it":
+            # ssh_server treats an empty line as "just redraw", and an empty
+            # payload over the radio never arrives at all. A beta tester
+            # found a blank submission silently did nothing and left no way
+            # to remove a bio. This is the documented way instead.
+            update_user_bio(sender_id, '')
+            send_message("Bio cleared.", sender_id, interface)
+            handle_settings_command(sender_id, interface, sender_node_id)
+            return
+        update_user_bio(sender_id, choice[:100])
+        send_message("Bio updated!" if len(choice) <= 100
+                     else "Bio updated! (trimmed to 100 chars)",
+                     sender_id, interface)
+        handle_settings_command(sender_id, interface, sender_node_id)
+        return
+
+    if lowered in ('0', 'x', 'back', 'exit'):
         handle_help_command(sender_id, interface)
         return
-    if choice == '1':
+    if lowered in ('1', 'e'):
+        send_message(f"Enter your bio (max 100 chars), CLEAR to remove it, or {CANCEL_HINT} to stop:",
+                     sender_id, interface)
+        update_user_state(sender_id, {'command': 'SETTINGS', 'step': 3})
+        return
+    if lowered in ('2', 'd'):
+        handle_account_command(sender_id, interface)
+        return
+    if choice == '3':
         if not sender_node_id:
             send_message("Couldn't verify your device identity.", sender_id, interface)
             return
@@ -1668,130 +1826,65 @@ def handle_settings_steps(sender_id, message, interface, sender_node_id):
         update_user_state(sender_id, {'command': 'SETTINGS', 'step': 2,
                                       'relay_enabled': enabled})
         return
-    if choice == '2':
+    if choice == '4':
         handle_node_view_command(sender_id, interface)
         return
-    if choice == '3':
+    if choice == '5':
+        # Toggled outright rather than confirmed: it changes nothing but
+        # what this person sees, and it is reversible from the line that
+        # reports it.
+        enabled = not get_help_tips_enabled(sender_id)
+        set_help_tips_enabled(sender_id, enabled)
+        send_message("Help tips on." if enabled
+                     else "Help tips off. Turn them back on here any time.",
+                     sender_id, interface)
+        handle_settings_command(sender_id, interface, sender_node_id)
+        return
+    if choice == '6':
         handle_version_command(sender_id, interface)
         handle_settings_command(sender_id, interface, sender_node_id)
         return
-    if choice == '4':
+    if choice == '7':
         handle_stats_command(sender_id, interface)
         return
-    send_message(_settings_menu_text(sender_id, interface, sender_node_id),
+    # Redrawing the identical screen with no notice looked like the BBS had
+    # ignored the keypress rather than rejected it.
+    send_message("Invalid choice." + LINE_BREAK
+                 + _settings_menu_text(sender_id, interface, sender_node_id),
                  sender_id, interface)
 
 
 def handle_profile_command(sender_id, interface, notice=None,
                            sender_node_id=None):
-    """Everything about you, in one screen: who you are and what you have done.
+    """Profile is now the top half of Settings & Profile.
 
-    Preferences deliberately live in Settings instead. The split is "who you
-    are" against "what the BBS does for you" -- a bio belongs here, a mail
-    relay toggle does not, and putting both in one list made neither easy to
-    find.
+    Kept as a name rather than deleted: !P still reaches it, the account
+    screens return here when a link finishes, and a user who learned the old
+    main-menu letter should land somewhere sensible rather than nowhere.
     """
-    profile = get_user_profile(sender_id)
-    if not profile:
-        send_message("No profile yet - send any command to create one!", sender_id, interface)
-        return
-    _, short_name, long_name, first_seen, last_seen, msg_count, bio = profile
-    first_date = first_seen[:10] if first_seen else "?"
-    node_id = sender_node_id or get_node_id_from_num(sender_id, interface)
-
-    lines = [f"👤 {short_name}"]
-
-    # The alias, when set, is the name that actually appears on this
-    # person's posts; short_name is whatever their radio reports. Shown only
-    # when they differ, which is when the question "why does my name look
-    # like that?" arises.
-    alias, devices = '', 0
-    try:
-        account_id = get_account_id_for_node(node_id) if node_id else None
-        if account_id:
-            alias = (get_account_alias(account_id) or '').strip()
-            devices = len(get_linked_node_ids(account_id) or [])
-    except Exception:
-        logging.debug("could not read account details for profile", exc_info=True)
-    if alias and alias != short_name:
-        lines.append(f"Posts as: {alias}")
-
-    stats = f"Since:{first_date} Msgs:{msg_count}"
-    try:
-        role = normalize_role(get_node_role(node_id)) if node_id else ''
-    except Exception:
-        role = ''
-    if role and role != ROLE_UNREGISTERED:
-        stats += f" Role:{role}"
-    lines.append(stats)
-
-    scores = get_user_game_scores(sender_id)
-    if scores:
-        parts = []
-        for game_id, score, max_score in scores[:3]:
-            gname = GAMES.get(game_id, {}).get('name', game_id)[:8]
-            ms = f"/{max_score}" if max_score else ""
-            parts.append(f"{gname}:{score}{ms}")
-        lines.append("Scores: " + " ".join(parts))
-    if bio:
-        lines.append(f"Bio: {bio}")
-
-    device_note = f" ({devices})" if devices > 1 else ""
-    lines.append(f"[1] Edit bio  [2] Linked devices{device_note}  [0] Back")
     if notice:
-        lines.insert(0, notice)
-    send_message("\n".join(lines), sender_id, interface)
-    update_user_state(sender_id, {'command': 'PROFILE', 'step': 1})
+        send_message(notice, sender_id, interface)
+    handle_settings_command(sender_id, interface, sender_node_id)
 
 
 def handle_profile_steps(sender_id, message, interface, sender_node_id=None):
+    """Input arriving in the retired PROFILE state.
+
+    Reachable by someone whose session predates the merge, and by !P. The
+    step numbers have to be translated, not just passed along: PROFILE step
+    2 was the bio composer, while SETTINGS step 2 is the relay Y/N. Handing
+    one to the other verbatim would read somebody's half-written bio as a
+    confirmation and answer "no" to it.
+    """
     state = get_user_state(sender_id) or {}
-    choice = message.strip()
-    if state.get('step') == 2:
-        if is_cancel(choice):
-            handle_profile_command(sender_id, interface)
-            return
-        if choice.lower() == 'clear':
-            # A blank line can never actually reach here to mean "clear
-            # it" -- ssh_server.py treats an empty line typed at the BBS
-            # prompt as "just redraw," so it never calls process_message at
-            # all, and the same is true sending an empty payload over
-            # Meshtastic/MeshCore. A beta tester found that a blank
-            # submission silently did nothing and had no way to remove an
-            # existing bio. This is the documented way to do it instead.
-            update_user_bio(sender_id, '')
-            send_message("Bio cleared.", sender_id, interface)
-            handle_profile_command(sender_id, interface,
-                                   sender_node_id=sender_node_id)
-            return
-        bio = choice[:100]
-        update_user_bio(sender_id, bio)
-        notice = "Bio updated!"
-        if len(choice) > 100:
-            notice = "Bio updated! (trimmed to 100 chars)"
-        send_message(notice, sender_id, interface)
-        handle_profile_command(sender_id, interface,
-                               sender_node_id=sender_node_id)
-        return
-    if choice.lower() in ('0', 'x', 'back', 'exit'):
-        handle_help_command(sender_id, interface)
-        return
-    if choice.lower() in ('e', '1'):
-        send_message(f"Enter your bio (max 100 chars), CLEAR to remove it, or {CANCEL_HINT} to stop:", sender_id, interface)
-        update_user_state(sender_id, {'command': 'PROFILE', 'step': 2})
-        return
-    if choice.lower() in ('d', '2'):
-        handle_account_command(sender_id, interface)
-        return
-    if choice == '3':
-        # Where the relay toggle used to be. Someone who learned the old
-        # number gets sent to where it lives now rather than "Invalid
-        # choice."
-        handle_settings_command(sender_id, interface, sender_node_id)
-        return
-    # Redrawing the identical screen with no notice looked like the BBS had
-    # ignored the keypress rather than rejected it.
-    handle_profile_command(sender_id, interface, notice="Invalid choice.")
+    if state.get('command') == 'PROFILE':
+        # Only a genuinely legacy state gets rewritten. Once the first
+        # keystroke has moved the session to SETTINGS, that state is live --
+        # step 3 is a bio half-typed -- and stamping step 1 over it would
+        # feed the next line back to the menu as a choice.
+        translated = 3 if state.get('step') == 2 else 1
+        update_user_state(sender_id, {'command': 'SETTINGS', 'step': translated})
+    handle_settings_steps(sender_id, message, interface, sender_node_id)
 
 
 # ---------------------------------------------------------------------------

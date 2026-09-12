@@ -300,7 +300,8 @@ class RosterTelemetryTests(_Scratch):
         self._client("!def", hw_model="HELTEC_V3", role="ROUTER")
         session = self.session()
         session.send("!S")
-        chunks, error = session.send("4")
+        # View Stats is [7] on the merged Settings & Profile screen.
+        chunks, error = session.send("7")
         self.assertIsNone(error)
         body = self.text_of(chunks)
         chunks, error = session.send("2")
@@ -316,7 +317,7 @@ class RosterTelemetryTests(_Scratch):
         self._client("!abc", last_heard_epoch=now)
         session = self.session()
         session.send("!S")
-        chunks, error = session.send("4")
+        chunks, error = session.send("7")
         self.assertIsNone(error)
         body = self.text_of(chunks)
         chunks, error = session.send("1")
