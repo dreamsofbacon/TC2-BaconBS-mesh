@@ -5426,8 +5426,31 @@ def create_app(runtime_interface=None) -> Flask:
     @app.route("/")
     def index():
         if session.get("logged_in"):
-            return redirect(url_for("table_list", table="bulletins"))
+            return redirect(url_for("dashboard"))
         return redirect(url_for("login"))
+
+    @app.get("/dashboard")
+    @login_required
+    def dashboard():
+        """The BBS front page: what the board looks like right now.
+
+        Deliberately about the community rather than the machine -- posts,
+        boards and ways in. The operational detail lives one fold down in a
+        collapsed section, and everything else stays in the nav.
+        """
+        with get_db_connection() as conn:
+            counts = {name: conn.execute("SELECT COUNT(*) FROM " + name).fetchone()[0]
+                      for name in ("bulletins", "channels", "mesh_clients")}
+            recent = conn.execute(
+                "SELECT id, board, subject, sender_short_name, date FROM bulletins "
+                "ORDER BY date DESC, id DESC LIMIT 6"
+            ).fetchall()
+            boards = conn.execute(
+                "SELECT board, COUNT(*) AS count FROM bulletins GROUP BY board "
+                "ORDER BY count DESC, board LIMIT 6"
+            ).fetchall()
+        return render_template("dashboard.html", title="Home", show_nav=True,
+                               counts=counts, recent=recent, boards=boards)
 
     def _bounded_int_arg(name: str, default: int, minimum: int, maximum: int) -> int:
       try:
@@ -5925,7 +5948,7 @@ def create_app(runtime_interface=None) -> Flask:
             if username == app.config["ADMIN_USER"] and password == app.config["ADMIN_PASSWORD"]:
                 session["logged_in"] = True
                 flash("Login successful.", "success")
-                return redirect(url_for("table_list", table="bulletins"))
+                return redirect(url_for("dashboard"))
             flash("Invalid username or password.", "error")
 
         return render_template("login.html", title="Login", show_nav=False)

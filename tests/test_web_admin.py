@@ -223,7 +223,11 @@ class WebAdminSettingsTests(unittest.TestCase):
         restarted_client = restarted_app.test_client()
         login_response = self.login(restarted_client, password="newpass")
         self.assertEqual(login_response.status_code, 302)
-        self.assertTrue(login_response.headers["Location"].endswith("/bulletins"))
+        # A successful login lands on the BBS home page. What this test is
+        # actually about is that the NEW password worked after a restart --
+        # the destination only has to be the signed-in landing page, which
+        # moved from the bulletins table when that home page arrived.
+        self.assertTrue(login_response.headers["Location"].endswith("/dashboard"))
 
     def test_sync_settings_update_config_and_runtime_interface(self):
         runtime_interface = FakeInterface()
