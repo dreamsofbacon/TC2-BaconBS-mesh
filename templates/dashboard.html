@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <header class="bbs-masthead">
-  <h1 class="bbs-wordmark">BACON<span>BBS</span><span class="wordmark-slash" aria-hidden="true">/</span></h1>
+  <h1 class="bbs-wordmark">BACON<span>BBS</span></h1>
   <div class="bbs-intro"><p>Leave a message. Start a conversation.<br>Give someone a high score to chase.</p><a class="btn btn-primary" href="{{ url_for('bulletin_new') }}">POST SOMETHING <span aria-hidden="true">↗</span></a></div>
 </header>
 <div class="board-ticker" aria-label="Board totals"><span class="ticker-label">ON THE BOARD</span><a href="{{ url_for('table_list', table='bulletins') }}"><strong>{{ counts.bulletins }}</strong> posts</a><a href="{{ url_for('table_list', table='channels') }}"><strong>{{ counts.channels }}</strong> channels</a><a href="{{ url_for('clients_summary') }}" title="Persisted roster · not online count"><strong>{{ counts.mesh_clients }}</strong> known clients</a></div>
@@ -28,6 +28,6 @@
     <details class="system-details"><summary>Behind the board <span aria-hidden="true">＋</span></summary><p class="snapshot-note">Local connections · refreshes every 5 seconds</p><p><strong id="overview-link-count">—</strong> <span id="overview-link-summary">Waiting for status</span></p><div id="overview-links"><p class="text-muted">Checking local links…</p></div><p id="overview-updated" class="snapshot-note" role="status"></p><a class="overview-footer-link" href="{{ url_for('meshtastic_device') }}">Manage connections →</a></details>
   </div>
 </div>
-{% if boards %}<section class="board-index"><div class="section-heading"><div><div class="section-number">BOARD INDEX</div><h2>Find your people</h2></div></div><div class="board-overview">{% for board in boards %}<div><strong>{{ board.board }}</strong><span>{{ board.count }} post{{ '' if board.count == 1 else 's' }}</span></div>{% endfor %}</div></section>{% endif %}
+{% if boards %}<section class="board-index"><div class="section-heading"><div><h2>Find your people</h2></div></div><div class="board-overview">{% for board in boards %}<div><strong>{{ board.board }}</strong><span>{{ board.count }} post{{ '' if board.count == 1 else 's' }}</span></div>{% endfor %}</div></section>{% endif %}
 {% endblock %}
 {% block extra_scripts %}<script src="{{ url_for('static', filename='js/overview.js', v=asset_version) }}"></script>{% endblock %}

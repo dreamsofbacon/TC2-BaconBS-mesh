@@ -122,12 +122,18 @@ class LayoutTests(unittest.TestCase):
         self.assertIn('id="chatter-search"', header)
         self.assertNotIn('id="chatter-search"', self.controls_block())
 
-    def test_search_comes_after_the_title_in_the_markup(self):
+    def test_search_comes_after_the_strapline_in_the_markup(self):
         """So it lands on the right of a space-between header, and reads in
-        the order it appears."""
+        the order it appears.
+
+        Anchored on the strapline rather than an <h1>: the page title moved
+        into the nav bar's page-name chip, so this header no longer carries
+        a heading of its own to sit opposite.
+        """
         header = HTML[HTML.index('<header class="chatter-header">'):
                       HTML.index("</header>")]
-        self.assertLess(header.index("<h1>"), header.index('id="chatter-search"'))
+        self.assertLess(header.index('class="text-muted"'),
+                        header.index('id="chatter-search"'))
 
     def test_it_is_no_longer_in_the_header(self):
         header = HTML[HTML.index('<header class="chatter-header">'):
