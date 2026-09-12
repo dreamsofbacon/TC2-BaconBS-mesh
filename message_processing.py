@@ -189,6 +189,8 @@ main_menu_handlers = {
     "g": handle_games_command,
     "h": handle_public_chatter_command,
     "u": lambda sender_id, interface: handle_help_command(sender_id, interface, 'utilities'),
+    # Profile merged into Settings & Profile. "p" stays so !P keeps working
+    # for anyone who learned it.
     "p": handle_profile_command,
     "n": handle_ask_nomad_command,
     "a": handle_apigw_command,

@@ -39,9 +39,10 @@ class MainMenuContentsTests(unittest.TestCase):
         with the rest of MENU_REQUIRED -- see MENU_REQUIRED_AFTER."""
         rendered = ch.build_menu(["Q", "B", "U", "P", "N", "X"], self.MAIN)
         for expected in ("[1] Quick Commands", "[2] BBS", "[3] Games",
-                         "[4] Public Chatter", "[5] Utilities", "[6] Profile",
-                         "[7] Ask Nomad", "[8] Web Fetch", "[9] Settings",
-                         "[10] Node View", "[0] Exit"):
+                         "[4] Public Chatter", "[5] Utilities",
+                         "[6] Ask Nomad", "[7] Web Fetch",
+                         "[8] Settings & Profile", "[9] Node View",
+                         "[0] Exit"):
             self.assertIn(expected, rendered)
 
     def test_a_trimmed_config_closes_the_gap_instead_of_skipping_numbers(self):
@@ -52,9 +53,9 @@ class MainMenuContentsTests(unittest.TestCase):
         by an old or trimmed config any more; every one is either in
         MENU_REQUIRED or MENU_REQUIRED_AFTER."""
         rendered = ch.build_menu(["Q", "B", "U", "X"], self.MAIN)
-        for expected in ("[3] Games", "[4] Public Chatter", "[6] Profile",
-                         "[7] Ask Nomad", "[8] Web Fetch", "[9] Settings",
-                         "[10] Node View"):
+        for expected in ("[3] Games", "[4] Public Chatter",
+                         "[6] Ask Nomad", "[7] Web Fetch",
+                         "[8] Settings & Profile", "[9] Node View"):
             self.assertIn(expected, rendered)
 
     def test_numbers_run_1_upward_with_no_gaps_for_any_config(self):
@@ -150,8 +151,9 @@ class SettingsNavigationTests(unittest.TestCase):
 
     def test_settings_is_its_own_menu_now(self):
         """It used to jump straight into Linked Devices, which left the S
-        entry mislabelled and the real Settings menu unreachable. Linking
-        moved to Profile, where the rest of a user's identity lives."""
+        entry mislabelled and the real Settings menu unreachable. Linking is
+        now offered as a line on this screen rather than being what the
+        screen IS."""
         ch.handle_settings_command(1234, self.iface)
         self.assertIn("Settings", self.sent[-1])
         self.assertNotIn("Request link code", self.sent[-1])
@@ -165,17 +167,17 @@ class SettingsNavigationTests(unittest.TestCase):
         self.assertIn("Offline mail relay: Off", body)
         self.assertIn("Node View: All nodes", body)
 
-    def test_choice_one_offers_the_relay_toggle(self):
+    def test_choice_three_offers_the_relay_toggle(self):
         ch.handle_settings_command(1234, self.iface)
         self.sent.clear()
-        ch.handle_settings_steps(1234, "1", self.iface, "!abc")
+        ch.handle_settings_steps(1234, "3", self.iface, "!abc")
         self.assertIn("offline mail relay", self.sent[-1].lower())
         self.assertEqual(ch.get_user_state(1234).get("command"), "SETTINGS")
         self.assertEqual(ch.get_user_state(1234).get("step"), 2)
 
     def test_the_relay_toggle_takes_effect_and_shows_in_the_menu(self):
         ch.handle_settings_command(1234, self.iface)
-        ch.handle_settings_steps(1234, "1", self.iface, "!abc")
+        ch.handle_settings_steps(1234, "3", self.iface, "!abc")
         with mock.patch.object(ch, "send_mail_relay_preference_to_bbs_nodes",
                                lambda *a, **k: None):
             self.iface.bbs_nodes = []
@@ -183,26 +185,26 @@ class SettingsNavigationTests(unittest.TestCase):
         self.assertTrue(db_operations.get_mail_relay_preference("!abc"))
         self.assertIn("Offline mail relay: On", self.sent[-1])
 
-    def test_choice_two_opens_the_node_view_lens(self):
-        ch.handle_settings_command(1234, self.iface)
-        self.sent.clear()
-        ch.handle_settings_steps(1234, "2", self.iface, "!abc")
-        self.assertEqual(ch.get_user_state(1234).get("command"), "NODE_VIEW")
-
-    def test_choice_three_says_what_this_node_is(self):
-        ch.handle_settings_command(1234, self.iface)
-        self.sent.clear()
-        ch.handle_settings_steps(1234, "3", self.iface, "!abc")
-        self.assertIn("Bacon BBS", self.sent[0])
-
-    def test_it_lists_view_stats_as_choice_four(self):
-        ch.handle_settings_command(1234, self.iface)
-        self.assertIn("[4] View Stats", self.sent[-1])
-
-    def test_choice_four_opens_stats(self):
+    def test_choice_four_opens_the_node_view_lens(self):
         ch.handle_settings_command(1234, self.iface)
         self.sent.clear()
         ch.handle_settings_steps(1234, "4", self.iface, "!abc")
+        self.assertEqual(ch.get_user_state(1234).get("command"), "NODE_VIEW")
+
+    def test_choice_six_says_what_this_node_is(self):
+        ch.handle_settings_command(1234, self.iface)
+        self.sent.clear()
+        ch.handle_settings_steps(1234, "6", self.iface, "!abc")
+        self.assertIn("Bacon BBS", self.sent[0])
+
+    def test_it_lists_view_stats_as_choice_seven(self):
+        ch.handle_settings_command(1234, self.iface)
+        self.assertIn("[7] View Stats", self.sent[-1])
+
+    def test_choice_seven_opens_stats(self):
+        ch.handle_settings_command(1234, self.iface)
+        self.sent.clear()
+        ch.handle_settings_steps(1234, "7", self.iface, "!abc")
         self.assertIn("Stats Menu", self.sent[-1])
         self.assertEqual(ch.get_user_state(1234).get("command"), "STATS")
 
@@ -211,7 +213,7 @@ class SettingsNavigationTests(unittest.TestCase):
         follow it there -- it used to jump straight to the main menu, which
         would now skip past the screen the user actually came from."""
         ch.handle_settings_command(1234, self.iface)
-        ch.handle_settings_steps(1234, "4", self.iface, "!abc")
+        ch.handle_settings_steps(1234, "7", self.iface, "!abc")
         self.sent.clear()
         ch.handle_stats_steps(1234, "0", 1, self.iface)
         self.assertIn("Settings", self.sent[-1])
@@ -439,12 +441,12 @@ class HiddenEntryTests(unittest.TestCase):
     def test_a_digit_follows_the_trimmed_menu(self):
         """A digit means whatever that line of the screen says.
 
-        On this node 3 is Games (inserted right after BBS) and 8 is Web
+        On this node 3 is Games (inserted right after BBS) and 7 is Web
         Fetch. Both are asserted: checking only one would pass if the
         digits stopped tracking the layout and happened to land right.
         """
         import message_processing as mp
-        for digit, letter in (("3", "g"), ("8", "a")):
+        for digit, letter in (("3", "g"), ("7", "a")):
             with self.subTest(digit=digit):
                 handler = mock.Mock()
                 with mock.patch.object(ch, "main_menu_items", ["Q", "B", "U", "X"]), \
@@ -595,7 +597,7 @@ class MenuNumberAliasTests(unittest.TestCase):
         items = ["Q", "U", "X"]
         alias = ch.menu_number_alias(items, self.MAIN)
         self.assertNotIn("b", alias.values())
-        self.assertIn("p", alias.values())
+        self.assertIn("s", alias.values())
         rendered = set(re.findall(r"\[(\d+)\]", ch.build_menu(items, self.MAIN)))
         self.assertEqual(set(alias), rendered)
 
@@ -788,10 +790,11 @@ class GlobalCommandPrefixTests(unittest.TestCase):
     def test_main_menu_letters_and_numbers_remain_local(self):
         import message_processing as mp
 
-        # '9' is Settings' live position now: Q,B,G,H,U,P,N,A,S,V,X.
+        # '8' is Settings & Profile's live position now that Profile merged
+        # into it: Q,B,G,H,U,N,A,S,V,X.
         settings = mock.Mock()
         with mock.patch.dict(mp.main_menu_handlers, {'s': settings}, clear=False):
-            for value in ('s', '9'):
+            for value in ('s', '8'):
                 ch.update_user_state(1234, {'command': 'MAIN_MENU', 'step': 1})
                 mp.process_message(1234, value, self.iface)
         self.assertEqual(settings.call_count, 2)

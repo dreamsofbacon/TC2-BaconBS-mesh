@@ -56,20 +56,30 @@ class _Case(unittest.TestCase):
 
 
 class MenuPlacementTests(_Case):
-    def test_profile_can_no_longer_be_hidden(self):
-        """It was defined but absent from every live menu, so the only way
-        in was knowing !P existed."""
-        self.assertIn("P", ch.MENU_REQUIRED["main"])
+    def test_the_combined_entry_can_no_longer_be_hidden(self):
+        """Everything about you is behind this one door, so a config that
+        omits it leaves no way in but knowing !S or !P exists."""
+        self.assertIn("S", ch.MENU_REQUIRED["main"])
         rendered = ch.build_menu(["Q", "B", "U", "X"], "BBS")
-        self.assertIn("Profile", rendered)
+        self.assertIn("Settings & Profile", rendered)
 
     def test_the_s_entry_says_what_it_opens(self):
-        self.assertEqual(ch.MAIN_MENU_LABELS["S"], "Settings")
+        self.assertEqual(ch.MAIN_MENU_LABELS["S"], "Settings & Profile")
 
-    def test_both_are_on_the_main_menu(self):
-        rendered = ch.build_menu(["Q", "B", "U", "X"], "BBS")
-        self.assertIn("Profile", rendered)
-        self.assertIn("Settings", rendered)
+    def test_profile_is_not_a_second_main_menu_line(self):
+        """The merge is the point: two doors to one screen is what it set
+        out to remove."""
+        rendered = ch.build_menu(["Q", "B", "U", "P", "X"], "BBS")
+        self.assertEqual(rendered.count("Profile"), 1)
+        self.assertIn("Settings & Profile", rendered)
+
+    def test_a_config_still_listing_P_does_not_break_the_menu(self):
+        """Every live config.ini names P. menu_layout drops letters with no
+        label, so it has to renumber rather than render a hole or raise."""
+        rendered = ch.build_menu(["Q", "B", "U", "P", "N", "X"], "BBS")
+        self.assertNotIn("[]", rendered)
+        numbers = [line.split("]")[0][1:] for line in rendered.splitlines()[1:]]
+        self.assertEqual(numbers, [str(n) for n in range(1, len(numbers))] + ["0"])
 
     def test_the_menu_costs_at_most_a_second_meshcore_chunk(self):
         """This screen is re-sent on every return to the top, so its byte
@@ -110,7 +120,7 @@ class ProfileScreenTests(_Case):
         self.sent.clear()
         ch.handle_account_steps(1234, "0", self.iface, "!abc")
         self.assertIn("bac", self.last)
-        self.assertEqual(ch.get_user_state(1234)["command"], "PROFILE")
+        self.assertEqual(ch.get_user_state(1234)["command"], "SETTINGS")
 
     def test_the_bio_can_be_edited(self):
         ch.handle_profile_command(1234, self.iface, sender_node_id="!abc")
@@ -145,11 +155,16 @@ class ProfileScreenTests(_Case):
         ch.handle_profile_command(1234, self.iface, sender_node_id="!abc")
         self.assertNotIn("Posts as", self.last)
 
-    def test_preferences_are_not_on_the_profile_screen(self):
-        """They moved to Settings. Leaving a copy here is how two screens
-        start disagreeing about one value."""
+    def test_who_you_are_comes_before_what_you_can_change(self):
+        """The merged screen is sectioned, not a flat list. The note this
+        replaces warned that combining them once "made neither easy to
+        find", and an unheaded list of eight unrelated entries is exactly
+        that failure."""
+        db_operations.update_user_bio(1234, "likes radios")
         ch.handle_profile_command(1234, self.iface, sender_node_id="!abc")
-        self.assertNotIn("relay", self.last.lower())
+        screen = self.last
+        self.assertLess(screen.index("likes radios"), screen.index("⚙"))
+        self.assertIn("Offline mail relay", screen)
 
 
 class SettingsScreenTests(_Case):
@@ -177,13 +192,13 @@ class SettingsScreenTests(_Case):
 
     def test_the_node_view_picker_opens(self):
         ch.handle_settings_command(1234, self.iface, "!abc")
-        ch.handle_settings_steps(1234, "2", self.iface, "!abc")
+        ch.handle_settings_steps(1234, "4", self.iface, "!abc")
         self.assertEqual(ch.get_user_state(1234)["command"], "NODE_VIEW")
 
     def test_about_says_the_version_and_returns(self):
         ch.handle_settings_command(1234, self.iface, "!abc")
         self.sent.clear()
-        ch.handle_settings_steps(1234, "3", self.iface, "!abc")
+        ch.handle_settings_steps(1234, "6", self.iface, "!abc")
         self.assertIn("Bacon BBS", self.sent[0])
         self.assertIn("Settings", self.last)
 
@@ -193,12 +208,12 @@ class SettingsScreenTests(_Case):
         ch.handle_settings_steps(1234, "0", self.iface, "!abc")
         self.assertIn("Bacon BBS", self.last)
 
-    def test_linking_is_not_duplicated_here(self):
-        """It lives in Profile now. Two doors to one flow is what made the
-        old S entry unlabelable."""
+    def test_linking_is_offered_once(self):
+        """Reachable from the merged screen, and only from there -- two
+        doors to one flow is what the merge set out to remove."""
         ch.handle_settings_command(1234, self.iface, "!abc")
+        self.assertEqual(self.last.count("Linked devices"), 1)
         self.assertNotIn("Request link code", self.last)
-        self.assertNotIn("Linked", self.last)
 
 
 class BioSurvivesSyncTests(_Case):
