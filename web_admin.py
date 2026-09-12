@@ -3,6 +3,7 @@ import hmac
 import os
 import json
 import logging
+import random
 import re
 import sqlite3
 import ssl
@@ -5438,6 +5439,14 @@ def create_app(runtime_interface=None) -> Flask:
         boards and ways in. The operational detail lives one fold down in a
         collapsed section, and everything else stays in the nav.
         """
+        fortune_path = resolve_app_path(None, "fortunes.txt")
+        try:
+            with open(fortune_path, "r", encoding="utf-8") as fortune_file:
+                fortunes = [line.strip() for line in fortune_file if line.strip()]
+            fortune = random.choice(fortunes) if fortunes else "Leave a message. Start a conversation."
+        except OSError:
+            fortune = "Leave a message. Start a conversation."
+
         with get_db_connection() as conn:
             counts = {name: conn.execute("SELECT COUNT(*) FROM " + name).fetchone()[0]
                       for name in ("bulletins", "channels", "mesh_clients")}
@@ -5450,7 +5459,8 @@ def create_app(runtime_interface=None) -> Flask:
                 "ORDER BY count DESC, board LIMIT 6"
             ).fetchall()
         return render_template("dashboard.html", title="Home", show_nav=True,
-                               counts=counts, recent=recent, boards=boards)
+                               counts=counts, recent=recent, boards=boards,
+                               fortune=fortune)
 
     def _bounded_int_arg(name: str, default: int, minimum: int, maximum: int) -> int:
       try:
