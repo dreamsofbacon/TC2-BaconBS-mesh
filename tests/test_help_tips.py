@@ -134,11 +134,19 @@ class MenuTests(_Case):
             with self.subTest(screen=key):
                 self.assertLessEqual(len(tip.encode('utf-8')), 160)
 
-    def test_tips_do_not_push_the_main_menu_past_two_chunks(self):
-        """The menu already spans two MeshCore packets. A tip must not buy a
-        third, or every return to the top costs another 2s of pacing."""
-        ch.handle_help_command(1234, self.iface)
-        self.assertLessEqual(len(self.last.encode('utf-8')), 320)
+    def test_no_screen_is_pushed_past_two_chunks(self):
+        """Every packet past the first costs another ~2s of pacing on
+        MeshCore, so no screen may need more than two.
+
+        Checked across all nine rather than the main menu alone: the Games
+        menu lists eleven titles and went to three the first time the tips
+        were lengthened, which a main-menu-only cap did not notice.
+        """
+        for key, open_screen in EveryDefinedTipIsActuallyShownTests.SCREENS.items():
+            with self.subTest(screen=key):
+                self.sent.clear()
+                open_screen(self)
+                self.assertLessEqual(len(self.sent[-1].encode('utf-8')), 320)
 
 
 class EveryDefinedTipIsActuallyShownTests(_Case):
