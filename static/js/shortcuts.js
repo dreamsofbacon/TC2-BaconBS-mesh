@@ -219,6 +219,12 @@
     }
     if (helpClose) helpClose.addEventListener('click', closeHelp);
 
+    // The header's Search button. Ctrl/Cmd+K has always opened this modal;
+    // the button arrived with the new masthead and had nothing bound to it,
+    // so it looked broken to anyone who did not know the shortcut.
+    var searchButton = document.getElementById('quick-search-button');
+    if (searchButton) searchButton.addEventListener('click', openQS);
+
     // Expose for nav use
     BBS.openSearch = openQS;
     BBS.openHelp   = openHelp;
