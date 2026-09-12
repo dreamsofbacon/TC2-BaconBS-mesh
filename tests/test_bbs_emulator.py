@@ -13,6 +13,7 @@ import sqlite3
 import sys
 import types
 import unittest
+import unittest.mock
 
 if "meshtastic" not in sys.modules:
     sys.modules["meshtastic"] = types.SimpleNamespace(BROADCAST_NUM=0)
@@ -382,3 +383,67 @@ class LifecycleTests(_Scratch):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SyntheticIdentityTests(_Scratch):
+    """A new emulator session must be a new person.
+
+    The session counter is module state that restarted at 1 on every restart
+    of the web admin, so each new session was handed an id an earlier one had
+    already used. process_message treats "no profile row" as first contact,
+    so a genuinely new tester silently inherited an old identity: no welcome,
+    someone else's short name and message count, and -- found on the live
+    node -- someone else's bio.
+    """
+
+    def setUp(self):
+        super().setUp()
+        bbs_emulator._synthetic_counter = 0
+        bbs_emulator._synthetic_counter_seeded = False
+        self.addCleanup(self._reset_counter)
+
+    def _reset_counter(self):
+        bbs_emulator._synthetic_counter = 0
+        bbs_emulator._synthetic_counter_seeded = False
+
+    def seed_old_sessions(self, count, bio_on=None):
+        for n in range(1, count + 1):
+            db_operations.auto_upsert_user_profile(
+                bbs_emulator._SYNTHETIC_NUM_BASE + n, f"old{n}", f"old{n}")
+        if bio_on:
+            db_operations.update_user_bio(
+                bbs_emulator._SYNTHETIC_NUM_BASE + bio_on, "an earlier tester's bio")
+
+    def test_a_new_session_does_not_reuse_an_old_id(self):
+        self.seed_old_sessions(4)
+        session = self.session()
+        self.assertGreater(session.sender_id, bbs_emulator._SYNTHETIC_NUM_BASE + 4)
+
+    def test_a_new_session_does_not_inherit_a_stranger_s_bio(self):
+        self.seed_old_sessions(4, bio_on=3)
+        session = self.session()
+        session.send("")
+        profile = db_operations.get_user_profile(session.sender_id)
+        self.assertEqual(profile[6], "")
+
+    def test_a_new_session_is_greeted(self):
+        """First contact is decided by whether a profile row exists, so a
+        reused id silently skipped the welcome."""
+        self.seed_old_sessions(4)
+        session = self.session()
+        chunks, error = session.send("")
+        self.assertIsNone(error)
+        self.assertIn("Send ? any time for the menu", self.text_of(chunks))
+
+    def test_two_sessions_in_a_row_are_different_people(self):
+        first = self.session()
+        second = self.session()
+        self.assertNotEqual(first.sender_id, second.sender_id)
+
+    def test_an_unreadable_database_still_opens_a_session(self):
+        """Reusing an id is bad; refusing to open the emulator at all is
+        worse, so a failed seed must not raise."""
+        with unittest.mock.patch.object(
+                db_operations, "get_db_connection", side_effect=RuntimeError("down")):
+            bbs_emulator._seed_synthetic_counter()
+        self.assertTrue(self.session().token)

@@ -228,6 +228,44 @@ class EmulatorSession:
 _registry_lock = threading.Lock()
 _sessions: dict = {}
 _synthetic_counter = 0
+_synthetic_counter_seeded = False
+
+
+def _seed_synthetic_counter() -> None:
+    """Start numbering above every synthetic id this database has already seen.
+
+    The counter is module state, so it restarted at 1 on every restart of the
+    web admin and each new session was handed the id of an old one. Two
+    consequences, and the second is the serious one:
+
+      * process_message treats "this sender has no profile row" as first
+        contact, so a genuinely new tester inherited one and never saw the
+        welcome.
+      * they also inherited that profile -- its name, its message count, its
+        bio, and anything else keyed by sender id, including game scores.
+        A bio written by one tester was showing up under the next.
+
+    Called once, under the registry lock. A database that cannot be read
+    leaves the counter where it was: reusing an id is bad, and refusing to
+    open an emulator session at all is worse.
+    """
+    global _synthetic_counter, _synthetic_counter_seeded
+    if _synthetic_counter_seeded:
+        return
+    _synthetic_counter_seeded = True
+    try:
+        from db_operations import get_db_connection
+        row = get_db_connection().execute(
+            """SELECT MAX(CAST(user_id AS INTEGER)) FROM user_profiles
+               WHERE CAST(user_id AS INTEGER) BETWEEN ? AND ?""",
+            (_SYNTHETIC_NUM_BASE, _SYNTHETIC_NUM_BASE + 0xFFFFFF),
+        ).fetchone()
+    except Exception:
+        logging.debug("could not seed the emulator id counter", exc_info=True)
+        return
+    highest = int(row[0]) if row and row[0] else 0
+    if highest > _SYNTHETIC_NUM_BASE:
+        _synthetic_counter = max(_synthetic_counter, highest - _SYNTHETIC_NUM_BASE)
 
 
 def _mesh_client_last_heard_epoch(client) -> Optional[int]:
@@ -384,6 +422,7 @@ def start_session(node_id=None, short_name=None,
             # can still be driven; it just gets a synthetic number for menu
             # state, while writes keep its real id.
             with _registry_lock:
+                _seed_synthetic_counter()
                 _synthetic_counter += 1
                 sender_id = _SYNTHETIC_NUM_BASE + _synthetic_counter
             nodes.setdefault(sender_node_id, {
@@ -395,6 +434,7 @@ def start_session(node_id=None, short_name=None,
                  or sender_node_id)
     else:
         with _registry_lock:
+            _seed_synthetic_counter()
             _synthetic_counter += 1
             counter = _synthetic_counter
         sender_id = _SYNTHETIC_NUM_BASE + counter
