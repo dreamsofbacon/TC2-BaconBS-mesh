@@ -63,9 +63,12 @@
     const refresh = el('button', 'Refresh status'); refresh.className = 'btn'; refresh.onclick = load;
     panels.append(refresh);
     radios.forEach(radio => {
-      const card = el('section'); card.className = 'card'; card.style.marginTop = '16px';
-      card.append(el('h2', (radio.network === 'meshcore' ? 'MeshCore' : 'Meshtastic') + ' · ' + radio.id));
-      card.append(el('p', 'Status: ' + radio.state + (radio.identity ? ' · ' + radio.identity : '')));
+      const card = el('section'); card.className = 'card radio-panel-card'; card.style.marginTop = '16px';
+      const title = el('h2', (radio.network === 'meshcore' ? 'MeshCore' : 'Meshtastic') + ' · ' + radio.id);
+      const badge = el('span', radio.state); badge.className = 'status-pill';
+      const details = el('p'); details.textContent = radio.identity ? 'Status: ' + radio.state + ' · ' + radio.identity : 'Status: ' + radio.state;
+      details.prepend(badge);
+      card.append(title, details);
       if (radio.state !== 'connected') card.append(el('p', 'Controls are unavailable until the BBS reports a connected radio.'));
       card.append(el('h3', 'Channels'));
       const list = el('ul');

@@ -1,11 +1,21 @@
-<form id="radio-composer">
-  <label for="send-radio">Local radio</label>
-  <select id="send-radio" required><option value="">Choose a radio…</option></select>
-  <label for="send-channel">Channel on this radio</label>
-  <select id="send-channel" required disabled><option value="">Choose a channel…</option></select>
-  <label for="send-text">Message</label>
-  <textarea id="send-text" required rows="3" placeholder="Write a public message" style="width:100%"></textarea>
-  <p id="send-limit" class="text-muted">Select a destination to see its message limit.</p>
-  <button class="btn" type="submit" id="send-button" disabled>Send to selected channel</button>
-  <p id="send-result" role="status" aria-live="polite"></p>
+<form id="radio-composer" class="radio-composer">
+  <div class="composer-grid">
+    <div class="form-group">
+      <label for="send-radio">Local radio</label>
+      <select id="send-radio" required><option value="">Choose a radio…</option></select>
+    </div>
+    <div class="form-group">
+      <label for="send-channel">Channel</label>
+      <select id="send-channel" required disabled><option value="">Choose a channel…</option></select>
+    </div>
+  </div>
+  <div class="form-group">
+    <label for="send-text">Message</label>
+    <textarea id="send-text" required rows="4" placeholder="Write a public message"></textarea>
+  </div>
+  <div class="composer-actions">
+    <p id="send-limit" class="text-muted">Select a destination to see its message limit.</p>
+    <button class="btn btn-primary" type="submit" id="send-button" disabled>Send to selected channel</button>
+  </div>
+  <p id="send-result" class="send-result" role="status" aria-live="polite"></p>
 </form>
