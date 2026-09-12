@@ -7,7 +7,7 @@
   --info-bg:rgba(209,251,71,.08);
 }
 .operations-layout { font-size:14px; --radius-md:3px; --radius-lg:3px; --radius-sm:2px; }
-.operations-layout .main-content { max-width:1280px; padding:34px 36px 64px; }
+.operations-layout .main-content { max-width:1280px; padding:10px 36px 64px; }
 .operations-layout .top-nav { position:relative; box-shadow:none; border-bottom:1px solid var(--border); background:var(--bg); }
 .operations-layout .top-nav-inner { max-width:1280px; height:82px; padding:0 36px; gap:20px; }
 .operations-layout .nav-brand { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:23px; letter-spacing:.08em; gap:12px; line-height:1.1; }
@@ -114,12 +114,11 @@
 
 .bbs-monogram { display:grid; place-items:center; width:35px; height:35px; background:var(--accent); color:var(--accent-fg); font:900 24px/1 system-ui,sans-serif; letter-spacing:-.12em; padding-right:3px; }
 .bbs-masthead { padding:6px 0 30px; text-align:center; }
-.operations-layout .bbs-wordmark { display:flex; align-items:baseline; justify-content:center; gap:.13em; font-family:Impact,'Arial Black',system-ui,sans-serif; font-weight:950; font-size:clamp(55px,9vw,120px); letter-spacing:-.055em; line-height:1; margin:24px auto 18px; }
+.operations-layout .bbs-wordmark { display:flex; align-items:baseline; justify-content:center; gap:.13em; font-family:Impact,'Arial Black',system-ui,sans-serif; font-weight:950; font-size:clamp(55px,9vw,120px); letter-spacing:-.055em; line-height:1; margin:5px auto 18px; }
 .bbs-wordmark>span { -webkit-text-stroke:1.5px var(--text); color:transparent; }
-.bbs-intro { display:flex; justify-content:space-between; align-items:center; gap:24px; }
-.bbs-intro p { font-size:16px; line-height:1.5; color:var(--text-muted); margin:0; }
-.bbs-intro .btn { display:flex; align-items:center; justify-content:space-between; gap:32px; padding:15px 20px; font-size:12px; letter-spacing:.04em; border-radius:0; }
-.bbs-intro .btn span { font-size:22px; }
+.bbs-intro { display:flex; justify-content:center; align-items:center; gap:24px; }
+.bbs-intro p { font-size:14px; line-height:1.2; color:var(--text-muted); margin:0; white-space:nowrap; }
+.bbs-intro .btn { display:none; }
 .board-ticker { display:flex; flex-wrap:wrap; gap:24px; padding:17px 0; border-top:3px solid var(--text); border-bottom:1px solid var(--border); margin-bottom:36px; font:11px ui-monospace,monospace; }
 .board-ticker>a { color:var(--text-muted); }
 .board-ticker strong { color:var(--text); }
@@ -141,7 +140,10 @@
 @media(max-width:700px) {
   .operations-layout .bbs-wordmark { font-size:clamp(42px,12vw,90px); gap:.12em; margin-top:25px; }
   .bbs-intro { align-items:stretch; flex-direction:column; gap:22px; }
-  .bbs-intro p { font-size:14px; }
+  /* nowrap keeps the strapline on one line on a desktop; on a phone the
+     same rule is 73 characters of text in a 360px viewport, which
+     scrolls the whole page sideways. */
+  .bbs-intro p { font-size:14px; white-space:normal; }
   .bbs-intro .btn { align-self:flex-start; }
   .board-ticker { gap:14px; font-size:10px; margin-bottom:28px; }
   .ticker-label { width:100%; }
