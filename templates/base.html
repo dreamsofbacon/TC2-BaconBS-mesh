@@ -36,7 +36,7 @@
   </div>
   <div class="bbs-navigation">
     <div class="nav-links">
-      {% for endpoint, label, table in [('dashboard','Home',none), ('table_list','Bulletins','bulletins'), ('public_chatter_page','Chatter',none), ('table_list','Mail','mail'), ('table_list','Channels','channels'), ('scores_page','Scores',none)] %}
+      {% for endpoint, label, table in [('dashboard','Home',none), ('table_list','Bulletins','bulletins'), ('table_list','Channels','channels'), ('public_chatter_page','Chatter',none), ('table_list','Mail','mail'), ('scores_page','Scores',none)] %}
       {% set destination = url_for(endpoint, table=table) if table else url_for(endpoint) %}
       {% set selected = request.path == destination or (table and request.path.startswith(destination + '/')) %}
       <a href="{{ destination }}" class="nav-link{% if selected %} active{% endif %}"{% if selected %} aria-current="page"{% endif %}>{{ label }}</a>
