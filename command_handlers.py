@@ -353,15 +353,27 @@ def _js8call_configured() -> bool:
 # ---------------------------------------------------------------------------
 
 HELP_TIPS = {
-    'main': "Tip: reply with a number. !Q lists shortcuts.",
-    'bbs': "Tip: Bulletins are notices. Channels are topics with replies.",
-    'utilities': "Tip: these are the odds and ends. [0] goes back.",
-    'settings': "Tip: [5] turns these tips off.",
-    'BULLETIN_MENU': "Tip: pick a board, then a number to read it.",
-    'MAIL': "Tip: [0] backs out of any prompt.",
-    'CHANNEL_DIRECTORY': "Tip: a channel is a topic. Open one to reply.",
-    'GAMES_MENU': "Tip: games keep your score. X leaves a game.",
-    'PUBLIC_CHATTER': "Tip: this is live mesh traffic, not BBS posts.",
+    'main': "Tip: reply with a number, or jump straight there with a shortcut "
+            "like !B or !S. !Q lists them all, and [0] always goes back.",
+    'bbs': "Tip: Mail is private, to one person. Bulletins are public notices "
+           "on fixed boards. Channels are topics anyone can start, with replies.",
+    'utilities': "Tip: the odds and ends that fit nowhere else. Nothing here "
+                 "changes your account or how the BBS treats you.",
+    'settings': "Tip: the lines above are who you are; the numbered ones are "
+                "what the BBS does for you. [5] switches these tips off.",
+    'BULLETIN_MENU': "Tip: the boards are set by this node's operator. A "
+                     "bulletin is public and reaches every Bacon BBS node.",
+    'MAIL': "Tip: Read opens your inbox. Send writes to one person. Relay "
+            "Directory lists who agreed to have mail pushed to their radio.",
+    'CHANNEL_DIRECTORY': "Tip: a channel is a topic with replies under it. View "
+                         "opens one to read and reply, Post starts a new one.",
+    # Shorter than its neighbours on purpose: the Games menu lists eleven
+    # titles, so it is the one screen where a full-length tip buys a third
+    # MeshCore packet.
+    'GAMES_MENU': "Tip: scores and progress are saved and follow you to other "
+                  "nodes. X leaves a game without losing it.",
+    'PUBLIC_CHATTER': "Tip: live radio traffic the nodes overheard, not BBS "
+                      "posts. Pick a window, then filter it by channel.",
 }
 
 
