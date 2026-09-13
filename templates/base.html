@@ -36,7 +36,7 @@
   </div>
   <div class="bbs-navigation">
     <div class="nav-links">
-      {% for endpoint, label, table in [('dashboard','Home',none), ('table_list','Bulletins','bulletins'), ('table_list','Channels','channels'), ('public_chatter_page','Chatter',none), ('table_list','Mail','mail'), ('scores_page','Scores',none)] %}
+      {% for endpoint, label, table in [('dashboard','Home',none), ('table_list','Bulletins','bulletins'), ('table_list','Channels','channels'), ('public_chatter_page','Chatter',none), ('table_list','Mail','mail'), ('scores_page','Scores',none), ('settings_page','Settings',none)] %}
       {% set destination = url_for(endpoint, table=table) if table else url_for(endpoint) %}
       {% set selected = request.path == destination or (table and request.path.startswith(destination + '/')) %}
       <a href="{{ destination }}" class="nav-link{% if selected %} active{% endif %}"{% if selected %} aria-current="page"{% endif %}>{{ label }}</a>
@@ -44,7 +44,7 @@
       <div class="nav-dropdown" id="tools-dropdown">
         <button class="nav-link nav-dropdown-toggle" id="tools-dropdown-btn" type="button" aria-expanded="false" aria-controls="tools-dropdown-menu">More <span aria-hidden="true">⌄</span></button>
         <div class="nav-dropdown-menu" id="tools-dropdown-menu">
-          {% for endpoint, label in [('clients_summary','Clients'), ('fleet_page','Fleet'), ('accounts_list','Accounts'), ('settings_page','Settings'), ('system_transmissions','Transmissions'), ('emulator_page','Emulator'), ('radios_page','Radios'), ('meshtastic_device','Device'), ('system_flowchart','Documentation'), ('deleted_content','Deleted')] %}
+          {% for endpoint, label in [('clients_summary','Clients'), ('fleet_page','Fleet'), ('accounts_list','Accounts'), ('system_transmissions','Transmissions'), ('emulator_page','Emulator'), ('radios_page','Radios'), ('meshtastic_device','Device'), ('system_flowchart','Documentation'), ('deleted_content','Deleted')] %}
           <a href="{{ url_for(endpoint) }}" class="nav-dropdown-item{% if request.endpoint == endpoint %} active{% endif %}"{% if request.endpoint == endpoint %} aria-current="page"{% endif %}>{{ label }}</a>
           {% endfor %}
           <a href="{{ url_for('mesh_ui_index') }}" class="nav-dropdown-item" target="_blank" rel="noopener noreferrer">Mesh UI ↗</a>
