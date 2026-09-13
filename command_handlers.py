@@ -367,11 +367,12 @@ HELP_TIPS = {
             "Directory lists who agreed to have mail pushed to their radio.",
     'CHANNEL_DIRECTORY': "Tip: a channel is a topic with replies under it. View "
                          "opens one to read and reply, Post starts a new one.",
-    # Shorter than its neighbours on purpose: the Games menu lists eleven
-    # titles, so it is the one screen where a full-length tip buys a third
-    # MeshCore packet.
-    'GAMES_MENU': "Tip: scores and progress are saved and follow you to other "
-                  "nodes. X leaves a game without losing it.",
+    # True in both configurations, which the first version was not. High
+    # scores always sync; game SAVES only sync when zork save sync is on. It
+    # used to say progress follows you to other nodes, directly beneath the
+    # warning a no-save-sync node shows saying that it does not.
+    'GAMES_MENU': "Tip: high scores are shared with every node. X leaves a "
+                  "game without losing your place.",
     'PUBLIC_CHATTER': "Tip: live radio traffic the nodes overheard, not BBS "
                       "posts. Pick a window, then filter it by channel.",
 }
@@ -1242,8 +1243,14 @@ def handle_games_command(sender_id, interface):
     menu += "[S]cores [H]all of Fame [0]Back"
     sync_notice = get_zork_save_sync_notice()
     if sync_notice:
+        # On a node that does not sync saves the notice IS this screen's tip:
+        # it says the one thing a player most needs to know here. Adding the
+        # general tip beneath it was redundant, and pushed the screen to three
+        # MeshCore packets.
         menu += f"\n\n{sync_notice}"
-    send_message(with_help_tip(menu, sender_id, 'GAMES_MENU'), sender_id, interface)
+        send_message(menu, sender_id, interface)
+    else:
+        send_message(with_help_tip(menu, sender_id, 'GAMES_MENU'), sender_id, interface)
     update_user_state(sender_id, {'command': 'GAMES_MENU', 'step': 1})
 
 

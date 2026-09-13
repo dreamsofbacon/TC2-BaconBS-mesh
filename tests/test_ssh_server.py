@@ -1,4 +1,5 @@
 import os
+import asyncio
 import sqlite3
 import tempfile
 import unittest
@@ -73,6 +74,7 @@ class SSHBindTests(unittest.IsolatedAsyncioTestCase):
 
 class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        self.connections = []
         self.temp_dir = tempfile.TemporaryDirectory()
         db_operations.thread_local.connection = sqlite3.connect(":memory:")
         db_operations.initialize_database()
@@ -89,6 +91,13 @@ class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.port = self.listener.get_port()
 
     async def asyncTearDown(self):
+        # Close client connections before the listener. Left open, a failed
+        # assertion mid-test stalled the whole run waiting on a session that
+        # nothing would ever finish.
+        for connection in self.connections:
+            connection.close()
+        for connection in self.connections:
+            await asyncio.wait_for(connection.wait_closed(), timeout=5)
         self.listener.close()
         await self.listener.wait_closed()
         for token in list(bbs_emulator._sessions):
@@ -103,6 +112,7 @@ class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
         connection = await asyncssh.connect(
             "127.0.0.1", port=self.port, username=username,
             password=password, known_hosts=None)
+        self.connections.append(connection)
         process = await connection.create_process(term_type="xterm")
         return connection, process
 
@@ -112,7 +122,15 @@ class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
         welcome = await process.stdout.readuntil("> ")
         self.assertIn("Account Caller created", welcome)
         self.assertIn("Bacon BBS", welcome)
-        process.stdin.write("2\x7f3\n")
+        # Derived, not hardcoded. This used to type 3, which was Utilities
+        # until Games and Public Chatter were inserted above it -- and then it
+        # failed on every CI run while saying nothing about SSH at all.
+        import command_handlers as ch
+        items, title = ch.menu_items_for('main')
+        utilities = {letter: digit for digit, letter in
+                     ch.menu_number_alias(items, title).items()}['u']
+        wrong = '2' if utilities != '2' else '3'
+        process.stdin.write(f"{wrong}\x7f{utilities}\n")
         utilities = await process.stdout.readuntil("> ")
         self.assertIn("\b \b", utilities)
         self.assertIn("Utilities Menu", utilities)
