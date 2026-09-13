@@ -2215,10 +2215,21 @@ def main():
         next_diagnostics_write = 0.0
         # DB maintenance: prune unbounded tables + WAL checkpoint on a slow cadence,
         # VACUUM even less often. First pass deferred so startup isn't slowed.
-        from db_operations import get_maintenance_config, run_db_maintenance
+        from db_operations import get_maintenance_config, run_db_maintenance, next_vacuum_due
         _maint_cfg = get_maintenance_config()
         next_maintenance = time.time() + 300.0  # first pass 5 min after start
-        next_vacuum = time.time() + max(1, _maint_cfg['vacuum_interval_hours']) * 3600.0
+        # Judged from the last VACUUM that actually ran, which is stored in the
+        # database. Counting from process start meant any node redeployed more
+        # often than vacuum_interval_hours never vacuumed at all.
+        #
+        # settle_seconds sits inside the first maintenance pass on purpose.
+        # Maintenance runs at +5 minutes and then hourly, and VACUUM is only
+        # considered on those passes -- so an overdue VACUUM due at +10 minutes
+        # would really wait until +65, and a node redeployed more often than
+        # hourly would still never get one. That pass is already gated on no
+        # sync being in progress, which is the settling this is for.
+        next_vacuum = next_vacuum_due(_maint_cfg['vacuum_interval_hours'],
+                                      settle_seconds=240.0)
         # How long a requester waits for an API-gateway reply before timing out:
         # the gateway's own request_timeout plus generous mesh round-trip slack.
         from utils import _config_int as _cfg_int
@@ -2306,23 +2317,22 @@ def main():
                         )
                 except Exception as exc:
                     logging.warning(f"DB maintenance pass failed: {exc}")
-                # Enforce the optional GUI-set DB size cap (0 = disabled), once
-                # per active radio so each network's peers get the prune
-                # notice. Deletes the oldest content via the tombstoned delete
-                # path so the prune propagates to every node identically.
-                for link in links:
-                    if link.reconnecting:
-                        continue
-                    try:
-                        from db_operations import enforce_db_size_cap
-                        _cap = enforce_db_size_cap(link.bbs_nodes, link.interface)
-                        if _cap.get('deleted'):
-                            logging.info(
-                                f"[{link.name}] DB size cap: deleted {_cap['deleted']} oldest record(s); "
-                                f"on-disk now {_cap['size_bytes']} bytes"
-                            )
-                    except Exception as exc:
-                        logging.warning(f"[{link.name}] DB size-cap pass failed: {exc}")
+                # The optional GUI-set storage cap (0 = disabled). Once per pass,
+                # not once per radio: it only reclaims this node's own free
+                # pages and diagnostic logs now, so there is nothing to tell a
+                # peer and no reason to run it twice. See enforce_db_size_cap
+                # for why it no longer deletes content.
+                try:
+                    from db_operations import enforce_db_size_cap
+                    _cap = enforce_db_size_cap()
+                    if _cap.get('over'):
+                        logging.info(
+                            f"DB size cap: trimmed {_cap['deleted']} log row(s), "
+                            f"vacuum={_cap['vacuumed']}, on-disk now {_cap['size_bytes']} bytes "
+                            f"({_cap['live_bytes']} in use)"
+                        )
+                except Exception as exc:
+                    logging.warning(f"DB size-cap pass failed: {exc}")
                 if do_vacuum:
                     next_vacuum = now + max(1, _maint_cfg['vacuum_interval_hours']) * 3600.0
                 next_maintenance = now + max(1, _maint_cfg['interval_minutes']) * 60.0

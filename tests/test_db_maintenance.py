@@ -189,3 +189,84 @@ class DbMaintenanceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VacuumScheduleSurvivesRestartsTests(unittest.TestCase):
+    """VACUUM has to actually happen on a node that gets redeployed.
+
+    The schedule was measured from process start, and a fleet deploy restarts
+    the process. The live node had been redeployed well inside every 24-hour
+    window, logged zero VACUUMs in 14 days, and was carrying a file that was
+    63% empty pages. The last successful VACUUM is stored in the database now,
+    so the schedule outlives the process.
+    """
+
+    def setUp(self):
+        db_operations.thread_local.connection = sqlite3.connect(":memory:")
+        db_operations.initialize_database()
+        self.addCleanup(self._close)
+
+    def _close(self):
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
+
+    def test_a_node_that_has_never_vacuumed_does_so_soon(self):
+        now = 1_000_000.0
+        due = db_operations.next_vacuum_due(24, now=now, settle_seconds=600)
+        self.assertEqual(due, now + 600)
+
+    def test_a_recent_vacuum_is_remembered_across_a_restart(self):
+        """The regression itself: a restart must not reset the clock."""
+        db_operations.record_vacuum(epoch=1_000_000.0)
+        due = db_operations.next_vacuum_due(24, now=1_000_000.0 + 3600)
+        self.assertEqual(due, 1_000_000.0 + 24 * 3600)
+
+    def test_an_overdue_vacuum_is_not_deferred_another_full_day(self):
+        db_operations.record_vacuum(epoch=1_000_000.0)
+        now = 1_000_000.0 + 30 * 3600
+        due = db_operations.next_vacuum_due(24, now=now, settle_seconds=600)
+        self.assertEqual(due, now + 600)
+
+    def test_a_successful_vacuum_is_recorded(self):
+        self.assertIsNone(db_operations.get_last_vacuum_epoch())
+        self.assertTrue(db_operations.vacuum_database())
+        self.assertIsNotNone(db_operations.get_last_vacuum_epoch())
+
+    def test_a_failed_vacuum_reports_failure_and_records_nothing(self):
+        """It used to report vacuumed=True whether or not VACUUM worked, so a
+        node failing every day would have looked healthy in its logs."""
+        conn = db_operations.get_db_connection()
+        conn.execute("BEGIN")  # VACUUM cannot run inside a transaction
+        try:
+            self.assertFalse(db_operations.vacuum_database())
+        finally:
+            conn.rollback()
+        self.assertIsNone(db_operations.get_last_vacuum_epoch())
+
+    def test_maintenance_reports_what_vacuum_actually_did(self):
+        with mock.patch.object(db_operations, "vacuum_database", return_value=False):
+            summary = db_operations.run_db_maintenance(do_vacuum=True)
+        self.assertFalse(summary["vacuumed"])
+
+
+class OverdueVacuumReachesTheFirstPassTests(unittest.TestCase):
+    """VACUUM is only considered on a maintenance pass, and the first pass is
+    five minutes after start. An overdue VACUUM therefore has to be due before
+    that pass, or it slips to the next one an hour later -- and a node that is
+    redeployed more often than hourly never vacuums at all, which is the bug
+    this whole change exists to fix.
+
+    Read from server.py's source because the scheduling lives inside its main
+    loop rather than a function a test can call.
+    """
+
+    def test_an_overdue_vacuum_is_due_before_the_first_maintenance_pass(self):
+        import re
+        from pathlib import Path
+        source = (Path(__file__).resolve().parent.parent / "server.py").read_text(encoding="utf-8")
+        first_pass = float(re.search(
+            r"next_maintenance = time\.time\(\) \+ ([\d.]+)", source).group(1))
+        settle = float(re.search(r"settle_seconds=([\d.]+)", source).group(1))
+        self.assertLess(settle, first_pass)

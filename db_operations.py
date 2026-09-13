@@ -2076,16 +2076,81 @@ def checkpoint_wal(truncate: bool = False):
         return None
 
 
-def vacuum_database() -> None:
-    """Reclaim free pages so the DB file shrinks after large prunes. Heavier op —
-    callers should run this on a slow cadence (e.g. daily) when idle."""
+def _ensure_maintenance_state_table(conn) -> None:
+    """Node-local bookkeeping for maintenance. Never synced, never hashed."""
+    conn.execute('''CREATE TABLE IF NOT EXISTS maintenance_state (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    )''')
+
+
+def get_last_vacuum_epoch():
+    """When VACUUM last actually succeeded on this node, or None if never.
+
+    Stored in the database rather than held in server.py, because the process
+    that runs maintenance restarts on every fleet deploy. A schedule measured
+    from process start meant "every 24 hours" silently became "never" on a
+    node that is redeployed more often than that -- the live node had gone 14
+    days without one, leaving 63% of its file as empty pages.
+    """
+    try:
+        conn = get_db_connection()
+        _ensure_maintenance_state_table(conn)
+        row = conn.execute(
+            "SELECT value FROM maintenance_state WHERE key = 'last_vacuum_epoch'").fetchone()
+        return float(row[0]) if row else None
+    except Exception:
+        logging.debug("could not read last vacuum time", exc_info=True)
+        return None
+
+
+def record_vacuum(epoch=None) -> None:
+    try:
+        conn = get_db_connection()
+        _ensure_maintenance_state_table(conn)
+        conn.execute(
+            "INSERT INTO maintenance_state (key, value) VALUES ('last_vacuum_epoch', ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(float(time.time() if epoch is None else epoch)),))
+        conn.commit()
+    except Exception:
+        rollback_db_connection()
+        logging.debug("could not record vacuum time", exc_info=True)
+
+
+def next_vacuum_due(interval_hours, now=None, settle_seconds=600.0) -> float:
+    """When the next VACUUM should run, judged from the last one that happened.
+
+    Overdue (or never run) means soon rather than immediately: settle_seconds
+    lets a freshly started node finish its first sync before taking the
+    exclusive lock VACUUM needs.
+    """
+    now = time.time() if now is None else float(now)
+    interval = max(1.0, float(interval_hours)) * 3600.0
+    last = get_last_vacuum_epoch()
+    if last is None or last + interval <= now:
+        return now + float(settle_seconds)
+    return last + interval
+
+
+def vacuum_database() -> bool:
+    """Reclaim free pages so the DB file shrinks after large prunes.
+
+    Returns whether it actually worked. It used to return nothing and log a
+    failure at DEBUG, while run_db_maintenance reported vacuumed=True
+    regardless -- so a VACUUM that failed every day would have looked
+    perfectly healthy in the logs.
+    """
     try:
         conn = get_db_connection()
         conn.execute("VACUUM;")
         conn.commit()
     except Exception as e:
         rollback_db_connection()
-        logging.debug(f"VACUUM failed: {e}")
+        logging.warning(f"VACUUM failed: {e}")
+        return False
+    record_vacuum()
+    return True
 
 
 def enqueue_api_response(rid: str, requester_node_id: str, status, body) -> int:
@@ -2232,8 +2297,7 @@ def run_db_maintenance(do_vacuum: bool = False) -> dict:
     summary['public_chatter_deleted'] = prune_expired_public_chatter()
     checkpoint_wal()
     if do_vacuum:
-        vacuum_database()
-        summary['vacuumed'] = True
+        summary['vacuumed'] = vacuum_database()
     return summary
 
 
@@ -2260,84 +2324,128 @@ def read_max_db_size_mb() -> int:
         return 0
 
 
-def enforce_db_size_cap(bbs_nodes, interface, max_mb=None, keep_floor=20, max_deletes=100) -> dict:
-    """Keep the on-disk database under a configurable megabyte cap by deleting the
-    OLDEST content (bulletins/mail/channel_comments) across scopes when over.
+def _db_live_bytes() -> int:
+    """Bytes the database is actually using: pages in use, not the file size.
 
-    Deletes go through the normal tombstoned delete path, so they propagate to
-    peers (and the Pico cache) as DELETE_* frames — meaning every node prunes the
-    *same* records the *same* way. Bounded to ``max_deletes`` per pass to avoid a
-    DELETE-frame storm; successive maintenance passes converge. ``keep_floor``
-    newest records per scope are never deleted, so a board is never emptied.
+    A SQLite file only ever grows to its high-water mark. Deleting rows frees
+    pages inside it without shrinking it, until VACUUM runs. Measuring the
+    file therefore counts empty space as data -- on the live node 18.8 MB of a
+    30 MB file was free pages. Anything deciding whether there is too much
+    data has to ask this rather than os.path.getsize.
+    """
+    try:
+        conn = get_db_connection()
+        page_size = int(conn.execute("PRAGMA page_size").fetchone()[0])
+        pages = int(conn.execute("PRAGMA page_count").fetchone()[0])
+        free = int(conn.execute("PRAGMA freelist_count").fetchone()[0])
+        return max(0, pages - free) * page_size
+    except Exception:
+        logging.debug("could not measure live database bytes", exc_info=True)
+        return _db_total_bytes()
 
-    A cap of 0/None disables it (the default). Returns a summary dict."""
+
+# What a size cap may trim, in the order it trims them. Every one is this
+# node's own diagnostic history: nothing here is synced, nothing is part of a
+# sync hash, and losing old rows costs only the operator's ability to look
+# back further. The op log is deliberately absent -- sync reconciliation reads
+# it -- and so is every content table.
+_SIZE_CAP_LOG_TABLES = ('sync_transmissions', 'connection_events', 'sync_session_history')
+
+# Never trim a log below this many rows: a cap small enough to demand it has
+# stopped being about space and started erasing the evidence an operator
+# would need to work out why the node is full.
+_SIZE_CAP_LOG_FLOOR = 500
+
+
+def _trim_log_table(conn, table: str, keep: int) -> int:
+    before = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    if before <= keep:
+        return 0
+    conn.execute(
+        f"DELETE FROM {table} WHERE rowid NOT IN "
+        f"(SELECT rowid FROM {table} ORDER BY rowid DESC LIMIT ?)", (int(keep),))
+    conn.commit()
+    return before - keep
+
+
+def enforce_db_size_cap(max_mb=None) -> dict:
+    """Bring this node back under its storage cap without deleting content.
+
+    This used to delete the oldest bulletins, mail and channel comments until
+    the file shrank, through the synced delete path -- so one node's limit set
+    retention for every node in the fleet. Three things made that dangerous
+    rather than merely blunt. It measured the file, most of which was empty
+    pages and log tables. It deleted content, which holds almost none of the
+    bytes, so it would keep deleting to the 20-per-board floor and still not
+    get under. And every deletion propagated, so a small node's cap erased
+    posts on nodes with gigabytes free.
+
+    Now, in order, and stopping as soon as the file is under the cap:
+      1. checkpoint the WAL,
+      2. VACUUM, which returns free pages to the filesystem,
+      3. trim this node's own diagnostic logs, then VACUUM again,
+      4. if still over, say so and stop.
+
+    Bulletins, mail, comments, scores and saves are never touched, and no
+    delete frame or tombstone is ever produced. If content genuinely does not
+    fit, that is a decision for the operator, not something a maintenance
+    pass should settle by erasing other people's posts.
+    """
     if max_mb is None:
         max_mb = read_max_db_size_mb()
-    summary = {'enabled': bool(max_mb and max_mb > 0), 'over': False, 'deleted': 0, 'size_bytes': 0}
+    summary = {'enabled': bool(max_mb and max_mb > 0), 'over': False,
+               'deleted': 0, 'content_deleted': 0, 'vacuumed': False,
+               'size_bytes': _db_total_bytes(), 'live_bytes': 0}
     if not max_mb or max_mb <= 0:
         return summary
     target = int(max_mb) * 1024 * 1024
+
     try:
         checkpoint_wal(truncate=True)
     except Exception:
         pass
-    size = _db_total_bytes()
-    summary['size_bytes'] = size
-    if size <= target:
+    summary['size_bytes'] = _db_total_bytes()
+    summary['live_bytes'] = _db_live_bytes()
+    if summary['size_bytes'] <= target:
         return summary
     summary['over'] = True
-    keep = max(0, int(keep_floor))
+
+    # Free pages are the cheapest bytes there are: reclaiming them deletes
+    # nothing at all.
+    if summary['size_bytes'] > summary['live_bytes']:
+        summary['vacuumed'] = vacuum_database() or summary['vacuumed']
+        summary['size_bytes'] = _db_total_bytes()
+        summary['live_bytes'] = _db_live_bytes()
+        if summary['size_bytes'] <= target:
+            return summary
+
     try:
         conn = get_db_connection()
-        c = conn.cursor()
-        total_rows = 0
-        for tbl in ('bulletins', 'mail', 'channel_comments'):
+        for table in _SIZE_CAP_LOG_TABLES:
             try:
-                total_rows += int(c.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0])
-            except Exception:
-                pass
-        avg = max(1, size // max(1, total_rows))
-        want = min(int(max_deletes), max(1, int((size - target) * 1.05) // avg + 1))
-
-        def oldest_excluding_newest(table, extra=""):
-            rows = c.execute(
-                f"SELECT unique_id, date{extra} FROM {table} ORDER BY date ASC, id ASC"
-            ).fetchall()
-            cut = len(rows) - keep
-            return rows[:cut] if cut > 0 else []
-
-        candidates = []  # (date, scope, uid, recipient_or_None)
-        for uid, date in oldest_excluding_newest('bulletins'):
-            candidates.append((date or '', 'bulletins', uid, None))
-        for uid, date, recipient in oldest_excluding_newest('mail', ", recipient"):
-            candidates.append((date or '', 'mail', uid, recipient))
-        for uid, date in oldest_excluding_newest('channel_comments'):
-            candidates.append((date or '', 'channel_comments', uid, None))
-        candidates.sort(key=lambda x: (x[0], x[2]))  # oldest first
-        to_delete = candidates[:want]
-
-        for date, scope, uid, recipient in to_delete:
-            try:
-                if scope == 'bulletins':
-                    delete_bulletin(uid, bbs_nodes, interface)
-                elif scope == 'mail':
-                    delete_mail(uid, recipient, bbs_nodes, interface)
-                else:
-                    delete_channel_comment(uid, bbs_nodes, interface)
-                summary['deleted'] += 1
-            except Exception as e:
-                rollback_db_connection()
-                logging.debug(f"size-cap delete failed for {scope}/{uid}: {e}")
-        if summary['deleted']:
-            try:
-                vacuum_database()
-                checkpoint_wal(truncate=True)
-            except Exception:
-                pass
-            summary['size_bytes'] = _db_total_bytes()
+                rows = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            except sqlite3.Error:
+                continue
+            summary['deleted'] += _trim_log_table(
+                conn, table, max(_SIZE_CAP_LOG_FLOOR, rows // 2))
     except Exception as exc:
         rollback_db_connection()
-        logging.warning(f"enforce_db_size_cap failed: {exc}")
+        logging.warning(f"enforce_db_size_cap could not trim logs: {exc}")
+
+    if summary['deleted']:
+        summary['vacuumed'] = vacuum_database() or summary['vacuumed']
+        try:
+            checkpoint_wal(truncate=True)
+        except Exception:
+            pass
+    summary['size_bytes'] = _db_total_bytes()
+    summary['live_bytes'] = _db_live_bytes()
+    if summary['size_bytes'] > target:
+        logging.warning(
+            "Database is %.1f MB against a %d MB cap after reclaiming free pages and "
+            "trimming logs. The rest is content, which the cap never deletes: raise "
+            "the cap or free space on this node.",
+            summary['size_bytes'] / 1048576, int(max_mb))
     return summary
 
 
