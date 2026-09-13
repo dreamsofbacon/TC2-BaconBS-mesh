@@ -29,6 +29,7 @@ import sys
 import tempfile
 import types
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -56,6 +57,13 @@ class _ScopeCase(unittest.TestCase):
             clear=False)
         self.env_patch.start()
         db_operations.initialize_database()
+        # These tests are about spelling, not zones: pin the node to UTC so a
+        # 'Z' names the same instant as a bare time on every machine that
+        # runs them. ZoneIndependenceTests below moves the node on purpose.
+        self.zone_patch = mock.patch.object(
+            db_operations, "_local_utc_offset", lambda naive: timedelta(0))
+        self.zone_patch.start()
+        self.addCleanup(lambda: self.zone_patch.stop())
         self.addCleanup(self.temp_dir.cleanup)
         self.addCleanup(self.env_patch.stop)
         self.addCleanup(self._close)
@@ -153,8 +161,10 @@ class GameScoreDriftTests(_ScopeCase):
 
 
 class ChannelCommentDriftTests(_ScopeCase):
-    """channels hashes cc.date in the aggregate and cc.date plus
-    cc.source_timestamp in the manifest -- three columns, two functions."""
+    """channels hashed cc.date in the aggregate and cc.date plus
+    cc.source_timestamp in the manifest -- three columns, two functions.
+    cc.date is no longer hashed at all (see CommentDateTests); the
+    source_timestamp still is, and must still agree however it is spelled."""
 
     def setUp(self):
         super().setUp()
@@ -180,8 +190,7 @@ class ChannelCommentDriftTests(_ScopeCase):
         self.assert_one_hash_across_spellings(
             self._store, 'channel_comments', 'channels_hash')
 
-    def test_the_date_column_is_normalised_in_the_aggregate(self):
-        """cc.date is hashed by the aggregate and nothing else covers it."""
+    def test_the_date_column_does_not_move_the_aggregate(self):
         self._store(SPACE_FORM)
         space = db_operations.get_local_record_counts()['channels_hash']
         self.conn.execute("UPDATE channel_comments SET date = ?", (T_FORM,))
@@ -356,6 +365,267 @@ class InterpreterIndependenceTests(unittest.TestCase):
         self.assertEqual(
             db_operations._normalize_sync_timestamp("2026-08-12"),
             "2026-08-12 00:00:00")
+
+
+
+NEW_YORK = timedelta(hours=-4)   # America/New_York in September: bbs.local, forgecam
+UTC = timedelta(0)               # Chattanooga
+
+
+class ZoneIndependenceTests(_ScopeCase):
+    """One instant, stored in two time zones, one hash.
+
+    Stored timestamps are local wall-clock time: datetime.now() writes them
+    and decode_ts_second turns a peer's epoch back into one. So the same high
+    score reads '2026-09-06 21:24:31' on bbs.local (New York) and
+    '2026-09-07 01:24:31' on Chattanooga (UTC). Every other field matched,
+    and the two nodes still disagreed about game_scores, channels and
+    zork_saves permanently -- bbs.local re-sent Chattanooga all four scores
+    more than a hundred times an hour.
+    """
+
+    # The four rows on the live fleet on 2026-09-13, as bbs.local stores them.
+    LIVE_ROWS_NEW_YORK = (
+        ("3779101968", "trivia", "arthurdent", 8700, 0, 50, "2026-09-06 21:55:29"),
+        ("3781033626", "trivia", "baconbot", 100, 0, 2, "2026-09-07 21:37:34"),
+        ("mc-78cb1cc70466", "trivia", "\U0001f953 No", 1800, 0, 25, "2026-09-06 21:24:31"),
+        ("mc-dbc375683936", "baconfall", "Pers", 1190, 0, 73, "2026-09-13 01:03:37"),
+    )
+    # The same rows as Chattanooga stores them: four hours later, nothing else.
+    LIVE_ROWS_UTC = (
+        ("3779101968", "trivia", "arthurdent", 8700, 0, 50, "2026-09-07 01:55:29"),
+        ("3781033626", "trivia", "baconbot", 100, 0, 2, "2026-09-08 01:37:34"),
+        ("mc-78cb1cc70466", "trivia", "\U0001f953 No", 1800, 0, 25, "2026-09-07 01:24:31"),
+        ("mc-dbc375683936", "baconfall", "Pers", 1190, 0, 73, "2026-09-13 05:03:37"),
+    )
+    # What Chattanooga reported in SYNCSTATE for those rows.
+    CHATTANOOGA_REPORTED = "CMUpBQ-Bxag"
+
+    def _in_zone(self, offset):
+        self.zone_patch.stop()
+        patch = mock.patch.object(
+            db_operations, "_local_utc_offset", lambda naive: offset)
+        patch.start()
+        self.zone_patch = patch
+
+    def _hashes_as_node(self, offset, store, scope, aggregate_key):
+        self._in_zone(offset)
+        store()
+        return (db_operations.get_record_hash_manifest(scope),
+                db_operations.get_local_record_counts()[aggregate_key])
+
+    def _store_scores(self, rows):
+        def store():
+            self.conn.execute("DELETE FROM game_scores")
+            self.conn.executemany(
+                "INSERT INTO game_scores (user_id, game_id, short_name, score,"
+                " max_score, moves, achieved_at) VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+            self.conn.commit()
+        return store
+
+    def test_the_live_fleet_scores_now_agree(self):
+        new_york = self._hashes_as_node(
+            NEW_YORK, self._store_scores(self.LIVE_ROWS_NEW_YORK),
+            'game_scores', 'game_scores_hash')
+        utc = self._hashes_as_node(
+            UTC, self._store_scores(self.LIVE_ROWS_UTC),
+            'game_scores', 'game_scores_hash')
+        self.assertEqual(new_york[0], utc[0], "record manifests differ")
+        self.assertEqual(new_york[1], utc[1], "scope hashes differ")
+
+    def test_a_utc_node_hashes_exactly_what_it_did_before(self):
+        """Chattanooga's own report does not move, so a fleet part-way
+        through the update converges on the value it already sends."""
+        _, utc = self._hashes_as_node(
+            UTC, self._store_scores(self.LIVE_ROWS_UTC),
+            'game_scores', 'game_scores_hash')
+        self.assertEqual(utc, self.CHATTANOOGA_REPORTED)
+
+    def test_a_new_york_node_reaches_the_same_value(self):
+        _, new_york = self._hashes_as_node(
+            NEW_YORK, self._store_scores(self.LIVE_ROWS_NEW_YORK),
+            'game_scores', 'game_scores_hash')
+        self.assertEqual(new_york, self.CHATTANOOGA_REPORTED)
+
+    def test_zork_saves_agree_across_zones(self):
+        def store(when):
+            def _store():
+                self.conn.execute("DELETE FROM zork_saves")
+                self.conn.execute(
+                    "INSERT INTO zork_saves (user_id, game_id, save_data, updated_at)"
+                    " VALUES ('67472072', 'hhgttg', ?, ?)", (b"save", when))
+                self.conn.commit()
+            return _store
+        with mock.patch.object(db_operations, "is_zork_save_sync_enabled", return_value=True):
+            new_york = self._hashes_as_node(
+                NEW_YORK, store("2026-09-06 21:24:31"), 'zork_saves', 'zork_saves_hash')
+            utc = self._hashes_as_node(
+                UTC, store("2026-09-07 01:24:31"), 'zork_saves', 'zork_saves_hash')
+        self.assertEqual(new_york, utc)
+
+    def test_a_value_carrying_its_offset_is_the_same_string_in_every_zone(self):
+        """source_timestamp is stored verbatim as '...+00:00' on every node.
+        Reading it as local time would split nodes that currently agree."""
+        value = "2026-09-07T01:24:31.848137+00:00"
+        self._in_zone(NEW_YORK)
+        new_york = db_operations._hash_timestamp(value)
+        self._in_zone(UTC)
+        self.assertEqual(new_york, db_operations._hash_timestamp(value))
+        self.assertEqual(new_york, "2026-09-07 01:24:31")
+
+    def test_an_offset_is_applied_not_dropped(self):
+        self._in_zone(UTC)
+        self.assertEqual(
+            db_operations._hash_timestamp("2026-09-06T21:24:31-04:00"),
+            db_operations._hash_timestamp("2026-09-07T01:24:31Z"))
+        self.assertEqual(
+            db_operations._hash_timestamp("2026-09-07 06:54:31+05:30"),
+            "2026-09-07 01:24:31")
+
+    def test_a_z_is_utc_even_on_a_new_york_node(self):
+        """On a UTC node a 'Z' and a bare time coincide, so only a node in
+        another zone can tell whether the 'Z' was honoured."""
+        self._in_zone(NEW_YORK)
+        self.assertEqual(
+            db_operations._hash_timestamp("2026-09-07T01:24:31Z"), "2026-09-07 01:24:31")
+
+    def test_a_bare_time_is_read_in_this_nodes_zone(self):
+        """The conversion is real: a test that only proved values collapse
+        would pass if the hash ignored the zone -- or the timestamp."""
+        self._in_zone(NEW_YORK)
+        self.assertEqual(
+            db_operations._hash_timestamp("2026-09-06 21:24:31"), "2026-09-07 01:24:31")
+        self._in_zone(UTC)
+        self.assertEqual(
+            db_operations._hash_timestamp("2026-09-06 21:24:31"), "2026-09-06 21:24:31")
+
+    def test_different_instants_still_hash_differently(self):
+        _, first = self._hashes_as_node(
+            UTC, self._store_scores(self.LIVE_ROWS_UTC), 'game_scores', 'game_scores_hash')
+        _, shifted = self._hashes_as_node(
+            UTC, self._store_scores(self.LIVE_ROWS_NEW_YORK), 'game_scores', 'game_scores_hash')
+        self.assertNotEqual(first, shifted)
+
+    def test_storage_is_untouched(self):
+        """Only hashes see UTC. Local writers keep writing local time, so
+        storing UTC for synced rows would mix two zones in one column."""
+        self._in_zone(NEW_YORK)
+        db_operations.upsert_synced_game_score(
+            "3758096387", "trivia", "baconbot", 2200, 0, 12, "2026-09-06T21:24:31")
+        self.assertEqual(
+            self.conn.execute("SELECT achieved_at FROM game_scores").fetchone()[0],
+            "2026-09-06 21:24:31")
+
+    def test_the_parser_never_sees_a_fraction_or_offset(self):
+        """Same trap as InterpreterIndependenceTests: forgecam runs 3.9."""
+        real = db_operations.datetime
+        seen = []
+
+        class _Spy:
+            @staticmethod
+            def fromisoformat(text):
+                seen.append(text)
+                return real.fromisoformat(text)
+
+        self._in_zone(UTC)
+        for value in ("2026-08-12T00:17:16.84+00:00", "2026-08-12T00:17:16.8481Z",
+                      "2026-08-12 00:17:16.8-04:00", "2026-08-12T00:17:16+0530"):
+            with self.subTest(value=value):
+                seen.clear()
+                with mock.patch.object(db_operations, "datetime", _Spy):
+                    db_operations._hash_timestamp(value)
+                self.assertEqual(len(seen), 1)
+                time_part = seen[0].partition("T")[2]
+                for mark in (".", "+", "-", "Z"):
+                    self.assertNotIn(mark, time_part)
+
+    def test_garbage_is_returned_untouched(self):
+        self._in_zone(NEW_YORK)
+        for value in ("garbage", "2026-13-45T99:99:99", "T", "",
+                      "2026-09-07T01:24:31+0x:00", "2026-09-07T01:24:31Z+00:00"):
+            with self.subTest(value=value):
+                self.assertEqual(db_operations._hash_timestamp(value), value)
+
+    def test_the_real_local_zone_is_consulted(self):
+        """The seam itself, unpatched: it returns this machine's offset."""
+        self.zone_patch.stop()
+        try:
+            naive = datetime(2026, 9, 6, 21, 24, 31)
+            self.assertEqual(db_operations._local_utc_offset(naive),
+                             naive.astimezone().utcoffset())
+        finally:
+            self.zone_patch.start()
+
+
+
+class CommentDateTests(_ScopeCase):
+    """A channel comment's date is not part of its hash.
+
+    Chattanooga holds both kinds of stored date. Comments it received by sync
+    were converted to its own clock (UTC): '2026-09-04 00:18' where bbs.local
+    has '2026-09-03 20:18'. Comments it was enrolled with were copied from
+    bbs.local's database and still read '2026-03-01 21:32' -- New York time on
+    a UTC machine. A zone-aware rule fixes the first kind and breaks the
+    second; hashing the date at all left one kind or the other re-sent every
+    cycle. The date decides nothing sync does, so it is simply left out.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.conn.execute(
+            "INSERT INTO channels (name, url, local_only)"
+            " VALUES ('Introductions', 'https://example.invalid/i', 0)")
+        self.conn.commit()
+        self.channel_id = self.conn.execute("SELECT id FROM channels").fetchone()[0]
+
+    def _store(self, date, content="hello", source_timestamp=None):
+        self.conn.execute("DELETE FROM channel_comments")
+        self.conn.execute(
+            "INSERT INTO channel_comments (channel_id, sender_short_name,"
+            " date, content, unique_id, expected_content_length,"
+            " content_complete, source_node_id, source_timestamp, received_at)"
+            " VALUES (?, 'bacon', ?, ?, 'uid-1', ?, 1, NULL, ?, ?)",
+            (self.channel_id, date, content, len(content), source_timestamp, date))
+        self.conn.commit()
+
+    def _hashes(self):
+        return (db_operations.get_record_hash_manifest('channel_comments'),
+                db_operations.get_local_record_counts()['channels_hash'])
+
+    def test_a_synced_comment_agrees_across_zones(self):
+        self._store("2026-09-03 20:18", source_timestamp="2026-09-04T00:18:02.445256+00:00")
+        new_york = self._hashes()
+        self._store("2026-09-04 00:18", source_timestamp="2026-09-04T00:18:02.445256+00:00")
+        self.assertEqual(new_york, self._hashes())
+
+    def test_an_enrolled_copy_agrees_too(self):
+        """Same string, different machine zone: still one hash."""
+        self._store("2026-03-01 21:32")
+        with mock.patch.object(db_operations, "_local_utc_offset",
+                               lambda naive: timedelta(hours=-4)):
+            new_york = self._hashes()
+        self.assertEqual(new_york, self._hashes())
+
+    def test_different_content_still_hashes_differently(self):
+        """Leaving the date out must not leave the comment unhashed."""
+        self._store("2026-03-01 21:32", content="hello")
+        before = self._hashes()
+        self._store("2026-03-01 21:32", content="hello, world")
+        after = self._hashes()
+        self.assertNotEqual(before[0], after[0])
+        self.assertNotEqual(before[1], after[1])
+
+    def test_a_different_source_timestamp_still_hashes_differently(self):
+        """The manifest keeps the instant a comment was made -- as UTC."""
+        self._store("2026-03-01 21:32", source_timestamp="2026-09-04T00:18:02+00:00")
+        before = db_operations.get_record_hash_manifest('channel_comments')
+        self._store("2026-03-01 21:32", source_timestamp="2026-09-04T00:19:02+00:00")
+        self.assertNotEqual(before, db_operations.get_record_hash_manifest('channel_comments'))
+
+    def test_the_manifest_is_still_keyed_by_unique_id(self):
+        self._store("2026-03-01 21:32")
+        self.assertEqual(list(db_operations.get_record_hash_manifest('channel_comments')),
+                         ['uid-1'])
 
 
 if __name__ == "__main__":

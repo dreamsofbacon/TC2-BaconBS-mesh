@@ -2882,7 +2882,7 @@ def get_local_record_counts() -> dict:
                     # a row written here and the same row received from a peer
                     # differ only in a 'T' or a space, and hashing that string
                     # raw makes two identical records look different forever.
-                    value = _normalize_sync_timestamp(value)
+                    value = _hash_timestamp(value)
                 if value is None:
                     blob = b''
                 elif isinstance(value, bytes):
@@ -2908,15 +2908,14 @@ def get_local_record_counts() -> dict:
             blob = b'' if value is None else str(value).encode('utf-8')
             channels_digest.update(len(blob).to_bytes(4, 'big'))
             channels_digest.update(blob)
+    # No cc.date -- see the channel_comments branch of get_record_hash_manifest.
     for row in c.execute(
-        "SELECT 'comment', ch.name, ch.url, cc.sender_short_name, cc.date, cc.content, cc.unique_id, "
+        "SELECT 'comment', ch.name, ch.url, cc.sender_short_name, cc.content, cc.unique_id, "
         "COALESCE(cc.expected_content_length, LENGTH(cc.content)), COALESCE(cc.content_complete, 1) "
         "FROM channel_comments cc JOIN channels ch ON ch.id = cc.channel_id WHERE ch.local_only = 0 ORDER BY cc.unique_id"
     ):
         channels_row_count += 1
-        for index, value in enumerate(row):
-            if index == 4:  # cc.date -- see _normalize_sync_timestamp
-                value = _normalize_sync_timestamp(value)
+        for value in row:
             blob = b'' if value is None else str(value).encode('utf-8')
             channels_digest.update(len(blob).to_bytes(4, 'big'))
             channels_digest.update(blob)
@@ -4048,6 +4047,18 @@ def delete_channel(name: str, url: str, bbs_nodes=None, interface=None, sync_rec
               (str(name), str(url)))
     row = c.fetchone()
     if row is None:
+        if sync_received:
+            # A peer deleted a channel this node never had. Nothing to remove,
+            # but the tombstone still has to be kept: without it the tombstone
+            # sets never match, the peer replays the delete to heal that, and
+            # the replay lands here and is dropped again. Chattanooga, enrolled
+            # after five test channels were deleted, was sent the same five
+            # deletes 377 times in one hour. delete_bulletin and
+            # delete_channel_comment already tombstone unconditionally.
+            # No snapshot: this node never held the channel, so it has no
+            # copy of its own to offer for restore.
+            record_sync_tombstone(
+                'channels', make_channel_manifest_key(str(name), str(url)))
         return False
     channel_id, real_name, real_url, local_only = row[0], row[1], row[2], row[3]
 
@@ -5010,6 +5021,78 @@ def _normalize_sync_timestamp(value) -> str:
 # The zork-specific name this started life under, kept so the save-sync call
 # sites and their tests keep reading naturally.
 _normalize_zork_timestamp = _normalize_sync_timestamp
+
+
+# The instant a stored timestamp names, spelled in UTC -- for hashing only.
+#
+# Most stored timestamps are this node's local wall-clock time with no zone:
+# datetime.now() writes them, and utils.decode_ts_second turns a peer's epoch
+# back into one with datetime.fromtimestamp(). The instant crosses the wire
+# intact; the string does not. bbs.local runs on America/New_York and
+# Chattanooga on UTC, so the same four high scores were stored four hours
+# apart ('2026-09-06 21:24:31' here, '2026-09-07 01:24:31' there), every
+# field of every row otherwise identical. game_scores, channels and zork_saves
+# never agreed with that node, and bbs.local re-sent it all four scores over a
+# hundred times an hour to repair a difference that was never in the data.
+#
+# _normalize_sync_timestamp cannot be changed to do this: it is also what
+# gets stored and compared, against values datetime.now() keeps writing in
+# local time. So storage stays as it is and only the hashes -- the one place
+# two nodes compare strings -- see UTC. A value that names its own offset
+# (source_timestamp is stored as '...+00:00') is converted by that offset;
+# one that does not is this node's local time, which is how it was written.
+#
+# One hour a year is still ambiguous: when clocks fall back, a local 01:30
+# names two instants and the string cannot say which. A record stamped in that
+# hour may hash differently on nodes in different zones. The wire encoding has
+# the same limit, and it costs one record one repair.
+def _local_utc_offset(naive: datetime) -> timedelta:
+    """This node's UTC offset at a local wall-clock time. A seam for tests."""
+    try:
+        return naive.astimezone().utcoffset() or timedelta(0)
+    except (OverflowError, OSError, ValueError):
+        return timedelta(0)
+
+
+def _hash_timestamp(value) -> str:
+    """The UTC spelling of a stored timestamp, so every zone hashes it alike.
+
+    Parsed as _normalize_sync_timestamp parses -- 'T' or space, fraction
+    dropped before fromisoformat so Python 3.9 and 3.13 agree -- but an offset
+    is applied rather than discarded. Unparseable text is returned untouched.
+    """
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    candidate = text
+    offset = None
+    if candidate.endswith('Z'):
+        candidate = candidate[:-1]
+        offset = timedelta(0)
+    if len(candidate) > 10 and candidate[10] == ' ':
+        candidate = candidate[:10] + 'T' + candidate[11:]
+    date_part, separator, time_part = candidate.partition('T')
+    if separator:
+        sign_at = max(time_part.rfind('+'), time_part.rfind('-'))
+        if sign_at > 0:
+            zone = time_part[sign_at + 1:].replace(':', '')
+            if offset is not None or len(zone) != 4 or not zone.isdigit():
+                return text
+            offset = timedelta(hours=int(zone[:2]), minutes=int(zone[2:]))
+            if time_part[sign_at] == '-':
+                offset = -offset
+            time_part = time_part[:sign_at]
+        time_part = time_part.split('.')[0]
+        candidate = f"{date_part}T{time_part}"
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        return text
+    if parsed.tzinfo is not None:
+        return text
+    if offset is None:
+        offset = _local_utc_offset(parsed)
+    return (parsed - offset).strftime('%Y-%m-%d %H:%M:%S')
 
 
 def _should_replace_zork_save(existing_updated_at: str, existing_save_data: bytes, incoming_updated_at: str, incoming_save_data: bytes) -> bool:
@@ -6997,7 +7080,7 @@ def _compact_record_hash(row, timestamp_columns=()) -> str:
     nothing to fix and the repair cycle runs forever finding nothing.
     """
     return _compact_row_hash(tuple(
-        _normalize_sync_timestamp(value) if index in timestamp_columns else value
+        _hash_timestamp(value) if index in timestamp_columns else value
         for index, value in enumerate(row)))
 
 
@@ -7032,14 +7115,28 @@ def get_record_hash_manifest(scope: str) -> dict:
     elif scope == 'channel_comments':
         # Comments only — keyed by plain UUID (no 'comment:' prefix needed since
         # the scope already identifies the record type).
+        # Why a channel comment's date is not hashed at all, when a score's time is.
+        #
+        # A score's achieved_at and a save's updated_at decide which copy wins a merge,
+        # so they have to be compared, and _hash_timestamp makes that safe across
+        # zones. A comment's date decides nothing. Sync only rewrites it together
+        # with the content when it heals a truncated comment, and the content is
+        # hashed; the record is already pinned by unique_id, content and the
+        # offset-tagged source_timestamp. Hashing
+        # it can only report differences that sync has no way to repair -- and the
+        # stored string is not even reliably local time: Chattanooga was enrolled
+        # from a copy of this node's database, so its older comments carry New York
+        # wall-clock dates on a UTC machine, while the ones it received since carry
+        # UTC. No zone rule makes both kinds agree, and every one would be re-sent
+        # each cycle, forever.
         for row in c.execute(
-            "SELECT ch.name, ch.url, cc.sender_short_name, cc.date, cc.content, cc.unique_id, "
+            "SELECT ch.name, ch.url, cc.sender_short_name, cc.content, cc.unique_id, "
             "COALESCE(cc.expected_content_length, LENGTH(cc.content)), COALESCE(cc.content_complete, 1), "
             "cc.source_node_id, cc.source_timestamp "
             "FROM channel_comments cc JOIN channels ch ON ch.id = cc.channel_id WHERE ch.local_only = 0"
         ):
-            manifest[str(row[5])] = _compact_record_hash(
-                row, timestamp_columns=(3, 9))
+            manifest[str(row[4])] = _compact_record_hash(
+                row, timestamp_columns=(8,))
     elif scope == 'public_chatter':
         now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
         for row in c.execute(
