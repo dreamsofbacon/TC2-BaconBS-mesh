@@ -5976,7 +5976,15 @@ def apply_synced_account_identity(account_id, alias, alias_updated_at,
         if wanted is not None and existing[2] is None:
             holder = c.execute("SELECT account_id FROM accounts WHERE sender_num = ?",
                                (wanted,)).fetchone()
-            if holder is None:
+            if holder is None and wanted in _radio_node_numbers(conn):
+                # A radio heard here already answers to this number. Adopting
+                # it would merge that radio's player with this account.
+                # Profiles and scores are deliberately NOT checked on this
+                # path: they may be this very account's own, synced ahead of
+                # it, and refusing those would split one person in two.
+                logging.info("Account %s wants sender_num %s, which a radio here uses; "
+                             "allocating our own.", account_id[:12], wanted)
+            elif holder is None:
                 c.execute("UPDATE accounts SET sender_num = ? WHERE account_id = ?",
                           (wanted, account_id))
                 changed = True
@@ -6297,6 +6305,47 @@ SSH_SENDER_NUM_BASE = 0xE1000000
 SSH_SENDER_NUM_SPAN = 0x00F00000
 
 
+def _radio_node_numbers(conn) -> set:
+    """Node numbers of every radio this node has ever heard."""
+    numbers = set()
+    try:
+        for (value,) in conn.execute(
+                "SELECT node_num FROM mesh_clients WHERE node_num IS NOT NULL AND node_num != ''"):
+            try:
+                numbers.add(int(value))
+            except (TypeError, ValueError):
+                continue
+    except sqlite3.Error:
+        pass
+    return numbers
+
+
+def _numbers_already_meaning_someone(conn) -> set:
+    """Every numeric identity this node already associates with a person.
+
+    A score, a save and a profile are all keyed by this number, so handing an
+    account a number a radio already answers to would merge the two players:
+    one score row, one save slot, one profile. Accounts are checked, as they
+    always were, and so now is everything else that carries a number -- the
+    radio roster, and any number already holding a profile, score or save,
+    which catches a remote player heard only by another node.
+    """
+    taken = _radio_node_numbers(conn)
+    for query in ("SELECT sender_num FROM accounts WHERE sender_num IS NOT NULL",
+                  "SELECT user_id FROM user_profiles",
+                  "SELECT user_id FROM game_scores",
+                  "SELECT user_id FROM zork_saves"):
+        try:
+            for (value,) in conn.execute(query):
+                try:
+                    taken.add(int(value))
+                except (TypeError, ValueError):
+                    continue
+        except sqlite3.Error:
+            continue
+    return taken
+
+
 def get_account_sender_num(account_id: str) -> Optional[int]:
     """The stable local number for an account, assigning one on first use.
 
@@ -6319,10 +6368,7 @@ def get_account_sender_num(account_id: str) -> Optional[int]:
 
     digest = hashlib.blake2b(normalized.encode('utf-8'), digest_size=8).digest()
     start = int.from_bytes(digest, 'big') % SSH_SENDER_NUM_SPAN
-    taken = {
-        int(value[0]) for value in conn.execute(
-            "SELECT sender_num FROM accounts WHERE sender_num IS NOT NULL")
-    }
+    taken = _numbers_already_meaning_someone(conn)
     for step in range(SSH_SENDER_NUM_SPAN):
         candidate = SSH_SENDER_NUM_BASE + ((start + step) % SSH_SENDER_NUM_SPAN)
         if candidate in taken:
