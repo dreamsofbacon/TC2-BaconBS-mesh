@@ -120,6 +120,36 @@ class ChannelDeleteTests(unittest.TestCase):
 
     def test_deleting_an_unknown_channel_reports_false(self):
         self.assertFalse(db_operations.delete_channel("nope", "nowhere"))
+        self.assertFalse(db_operations.has_sync_tombstone(
+            "channels", db_operations.make_channel_manifest_key("nope", "nowhere")),
+            "a local delete of nothing must not invent a tombstone")
+
+    def test_a_peers_delete_of_a_channel_never_held_is_still_remembered(self):
+        """Chattanooga was enrolled after five test channels were deleted. It
+        never had them, so every DELETE_CHANNEL was dropped without a
+        tombstone, the tombstone sets never matched, and bbs.local replayed
+        the same five deletes 377 times in one hour."""
+        message_processing.process_message(
+            1, "DELETE_CHANNEL|" + self._key(), self.iface,
+            is_sync_message=True, sender_node_id="!peer")
+        self.assertEqual(self._count(), 0)
+        self.assertTrue(db_operations.has_sync_tombstone("channels", self._key()))
+        self.assertIn("channels:" + self._key(),
+                      db_operations.get_record_hash_manifest("tombstones"))
+
+    def test_that_tombstone_keeps_the_channel_from_arriving_later(self):
+        message_processing.process_message(
+            1, "DELETE_CHANNEL|" + self._key(), self.iface,
+            is_sync_message=True, sender_node_id="!peer")
+        message_processing.process_message(
+            1, "CHANNEL|" + self.NAME + "|" + self.URL, self.iface,
+            is_sync_message=True, sender_node_id="!other-peer")
+        self.assertEqual(self._count(), 0)
+
+    def test_that_tombstone_offers_nothing_to_restore(self):
+        """This node never held the channel, so there is no copy of its own."""
+        db_operations.delete_channel(self.NAME, self.URL, sync_received=True)
+        self.assertFalse(db_operations.get_sync_tombstones()[0]["restorable"])
 
     def test_deleting_takes_the_channels_comments_with_it(self):
         db_operations.add_channel(self.NAME, self.URL)
