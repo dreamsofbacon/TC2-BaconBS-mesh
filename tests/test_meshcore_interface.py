@@ -232,7 +232,10 @@ class MeshCoreInterfaceTests(unittest.TestCase):
 
     def test_numeric_sender_resolves_to_configured_key_alias(self):
         self.interface.allowed_nodes = [PEER_KEY[:12]]
-        peer_num = int(PEER_KEY[:8], 16)
+        # The interface's own derivation, not a copy of it. This used to be
+        # int(PEER_KEY[:8], 16), which is the 32-bit number that let two
+        # MeshCore players share an identity; see player_identity.
+        peer_num = meshcore_interface._node_num(PEER_KEY)
         self.assertEqual(
             self.interface.node_id_from_num(peer_num), PEER_KEY[:12]
         )

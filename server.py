@@ -2188,6 +2188,14 @@ def main():
     initialize_database()
     install_connection_log_handler()
     run_op_log_backfill()
+    # Before the first packet is handled: a MeshCore player whose profile is
+    # still under the old number would otherwise look like a stranger and be
+    # welcomed, and start a fresh empty profile, on their first message.
+    try:
+        from db_operations import migrate_meshcore_player_ids
+        migrate_meshcore_player_ids()
+    except Exception:
+        logging.exception("MeshCore identity migration failed at startup")
     _start_main_loop_watchdog()
 
     def receive_packet(packet, interface):

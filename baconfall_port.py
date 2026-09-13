@@ -8,6 +8,7 @@ import secrets
 
 import baconfall as game
 from db_operations import get_db_connection, upsert_game_score
+from player_identity import player_key
 
 
 class SaveUnavailable(ValueError):
@@ -57,6 +58,11 @@ def play(user_id, text=None, short_name=None):
     This owns its transaction and must be called outside any existing write
     transaction, like the other top-level door handlers.
     """
+    # Filed under the same player key as scores and saves. Raw str(user_id)
+    # here would give a MeshCore player a different identity for their run
+    # than for their score -- and strand every run saved before the move to
+    # "mc-" identities. See player_identity.
+    run_key = player_key(user_id)
     conn = get_db_connection()
     conn.execute('''CREATE TABLE IF NOT EXISTS baconfall_runs (
         user_id TEXT PRIMARY KEY, state_json TEXT NOT NULL)''')
@@ -64,7 +70,7 @@ def play(user_id, text=None, short_name=None):
     with conn:
         conn.execute('BEGIN IMMEDIATE')
         row = conn.execute('SELECT state_json FROM baconfall_runs WHERE user_id = ?',
-                           (str(user_id),)).fetchone()
+                           (run_key,)).fetchone()
         state = _load(row[0]) if row else game.new_game(secrets.randbits(63))
         previous_phase = state['phase']
         if text is None:
@@ -78,5 +84,5 @@ def play(user_id, text=None, short_name=None):
                               result[0], 0, result[1], commit=False)
         conn.execute('''INSERT INTO baconfall_runs (user_id, state_json) VALUES (?, ?)
             ON CONFLICT(user_id) DO UPDATE SET state_json = excluded.state_json''',
-                     (str(user_id), json.dumps(state, separators=(',', ':'))))
+                     (run_key, json.dumps(state, separators=(',', ':'))))
     return reply, leave, result
