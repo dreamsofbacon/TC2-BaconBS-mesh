@@ -33,7 +33,18 @@
         {% for row in rows %}
         <tr>
           <td>{{ row['game_id'] }}</td>
-          <td>{{ row['short_name'] or '—' }}</td>
+          {# The linked account first; the device the score was set from under it.
+             Same name twice is shown once. #}
+          {% set account = account_names.get(row['user_id']|string) %}
+          {% set device = row['short_name'] or '' %}
+          <td>
+            {% if account %}
+              <strong>{{ account }}</strong>
+              {% if device and device|lower != account|lower %}<br><span class="text-muted">{{ device }}</span>{% endif %}
+            {% else %}
+              {{ device or '—' }}
+            {% endif %}
+          </td>
           <td><code>{{ row['user_id'] }}</code></td>
           <td>{{ row['score'] }}</td>
           <td>{{ row['max_score'] or '—' }}</td>

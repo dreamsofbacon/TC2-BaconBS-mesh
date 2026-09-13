@@ -25,6 +25,7 @@ from db_operations import (
     add_channel_comment, get_channel_comments,
     auto_upsert_user_profile, get_user_profile, update_user_bio,
     upsert_game_score, get_game_scoreboard, get_user_game_scores, get_hall_of_fame,
+    get_score_account_names,
     create_account, get_account_id_for_node, get_linked_node_ids,
     get_linked_nodes_detail, link_node_to_account, unlink_node,
     get_help_tips_enabled, set_help_tips_enabled,
@@ -1345,6 +1346,33 @@ def _launch_game(sender_id, interface, game_id, game_name):
     update_user_state(sender_id, {'command': 'ZORK', 'step': 1, 'game_id': game_id})
 
 
+def _score_player_label(device_name, account_name) -> str:
+    """Who set a score: their account first, their device beside it.
+
+    A board used to show only the device name captured when the score was
+    set, so a player linked to an account appeared under whatever their radio
+    was called -- "Pers" rather than "Materva". The account is who they are
+    across every device; the device is kept in brackets because it is still
+    how other people on the mesh recognise them, and it tells two devices of
+    one person apart. When the two are the same name, saying it twice is
+    noise, so it is said once.
+    """
+    device = str(device_name or '').strip()
+    account = str(account_name or '').strip()
+    if account and device and account.casefold() != device.casefold():
+        return f"{account} ({device})"
+    return account or device or '?'
+
+
+def _score_row_user_id(row, index):
+    """The user_id column, if this row carries one.
+
+    Appended to the score queries rather than inserted, so older four- and
+    five-value rows still unpack exactly as they did.
+    """
+    return row[index] if len(row) > index else None
+
+
 def handle_hall_of_fame_command(sender_id, interface):
     rows = get_hall_of_fame()
     if not rows:
@@ -1352,12 +1380,16 @@ def handle_hall_of_fame_command(sender_id, interface):
         handle_games_command(sender_id, interface)
         return
     by_game = {r[0]: r for r in rows}
+    names = get_score_account_names(_score_row_user_id(r, 5) for r in rows)
     lines = ["🏛 Hall of Fame 🏛"]
     for game_id, info in GAME_LIST:
         if game_id in by_game:
-            _, short_name, score, max_score, moves = by_game[game_id]
+            row = by_game[game_id]
+            _, short_name, score, max_score, moves = row[:5]
+            player = _score_player_label(
+                short_name, names.get(str(_score_row_user_id(row, 5))))
             ms = f"/{max_score}" if max_score else ""
-            lines.append(f"{info['name']}: {short_name} {score}{ms} {moves}mv")
+            lines.append(f"{info['name']}: {player} {score}{ms} {moves}mv")
         else:
             lines.append(f"{info['name']}: —")
     send_message("\n".join(lines), sender_id, interface)
@@ -1663,9 +1695,13 @@ def handle_scoreboard_steps(sender_id, message, interface):
                      sender_id, interface)
     else:
         lines = [f"🏆 {info['name']}"]
-        for rank, (short_name, score, max_score, moves) in enumerate(scores, 1):
+        names = get_score_account_names(_score_row_user_id(r, 4) for r in scores)
+        for rank, row in enumerate(scores, 1):
+            short_name, score, max_score, moves = row[:4]
+            player = _score_player_label(
+                short_name, names.get(str(_score_row_user_id(row, 4))))
             ms = f"/{max_score}" if max_score else ""
-            lines.append(f"{rank}. {short_name} {score}{ms} {moves}mv")
+            lines.append(f"{rank}. {player} {score}{ms} {moves}mv")
         lines.append("[0] Back")
         send_message("\n".join(lines), sender_id, interface)
     update_user_state(sender_id, {'command': 'SCOREBOARD', 'step': 1})
