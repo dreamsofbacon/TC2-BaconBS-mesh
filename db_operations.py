@@ -1,6 +1,24 @@
 import configparser
 import base64
 import hashlib
+import functools
+
+from player_identity import player_key, meshcore_player_key, legacy_meshcore_number
+
+
+def _player_keyed(func):
+    """Store and look up a player under player_identity.player_key.
+
+    Every player-keyed function takes the player id first. Converting it here,
+    once, is what lets MeshCore players be filed as "mc-<prefix>" without any
+    of the call sites -- the games, the menus, the SSH and emulator paths --
+    having to know that identities now come in two shapes. Meshtastic, SSH
+    and emulator ids pass through unchanged.
+    """
+    @functools.wraps(func)
+    def wrapper(user_id, *args, **kwargs):
+        return func(player_key(user_id), *args, **kwargs)
+    return wrapper
 import json
 import logging
 import os
@@ -2295,6 +2313,14 @@ def run_db_maintenance(do_vacuum: bool = False) -> dict:
     summary['api_mailbox_deleted'] = prune_api_mailbox(
         cfg.get('api_mailbox_max_age_days', 7), cfg.get('api_mailbox_max_rows', 5000))
     summary['public_chatter_deleted'] = prune_expired_public_chatter()
+    # Picks up rows a peer still running older code wrote under a MeshCore
+    # player's old number before it updated. Idempotent; see
+    # migrate_meshcore_player_ids.
+    try:
+        summary['meshcore_players_migrated'] = migrate_meshcore_player_ids()['players']
+    except Exception:
+        logging.exception("MeshCore identity migration failed during maintenance")
+        summary['meshcore_players_migrated'] = 0
     checkpoint_wal()
     if do_vacuum:
         summary['vacuumed'] = vacuum_database()
@@ -4352,6 +4378,7 @@ def apply_synced_game_score_delete(user_id: str, game_id: str, deleted_at: str) 
     return True
 
 
+@_player_keyed
 def delete_game_score(user_id, game_id: str, bbs_nodes=None, interface=None,
                       deleted_at: Optional[str] = None) -> bool:
     """Delete a score locally and tell peers, so it cannot be pushed back."""
@@ -4912,6 +4939,7 @@ def get_sender_id_by_mail_id(mail_id):
     return None
 
 
+@_player_keyed
 def upsert_zork_save(user_id: int, save_data: bytes, game_id: str = 'zork1') -> None:
     _ensure_zork_saves_table()
     conn = get_db_connection()
@@ -5036,6 +5064,7 @@ def upsert_synced_zork_save(user_id: str, game_id: str, save_data: bytes, update
     clear_sync_tombstone('zork_saves', key)
 
 
+@_player_keyed
 def get_zork_save(user_id: int, game_id: str = 'zork1') -> Optional[bytes]:
     _ensure_zork_saves_table()
     conn = get_db_connection()
@@ -5069,6 +5098,7 @@ def apply_synced_zork_save_delete(user_id: str, game_id: str, deleted_at: str) -
     return True
 
 
+@_player_keyed
 def delete_zork_save(user_id: int, game_id: str = 'zork1', bbs_nodes=None, interface=None, deleted_at: Optional[str] = None) -> None:
     _ensure_zork_saves_table()
     normalized_deleted_at = str(deleted_at or datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
@@ -5081,6 +5111,7 @@ def delete_zork_save(user_id: int, game_id: str = 'zork1', bbs_nodes=None, inter
 # User profiles
 # ---------------------------------------------------------------------------
 
+@_player_keyed
 def auto_upsert_user_profile(user_id: int, short_name: str, long_name: str) -> bool:
     """Record that this user spoke. True if that was their FIRST message.
 
@@ -5506,6 +5537,7 @@ def take_due_link_codes() -> list[dict]:
     ]
 
 
+@_player_keyed
 def get_user_profile(user_id: int):
     conn = get_db_connection()
     c = conn.cursor()
@@ -5517,6 +5549,7 @@ def get_user_profile(user_id: int):
     return c.fetchone()
 
 
+@_player_keyed
 def get_help_tips_enabled(user_id) -> bool:
     """Whether to show this person the one-line hint under a menu.
 
@@ -5538,6 +5571,7 @@ def get_help_tips_enabled(user_id) -> bool:
     return True if row is None else bool(row[0])
 
 
+@_player_keyed
 def set_help_tips_enabled(user_id, enabled: bool) -> None:
     """Record the choice, creating the row if this is their first setting.
 
@@ -5561,6 +5595,7 @@ def set_help_tips_enabled(user_id, enabled: bool) -> None:
     conn.commit()
 
 
+@_player_keyed
 def update_user_bio(user_id: int, bio: str) -> None:
     """Set a user's bio, and stamp the row as the newest copy of it.
 
@@ -6799,6 +6834,7 @@ def get_account(account_id: str):
 # Game scores / scoreboard
 # ---------------------------------------------------------------------------
 
+@_player_keyed
 def upsert_game_score(user_id: int, game_id: str, short_name: str,
                       score: int, max_score: int, moves: int, *, commit: bool = True) -> None:
     """Promote a high score; commit=False joins a caller-owned transaction."""
@@ -6892,10 +6928,25 @@ def get_score_account_names(user_ids) -> dict:
         return {}
     for user_id, alias in rows:
         found.setdefault(str(user_id), set()).add(str(alias).strip())
+
+    # A MeshCore player is filed under "mc-<prefix>" rather than a number, so
+    # match their linked key by that prefix instead of through the roster.
+    meshcore = [key for key in ids if key.startswith('mc-')]
+    for key in meshcore:
+        try:
+            for (alias,) in conn.execute(
+                    """SELECT a.alias FROM linked_nodes ln
+                       JOIN accounts a ON a.account_id = ln.account_id
+                       WHERE TRIM(a.alias) != '' AND LOWER(ln.network) = 'meshcore'
+                         AND LOWER(SUBSTR(ln.node_id, 1, 12)) = ?""", (key[3:],)):
+                found.setdefault(key, set()).add(str(alias).strip())
+        except sqlite3.Error:
+            continue
     return {user_id: next(iter(aliases))
             for user_id, aliases in found.items() if len(aliases) == 1}
 
 
+@_player_keyed
 def get_user_game_scores(user_id: int) -> list:
     conn = get_db_connection()
     c = conn.cursor()
@@ -7089,6 +7140,7 @@ def get_profile_by_user_id(user_id: str):
     return c.fetchone()
 
 
+@_player_keyed
 def get_game_score_by_user_and_game(user_id: str, game_id: str):
     conn = get_db_connection()
     c = conn.cursor()
@@ -7099,6 +7151,7 @@ def get_game_score_by_user_and_game(user_id: str, game_id: str):
     return c.fetchone()
 
 
+@_player_keyed
 def get_zork_save_row_by_user_and_game(user_id: str, game_id: str):
     _ensure_zork_saves_table()
     conn = get_db_connection()
@@ -7981,3 +8034,191 @@ def get_node_versions() -> list:
     return [dict(zip(('node_id', 'app_version', 'commit_hash', 'target_commit',
                       'rollout_state', 'rollout_detail', 'reported_at'), r))
             for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# MeshCore player identity migration.
+#
+# MeshCore players' scores, saves and profiles used to be filed under
+# int(public_key[:8], 16). They are filed under "mc-<12-hex prefix>" now (see
+# player_identity), so everything already stored under the old number has to
+# move, or every existing MeshCore player would appear as two people: their
+# history under the old number and everything new under the new key.
+#
+# Run on every node, and again on every maintenance pass. Each node moves the
+# players it can identify and tombstones the old records; sync carries both to
+# the other nodes, and the tombstones stop the old copies coming back. A node
+# that never heard a player cannot move their rows, but it does not need to:
+# the node that did will, and the result reaches it by sync. Re-running picks
+# up rows a lagging node wrote under the old number before it updated.
+# ---------------------------------------------------------------------------
+
+def _meshcore_migration_plan(conn) -> tuple:
+    """(old number -> new key for every unambiguous player, ambiguous numbers).
+
+    The old number is derived from each known key rather than read from
+    mesh_clients.node_num, which the new code rewrites with the new numbers.
+
+    A number is ambiguous, and left alone, if two different MeshCore keys share
+    it -- the very collision this fixes, where there is no way to tell whose
+    rows are whose -- or if it also belongs to something that is not a MeshCore
+    radio: a Meshtastic node or an SSH account using that same number.
+    """
+    keys = set()
+    for query in ("SELECT node_id FROM mesh_clients WHERE LOWER(protocol) = 'meshcore'",
+                  "SELECT node_id FROM linked_nodes WHERE LOWER(network) = 'meshcore'"):
+        try:
+            keys.update(str(row[0]) for row in conn.execute(query) if row[0])
+        except sqlite3.Error:
+            continue
+
+    candidates: dict = {}
+    for key in keys:
+        old, new = legacy_meshcore_number(key), meshcore_player_key(key)
+        if old and new:
+            candidates.setdefault(old, set()).add(new)
+
+    not_meshcore = set()
+    for query in ("SELECT node_num FROM mesh_clients WHERE LOWER(protocol) != 'meshcore'"
+                  " AND node_num IS NOT NULL",
+                  "SELECT sender_num FROM accounts WHERE sender_num IS NOT NULL"):
+        try:
+            not_meshcore.update(str(row[0]) for row in conn.execute(query))
+        except sqlite3.Error:
+            continue
+
+    plan, ambiguous = {}, set()
+    for old, news in candidates.items():
+        if len(news) == 1 and old not in not_meshcore:
+            plan[old] = next(iter(news))
+        else:
+            ambiguous.add(old)
+    return plan, ambiguous
+
+
+def _migration_stamp(*timestamps) -> str:
+    """A tombstone time no older than the record it retires.
+
+    The synced upserts ignore an incoming copy only when the tombstone is at
+    least as new as that copy. Now is normally enough; taking the newest of
+    now and the record's own time also covers a record stamped ahead of this
+    node's clock.
+    """
+    now = _normalize_sync_timestamp(datetime.now(timezone.utc).isoformat())
+    stamps = [now] + [_normalize_sync_timestamp(t) for t in timestamps if t]
+    return max(stamps)
+
+
+def migrate_meshcore_player_ids() -> dict:
+    """Move MeshCore players' records from the old number to their "mc-" key."""
+    summary = {'players': 0, 'scores': 0, 'saves': 0, 'profiles': 0,
+               'baconfall_runs': 0, 'ambiguous': 0}
+    conn = get_db_connection()
+    plan, ambiguous = _meshcore_migration_plan(conn)
+
+    def has_rows(old):
+        for table in ("game_scores", "zork_saves", "user_profiles", "baconfall_runs"):
+            try:
+                if conn.execute(f"SELECT 1 FROM {table} WHERE user_id = ? LIMIT 1",
+                                (old,)).fetchone():
+                    return True
+            except sqlite3.Error:
+                continue
+        return False
+
+    for old in sorted(ambiguous):
+        if has_rows(old):
+            summary['ambiguous'] += 1
+            logging.warning(
+                "Player id %s is shared by more than one identity; its scores, saves and "
+                "profile were left under that number rather than credited to either.", old)
+
+    for old, new in sorted(plan.items()):
+        moved = False
+
+        try:
+            scores = conn.execute(
+                "SELECT game_id, short_name, score, max_score, moves, achieved_at"
+                " FROM game_scores WHERE user_id = ?", (old,)).fetchall()
+        except sqlite3.Error:
+            scores = []
+        for game_id, short_name, score, max_score, moves, achieved_at in scores:
+            upsert_synced_game_score(new, game_id, short_name, score, max_score, moves,
+                                     achieved_at)
+            conn.execute("DELETE FROM game_scores WHERE user_id = ? AND game_id = ?",
+                         (old, game_id))
+            conn.commit()
+            record_sync_tombstone_at(
+                'game_scores', f"{old}:{game_id}", _migration_stamp(achieved_at),
+                payload={'user_id': old, 'game_id': game_id, 'short_name': short_name,
+                         'score': score, 'max_score': max_score, 'moves': moves,
+                         'achieved_at': achieved_at, 'migrated_to': new})
+            summary['scores'] += 1
+            moved = True
+
+        try:
+            _ensure_zork_saves_table()
+            saves = conn.execute(
+                "SELECT game_id, save_data, updated_at FROM zork_saves WHERE user_id = ?",
+                (old,)).fetchall()
+        except sqlite3.Error:
+            saves = []
+        for game_id, save_data, updated_at in saves:
+            upsert_synced_zork_save(new, game_id, save_data, updated_at)
+            conn.execute("DELETE FROM zork_saves WHERE user_id = ? AND game_id = ?",
+                         (old, game_id))
+            conn.commit()
+            record_sync_tombstone_at(
+                'zork_saves', f"{old}:{game_id}", _migration_stamp(updated_at),
+                payload={'user_id': old, 'game_id': game_id, 'migrated_to': new})
+            summary['saves'] += 1
+            moved = True
+
+        try:
+            profile = conn.execute(
+                "SELECT short_name, long_name, first_seen, last_seen, messages_sent, bio,"
+                " help_tips FROM user_profiles WHERE user_id = ?", (old,)).fetchone()
+        except sqlite3.Error:
+            profile = None
+        if profile:
+            short_name, long_name, first_seen, last_seen, messages_sent, bio, help_tips = profile
+            upsert_synced_user_profile(new, short_name or '', long_name or '', first_seen,
+                                       last_seen, messages_sent or 0, bio or '')
+            # Profile sync predates help tips and does not carry the setting.
+            # Someone who switched tips off keeps them off.
+            if help_tips is not None and not help_tips:
+                conn.execute("UPDATE user_profiles SET help_tips = 0 WHERE user_id = ?", (new,))
+            conn.execute("DELETE FROM user_profiles WHERE user_id = ?", (old,))
+            conn.commit()
+            record_sync_tombstone_at(
+                'profiles', old, _migration_stamp(last_seen),
+                payload={'user_id': old, 'short_name': short_name, 'bio': bio,
+                         'migrated_to': new})
+            summary['profiles'] += 1
+            moved = True
+
+        # Baconfall runs are local to this node and never synced, so they move
+        # without a tombstone. A run already under the new key is newer.
+        try:
+            run = conn.execute("SELECT state_json FROM baconfall_runs WHERE user_id = ?",
+                               (old,)).fetchone()
+        except sqlite3.Error:
+            run = None
+        if run:
+            conn.execute("INSERT OR IGNORE INTO baconfall_runs (user_id, state_json)"
+                         " VALUES (?, ?)", (new, run[0]))
+            conn.execute("DELETE FROM baconfall_runs WHERE user_id = ?", (old,))
+            conn.commit()
+            summary['baconfall_runs'] += 1
+            moved = True
+
+        if moved:
+            summary['players'] += 1
+
+    if summary['players']:
+        logging.info(
+            "MeshCore identity migration: %d player(s) -- %d score(s), %d save(s), "
+            "%d profile(s), %d Baconfall run(s) moved to mc- keys.",
+            summary['players'], summary['scores'], summary['saves'],
+            summary['profiles'], summary['baconfall_runs'])
+    return summary

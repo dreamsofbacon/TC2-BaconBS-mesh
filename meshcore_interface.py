@@ -18,6 +18,8 @@ from types import SimpleNamespace
 from typing import Any, Optional
 
 from meshcore import EventType, MeshCore
+
+from player_identity import meshcore_player_number
 from pubsub import pub
 
 
@@ -37,16 +39,14 @@ def _clean_key(value: Any) -> str:
 
 
 def _node_num(public_key: str) -> int:
-    """Return a stable Meshtastic-shaped numeric ID for BBS session state."""
-    key = _clean_key(public_key)
-    try:
-        return int(key[:8], 16)
-    except (TypeError, ValueError):
-        # FNV-1a fallback for an unexpected non-hex identifier.
-        value = 2166136261
-        for byte in key.encode("utf-8"):
-            value = ((value ^ byte) * 16777619) & 0xFFFFFFFF
-        return value
+    """The runtime sender number for a MeshCore key.
+
+    Used to be int(key[:8], 16), which merged any two players whose keys shared
+    8 hex characters, and could equal a Meshtastic node number outright. It is
+    now derived from the 12-hex prefix MeshCore sends with every message, in a
+    range no 32-bit number can reach. See player_identity.
+    """
+    return meshcore_player_number(_clean_key(public_key))
 
 
 # MeshCore reports a contact's advertisement type as a raw byte
