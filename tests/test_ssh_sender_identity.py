@@ -14,6 +14,7 @@ import os
 import sys
 import tempfile
 import types
+import sqlite3
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -199,3 +200,60 @@ class SSHSessionIdentityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SenderNumberAvoidsOtherIdentitiesTests(unittest.TestCase):
+    """An account's number must not be one a radio already answers to.
+
+    Scores, saves and profiles are all keyed by this number, so sharing it
+    merges two players into one score row, one save slot and one profile. The
+    allocator used to avoid only numbers other ACCOUNTS held.
+    """
+
+    def setUp(self):
+        db_operations.thread_local.connection = sqlite3.connect(":memory:")
+        db_operations.initialize_database()
+        self.addCleanup(self._close)
+
+    def _close(self):
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
+
+    def natural_number_for(self, account_id):
+        """Where the allocator would land if nothing were in the way."""
+        import hashlib
+        digest = hashlib.blake2b(account_id.encode("utf-8"), digest_size=8).digest()
+        start = int.from_bytes(digest, "big") % db_operations.SSH_SENDER_NUM_SPAN
+        return db_operations.SSH_SENDER_NUM_BASE + start
+
+    def test_a_radio_in_the_roster_is_never_given_away(self):
+        account_id = db_operations.create_account()
+        wanted = self.natural_number_for(account_id)
+        conn = db_operations.get_db_connection()
+        conn.execute("INSERT INTO mesh_clients (link_name, node_id, node_num, protocol,"
+                     " first_seen, last_seen) VALUES ('primary', 'abcd', ?, 'meshcore',"
+                     " '2026-09-01', '2026-09-01')", (str(wanted),))
+        conn.commit()
+        self.assertNotEqual(db_operations.get_account_sender_num(account_id), wanted)
+
+    def test_a_number_already_holding_a_profile_is_never_given_away(self):
+        """A player heard only by another node has a synced profile here but
+        no roster row."""
+        account_id = db_operations.create_account()
+        wanted = self.natural_number_for(account_id)
+        db_operations.auto_upsert_user_profile(wanted, "remote", "remote player")
+        self.assertNotEqual(db_operations.get_account_sender_num(account_id), wanted)
+
+    def test_a_number_already_holding_a_score_is_never_given_away(self):
+        account_id = db_operations.create_account()
+        wanted = self.natural_number_for(account_id)
+        db_operations.upsert_game_score(wanted, "trivia", "someone", 10, 0, 1)
+        self.assertNotEqual(db_operations.get_account_sender_num(account_id), wanted)
+
+    def test_with_nothing_in_the_way_the_natural_number_is_kept(self):
+        """Stable across nodes is the point of deriving it from the id."""
+        account_id = db_operations.create_account()
+        self.assertEqual(db_operations.get_account_sender_num(account_id),
+                         self.natural_number_for(account_id))
