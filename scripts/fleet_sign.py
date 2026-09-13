@@ -20,6 +20,7 @@ import configparser
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -141,6 +142,60 @@ def cmd_sign(args) -> int:
     return 0
 
 
+# The workflow that has to be green before a commit may go to the fleet.
+CI_WORKFLOW = "tests.yml"
+
+
+def _origin_repo():
+    """owner/name of the GitHub repository origin points at, or None.
+
+    Named explicitly because this checkout has several remotes -- origin,
+    upstream and a contributor's fork -- and gh left to infer one has already
+    picked the wrong repository once.
+    """
+    url = _git("remote", "get-url", "origin").stdout.strip()
+    match = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", url)
+    return match.group(1) if match else None
+
+
+def _ci_verdict(commit):
+    """(passed, reason) for this exact commit's regression-test run.
+
+    Refuses on anything short of a completed success -- including a run that
+    has not finished, no run at all, and not being able to ask. Each of those
+    is a case where nobody knows the commit is good, and "nobody knows" is
+    how fifteen red commits in a row reached every node.
+    """
+    repo = _origin_repo()
+    if not repo:
+        return False, "cannot tell which GitHub repository origin is"
+    gh = shutil.which("gh")
+    if not gh:
+        return False, "the GitHub CLI (gh) is not installed, so CI cannot be checked"
+    try:
+        proc = subprocess.run(
+            [gh, "run", "list", "--repo", repo, "--commit", commit,
+             "--workflow", CI_WORKFLOW, "--limit", "1",
+             "--json", "status,conclusion,url"],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"could not ask GitHub about CI: {exc}"
+    if proc.returncode != 0:
+        return False, f"could not ask GitHub about CI: {proc.stderr.strip()[:200]}"
+    try:
+        runs = json.loads(proc.stdout or "[]")
+    except ValueError:
+        return False, "GitHub returned something that was not a run list"
+    if not runs:
+        return False, "no regression-test run exists for this commit yet"
+    run = runs[0]
+    if run.get("status") != "completed":
+        return False, f"regression tests are still {run.get('status')}: {run.get('url')}"
+    if run.get("conclusion") != "success":
+        return False, f"regression tests {run.get('conclusion')}: {run.get('url')}"
+    return True, "regression tests passed"
+
+
 def _build_signed_instruction(args):
     resolved = _git("rev-parse", f"{args.ref}^{{commit}}")
     if resolved.returncode != 0:
@@ -158,6 +213,16 @@ def _build_signed_instruction(args):
                 "Nodes fetch from the remote, so this would fail on every one "
                 "of them.\nPush first, or pass --allow-unpushed if you know "
                 "what you are doing.")
+
+    if not getattr(args, "allow_red_ci", False):
+        passed, reason = _ci_verdict(commit)
+        if not passed:
+            raise ValueError(
+                f"Refusing to sign {commit[:12]}: {reason}.\n"
+                "A signed instruction is applied automatically by every node, so "
+                "it has to be a commit CI has actually passed.\n"
+                "Wait for the run to finish green, or pass --allow-red-ci if you "
+                "have decided to ship it anyway.")
 
     version = args.version or _version_for(commit)
     from cryptography.hazmat.primitives import serialization
@@ -512,6 +577,8 @@ def main() -> int:
     sign.add_argument("--version", default="",
                       help="version string to advertise (default: derived)")
     sign.add_argument("--allow-unpushed", action="store_true")
+    sign.add_argument("--allow-red-ci", action="store_true",
+                        help="sign even though CI has not passed for this commit")
     sign.set_defaults(func=cmd_sign)
 
     deploy = sub.add_parser("deploy", help="sign and submit a commit to one seed node")
@@ -519,6 +586,8 @@ def main() -> int:
     deploy.add_argument("--version", default="",
                         help="version string to advertise (default: derived)")
     deploy.add_argument("--allow-unpushed", action="store_true")
+    deploy.add_argument("--allow-red-ci", action="store_true",
+                        help="sign even though CI has not passed for this commit")
     deploy.add_argument("--seed", default=os.getenv("BBS_FLEET_SEED", ""),
                         help="seed web admin URL (or BBS_FLEET_SEED)")
     deploy.add_argument("--token", default=os.getenv("BBS_FLEET_API_TOKEN", ""),

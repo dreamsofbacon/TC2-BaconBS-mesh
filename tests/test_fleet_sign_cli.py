@@ -109,7 +109,10 @@ class UnpushedCommitTests(unittest.TestCase):
                 return _result(stdout="334\n")
             return _result(stdout="a subject\n")
 
+        # About the push guard only. CI is its own gate (RedCiGateTests), and
+        # a test must never reach GitHub for real.
         with mock.patch.object(fleet_sign, "_git", side_effect=fake_git), \
+             mock.patch.object(fleet_sign, "_ci_verdict", return_value=(True, "stub")), \
              mock.patch("builtins.print"):
             return fleet_sign.cmd_sign(args)
 
@@ -165,6 +168,7 @@ class SignedOutputTests(unittest.TestCase):
                 captured.append(str(a[0]) if a else "")
 
             with mock.patch.object(fleet_sign, "_git", side_effect=fake_git), \
+                 mock.patch.object(fleet_sign, "_ci_verdict", return_value=(True, "stub")), \
                  mock.patch("builtins.print", side_effect=capture):
                 fleet_sign.cmd_sign(types.SimpleNamespace(
                     ref="HEAD", version="", group="baconbbsvt",
