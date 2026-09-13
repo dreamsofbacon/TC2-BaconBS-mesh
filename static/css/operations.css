@@ -13,7 +13,7 @@
 .operations-layout .nav-brand { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:23px; letter-spacing:.08em; gap:12px; line-height:1.1; }
 .brand-descriptor { display:block; font-size:9px; font-weight:400; letter-spacing:.12em; margin-top:6px; color:var(--text-muted); }
 .operations-layout .nav-right { margin-left:auto; gap:14px; }
-.operations-layout .version-chip { display:none; }
+.operations-layout .version-chip { display:inline-block; font:10px ui-monospace,monospace; letter-spacing:.06em; color:var(--text-muted); background:none; border:1px solid var(--border); border-radius:0; padding:3px 7px; white-space:nowrap; }
 .operations-layout .sync-pill { font-family:ui-monospace,monospace; border:0; background:none; font-size:10px; padding:0; max-width:260px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .operations-layout .theme-picker-toggle { background:none; border:0; font-size:11px; }
 .bbs-navigation { max-width:1280px; margin:auto; padding:0 36px; display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border); }
@@ -24,7 +24,7 @@
 .operations-layout .nav-link:hover { background:var(--surface); }
 .operations-layout .nav-dropdown-toggle { height:100%; }
 .operations-layout .nav-dropdown-menu { left:auto; right:0; border-radius:3px; min-width:200px; max-height:65vh; overflow-y:auto; }
-.bbs-page-name { font:700 12px ui-monospace,monospace; color:var(--text-muted); text-transform:uppercase; letter-spacing:.12em; }
+.bbs-page-name { font:900 18px ui-monospace,monospace; color:var(--text); text-transform:uppercase; letter-spacing:.08em; line-height:1.2; }
 .operations-layout .card { border-radius:3px; padding:24px; box-shadow:none; }
 .operations-layout .btn { border-radius:3px; padding:8px 13px; font-size:12px; font-weight:600; box-shadow:none; }
 .operations-layout .btn-sm { padding:5px 9px; font-size:11px; }
@@ -114,7 +114,7 @@
 
 .bbs-monogram { display:grid; place-items:center; width:35px; height:35px; background:var(--accent); color:var(--accent-fg); font:900 24px/1 system-ui,sans-serif; letter-spacing:-.12em; padding-right:3px; }
 .bbs-masthead { padding:6px 0 30px; text-align:center; }
-.operations-layout .bbs-wordmark { display:flex; align-items:baseline; justify-content:center; gap:.13em; font-family:Impact,'Arial Black',system-ui,sans-serif; font-weight:950; font-size:clamp(55px,9vw,120px); letter-spacing:-.055em; line-height:1; margin:5px auto 18px; }
+.operations-layout .bbs-wordmark { display:flex; align-items:baseline; justify-content:center; gap:.13em; font-family:Impact,'Arial Black',system-ui,sans-serif; font-weight:950; font-size:clamp(28px,4.5vw,60px); letter-spacing:-.055em; line-height:1; margin:5px auto 18px; }
 .bbs-wordmark>span { -webkit-text-stroke:1.5px var(--text); color:transparent; }
 .bbs-intro { display:flex; justify-content:center; align-items:center; gap:8px; }
 .bbs-intro p {
@@ -150,7 +150,7 @@
 .operations-layout .card,.operations-layout .btn,.operations-layout .table-scroll-container { border-radius:0; }
 .operations-layout .nav-link { text-transform:uppercase; font-size:11px; letter-spacing:.04em; }
 @media(max-width:700px) {
-  .operations-layout .bbs-wordmark { font-size:clamp(42px,12vw,90px); gap:.12em; margin-top:25px; }
+  .operations-layout .bbs-wordmark { font-size:clamp(24px,9vw,46px); gap:.12em; margin-top:25px; }
   .bbs-intro { align-items:stretch; flex-direction:column; gap:22px; }
   /* nowrap keeps the strapline on one line on a desktop; on a phone the
      same rule is 73 characters of text in a 360px viewport, which

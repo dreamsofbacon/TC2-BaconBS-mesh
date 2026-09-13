@@ -70,5 +70,33 @@ class HeaderControlsAreWiredTests(unittest.TestCase):
         self.assertEqual(unbound, [], f"header buttons with no handler: {unbound}")
 
 
+
+class VersionChipTests(unittest.TestCase):
+    """The running version stays visible in the header.
+
+    It went missing when the new visual identity arrived: the markup was
+    still in base.html and still rendered the right value, but operations.css
+    set it to display:none, so nothing looked wrong in the template or the
+    handler. An operator deploying fleet updates needs to see at a glance
+    which version the page they are on is actually running.
+    """
+
+    OPERATIONS = (ROOT / "static" / "css" / "operations.css").read_text(encoding="utf-8")
+
+    def test_the_header_renders_the_version(self):
+        self.assertIn('class="version-chip"', BASE)
+        self.assertIn("app_version_display", BASE)
+
+    def test_no_stylesheet_hides_it_on_a_desktop(self):
+        for name, css in (("operations.css", self.OPERATIONS),):
+            with self.subTest(stylesheet=name):
+                rules = re.findall(r"([^{}]*\.version-chip[^{}]*)\{([^}]*)\}", css)
+                for selector, body in rules:
+                    if "@media" in selector:
+                        continue
+                    self.assertNotRegex(body, r"display\s*:\s*none",
+                                        f"{selector.strip()} hides the version chip")
+
+
 if __name__ == "__main__":
     unittest.main()
