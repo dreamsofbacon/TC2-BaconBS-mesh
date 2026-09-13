@@ -6818,8 +6818,13 @@ def create_app(runtime_interface=None) -> Flask:
           "FROM game_scores ORDER BY game_id ASC, score DESC, achieved_at ASC"
         )
         rows = cursor.fetchall()
+      # Resolved once for the whole table rather than per row: see
+      # get_score_account_names for how a score id reaches an account
+      # without a live radio.
+      from db_operations import get_score_account_names
+      account_names = get_score_account_names(row['user_id'] for row in rows)
       return render_template("scores.html", title="Game Scores", show_nav=True,
-                             rows=rows)
+                             rows=rows, account_names=account_names)
 
     @app.post("/scores/delete")
     @login_required

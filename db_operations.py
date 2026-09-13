@@ -6797,13 +6797,57 @@ def get_game_scoreboard(game_id: str, limit: int = 5) -> list:
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        '''SELECT short_name, score, max_score, moves FROM game_scores
+        '''SELECT short_name, score, max_score, moves, user_id FROM game_scores
            WHERE game_id = ?
            ORDER BY score DESC, moves ASC
            LIMIT ?''',
         (game_id, limit)
     )
     return c.fetchall()
+
+
+def get_score_account_names(user_ids) -> dict:
+    """{score user_id: account alias} for players with a named linked account.
+
+    A score records the numeric sender id and whatever the device called
+    itself at the time, so a board showed "Pers" for a player whose account
+    is "Materva". The account is found two ways, both from persisted data so
+    this works in the web admin and the SSH process, neither of which has a
+    live radio to ask:
+
+      * an SSH account's score id IS its sender_num;
+      * a radio's score id is its node number, which mesh_clients records
+        against the node id that linked_nodes ties to an account.
+
+    Only ids with exactly one alias come back. Node numbers can collide
+    between a MeshCore and a Meshtastic device in dual-radio mode, and a
+    number that leads to two different accounts must not be credited to
+    either: the caller falls back to the device name instead of guessing.
+    """
+    ids = sorted({str(user_id) for user_id in (user_ids or []) if str(user_id or '').strip()})
+    if not ids:
+        return {}
+    conn = get_db_connection()
+    marks = ','.join('?' for _ in ids)
+    found: dict = {}
+    try:
+        rows = conn.execute(
+            f"""SELECT CAST(sender_num AS TEXT), alias FROM accounts
+                WHERE TRIM(alias) != '' AND CAST(sender_num AS TEXT) IN ({marks})
+                UNION
+                SELECT CAST(mc.node_num AS TEXT), a.alias
+                FROM mesh_clients mc
+                JOIN linked_nodes ln ON ln.node_id = mc.node_id
+                JOIN accounts a ON a.account_id = ln.account_id
+                WHERE TRIM(a.alias) != '' AND CAST(mc.node_num AS TEXT) IN ({marks})""",
+            ids + ids).fetchall()
+    except sqlite3.Error:
+        logging.debug("could not resolve score account names", exc_info=True)
+        return {}
+    for user_id, alias in rows:
+        found.setdefault(str(user_id), set()).add(str(alias).strip())
+    return {user_id: next(iter(aliases))
+            for user_id, aliases in found.items() if len(aliases) == 1}
 
 
 def get_user_game_scores(user_id: int) -> list:
@@ -6821,7 +6865,7 @@ def get_hall_of_fame() -> list:
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        '''SELECT gs.game_id, gs.short_name, gs.score, gs.max_score, gs.moves
+        '''SELECT gs.game_id, gs.short_name, gs.score, gs.max_score, gs.moves, gs.user_id
            FROM game_scores gs
            INNER JOIN (
                SELECT game_id, MAX(score) AS top_score
