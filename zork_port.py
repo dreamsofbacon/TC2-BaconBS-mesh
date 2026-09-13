@@ -94,7 +94,11 @@ def response_limit_for(interface=None) -> int:
         return MAX_RESPONSE_CHARS
 
 _config = configparser.ConfigParser()
-_config.read("config.ini")
+# Resolved against the application root and BBS_CONFIG_PATH, like every other
+# config read. A bare "config.ini" is relative to the working directory, and
+# utils is not imported here at module level because it would be a cycle.
+from app_paths import resolve_app_path as _resolve_app_path
+_config.read(_resolve_app_path(os.getenv("BBS_CONFIG_PATH"), "config.ini"))
 
 
 def _cfg(key: str, fallback: str = "") -> str:

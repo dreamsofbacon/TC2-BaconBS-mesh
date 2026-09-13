@@ -42,7 +42,7 @@ from utils import (
     get_node_short_name, resolve_display_name, get_user_state, get_zork_save_sync_notice, send_message,
     update_user_state,
     select_gateway_peer, send_api_request, register_api_request,
-    home_network, _config_int, send_mail_relay_preference_to_bbs_nodes,
+    home_network, _config_int, _get_config_path, send_mail_relay_preference_to_bbs_nodes,
     clear_user_state, request_session_end,
     get_view_scope, set_view_scope, clear_view_scope,
     node_display_name, scope_notice, local_identities_for_display,
@@ -71,7 +71,7 @@ GAME_LIST = list(GAMES.items())  # [(game_id, {name, ...}), ...]
 
 # Read the configuration for menu options
 config = configparser.ConfigParser()
-config.read('config.ini')
+config.read(_get_config_path())
 
 
 def _parse_menu_items(value: str) -> list[str]:
@@ -94,7 +94,7 @@ def _urgent_board_allow_lists(interface) -> list:
     live-refreshed."""
     lists = [list(getattr(interface, 'allowed_nodes', []) or [])]
     try:
-        config.read('config.ini')
+        config.read(_get_config_path())
         for section in config.sections():
             if section.startswith('allow_list'):
                 raw = config.get(section, 'allowed_nodes', fallback='')
@@ -119,7 +119,7 @@ def get_bulletin_boards() -> list[str]:
         if boards:
             return boards
 
-    config.read('config.ini')
+    config.read(_get_config_path())
     configured = config.get('boards', 'bulletin_boards', fallback='General,Info,News,Urgent')
     boards = [item.strip() for item in configured.split(',') if item.strip()]
     if boards:

@@ -181,7 +181,17 @@ def parse_capabilities_token(token: str) -> tuple:
 
 
 def _get_config_path() -> str:
-    return os.getenv("BBS_CONFIG_PATH", "config.ini")
+    """config.ini, resolved against the application root, never the cwd.
+
+    It used to default to a bare "config.ini", which is relative to whatever
+    directory the process happened to start in. A systemd unit with its own
+    WorkingDirectory, or a test run, then read a different file -- or none --
+    than the one the operator edited, silently. BBS_CONFIG_PATH still wins
+    when set, which is also what lets the test suite point every read at an
+    isolated file instead of the developer's real one.
+    """
+    from app_paths import resolve_app_path
+    return resolve_app_path(os.getenv("BBS_CONFIG_PATH"), "config.ini")
 
 
 def _load_runtime_config() -> configparser.ConfigParser:
