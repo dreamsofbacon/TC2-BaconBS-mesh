@@ -76,6 +76,13 @@ class ManifestAgreementTests(unittest.TestCase):
     """Two nodes, one save, two spellings -- one hash."""
 
     def setUp(self):
+        # Same reason as test_zork_save_opt_out: save sync is config-driven, so
+        # pin it on rather than depend on whether this checkout has a
+        # config.ini. CI does not, and failed here on every run.
+        enabled = mock.patch.object(db_operations, "is_zork_save_sync_enabled",
+                                    return_value=True)
+        enabled.start()
+        self.addCleanup(enabled.stop)
         self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.env_patch = mock.patch.dict(
             os.environ,

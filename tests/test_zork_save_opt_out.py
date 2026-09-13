@@ -32,6 +32,14 @@ PEER = "mqtt:baconbbsvt:Chattanooga"
 
 class ZorkSaveOptOutTests(unittest.TestCase):
     def setUp(self):
+        # These tests are about what happens WHEN save sync is on. Whether it
+        # is on comes from config.ini, which a developer's checkout has and a
+        # fresh clone -- CI -- does not, so without this they passed locally
+        # and failed on every CI run. Pinned rather than inherited.
+        enabled = mock.patch.object(db_operations, "is_zork_save_sync_enabled",
+                                    return_value=True)
+        enabled.start()
+        self.addCleanup(enabled.stop)
         db_operations.thread_local.connection = sqlite3.connect(":memory:")
         db_operations.initialize_database()
         db_operations._ensure_zork_saves_table()

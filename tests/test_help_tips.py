@@ -38,6 +38,14 @@ class _Case(unittest.TestCase):
         self.iface = _Interface()
         db_operations.auto_upsert_user_profile(1234, "bac", "bacon")
         self.addCleanup(self._restore)
+        # The Games screen changes with [sync] zork_saves, which comes from
+        # config.ini: present on a developer checkout, absent in CI. Unpinned,
+        # these tests measured a different screen in each place, and passed
+        # locally while failing on every CI run. Save sync is on here; the
+        # no-save-sync screen has its own tests below.
+        notice = mock.patch.object(ch, "get_zork_save_sync_notice", return_value="")
+        notice.start()
+        self.addCleanup(notice.stop)
 
     def _restore(self):
         ch.send_message = self._real
@@ -191,6 +199,41 @@ class EveryDefinedTipIsActuallyShownTests(_Case):
     def test_no_tip_is_defined_without_a_screen_to_show_it(self):
         self.assertEqual(set(ch.HELP_TIPS), set(self.SCREENS),
                          "a tip exists that no screen displays, or vice versa")
+
+
+class GamesWithoutSaveSyncTests(_Case):
+    """A node that does not sync game saves warns about it on the Games
+    screen, and that warning is the tip there.
+
+    The first version of the Games tip said progress follows you to other
+    nodes, and printed it directly beneath the warning saying it does not.
+    It was also what made this screen 437 bytes in CI: three MeshCore packets.
+    """
+
+    WARNING = ("Warning: this node does not sync game saves. Progress is saved "
+               "only on this node and will not follow you to other BBS nodes.")
+
+    def setUp(self):
+        super().setUp()
+        notice = mock.patch.object(ch, "get_zork_save_sync_notice",
+                                   return_value=self.WARNING)
+        notice.start()
+        self.addCleanup(notice.stop)
+
+    def test_the_warning_is_shown(self):
+        ch.handle_games_command(1234, self.iface)
+        self.assertIn(self.WARNING, self.last)
+
+    def test_the_general_tip_is_not_added_beneath_it(self):
+        ch.handle_games_command(1234, self.iface)
+        self.assertNotIn(ch.HELP_TIPS["GAMES_MENU"], self.last)
+
+    def test_the_tip_never_claims_saves_follow_you(self):
+        """It must be true on either kind of node, since the same text ships
+        to both."""
+        tip = ch.HELP_TIPS["GAMES_MENU"].lower()
+        self.assertNotIn("progress", tip)
+        self.assertNotIn("saves", tip)
 
 
 class SettingsScreenTests(_Case):
