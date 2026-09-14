@@ -583,8 +583,8 @@ def affiliated_node_labels() -> list:
 WELCOME_MENU_HINT = "Send ? any time for the menu."
 
 
-def welcome_text() -> str:
-    """The whole welcome, on every transport, as a stranger's first contact.
+def welcome_text(*, first_contact=False) -> str:
+    """The whole welcome, on every transport.
 
     It used to be trimmed to fit one packet, dropping sections from the end
     until it did. With a real greeting that meant a radio user got the BBS
@@ -598,8 +598,9 @@ def welcome_text() -> str:
     form: the browser submits CRLF, and a carriage return is a wasted byte
     on the radio and a stray glyph on some clients.
 
-    First contact is the only time it is sent -- there is no command that
-    asks for it again -- so the menu hint is always part of it.
+    Sent unprompted once, on first contact, and after that only when asked
+    for with !WELCOME or !HELLO. The menu hint is for the first time: someone
+    asking for the welcome already knows there is a menu.
     """
     parts = [get_bbs_name()]
     for optional in (get_fleet_welcome(), get_node_welcome()):
@@ -609,15 +610,16 @@ def welcome_text() -> str:
         labels = affiliated_node_labels()
         if labels:
             parts.append("Nodes: " + ", ".join(labels))
-    # Last, so it is the line a stranger reads just before the menu.
-    parts.append(WELCOME_MENU_HINT)
+    if first_contact:
+        # Last, so it is the line a stranger reads just before the menu.
+        parts.append(WELCOME_MENU_HINT)
     text = "\n".join(parts)
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def welcome_messages(max_bytes: int) -> list:
-    """The welcome as the packets a transport of this size receives."""
-    return _split_into_chunks(welcome_text(), max_len=max_bytes)
+    """The first-contact welcome as the packets a transport of this size receives."""
+    return _split_into_chunks(welcome_text(first_contact=True), max_len=max_bytes)
 
 
 def is_bbs_role_management_enabled() -> bool:
