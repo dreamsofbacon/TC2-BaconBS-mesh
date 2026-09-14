@@ -1152,14 +1152,24 @@
 
   <h3>What it looks like</h3>
   <p class="text-muted">
-    Rendered by the same code the BBS uses, at each transport's byte budget.
-    The greeting is dropped before the name when it will not fit.
+    What a new user receives on their first message, rendered by the same
+    code the BBS uses and split into the messages each transport sends. The
+    main menu follows it. Every message is a separate radio transmission, so
+    a shorter greeting reaches people sooner.
   </p>
   <div class="table-scroll">
     <table class="table">
-      <tr><th style="width:9rem">MeshCore (160B)</th><td><pre style="white-space:pre-wrap;margin:0">{{ welcome_preview.meshcore }}</pre></td></tr>
-      <tr><th>Meshtastic (220B)</th><td><pre style="white-space:pre-wrap;margin:0">{{ welcome_preview.meshtastic }}</pre></td></tr>
-      <tr><th>SSH (8KB)</th><td><pre style="white-space:pre-wrap;margin:0">{{ welcome_preview.ssh }}</pre></td></tr>
+      {% for label, messages in [('MeshCore (160B)', welcome_preview.meshcore), ('Meshtastic (220B)', welcome_preview.meshtastic), ('SSH (8KB)', welcome_preview.ssh)] %}
+      <tr>
+        <th style="width:9rem">{{ label }}<br><span class="text-muted">{{ messages|length }} message{{ '' if messages|length == 1 else 's' }}</span></th>
+        <td>
+          {% for message in messages %}
+          <div class="text-muted" style="font-size:.8em">{{ loop.index }}/{{ messages|length }}</div>
+          <pre style="white-space:pre-wrap;margin:0 0 .5rem">{{ message }}</pre>
+          {% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
     </table>
   </div>
   {% if welcome_preview.nodes %}

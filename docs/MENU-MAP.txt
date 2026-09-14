@@ -12,7 +12,7 @@ from anywhere, and !cancel/!exit/!x/!0 backs out of any in-progress form.
 
 [1] Quick Commands
     -- reference only, not a menu: lists the !SM/!CM/!R/!AU/!PB/!CB/!CHP/
-       !CHL/!VER/!WELCOME shortcuts and (for a moderator) !ROLE/!WHO.
+       !CHL/!VER shortcuts and (for a moderator) !ROLE/!WHO.
 
 [2] BBS
     [1] Mail

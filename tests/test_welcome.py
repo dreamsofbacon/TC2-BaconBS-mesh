@@ -4,10 +4,10 @@ Two sections, because a fleet is two things at once. [bbs] name and
 [bbs] welcome describe the BBS -- one identity every node shares. [bbs]
 node_welcome is this node's own line and never leaves it.
 
-The hard parts are the byte budget (a MeshCore packet is 160 bytes in
-total, and this is an EXTRA message on someone's first contact) and the
-trigger: greeting a regular on every message would be worse than not
-greeting anyone.
+The hard part is the trigger: the whole welcome runs to several packets, so
+it is sent once per person, on first contact, and never again. It used to be
+trimmed to fit one packet instead, which on the live fleet meant radio users
+saw only the BBS name -- the operator chose several packets, once, over that.
 """
 
 import os
@@ -57,48 +57,87 @@ class WelcomeTextTests(unittest.TestCase):
 
     def test_the_name_is_always_present(self):
         with _settings(name="Bacon BBS"):
-            self.assertIn("Bacon BBS", utils.welcome_text(max_bytes=160))
+            self.assertTrue(utils.welcome_text().startswith("Bacon BBS"))
 
     def test_a_blank_name_falls_back(self):
         with _settings(name=""):
-            self.assertEqual(utils.welcome_text(max_bytes=160), "Bacon BBS")
+            self.assertTrue(utils.welcome_text().startswith("Bacon BBS"))
 
-    def test_both_sections_appear_when_they_fit(self):
-        with _settings(name="Bacon BBS", welcome="Mail, boards and games.",
-                       node_welcome="You have reached Burlington."):
-            text = utils.welcome_text(max_bytes=8192)
-        self.assertIn("Bacon BBS", text)
-        self.assertIn("Mail, boards and games.", text)
+    def test_every_section_is_sent_however_long(self):
+        """The live failure: an 899-byte greeting never fit one packet, so it
+        was dropped -- and the short node line and node list after it went
+        with it. A radio user saw the BBS name and nothing else."""
+        with mock.patch.object(utils, "affiliated_node_labels",
+                               lambda: ["burlington (here)", "chattanooga"]):
+            with _settings(name="Bacon BBS", welcome="A" * 899,
+                           node_welcome="You have reached Burlington."):
+                text = utils.welcome_text()
+        self.assertIn("A" * 899, text)
         self.assertIn("You have reached Burlington.", text)
+        self.assertIn("Nodes: burlington (here), chattanooga", text)
 
-    def test_the_node_line_is_dropped_before_the_fleet_line(self):
-        """Least important first out. A stranger needs to know what this is
-        more than which node answered."""
-        with _settings(name="Bacon BBS", welcome="A" * 100,
-                       node_welcome="B" * 100):
-            text = utils.welcome_text(max_bytes=160)
-        self.assertIn("A" * 100, text)
-        self.assertNotIn("B" * 100, text)
+    def test_sections_come_in_order_and_the_menu_hint_is_last(self):
+        with _settings(name="Bacon BBS", welcome="Fleet line.",
+                       node_welcome="Node line."):
+            lines = utils.welcome_text().split("\n")
+        self.assertEqual(lines, ["Bacon BBS", "Fleet line.", "Node line.",
+                                 utils.WELCOME_MENU_HINT])
 
-    def test_it_fits_the_smallest_transport(self):
-        with _settings(name="Bacon BBS", welcome="C" * 400,
-                       node_welcome="D" * 400):
-            text = utils.welcome_text(max_bytes=160)
-        self.assertLessEqual(len(text.encode("utf-8")), 160)
+    def test_the_menu_hint_says_how_to_get_the_menu(self):
+        self.assertIn("?", utils.WELCOME_MENU_HINT)
+        self.assertIn("menu", utils.WELCOME_MENU_HINT.lower())
 
-    def test_an_oversized_name_is_still_returned(self):
-        """Trimming stops at the name. A welcome with nothing in it is worse
-        than one message that runs to two chunks."""
-        with _settings(name="E" * 400):
-            self.assertEqual(utils.welcome_text(max_bytes=160), "E" * 400)
+    def test_carriage_returns_from_the_web_form_are_removed(self):
+        """The browser submits CRLF; every \\r is a wasted byte on air."""
+        with _settings(name="Bacon BBS", welcome="One.\r\n\r\nTwo.\rThree."):
+            text = utils.welcome_text()
+        self.assertNotIn("\r", text)
+        self.assertIn("One.\n\nTwo.\nThree.", text)
 
     def test_the_node_list_can_be_turned_off(self):
         with mock.patch.object(utils, "affiliated_node_labels",
                                lambda: ["Burlington", "forgecam"]):
             with _settings(name="Bacon BBS", show_nodes="false"):
-                self.assertNotIn("forgecam", utils.welcome_text(max_bytes=8192))
+                self.assertNotIn("forgecam", utils.welcome_text())
             with _settings(name="Bacon BBS", show_nodes="true"):
-                self.assertIn("forgecam", utils.welcome_text(max_bytes=8192))
+                self.assertIn("forgecam", utils.welcome_text())
+
+
+class WelcomeMessagesTests(unittest.TestCase):
+    """What each transport receives, and what the web admin previews."""
+
+    def setUp(self):
+        p = mock.patch.object(utils, "affiliated_node_labels", lambda: [])
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_a_long_welcome_is_split_to_fit_each_transport(self):
+        with _settings(name="Bacon BBS",
+                       welcome=" ".join(["Sentence number %d." % i for i in range(60)])):
+            for budget in (160, 220):
+                with self.subTest(budget=budget):
+                    messages = utils.welcome_messages(budget)
+                    self.assertGreater(len(messages), 1)
+                    for message in messages:
+                        self.assertLessEqual(len(message.encode("utf-8")), budget)
+                    self.assertIn(utils.WELCOME_MENU_HINT, messages[-1])
+
+    def test_nothing_is_lost_in_the_split(self):
+        words = ["word%d" % i for i in range(150)]
+        with _settings(name="Bacon BBS", welcome=" ".join(words)):
+            joined = " ".join(utils.welcome_messages(160))
+        for word in words:
+            self.assertIn(word, joined)
+
+    def test_ssh_gets_it_in_one(self):
+        with _settings(name="Bacon BBS", welcome="A" * 899):
+            self.assertEqual(len(utils.welcome_messages(8192)), 1)
+
+    def test_it_is_split_exactly_as_send_message_splits_it(self):
+        with _settings(name="Bacon BBS", welcome="Long greeting. " * 40):
+            self.assertEqual(
+                utils.welcome_messages(220),
+                utils._split_into_chunks(utils.welcome_text(), max_len=220))
 
 
 class NodeListTests(unittest.TestCase):
@@ -227,45 +266,31 @@ class HandlerTests(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def test_first_contact_says_how_to_get_the_menu(self):
+    def test_it_sends_the_whole_welcome(self):
         with mock.patch.object(command_handlers, "welcome_text",
-                               lambda i: "Bacon BBS"):
-            command_handlers.handle_welcome_command(
-                "!user", object(), first_contact=True)
-        self.assertIn("?", self.radio.text)
-        self.assertIn("menu", self.radio.text.lower())
-
-    def test_on_demand_is_just_the_welcome(self):
-        with mock.patch.object(command_handlers, "welcome_text",
-                               lambda i: "Bacon BBS"):
+                               lambda: "Bacon BBS\nA long greeting."):
             command_handlers.handle_welcome_command("!user", object())
-        self.assertEqual(self.radio.sent, ["Bacon BBS"])
+        self.assertEqual(self.radio.sent, ["Bacon BBS\nA long greeting."])
 
-    def test_it_is_one_message_not_two(self):
-        """send_message paces at two seconds. A burst on someone's first
-        contact collides with its own relay traffic -- see
-        deliver_ask_nomad_reply."""
-        with mock.patch.object(command_handlers, "welcome_text",
-                               lambda i: "Bacon BBS"):
-            command_handlers.handle_welcome_command(
-                "!user", object(), first_contact=True)
-        self.assertEqual(len(self.radio.sent), 1)
-
-    def test_the_quick_help_screen_advertises_it(self):
+    def test_the_quick_help_screen_no_longer_offers_it(self):
+        """It is a first-contact message only; advertising a command that
+        no longer exists would cost a refusal on air."""
         with mock.patch.object(command_handlers, "_role_commands_available",
                                lambda s, i: False):
             command_handlers.handle_quick_help_command("!user", object())
-        self.assertIn("!WELCOME", self.radio.text)
+        self.assertNotIn("WELCOME", self.radio.text.upper())
 
 
 class WiringTests(unittest.TestCase):
-    def test_bang_welcome_is_dispatched(self):
+    def test_there_is_no_command_that_sends_it_again(self):
+        """The operator wants it seen once. !WELCOME and !HELLO asked for it
+        on demand, which at five to seven packets is not a small reply."""
         import inspect
         import message_processing
         source = inspect.getsource(message_processing.process_message)
-        self.assertIn('"welcome"', source)
-        self.assertIs(message_processing.handle_welcome_command,
-                      command_handlers.handle_welcome_command)
+        self.assertNotIn('"welcome"', source)
+        self.assertNotIn('"hello"', source)
+        self.assertEqual(source.count("handle_welcome_command("), 1)
 
     def test_first_contact_is_wired_to_the_profile_upsert(self):
         """The greeting hangs off _auto_update_profile's return value, which
@@ -273,8 +298,9 @@ class WiringTests(unittest.TestCase):
         import inspect
         import message_processing
         source = inspect.getsource(message_processing.process_message)
-        self.assertIn("if _auto_update_profile(sender_id, interface):", source)
-        self.assertIn("first_contact=True", source)
+        self.assertIn(
+            "if _auto_update_profile(sender_id, interface):\n"
+            "            handle_welcome_command(sender_id, interface)", source)
 
     def test_a_profile_failure_never_greets(self):
         """_auto_update_profile swallows errors; it must return False when it
@@ -283,6 +309,55 @@ class WiringTests(unittest.TestCase):
         broken = types.SimpleNamespace(nodes={})
         self.assertFalse(
             message_processing._auto_update_profile(1234, broken))
+
+
+class SentOnceEndToEndTests(unittest.TestCase):
+    """Through process_message, the way a radio message arrives."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        env = mock.patch.dict(
+            os.environ,
+            {"BBS_DB_PATH": str(Path(self.temp_dir.name) / "bulletins.db")},
+            clear=False)
+        env.start()
+        db_operations.initialize_database()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.addCleanup(env.stop)
+        self.addCleanup(self._close)
+        import bbs_emulator
+        self.session = bbs_emulator.start_session(short_name="once")
+        self.addCleanup(lambda: bbs_emulator.end_session(self.session.token))
+        labels = mock.patch.object(utils, "affiliated_node_labels", lambda: [])
+        labels.start()
+        self.addCleanup(labels.stop)
+
+    def _close(self):
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
+        if hasattr(db_operations.thread_local, "connection_origin"):
+            del db_operations.thread_local.connection_origin
+
+    def _texts(self, message):
+        chunks, error = self.session.send(message)
+        self.assertIsNone(error)
+        return [c["text"] if isinstance(c, dict) else str(c) for c in chunks]
+
+    def test_the_whole_welcome_arrives_on_the_first_message_only(self):
+        greeting = " ".join(["Welcome sentence %d." % i for i in range(30)])
+        with _settings(name="Bacon BBS", welcome=greeting,
+                       node_welcome="You have reached Burlington."):
+            first = "\n".join(self._texts("hi"))
+            again = [self._texts(text) for text in ("hi", "!welcome", "!hello")]
+        self.assertIn("Welcome sentence 29.", first)
+        self.assertIn("You have reached Burlington.", first)
+        self.assertIn(utils.WELCOME_MENU_HINT, first)
+        for later in again:
+            joined = "\n".join(later)
+            self.assertNotIn("Welcome sentence", joined)
+            self.assertNotIn(utils.WELCOME_MENU_HINT, joined)
 
 
 if __name__ == "__main__":

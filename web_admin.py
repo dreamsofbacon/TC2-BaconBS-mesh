@@ -584,7 +584,7 @@ def _live_fleet_value(key: str) -> str:
 
 
 def _welcome_preview() -> dict:
-  """What the BBS would actually send, at each transport's byte budget.
+  """What a stranger's first contact receives, packet by packet, per transport.
 
   Deliberately rendered through utils rather than re-implemented here, so
   the preview cannot drift from the thing it previews -- and so it shows
@@ -595,14 +595,14 @@ def _welcome_preview() -> dict:
   try:
     import utils
     return {
-      "meshcore": utils.welcome_text(max_bytes=160),
-      "meshtastic": utils.welcome_text(max_bytes=220),
-      "ssh": utils.welcome_text(max_bytes=8192),
+      "meshcore": utils.welcome_messages(160),
+      "meshtastic": utils.welcome_messages(220),
+      "ssh": utils.welcome_messages(8192),
       "nodes": utils.affiliated_node_labels(),
     }
   except Exception:
     logging.debug("could not build welcome preview", exc_info=True)
-    return {"meshcore": "", "meshtastic": "", "ssh": "", "nodes": []}
+    return {"meshcore": [], "meshtastic": [], "ssh": [], "nodes": []}
 
 
 # (display name, importable module, minimum Python needed or None, why it

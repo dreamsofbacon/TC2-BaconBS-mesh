@@ -3278,19 +3278,18 @@ def handle_list_channels_command(sender_id, interface):
         send_message("Error processing list channels command.", sender_id, interface)
 
 
-def handle_welcome_command(sender_id, interface, *, first_contact=False):
+def handle_welcome_command(sender_id, interface):
     """Say what this BBS is and which node you have reached.
 
-    Sent once, unprompted, on someone's very first message, and any time
-    afterwards on request. The first-contact copy adds the one line a
-    stranger actually needs -- that there is a menu and how to get it --
-    because at that moment they have not chosen to be here and may have no
-    idea what just answered them.
+    Sent once per person, unprompted, on their very first message, and never
+    again. It used to be available on request too (!WELCOME, !HELLO), which
+    was one packet when the welcome was trimmed to fit; the whole welcome is
+    five to seven, and the operator wants it seen once. The one line a
+    stranger actually needs -- that there is a menu and how to get it -- is
+    part of it, because at that moment they have not chosen to be here and
+    may have no idea what just answered them.
     """
-    text = welcome_text(interface)
-    if first_contact:
-        text = f"{text}{LINE_BREAK}Send ? any time for the menu."
-    send_message(text, sender_id, interface)
+    send_message(welcome_text(), sender_id, interface)
 
 
 def handle_version_command(sender_id, interface):
@@ -3348,7 +3347,6 @@ def handle_quick_help_command(sender_id, interface):
         "!PB,, - Post Bulletin\n!CB,, - Check Bulletins\n"
         "!CHP,, - Post Channel\n!CHL - List Channels\n"
         "!VER - This node and its version\n"
-        "!WELCOME - What this BBS is\n"
         "Global menus: !Q !B !G !H !U !P !N !A !S !V !X"
     )
     # Only shown to someone who can use them. A moderator's toolkit listed on
