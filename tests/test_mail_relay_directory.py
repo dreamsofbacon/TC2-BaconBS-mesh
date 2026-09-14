@@ -220,7 +220,8 @@ class RelayDirectoryNavigationTests(unittest.TestCase):
         nothing."""
         page = ch._mail_directory_page(
             [{'display_name': 'somebody', 'protocols': ['Meshtastic']}], 0, selecting=False)
-        self.assertIn("[#] Write", page)
+        # The range to type, not "[#]", which read as a key and did nothing.
+        self.assertIn("[1] Write", page)
 
 
 class DirectoryNumbersMeanWhatTheyShowTests(unittest.TestCase):

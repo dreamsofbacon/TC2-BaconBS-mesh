@@ -31,6 +31,7 @@ from db_operations import (
     get_help_tips_enabled, set_help_tips_enabled,
     get_mesh_client_names,
     get_account_alias, set_account_alias, create_link_code, redeem_link_code,
+    describe_link_code, move_node_with_link_code,
     record_link_attempt, link_rate_limit_ok, account_authorized,
     SSH_NODE_PREFIX,
     queue_delayed_link_code,
@@ -589,10 +590,13 @@ def _mail_directory_page(entries: list[dict], page: int, selecting: bool) -> str
         controls.append("[N]ext")
     if selecting:
         controls.append("[A]ddress")
-    else:
+    elif visible:
         # The selecting view says "Select a relay user:" in its heading.
-        # Browsing had no such cue, so the numbers looked decorative.
-        controls.append("[#] Write")
+        # Browsing had no such cue, so the numbers looked decorative. It said
+        # "[#] Write", which read as a key to press -- and # did nothing.
+        # The real range says what to type (numbers restart at 1 per page).
+        last = len(visible)
+        controls.append("[1] Write" if last == 1 else f"[1-{last}] Write")
     controls.append("[0] Back")
     lines.append(" ".join(controls))
     return "\n".join(lines)
@@ -964,7 +968,9 @@ def _node_view_options(sender_id) -> list:
     nicknames = get_node_nicknames()
     options = [
         {'label': 'All nodes', 'ids': []},
-        {'label': 'This node', 'ids': sorted(local_ids)},
+        # Named, so someone who reached the BBS over MQTT or SSH can tell
+        # which node "this" is -- the picker never said.
+        {'label': _this_node_option_label(), 'ids': sorted(local_ids)},
     ]
 
     grouped = {}
@@ -1767,12 +1773,26 @@ def _settings_menu_text(sender_id, interface, sender_node_id=None) -> str:
     return LINE_BREAK.join(lines)
 
 
+def _this_node_option_label() -> str:
+    """'This node (burlington)', or plain 'This node' when nothing names it.
+
+    Named with the same function !VER uses, so both say the same thing and
+    both work in the SSH and web admin processes, which own no radio.
+    """
+    try:
+        name = _this_node_label()
+    except Exception:
+        logging.debug("could not name this node", exc_info=True)
+        name = ''
+    return f"This node ({name})" if name else "This node"
+
+
 def _scope_label(scope) -> str:
     """The narrowed lens, said the way the Node View picker says it."""
     try:
         local_ids = local_identities_for_display()
         if set(scope) & set(local_ids or ()):
-            return "This node"
+            return _this_node_option_label()
         nicknames = get_node_nicknames()
         for node_id in scope:
             return node_display_name(node_id, local_ids=local_ids,
@@ -2075,6 +2095,19 @@ def handle_account_steps(sender_id, message, interface, sender_node_id=None):
         _handle_confirm_unlink(sender_id, interface, choice, state)
         return
 
+    if step == 7:
+        if choice_lower in ('y', 'yes'):
+            ok, msg = move_node_with_link_code(
+                state.get('code', ''), sender_node_id, home_network(sender_node_id),
+                max_devices=_account_max_linked_devices())
+            record_link_attempt(sender_node_id, 'submit_code', ok)
+            send_message(msg, sender_id, interface)
+        else:
+            send_message("Left where it was. The code is still valid until it expires.",
+                         sender_id, interface)
+        handle_account_command(sender_id, interface)
+        return
+
     handle_account_command(sender_id, interface)
 
 
@@ -2148,6 +2181,25 @@ def _handle_submit_link_code(sender_id, interface, sender_node_id, code):
         record_link_attempt(sender_node_id, 'submit_code', False)
         send_message("Too many attempts. Try again later.", sender_id, interface)
         handle_account_command(sender_id, interface)
+        return
+    info = describe_link_code(code, sender_node_id, max_devices=_account_max_linked_devices())
+    if info['status'] == 'other':
+        if str(sender_node_id).startswith(SSH_NODE_PREFIX):
+            # An SSH login IS its account; moving it would strand the password.
+            record_link_attempt(sender_node_id, 'submit_code', False)
+            send_message(
+                f"This SSH login belongs to {info['device_account_name']} and can't be "
+                f"moved. Enter the code on a radio instead.", sender_id, interface)
+            handle_account_command(sender_id, interface)
+            return
+        devices = info['device_account_devices']
+        which = "only this device" if devices <= 1 else f"{devices} devices"
+        # Named on both sides, so the owner can tell they are both theirs.
+        send_message(
+            f"This device is on {info['device_account_name']} ({which}). That code is "
+            f"for {info['code_account_name']}. Move this device there? [Y/N]",
+            sender_id, interface)
+        _account_state(sender_id, 7, code=str(code))
         return
     ok, msg = redeem_link_code(
         code, sender_node_id, home_network(sender_node_id),
@@ -2764,9 +2816,14 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
         if selected is not None:
             _begin_mail_to_directory_entry(sender_id, interface, selected)
             return
-        notice = ("No one is listed at that number on this page."
-                  if problem == 'out_of_range'
-                  else "Reply with a number to write to someone, N, P, or 0.")
+        count = len(_visible)
+        if problem == 'out_of_range':
+            notice = "No one is listed at that number on this page."
+        else:
+            # '#' and 'W' are what the old "[#] Write" footer taught people
+            # to press. Say what to type instead of redrawing the page.
+            notice = (f"Reply with the number of the person to write to "
+                      f"({'1' if count == 1 else f'1-{count}'}), or N, P, 0.")
         send_message(f"{notice}{LINE_BREAK}"
                      f"{_mail_directory_page(entries, page, selecting=False)}",
                      sender_id, interface)

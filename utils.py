@@ -530,6 +530,75 @@ def is_welcome_node_list_enabled() -> bool:
     return _config_bool("bbs", "show_nodes", True)
 
 
+def local_node_label(*, local_ids=None, nicknames=None) -> str:
+    """This node's own name, or '' when nothing names it.
+
+    Its [node_names] nickname when one of its ids has one, else the label of
+    its first mqtt:<topic>:<label> identity. Shared by the welcome's node
+    list, Node View's "This node" line and the chatter page's radio labels,
+    so all three call this node the same thing.
+    """
+    if local_ids is None:
+        local_ids = local_identities_for_display()
+    if nicknames is None:
+        nicknames = get_node_nicknames()
+    for node_id in sorted(local_ids or ()):
+        candidate = nicknames.get(node_id)
+        if not candidate and str(node_id).startswith('mqtt:'):
+            candidate = str(node_id).rsplit(':', 1)[-1].strip()
+        if candidate:
+            return candidate
+    return ''
+
+
+_NETWORK_TITLES = {'meshcore': 'MeshCore', 'meshtastic': 'Meshtastic', 'mqtt': 'MQTT'}
+
+
+def capture_radio_labels(captures: dict, local_radios=(), *, local_ids=None,
+                         nicknames=None) -> dict:
+    """A readable name for every radio that captured public chatter.
+
+    ``captures`` maps capture id -> network. ``local_radios`` is this node's
+    radios as the diagnostics snapshot describes them (capture_node_id and
+    local_long_name). Capture ids are radio keys -- 64 hex characters for
+    MeshCore -- and printing one tells nobody which radio, or which town,
+    heard a message.
+
+      one of this node's radios  -> "<radio name> (<this node>)"
+      a radio [node_names] names -> "<network> radio (<that node>)"
+      anything else              -> not in the result; the page shows the id
+
+    A remote radio's own name is never known here -- only the node it belongs
+    to, and only if [node_names] says so -- so remote radios are named by
+    network and place.
+    """
+    if local_ids is None:
+        local_ids = local_identities_for_display()
+    if nicknames is None:
+        nicknames = get_node_nicknames()
+    here = local_node_label(local_ids=local_ids, nicknames=nicknames) or 'this node'
+    radio_names = {}
+    for radio in local_radios or ():
+        capture = str((radio or {}).get('capture_node_id') or '').strip()
+        name = str((radio or {}).get('local_long_name') or '').strip()
+        if capture and name:
+            radio_names[capture] = name
+    labels = {}
+    for capture, network in (captures or {}).items():
+        capture = str(capture or '').strip()
+        if not capture:
+            continue
+        kind = _NETWORK_TITLES.get(str(network or '').casefold(), 'Radio')
+        generic = f"{kind} radio" if kind != 'Radio' else 'Radio'
+        if capture in radio_names:
+            labels[capture] = f"{radio_names[capture]} ({here})"
+        elif capture in (local_ids or ()):
+            labels[capture] = f"{generic} ({here})"
+        elif capture in nicknames:
+            labels[capture] = f"{generic} ({nicknames[capture]})"
+    return labels
+
+
 def affiliated_node_labels() -> list:
     """Every node of this BBS, this one first, as a person would say them.
 
@@ -551,14 +620,7 @@ def affiliated_node_labels() -> list:
         local_ids = local_identities_for_display()
         nicknames = get_node_nicknames()
 
-        here = ''
-        for node_id in sorted(local_ids or ()):
-            candidate = nicknames.get(node_id)
-            if not candidate and str(node_id).startswith('mqtt:'):
-                candidate = str(node_id).rsplit(':', 1)[-1].strip()
-            if candidate:
-                here = candidate
-                break
+        here = local_node_label(local_ids=local_ids, nicknames=nicknames)
         if here:
             labels.append(f"{here} (here)")
 

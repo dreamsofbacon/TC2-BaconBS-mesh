@@ -291,7 +291,7 @@ class LinkCodeTests(unittest.TestCase):
         code = db_operations.create_link_code(self.account_id, "!aaa11111")
         ok, msg = db_operations.redeem_link_code(code, "!ccc33333", "meshtastic")
         self.assertFalse(ok)
-        self.assertIn("different account", msg)
+        self.assertIn("already on", msg)
         # unchanged
         self.assertEqual(db_operations.get_account_id_for_node("!ccc33333"), other_account)
 

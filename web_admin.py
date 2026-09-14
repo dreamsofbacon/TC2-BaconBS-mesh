@@ -5725,6 +5725,31 @@ def create_app(runtime_interface=None) -> Flask:
             "take effect.", "success")
       return redirect(url_for("fleet_page"))
 
+    def _label_chatter_captures(result) -> None:
+      """Add capture_label to each entry: which radio, at which node, heard it."""
+      entries = result.get("entries") if isinstance(result, dict) else None
+      if not isinstance(entries, list):
+        return
+      try:
+        import utils
+        captures = {}
+        for entry in entries:
+          capture = str(entry.get("capture_node_id") or "")
+          if capture and capture not in captures:
+            captures[capture] = entry.get("network") or ""
+        snapshot = load_runtime_snapshot(
+          resolve_app_path(os.getenv("BBS_RUNTIME_DIAG_PATH"), "runtime_diagnostics.json"))
+        radios = snapshot.get("radios") if isinstance(snapshot, dict) else None
+        labels = utils.capture_radio_labels(
+          captures, [r for r in (radios or []) if isinstance(r, dict)])
+      except Exception:
+        logging.debug("could not label chatter capture radios", exc_info=True)
+        return
+      for entry in entries:
+        label = labels.get(str(entry.get("capture_node_id") or ""))
+        if label:
+          entry["capture_label"] = label
+
     @app.get("/api/public/chatter")
     @login_required
     def public_chatter_api():
@@ -5741,6 +5766,7 @@ def create_app(runtime_interface=None) -> Flask:
         capture_node_id=request.args.get("capture_node", ""),
         search_query=request.args.get("q", ""),
       )
+      _label_chatter_captures(result)
       return jsonify({"ok": True, **result})
 
     # -- Client emulator ------------------------------------------------

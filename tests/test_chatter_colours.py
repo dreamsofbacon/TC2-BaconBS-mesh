@@ -163,7 +163,7 @@ class ColourIsNeverTheOnlySignalTests(unittest.TestCase):
         self.assertIn('appendText(channelWrap, "span", channelLabel(entry))', JS)
 
     def test_the_capture_node_is_still_rendered_as_text(self):
-        self.assertIn('"Heard by " + shortNodeId(capture)', JS)
+        self.assertIn('"Heard by " + (entry.capture_label || shortNodeId(capture))', JS)
 
     def test_swatches_are_hidden_from_assistive_technology(self):
         """They repeat the label beside them; announcing them would be noise."""
