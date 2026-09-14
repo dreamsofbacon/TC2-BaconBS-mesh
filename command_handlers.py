@@ -778,6 +778,10 @@ def _chatter_entry_lines(entry: dict) -> str:
     when = str(entry.get('message_timestamp') or '').replace('T', ' ')[11:16]
     sender = str(entry.get('sender_long_name') or entry.get('sender_name')
                  or entry.get('sender_node_id') or '?')
+    # A radio linked to an account: the device first, then the account.
+    alias = str(entry.get('sender_account_alias') or '').strip()
+    if alias and alias.casefold() != sender.casefold():
+        sender = f"{sender} ({alias})"
     channel = (str(entry.get('channel_name') or '')
                or f"Ch{entry.get('channel_index', 0)}")
     head = f"{when} {sender} {_network_tag(entry.get('network'))}/{channel}"

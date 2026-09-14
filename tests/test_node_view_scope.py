@@ -405,10 +405,12 @@ class DefaultScopeCostTests(_DbCase):
 
     def test_the_mail_query_is_unchanged(self):
         sql = self._captured_sql(lambda: db_operations.get_mail(RADIO))
-        self.assertIn(
-            "SELECT id, sender_short_name, CASE WHEN COALESCE(content_complete, 1) = 0"
-            " THEN subject || ' [incomplete]' ELSE subject END, date, unique_id"
-            " FROM mail WHERE recipient IN (?) ORDER BY id", sql)
+        # The sender column became a live account-name lookup on 2026-09-14;
+        # what this guards is that the default scope adds no origin filter.
+        mail_sql = [s for s in sql if "FROM mail WHERE recipient IN" in s]
+        self.assertEqual(len(mail_sql), 1)
+        self.assertTrue(mail_sql[0].endswith("FROM mail WHERE recipient IN (?) ORDER BY id"))
+        self.assertNotIn("source_node_id", mail_sql[0])
 
 
 class DiscoveryTests(_DbCase):

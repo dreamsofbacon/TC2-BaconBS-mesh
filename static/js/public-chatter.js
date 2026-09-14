@@ -163,6 +163,10 @@
     // short name, which for most nodes is just the hex tail of the id.
     var name = senderLabel(entry);
     appendText(meta, "strong", name);
+    // A radio linked to an account: the device first, then the account.
+    if (entry.sender_account_alias && entry.sender_account_alias !== name) {
+      appendText(meta, "span", "(" + entry.sender_account_alias + ")", "chatter-account");
+    }
 
     // Keep the short name and id visible when they add something the long
     // name does not, so a station stays identifiable across renames.

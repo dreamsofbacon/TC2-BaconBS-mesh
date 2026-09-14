@@ -1261,7 +1261,12 @@ def get_public_chatter_history(
                    p.captured_at, p.capture_node_id, p.hops,
                    (SELECT MAX(NULLIF(m.long_name, ''))
                       FROM mesh_clients m
-                     WHERE m.node_id = p.sender_node_id)
+                     WHERE m.node_id = p.sender_node_id),
+                   -- The account a known sending radio is linked to, shown
+                   -- after the device name.
+                   (SELECT NULLIF(a.alias, '')
+                      FROM linked_nodes ln JOIN accounts a ON a.account_id = ln.account_id
+                     WHERE ln.node_id = p.sender_node_id)
             FROM public_chatter p
             WHERE {' AND '.join(clauses)}
             ORDER BY p.message_timestamp DESC, p.id DESC
@@ -1275,6 +1280,7 @@ def get_public_chatter_history(
         'id', 'unique_id', 'network', 'channel_index', 'channel_name',
         'sender_node_id', 'sender_name', 'content', 'message_timestamp',
         'captured_at', 'capture_node_id', 'hops', 'sender_long_name',
+        'sender_account_alias',
     )
     entries = [dict(zip(columns, row)) for row in rows]
     next_cursor = None
@@ -4884,7 +4890,7 @@ def get_latest_delivered_mail(recipient_id: str) -> Optional[dict]:
         return None
     placeholders = ','.join('?' for _ in recipient_ids)
     c.execute(
-        f"""SELECT m.id, m.sender, m.sender_short_name, m.subject, m.unique_id,
+        f"""SELECT m.id, m.sender, {_MAIL_SENDER_NAME_SQL.format(table='m')}, m.subject, m.unique_id,
                    d.delivered_at
             FROM mail_dm_deliveries d
             JOIN mail m ON m.unique_id = d.mail_unique_id
@@ -4922,7 +4928,7 @@ def get_latest_mailbox_message(recipient_id: str) -> Optional[dict]:
         return None
     placeholders = ','.join('?' for _ in recipient_ids)
     c.execute(
-        f"""SELECT id, sender_short_name, subject
+        f"""SELECT id, {_MAIL_SENDER_NAME_SQL.format(table='mail')}, subject
             FROM mail
             WHERE recipient IN ({placeholders})
               AND COALESCE(content_complete, 1) = 1
@@ -5011,6 +5017,19 @@ def retry_mail_dm_delivery(delivery_id: int, error: str, delay_seconds: int) -> 
     conn.commit()
 
 
+# The name to show for a mail's sender: the sending device's account alias as
+# it is NOW, falling back to the name stored when the mail was written. Names
+# are captured at authorship, so mail sent before someone linked their device
+# or set an alias kept a radio short name -- often just the tail of the device
+# id -- for good. The row records the sending device, so it can be looked up
+# live. The stored column is untouched, which keeps sync hashes as they are.
+_MAIL_SENDER_NAME_SQL = (
+    "COALESCE(NULLIF((SELECT a.alias FROM linked_nodes ln "
+    "JOIN accounts a ON a.account_id = ln.account_id "
+    "WHERE ln.node_id = {table}.sender), ''), {table}.sender_short_name)"
+)
+
+
 def get_mail(recipient_id, source_node_ids=None):
     conn = get_db_connection()
     c = conn.cursor()
@@ -5018,7 +5037,7 @@ def get_mail(recipient_id, source_node_ids=None):
     if not recipient_ids:
         return []
     placeholders = ','.join('?' for _ in recipient_ids)
-    sql = f"SELECT id, sender_short_name, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject || ' [incomplete]' ELSE subject END, date, unique_id FROM mail WHERE recipient IN ({placeholders})"
+    sql = f"SELECT id, {_MAIL_SENDER_NAME_SQL.format(table='mail')}, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject || ' [incomplete]' ELSE subject END, date, unique_id FROM mail WHERE recipient IN ({placeholders})"
     params = list(recipient_ids)
     clause, scope_params = origin_scope_clause('source_node_id', source_node_ids)
     if clause:
@@ -5068,7 +5087,7 @@ def get_mail_content(mail_id, recipient_id, source_node_ids=None):
     if not recipient_ids:
         return None
     placeholders = ','.join('?' for _ in recipient_ids)
-    sql = f"SELECT sender_short_name, date, subject, content, unique_id, COALESCE(content_complete, 1), COALESCE(expected_content_length, LENGTH(content)) FROM mail WHERE id = ? AND recipient IN ({placeholders})"
+    sql = f"SELECT {_MAIL_SENDER_NAME_SQL.format(table='mail')}, date, subject, content, unique_id, COALESCE(content_complete, 1), COALESCE(expected_content_length, LENGTH(content)) FROM mail WHERE id = ? AND recipient IN ({placeholders})"
     params = [mail_id, *recipient_ids]
     clause, scope_params = origin_scope_clause('source_node_id', source_node_ids)
     if clause:
