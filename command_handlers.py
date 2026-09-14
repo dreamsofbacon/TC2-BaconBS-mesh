@@ -105,9 +105,12 @@ def _urgent_board_allow_lists(interface) -> list:
     return lists
 
 
-main_menu_items = _parse_menu_items(config.get('menu', 'main_menu_items', fallback='Q,B,U,P,N,A,S,X'))
+main_menu_items = _parse_menu_items(config.get('menu', 'main_menu_items', fallback='Q,B,P,N,A,S,X'))
 bbs_menu_items = _parse_menu_items(config.get('menu', 'bbs_menu_items', fallback='M,B,C,J,X'))
-utilities_menu_items = _parse_menu_items(config.get('menu', 'utilities_menu_items', fallback='F,W,X'))
+# There is no Utilities menu any more: Fortune moved to Games and the Wall of
+# Shame was removed. A config.ini still listing U, or a [menu]
+# utilities_menu_items line, is ignored -- menu_layout drops letters with no
+# label, so the main menu renumbers instead of showing a blank.
 # The G/H/Z repairs that used to run here now live in menu_layout, so the
 # rendered menu and the digits accepted for it are decided by one function
 # rather than by a list mutated at import time and a separate fixed table.
@@ -151,7 +154,6 @@ def is_cancel(message) -> bool:
     return str(message or '').strip().casefold() in CANCEL_WORDS
 
 
-UTILITIES_MENU_TITLE = "🛠️Utilities Menu🛠️"
 BBS_MENU_TITLE = "📰BBS Menu📰"
 
 # Menu labels WITHOUT their numbers. The number an entry gets is decided at
@@ -164,15 +166,6 @@ BBS_MENU_TITLE = "📰BBS Menu📰"
 # the digits message_processing accepts, because both go through menu_layout.
 # They used to be separate tables, which is how "[5] Ask Nomad" once
 # rendered while typing 5 did nothing.
-UTILITIES_MENU_LABELS = {
-    # Stats moved to Settings ([4] View Stats) and Games/Public Chatter
-    # moved to the main menu -- see MENU_REQUIRED_AFTER. What is left here
-    # genuinely has nowhere more specific to live.
-    'F': "Fortune",
-    'W': "Wall of Shame",
-    'X': "Back",
-}
-
 BBS_MENU_LABELS = {
     'M': "Mail",
     'B': "Bulletins",
@@ -186,7 +179,6 @@ MAIN_MENU_LABELS = {
     'B': "BBS",
     'G': "Games",
     'H': "Public Chatter",
-    'U': "Utilities",
     'N': "Ask Nomad",
     'A': "Web Fetch",
     # One entry, not two. Profile and Settings were split on "who you are"
@@ -204,7 +196,6 @@ MAIN_MENU_LABELS = {
 MENU_LABELS = {
     'main': MAIN_MENU_LABELS,
     'bbs': BBS_MENU_LABELS,
-    'utilities': UTILITIES_MENU_LABELS,
 }
 
 # Entries added after the first config.ini files were written. An explicit
@@ -224,11 +215,6 @@ MENU_REQUIRED = {
     # the discoverability complaint restated.
     'main': ('N', 'A', 'S', 'V'),
     'bbs': (),
-    # Games and Public Chatter moved to the main menu (see
-    # MENU_REQUIRED_AFTER) -- showing them here too would be the exact
-    # duplication test_api_gateway_no_longer_rendered_under_utilities
-    # already guards against for Web Fetch.
-    'utilities': (),
 }
 
 # A few required entries want a specific neighbor instead of "anywhere
@@ -247,8 +233,6 @@ def menu_kind(menu_name) -> str:
     The main menu's title carries a live mail count, so it is matched last
     as the default rather than by equality.
     """
-    if menu_name == UTILITIES_MENU_TITLE:
-        return 'utilities'
     if menu_name == BBS_MENU_TITLE:
         return 'bbs'
     return 'main'
@@ -348,7 +332,7 @@ def _js8call_configured() -> bool:
 # buys a third. Tips are therefore short, and turning them off genuinely
 # reclaims airtime rather than just tidying the screen.
 #
-# Keyed by the same names menu_layout uses ('main', 'bbs', 'utilities') plus
+# Keyed by the same names menu_layout uses ('main', 'bbs') plus
 # the user_states 'command' of the screens that are not built by build_menu.
 # A screen with no entry here simply gets no tip.
 # ---------------------------------------------------------------------------
@@ -358,8 +342,6 @@ HELP_TIPS = {
             "like !B or !S. !Q lists them all, and [0] always goes back.",
     'bbs': "Tip: Mail is private, to one person. Bulletins are public notices "
            "on fixed boards. Channels are topics anyone can start, with replies.",
-    'utilities': "Tip: the odds and ends that fit nowhere else. Nothing here "
-                 "changes your account or how the BBS treats you.",
     'settings': "Tip: the lines above are who you are; the numbered ones are "
                 "what the BBS does for you. [5] switches these tips off.",
     'BULLETIN_MENU': "Tip: the boards are set by this node's operator. A "
@@ -410,8 +392,6 @@ def handle_help_command(sender_id, interface, menu_name=None, notice=None):
         update_user_state(sender_id, {'command': 'MENU', 'menu': menu_name, 'step': 1})
         if menu_name == 'bbs':
             response = build_menu(bbs_menu_items, "📰BBS Menu📰")
-        elif menu_name == 'utilities':
-            response = build_menu(utilities_menu_items, "🛠️Utilities Menu🛠️")
         else:
             response = build_menu(main_menu_items, "💾Bacon BBS💾")
     else:
@@ -437,8 +417,6 @@ def menu_items_for(kind):
     """
     if kind == 'bbs':
         return bbs_menu_items, BBS_MENU_TITLE
-    if kind == 'utilities':
-        return utilities_menu_items, UTILITIES_MENU_TITLE
     return main_menu_items, "💾Bacon BBS💾"
 
 
@@ -1234,14 +1212,14 @@ def handle_fortune_command(sender_id, interface):
             send_message(decorated_fortune, sender_id, interface)
     except Exception as e:
         send_message(f"Error generating fortune: {e}", sender_id, interface)
-    handle_help_command(sender_id, interface, 'utilities')
+    handle_games_command(sender_id, interface)
 
 
 def handle_games_command(sender_id, interface):
     menu = "🎮 Games 🎮\n"
     for i, (game_id, info) in enumerate(GAME_LIST, start=1):
         menu += f"[{i}] {info['name']}\n"
-    menu += "[S]cores [H]all of Fame [0]Back"
+    menu += "[S]cores [H]all of Fame [F]ortune [0]Back"
     sync_notice = get_zork_save_sync_notice()
     if sync_notice:
         # On a node that does not sync saves the notice IS this screen's tip:
@@ -1271,6 +1249,11 @@ def handle_games_steps(sender_id, message, interface):
         handle_hall_of_fame_command(sender_id, interface)
         return
 
+    if choice.lower() == 'f':
+        # Moved here from the Utilities menu, which no longer exists.
+        handle_fortune_command(sender_id, interface)
+        return
+
     try:
         idx = int(choice) - 1
         if idx < 0:
@@ -1278,7 +1261,7 @@ def handle_games_steps(sender_id, message, interface):
         game_id, info = GAME_LIST[idx]
     except (ValueError, IndexError):
         send_message(
-            f"Invalid choice. Enter 1-{len(GAME_LIST)}, S for scores, or 0.",
+            f"Invalid choice. Enter 1-{len(GAME_LIST)}, S, H, F, or 0.",
             sender_id, interface
         )
         return
@@ -2789,20 +2772,6 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
                      sender_id, interface)
 
 
-def handle_wall_of_shame_command(sender_id, interface):
-    response = "Devices with battery levels below 20%:\n"
-    for node_id, node in interface.nodes.items():
-        metrics = node.get('deviceMetrics', {})
-        battery_level = metrics.get('batteryLevel', 101)
-        if battery_level < 20:
-            long_name = node['user']['longName']
-            response += f"{long_name} - Battery {battery_level}%\n"
-    if response == "Devices with battery levels below 20%:\n":
-        response = "No devices with battery levels below 20% found."
-    send_message(response, sender_id, interface)
-    handle_help_command(sender_id, interface, 'utilities')
-
-
 def handle_channel_directory_command(sender_id, interface):
     response = "📚CHANNEL DIRECTORY📚\nWhat would you like to do?\n[1]View [2]Post [0]Back"
     send_message(with_help_tip(response, sender_id, 'CHANNEL_DIRECTORY'),
@@ -3353,7 +3322,7 @@ def handle_quick_help_command(sender_id, interface):
         "!CHP,, - Post Channel\n!CHL - List Channels\n"
         "!VER - This node and its version\n"
         "!WELCOME - What this BBS is\n"
-        "Global menus: !Q !B !G !H !U !P !N !A !S !V !X"
+        "Global menus: !Q !B !G !H !P !N !A !S !V !X"
     )
     # Only shown to someone who can use them. A moderator's toolkit listed on
     # everyone's help screen is an invitation to try it, and every attempt

@@ -768,7 +768,7 @@ class MqttInterface:
 
     def publish_telemetry(self, telemetry: dict[str, Any]) -> None:
         """Aggregate node stats (hardware models, roles, battery) -- the
-        data behind Node Statistics and Wall of Shame, as topics suitable
+        data behind Node Statistics, as topics suitable
         for graphing or a Home Assistant sensor."""
         if not self.publishes("telemetry"):
             return

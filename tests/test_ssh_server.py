@@ -124,16 +124,17 @@ class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Bacon BBS", welcome)
         # Derived, not hardcoded. This used to type 3, which was Utilities
         # until Games and Public Chatter were inserted above it -- and then it
-        # failed on every CI run while saying nothing about SSH at all.
+        # failed on every CI run while saying nothing about SSH at all. It
+        # opens the BBS menu now that Utilities is gone.
         import command_handlers as ch
         items, title = ch.menu_items_for('main')
-        utilities = {letter: digit for digit, letter in
-                     ch.menu_number_alias(items, title).items()}['u']
-        wrong = '2' if utilities != '2' else '3'
-        process.stdin.write(f"{wrong}\x7f{utilities}\n")
-        utilities = await process.stdout.readuntil("> ")
-        self.assertIn("\b \b", utilities)
-        self.assertIn("Utilities Menu", utilities)
+        bbs = {letter: digit for digit, letter in
+               ch.menu_number_alias(items, title).items()}['b']
+        wrong = '3' if bbs != '3' else '4'
+        process.stdin.write(f"{wrong}\x7f{bbs}\n")
+        bbs_menu = await process.stdout.readuntil("> ")
+        self.assertIn("\b \b", bbs_menu)
+        self.assertIn("BBS Menu", bbs_menu)
         process.stdin.write_eof()
         await process.wait_closed()
         connection.close()

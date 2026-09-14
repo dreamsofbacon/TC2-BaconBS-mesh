@@ -17,13 +17,12 @@ Forked from [TC²-BBS-mesh](https://github.com/TheCommsChannel/TC2-BBS-mesh) wit
 - **Trivia King** — a single-player multiple-choice quiz door, scored to the shared scoreboard. Ships with a question set at `data/trivia.db` (override with `BBS_TRIVIA_DB`); top it up with `scripts/fetch_trivia_questions.py`. Questions come from the [Open Trivia Database](https://opentdb.com) under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
 - **JS8Call Bridge** — Optional integration with JS8Call for group, direct, and urgent radio messages
 - **Node Statistics** — View node counts, hardware types, and roles on the mesh
-- **Wall of Shame** — Devices with low battery levels
 - **Mesh Client Roster** — Every device seen on any active radio/MQTT link, persisted to the database (not just held in memory) so it survives a restart; browsable from Web Admin → Clients
 - **Unique Account Aliases** — An account's alias is the byline on everything it posts, so it's claimed exclusively on this BBS: no two accounts can hold the same one, compared ignoring case and extra whitespace. Aliases are local to this node (accounts don't sync), and clearing yours frees it for someone else
 - **Delayed Link Codes** — Request an account link code that's held for a couple of minutes and then sent to your already-linked devices, so a dual-boot node has time to reboot into its other protocol first
 - **Consent-Based Durable Mail Relay** — Relay is off by default and syncs across BBS peers when enabled from Profile; eligible offline devices remain queued until heard again, while revocation cancels pending delivery
 - **Per-Link Reconnect** — Drop and re-establish any single radio or MQTT link from Web Admin → Settings → Links & Services, without restarting the service or disturbing the other links
-- **Fortune Teller** — Random fortunes from a configurable text file
+- **Fortune Teller** — Random fortunes from a configurable text file, under Games
 - **Web Admin Dashboard** — Full moderation interface at `localhost:8081` with real-time sync monitoring, peer hash visualizations, transmission logs, and manual sync controls
 
 ---
@@ -166,7 +165,7 @@ arrives while you are writing.
 
 Out-of-band actions require an immediate `!` prefix. Quick actions are `!SM,,`,
 `!CM`, `!R`, `!AU`, `!PB,,`, `!CB,,`, `!CHP,,`, and `!CHL`. Global navigation uses
-`!Q`, `!B`, `!U`, `!P`, `!N`, `!A`, `!S`, and `!X`. Plain letters and numbers
+`!Q`, `!B`, `!G`, `!H`, `!P`, `!N`, `!A`, `!S`, `!V`, and `!X`. Plain letters and numbers
 belong to the current menu or prompt, preventing short replies from triggering
 unrelated actions. Mail composition and games treat all input literally until
 their own exit command is used.
@@ -526,14 +525,12 @@ Remove items you don't want to expose to users:
 
 ```ini
 [menu]
-main_menu_items = Q, B, U, P, N, X
+main_menu_items = Q, B, P, N, X
 bbs_menu_items = M, B, C, J, X
-utilities_menu_items = S, F, W, G, X
 ```
 
 `N` (Ask Nomad) is a homescreen shortcut straight to the Project Nomad AI
-question prompt — the same destination as Utilities > API Gateway > Ask
-Project Nomad, without the extra menu hops. After a reply arrives, you can
+question prompt, without the extra menu hops. After a reply arrives, you can
 immediately ask a follow-up question or send `0` to return to the main menu.
 
 ---

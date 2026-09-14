@@ -5,7 +5,7 @@ Every path from the main menu. Stops at each game's own launch item --
 what happens inside Zork, Trivia King, etc. is that game's own interface,
 not this BBS's menu tree. Numbers/letters shown are the canonical set from
 example_config.ini; a given node's config.ini may configure a smaller
-subset (main_menu_items, bbs_menu_items, utilities_menu_items), with
+subset (main_menu_items, bbs_menu_items), with
 required entries (Profile, Ask Nomad, Web Fetch, Settings, Node View)
 inserted automatically if left out. !<letter> reaches any main-menu item
 from anywhere, and !cancel/!exit/!x/!0 backs out of any in-progress form.
@@ -54,17 +54,15 @@ from anywhere, and !cancel/!exit/!x/!0 backs out of any in-progress form.
         (per-title top-5 standings, picked from the same numbered list)
     [H]all of Fame
         (all-time best per title)
+    [F]ortune
+        (a random fortune, then back to this menu)
 
 [4] Public Chatter
     -- duration picker (how far back to read)
       -> the feed itself: [M]ore  [F]ilter  [T]ime  [0] Back
          [F]ilter -> per-channel toggle list -> [A]ll  [D]one
 
-[5] Utilities
-    [F] Fortune
-    [W] Wall of Shame
-
-[6] Profile
+[5] Profile
     [1] Edit bio
     [2] Linked Devices
         [1] Request link code
@@ -74,21 +72,20 @@ from anywhere, and !cancel/!exit/!x/!0 backs out of any in-progress form.
         [5] Unlink a device
         [6] Request code, delayed (dual-boot)
 
-[7] Ask Nomad
-    -- straight to the question prompt (Utilities > API Gateway > Ask
-       Project Nomad, before this shortcut existed)
+[6] Ask Nomad
+    -- straight to the question prompt
 
-[8] Web Fetch
+[7] Web Fetch
     -- straight to the URL prompt (allow-listed HTTP GET via the gateway)
 
-[9] Settings
+[8] Settings
     [1] Offline mail relay: On/Off (toggle)
-    [2] Node View            -- same picker as [10] below
+    [2] Node View            -- same picker as [9] below
     [3] About this node
     [4] View Stats
         [1] Nodes  [2] Hardware  [3] Roles
 
-[10] Node View
+[9] Node View
     [1] All nodes   (always first, always the way back to everything)
     [2] This node
     [3+] Named peers with content (only ones that actually have any)
