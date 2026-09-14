@@ -2361,9 +2361,9 @@ UPDATED_FLOWCHART_CONTENT = """
   <table>
     <thead><tr><th>Menu</th><th>Selections</th></tr></thead>
     <tbody>
-      <tr><td>Main Menu (💾Bacon BBS💾)</td><td><strong>Q</strong> Quick Commands, <strong>B</strong> BBS Submenu, <strong>G</strong> Games, <strong>H</strong> Public Chatter, <strong>U</strong> Utilities Menu, <strong>P</strong> Profile, <strong>N</strong> Ask Nomad, <strong>A</strong> Web Fetch, <strong>S</strong> Settings, <strong>V</strong> Node View, <strong>X</strong> Exit (configurable via <code>[menu] main_menu_items</code>; numbers are assigned in list order, and a removed letter still works with the <code>!</code> prefix)</td></tr>
+      <tr><td>Main Menu (💾Bacon BBS💾)</td><td><strong>Q</strong> Quick Commands, <strong>B</strong> BBS Submenu, <strong>G</strong> Games, <strong>H</strong> Public Chatter, <strong>P</strong> Profile, <strong>N</strong> Ask Nomad, <strong>A</strong> Web Fetch, <strong>S</strong> Settings, <strong>V</strong> Node View, <strong>X</strong> Exit (configurable via <code>[menu] main_menu_items</code>; numbers are assigned in list order, and a removed letter still works with the <code>!</code> prefix)</td></tr>
       <tr><td>BBS Menu (📰)</td><td><strong>M</strong> Mail, <strong>B</strong> Bulletins, <strong>C</strong> Channel Directory, <strong>J</strong> JS8Call gateway, <strong>X</strong> Exit</td></tr>
-      <tr><td>Utilities Menu (🛠️)</td><td><strong>F</strong> Fortune, <strong>W</strong> Wall of Shame, <strong>X</strong> Exit (Stats moved to Settings, Games and Public Chatter to the main menu)</td></tr>
+      <tr><td>Games (🎮)</td><td>Numbered door games, <strong>S</strong> Scores, <strong>H</strong> Hall of Fame, <strong>F</strong> Fortune, <strong>0</strong> Back</td></tr>
       <tr><td>Mail</td><td>Read inbox, send to a node short name, delete; long messages chunk automatically.</td></tr>
       <tr><td>Bulletins</td><td>Browse by board, read post, post new (Urgent board may require an allow-listed node).</td></tr>
       <tr><td>Channels</td><td>List directory, view a channel, read &amp; add comments.</td></tr>
@@ -2381,7 +2381,7 @@ UPDATED_FLOWCHART_CONTENT = """
       <tr><td><a href=\"{{ url_for('table_list', table='bulletins') }}\">Bulletins</a></td><td>Moderate bulletins; create new posts; edit/delete; per-board filter; tombstone deletes propagate via sync.</td></tr>
       <tr><td><a href=\"{{ url_for('table_list', table='channels') }}\">Channels</a></td><td>Moderate channel directory entries and per-channel comments.</td></tr>
       <tr><td><a href=\"{{ url_for('clients_summary') }}\">Clients</a></td><td>Connected mesh clients, last-seen, hardware, role, battery, recent activity.</td></tr>
-      <tr><td><a href=\"{{ url_for('scores_page') }}\">Game Scores</a></td><td>Every Hall of Fame / Wall of Shame score; delete one through its own delete function so the tombstone stops a peer restoring it.</td></tr>
+      <tr><td><a href=\"{{ url_for('scores_page') }}\">Game Scores</a></td><td>Every Hall of Fame / scoreboard score; delete one through its own delete function so the tombstone stops a peer restoring it.</td></tr>
       <tr><td><a href=\"{{ url_for('settings_page') }}\">Settings</a></td><td>Boards, Sync (peers, allow-list, interval, pacing, manual triggers, force resync, save resolver), Diagnostics (peer hash graph, mismatch attempts), Admin credentials.</td></tr>
       <tr><td>Documentation (this page)</td><td>Project reference, runtime sync flowchart, protocol frames, commands, configuration, schema, and live snapshot.</td></tr>
       <tr><td><a href=\"{{ url_for('system_transmissions') }}\">Transmission Stats</a></td><td>Recent <code>sync_transmissions</code> rows: timestamp, frame type, destination, direction, frame size, continuation flag.</td></tr>
@@ -2403,7 +2403,7 @@ UPDATED_FLOWCHART_CONTENT = """
       <tr><td><code>[sync] sync_interval_minutes</code></td><td>How often a full peer sync re-runs (default 5).</td></tr>
       <tr><td><code>[sync] sync_zork_saves</code></td><td>When false, Zork saves stay local to that node and do not appear on peers.</td></tr>
       <tr><td><code>[boards] bulletin_boards</code></td><td>Bulletin board categories (default <code>General,Info,News,Urgent</code>).</td></tr>
-      <tr><td><code>[menu] main_menu_items</code> / <code>bbs_menu_items</code> / <code>utilities_menu_items</code></td><td>Comma-separated menu letters. Profile, Ask Nomad, Web Fetch, Settings, Node View, Games and Public Chatter are auto-injected into the main menu even if omitted (Games/Public Chatter right after BBS; the rest before Exit).</td></tr>
+      <tr><td><code>[menu] main_menu_items</code> / <code>bbs_menu_items</code></td><td>Comma-separated menu letters. Profile, Ask Nomad, Web Fetch, Settings, Node View, Games and Public Chatter are auto-injected into the main menu even if omitted (Games/Public Chatter right after BBS; the rest before Exit).</td></tr>
       <tr><td><code>BBS_BULLETIN_BOARDS</code></td><td>Env override for boards.</td></tr>
       <tr><td><code>BBS_WEBGUI_USER</code> / <code>BBS_WEBGUI_PASSWORD</code> / <code>BBS_WEBGUI_SECRET</code></td><td>Web admin credentials and Flask session secret.</td></tr>
       <tr><td><code>BBS_WEBGUI_HOST</code> / <code>BBS_WEBGUI_PORT</code></td><td>Bind address (default <code>127.0.0.1:8081</code>).</td></tr>

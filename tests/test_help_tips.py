@@ -171,7 +171,6 @@ class EveryDefinedTipIsActuallyShownTests(_Case):
     SCREENS = {
         'main': lambda self: ch.handle_help_command(1234, self.iface),
         'bbs': lambda self: ch.handle_help_command(1234, self.iface, 'bbs'),
-        'utilities': lambda self: ch.handle_help_command(1234, self.iface, 'utilities'),
         'settings': lambda self: ch.handle_settings_command(1234, self.iface, "!abc"),
         'BULLETIN_MENU': lambda self: ch.handle_bulletin_command(1234, self.iface),
         'MAIL': lambda self: ch.handle_mail_command(1234, self.iface),

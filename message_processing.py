@@ -14,8 +14,8 @@ from datetime import datetime, timezone
 from meshtastic import BROADCAST_NUM
 
 from command_handlers import (
-    handle_mail_command, handle_bulletin_command, handle_help_command, handle_stats_command, handle_fortune_command,
-    handle_bb_steps, handle_mail_steps, handle_stats_steps, handle_wall_of_shame_command,
+    handle_mail_command, handle_bulletin_command, handle_help_command, handle_stats_command,
+    handle_bb_steps, handle_mail_steps, handle_stats_steps,
     handle_channel_directory_command, handle_channel_directory_steps, handle_send_mail_command,
     handle_read_mail_command, handle_check_mail_command, handle_quick_reply_command,
     handle_delete_mail_confirmation, handle_post_bulletin_command,
@@ -188,7 +188,6 @@ main_menu_handlers = {
     "b": lambda sender_id, interface: handle_help_command(sender_id, interface, 'bbs'),
     "g": handle_games_command,
     "h": handle_public_chatter_command,
-    "u": lambda sender_id, interface: handle_help_command(sender_id, interface, 'utilities'),
     # Profile merged into Settings & Profile. "p" stays so !P keeps working
     # for anyone who learned it.
     "p": handle_profile_command,
@@ -204,20 +203,6 @@ bbs_menu_handlers = {
     "b": handle_bulletin_command,
     "c": handle_channel_directory_command,
     "j": handle_js8call_command,
-    "x": handle_help_command
-}
-
-
-utilities_menu_handlers = {
-    # Stats moved to Settings, Games and Public Chatter to the main menu --
-    # see UTILITIES_MENU_LABELS. Nothing here dispatches for those letters
-    # any more: the on-screen digit for a letter with no current label
-    # never resolves to one (menu_layout drops unlabelled letters before
-    # numbering), so a stale entry here would be unreachable weight, not a
-    # working shortcut.
-    "f": handle_fortune_command,
-    "w": handle_wall_of_shame_command,
-    "a": handle_apigw_command,
     "x": handle_help_command
 }
 
@@ -3161,8 +3146,6 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 menu_name = state.get('menu', 'main')
                 if menu_name == 'bbs':
                     handlers = bbs_menu_handlers
-                elif menu_name == 'utilities':
-                    handlers = utilities_menu_handlers
                 else:
                     handlers = main_menu_handlers
                     menu_name = 'main'
@@ -3203,7 +3186,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 # what the two menus already label it. Submenus keep going to
                 # the main menu; the main menu now actually leaves, so an SSH
                 # session has a way out it can see.
-                if state.get('command') == 'MENU' and state.get('menu') in ('bbs', 'utilities'):
+                if state.get('command') == 'MENU' and state.get('menu') == 'bbs':
                     handle_help_command(sender_id, interface)
                 else:
                     handle_exit_command(sender_id, interface)

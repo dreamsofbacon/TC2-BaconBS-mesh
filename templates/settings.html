@@ -874,7 +874,7 @@
     a locally-hosted Project Nomad (Ollama / OpenAI-compatible) endpoint. By
     default any node in the general allow-list may use the gateway; set an
     "Allowed requester nodes" list below to lock it down to specific nodes. Add
-    <code>A</code> to the Utilities menu items to expose it to users.
+    <code>A</code> (Web Fetch) to the main menu items to expose it to users.
   </p>
   <form method="post" action="{{ url_for('settings_page') }}#gateway">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
