@@ -1764,6 +1764,14 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
 
     interface = link.interface
 
+    # Straight after a (re)connect and every few hours: a radio with nothing
+    # else to set its clock is set from this node's. See radio_clock.
+    try:
+        import radio_clock
+        radio_clock.maintain(interface, link.name, now_monotonic=time.monotonic())
+    except Exception:
+        logging.debug("radio clock maintenance failed", exc_info=True)
+
     process_pending_candidate_resolutions(interface)
     # Drive stale-buffer retries (HASHZGAP / ZORKGAP) on a steady tick so a
     # dropped chunk in the middle of a manifest or zork save stream always
