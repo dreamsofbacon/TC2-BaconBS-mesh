@@ -173,23 +173,43 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(delivered, ["!good"])
         self.assertEqual(count, 1)
 
-    def test_mail_dm_uses_observed_link_and_marks_delivery(self):
-        self._account_with("!alpha")
-        self._active_client("!alpha", link_name="secondary")
-        unique_id = self._due_mail()
+    def test_mail_dm_uses_observed_link_and_is_delivered_once_acknowledged(self):
+        """Meshtastic: sent on the link the recipient was heard on, then
+        delivered when the recipient's radio ACKs every packet."""
+        import relay_ack
+        relay_ack.reset()
+        self._account_with("!0a1b2c3d")
+        self._active_client("!0a1b2c3d", link_name="secondary")
+        unique_id = self._due_mail("!0a1b2c3d")
         primary = self.RadioLink("primary", object())
-        secondary_interface = object()
+        secondary_interface = types.SimpleNamespace(max_text_bytes=8192)
         secondary = self.RadioLink("secondary", secondary_interface)
         sent = []
 
-        with patch("utils.send_message", lambda text, node, iface: sent.append((text, node, iface)) or True):
+        def send(text, node, iface):
+            sent.append((text, node, iface))
+            return types.SimpleNamespace(id=4242)
+
+        with patch("utils.send_one_chunk", send):
             count = self.server.deliver_due_mail_dms([primary, secondary])
 
-        self.assertEqual(count, 1)
-        self.assertEqual(sent[0][1:], ("!alpha", secondary_interface))
+        self.assertEqual(count, 0, "not delivered until acknowledged")
+        self.assertEqual(sent[0][1:], ("!0a1b2c3d", secondary_interface))
         self.assertIn("Relay subject", sent[0][0])
         self.assertIn("Relay body", sent[0][0])
         self.assertIn("Send !R to reply.", sent[0][0])
+
+        relay_ack.on_routing_packet({
+            "from": 0x0a1b2c3d,
+            "decoded": {"requestId": 4242, "routing": {"errorReason": "NONE"}}}, None)
+        db_operations.get_db_connection().execute(
+            "UPDATE mail_dm_deliveries SET not_before_epoch = 0")
+        db_operations.get_db_connection().commit()
+        with patch("utils.send_one_chunk", send):
+            count = self.server.deliver_due_mail_dms([primary, secondary])
+
+        self.assertEqual(count, 1)
+        self.assertEqual(len(sent), 1, "an acknowledged mail is not sent again")
         state = db_operations.get_db_connection().execute(
             "SELECT state FROM mail_dm_deliveries WHERE mail_unique_id = ?", (unique_id,)
         ).fetchone()[0]
@@ -215,16 +235,19 @@ class DeliveryTests(unittest.TestCase):
         self._active_client("!alpha")
         unique_id = self._due_mail()
 
-        with patch("utils.send_message", return_value=False):
-            count = self.server.deliver_due_mail_dms([self.RadioLink("primary", object())])
+        with patch("utils.send_one_chunk", side_effect=IOError("radio busy")):
+            count = self.server.deliver_due_mail_dms(
+                [self.RadioLink("primary", types.SimpleNamespace(max_text_bytes=8192))])
 
         self.assertEqual(count, 0)
-        state, attempts, error = db_operations.get_db_connection().execute(
-            "SELECT state, attempts, last_error FROM mail_dm_deliveries WHERE mail_unique_id = ?",
+        state, attempts, error, sends = db_operations.get_db_connection().execute(
+            "SELECT state, attempts, last_error, meshtastic_sends FROM mail_dm_deliveries"
+            " WHERE mail_unique_id = ?",
             (unique_id,),
         ).fetchone()
         self.assertEqual((state, attempts), ("pending", 1))
-        self.assertIn("false", error)
+        self.assertIn("radio busy", error)
+        self.assertEqual(sends, 0, "nothing reached the air, so the one retry is kept")
 
     def test_mail_dm_cancels_stale_queue_after_consent_is_revoked(self):
         account_id = self._account_with("!alpha")

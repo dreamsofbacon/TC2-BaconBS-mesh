@@ -1193,22 +1193,110 @@ def _mail_dm_retry_delay(attempts: int, base_seconds: int) -> int:
                max(5, int(base_seconds)) * (2 ** min(int(attempts), 7)))
 
 
+# How long a MeshCore recipient who did not acknowledge waits for the next
+# try: 10 minutes, 30 minutes, an hour, three hours, then every six. MeshCore
+# users advert rarely, so the relay cannot wait to hear from them -- it asks,
+# and the ACK answers. Each try is one packet (the next unsent chunk), and a
+# flood when the radio has no route, so the ladder climbs quickly.
+MESHCORE_UNREACHABLE_BACKOFF = (600, 1800, 3600, 10800, 21600)
+# A MeshCore recipient this radio has no contact for cannot be sent to at all
+# (a DM is encrypted with their key). Look again this often; a new contact
+# wakes the row sooner.
+MESHCORE_NO_CONTACT_DEFER_SECONDS = 1800
+# A Meshtastic mail sent once without every ACK, waiting to hear from its
+# recipient before its one retry. A DM from them makes it due sooner.
+MESHTASTIC_RETRY_RECHECK_SECONDS = 300
+
+
+def _meshcore_unreachable_delay(unreachable_attempts: int) -> int:
+    index = max(0, min(int(unreachable_attempts), len(MESHCORE_UNREACHABLE_BACKOFF) - 1))
+    return MESHCORE_UNREACHABLE_BACKOFF[index]
+
+
+def _relay_mail_text(entry) -> str:
+    return (
+        f"MAIL {str(entry['mail_unique_id'])[:8]}\n"
+        f"From: {entry['sender_short_name']}\n"
+        f"Subject: {entry['subject']}\n\n"
+        f"{entry['content']}\n\n"
+        "Send !R to reply."
+    )
+
+
+def _relay_receipt(entry, node_id, link) -> None:
+    """Every node queues this mail, so any peer that can also hear this radio
+    has its own copy pending. Tell them it landed."""
+    try:
+        from utils import send_mail_delivery_receipt_to_bbs_nodes
+        send_mail_delivery_receipt_to_bbs_nodes(
+            entry['mail_unique_id'], node_id,
+            datetime.now(timezone.utc).isoformat(),
+            list(getattr(link.interface, 'bbs_nodes', []) or []),
+            link.interface)
+    except Exception:
+        # A missed receipt costs a duplicate DM, never a lost message, so
+        # this must not fail the delivery it follows.
+        logging.debug("mail DM receipt broadcast failed", exc_info=True)
+
+
+def _relay_wakes(links) -> None:
+    """Make relay mail due for every MeshCore contact heard since last time."""
+    try:
+        from db_operations import wake_mail_dm_deliveries
+    except Exception:
+        return
+    for link in links:
+        take = getattr(getattr(link, 'interface', None), 'take_wakes', None)
+        if not callable(take):
+            continue
+        try:
+            for node_id in take():
+                wake_mail_dm_deliveries(node_id)
+        except Exception:
+            logging.debug(f"[{link.name}] relay wake failed", exc_info=True)
+
+
 def deliver_due_mail_dms(links, active_window_seconds: int = 900, retry_base_seconds: int = 30) -> int:
-    """Deliver complete queued mail to targets recently seen on this BBS."""
+    """Deliver queued relay mail. Returns how many mails were delivered.
+
+    MeshCore: delivered means acknowledged. The mail goes one chunk at a
+    time, each only after the recipient's radio ACKed the one before, so a
+    recipient who is not there costs a single packet; unanswered, it waits on
+    MESHCORE_UNREACHABLE_BACKOFF. No advert is needed first.
+
+    Meshtastic: ACKs are not reliable enough to depend on, so they are a
+    bonus. The whole mail goes when the recipient was recently heard. If every
+    packet is ACKed it is delivered; if not, it is sent once more the next time
+    they are heard after the ACK window, and then counted delivered.
+
+    Either way, a sign of life -- a DM to the BBS, or for MeshCore an advert,
+    route update or new contact -- makes a waiting mail due at once, and a
+    mail no radio took within MAIL_RELAY_MAX_AGE_DAYS stops being relayed.
+    """
     if not links:
         return 0
+    _relay_wakes(links)
     try:
+        import relay_ack
         from db_operations import (
+            MAIL_RELAY_MAX_AGE_DAYS,
             cancel_mail_dm_delivery,
             defer_mail_dm_delivery,
+            expire_mail_dm_deliveries,
             get_due_mail_dm_deliveries,
             get_mail_relay_preference,
             get_mesh_clients,
+            is_mail_relay_radio_target,
             mark_mail_dm_delivered,
+            record_mail_dm_chunk_acked,
+            record_mail_dm_meshtastic_send,
+            record_mail_dm_unreachable,
             retry_mail_dm_delivery,
         )
+        expire_mail_dm_deliveries(MAIL_RELAY_MAX_AGE_DAYS)
         due = get_due_mail_dm_deliveries(limit=20)
         active_clients = get_mesh_clients(seen_within_seconds=max(1, int(active_window_seconds)))
+        all_clients = get_mesh_clients() if due else []
     except Exception:
         logging.debug("mail DM relay: lookup failed", exc_info=True)
         return 0
@@ -1220,57 +1308,118 @@ def deliver_due_mail_dms(links, active_window_seconds: int = 900, retry_base_sec
         node_id = str(client.get('node_id') or '')
         if node_id and node_id not in active_by_node:
             active_by_node[node_id] = client
+    heard_epoch = {}
+    for client in all_clients:
+        node_id = str(client.get('node_id') or '')
+        try:
+            epoch = int(client.get('last_heard_epoch') or 0)
+        except (TypeError, ValueError):
+            epoch = 0
+        heard_epoch[node_id] = max(heard_epoch.get(node_id, 0), epoch)
 
-    from utils import send_message as _send
+    from utils import home_network, message_chunks, send_one_chunk
     delivered = 0
     links_by_name = {str(link.name): link for link in links}
     for entry in due:
         node_id = str(entry['target_node_id'])
+        short_uid = str(entry['mail_unique_id'])[:8]
+        if not is_mail_relay_radio_target(node_id):
+            cancel_mail_dm_delivery(entry['id'], "not a radio; mail stays in the mailbox")
+            continue
         if not get_mail_relay_preference(node_id):
             cancel_mail_dm_delivery(entry['id'], "recipient disabled mail relay")
             continue
-        client = active_by_node.get(node_id)
-        if client is None:
-            defer_mail_dm_delivery(entry['id'], 30)
+
+        if home_network(node_id) == 'meshcore':
+            link = next((l for l in links
+                         if callable(getattr(l.interface, 'has_contact', None))
+                         and l.interface.has_contact(node_id)), None)
+            if link is None:
+                defer_mail_dm_delivery(entry['id'], MESHCORE_NO_CONTACT_DEFER_SECONDS)
+                continue
+            chunks = message_chunks(_relay_mail_text(entry), link.interface)
+            sent = entry['delivered_chunks']
+            try:
+                while sent < len(chunks):
+                    send_one_chunk(chunks[sent], node_id, link.interface)
+                    sent += 1
+                    record_mail_dm_chunk_acked(entry['id'], sent)
+            except relay_ack.RecipientNoAck as exc:
+                delay = _meshcore_unreachable_delay(entry['unreachable_attempts'])
+                record_mail_dm_unreachable(entry['id'], str(exc), delay)
+                logging.info("Mail DM %s to %s not acknowledged (%d/%d chunks); next try in %ds.",
+                             short_uid, node_id, sent, len(chunks), delay)
+                continue
+            except Exception as exc:
+                delay = _mail_dm_retry_delay(entry.get('attempts') or 0, retry_base_seconds)
+                retry_mail_dm_delivery(entry['id'], str(exc), delay)
+                logging.warning("Mail DM delivery to %s failed: %s", node_id, exc)
+                continue
+            mark_mail_dm_delivered(entry['id'])
+            delivered += 1
+            logging.info("Mail DM %s delivered to %s via %s, every chunk acknowledged.",
+                         short_uid, node_id, link.name)
+            _relay_receipt(entry, node_id, link)
             continue
-        link = links_by_name.get(str(client.get('link_name') or '')) or _link_for_node(links, node_id)
-        message = (
-            f"MAIL {str(entry['mail_unique_id'])[:8]}\n"
-            f"From: {entry['sender_short_name']}\n"
-            f"Subject: {entry['subject']}\n\n"
-            f"{entry['content']}\n\n"
-            "Send !R to reply."
-        )
-        try:
-            if _send(message, node_id, link.interface):
+
+        # Meshtastic.
+        sends = entry['meshtastic_sends']
+        if sends >= 1:
+            if relay_ack.acked(entry['packet_ids']):
                 mark_mail_dm_delivered(entry['id'])
                 delivered += 1
-                logging.info(
-                    "Mail DM %s delivered to %s via %s.",
-                    str(entry['mail_unique_id'])[:8], node_id, link.name,
-                )
-                # Every node queues this mail, so any peer that can also hear
-                # this radio has its own copy pending. Tell them it landed.
-                try:
-                    from utils import send_mail_delivery_receipt_to_bbs_nodes
-                    send_mail_delivery_receipt_to_bbs_nodes(
-                        entry['mail_unique_id'], node_id,
-                        datetime.now(timezone.utc).isoformat(),
-                        list(getattr(link.interface, 'bbs_nodes', []) or []),
-                        link.interface)
-                except Exception:
-                    # A missed receipt costs a duplicate DM, never a lost
-                    # message, so this must not fail the delivery it follows.
-                    logging.debug("mail DM receipt broadcast failed", exc_info=True)
-            else:
-                delay = _mail_dm_retry_delay(entry.get('attempts') or 0,
-                                             retry_base_seconds)
-                retry_mail_dm_delivery(entry['id'], "send returned false", delay)
+                logging.info("Mail DM %s delivered to %s, acknowledged.", short_uid, node_id)
+                link = _link_for_node(links, node_id)
+                _relay_receipt(entry, node_id, link)
+                continue
+            window_end = int(entry['first_sent_epoch'] or 0) + relay_ack.ACK_WINDOW_SECONDS
+            heard_again = max(heard_epoch.get(node_id, 0), int(entry['last_wake_epoch'] or 0))
+            if heard_again <= window_end:
+                # Not heard since the ACK window closed -- which also covers
+                # a window still open, since nothing can have been heard after
+                # a moment still to come. The one retry waits for them; a DM
+                # from them makes this due at once.
+                defer_mail_dm_delivery(entry['id'], MESHTASTIC_RETRY_RECHECK_SECONDS)
+                continue
+
+        client = active_by_node.get(node_id)
+        if client is None and sends == 0:
+            defer_mail_dm_delivery(entry['id'], 30)
+            continue
+        link = (links_by_name.get(str((client or {}).get('link_name') or ''))
+                or _link_for_node(links, node_id))
+        chunks = message_chunks(_relay_mail_text(entry), link.interface)
+        packet_ids = []
+        try:
+            for chunk in chunks:
+                result = send_one_chunk(chunk, node_id, link.interface)
+                packet_id = getattr(result, 'id', None)
+                relay_ack.track(packet_id, node_id)
+                packet_ids.append(packet_id)
         except Exception as exc:
-            delay = _mail_dm_retry_delay(entry.get('attempts') or 0,
-                                         retry_base_seconds)
-            retry_mail_dm_delivery(entry['id'], str(exc), delay)
-            logging.warning("Mail DM delivery to %s failed: %s", node_id, exc)
+            if not packet_ids:
+                # Nothing reached the air, so the one retry is not used up.
+                delay = _mail_dm_retry_delay(entry.get('attempts') or 0, retry_base_seconds)
+                retry_mail_dm_delivery(entry['id'], str(exc), delay)
+                logging.warning("Mail DM delivery to %s failed: %s", node_id, exc)
+                continue
+            logging.warning("Mail DM %s to %s stopped after %d of %d chunks: %s",
+                            short_uid, node_id, len(packet_ids), len(chunks), exc)
+        if sends == 0:
+            if len(packet_ids) < len(chunks):
+                # Cut short: an id that is never tracked, so this send can
+                # never count as acknowledged and the one retry sends it whole.
+                packet_ids.append('incomplete')
+            record_mail_dm_meshtastic_send(entry['id'], packet_ids, relay_ack.ACK_WINDOW_SECONDS)
+            logging.info("Mail DM %s sent to %s via %s; waiting for acknowledgement.",
+                         short_uid, node_id, link.name)
+            continue
+        # The one retry: this is the last send, whatever comes back.
+        mark_mail_dm_delivered(entry['id'])
+        delivered += 1
+        logging.info("Mail DM %s resent to %s via %s; counted delivered.",
+                     short_uid, node_id, link.name)
+        _relay_receipt(entry, node_id, link)
     return delivered
 
 
@@ -2210,6 +2359,14 @@ def main():
         on_receive(packet, interface)
 
     pub.subscribe(receive_packet, system_config['mqtt_topic'])
+    # Meshtastic routing replies, so relayed mail can tell when a recipient's
+    # radio acknowledged it. See relay_ack.
+    try:
+        import relay_ack
+        relay_ack.subscribe(f"{system_config['mqtt_topic']}.routing")
+    except Exception:
+        logging.warning("Relay ACK tracking unavailable; Meshtastic relay mail will always be sent twice",
+                        exc_info=True)
 
     for link in links:
         start_receive = getattr(link.interface, 'start_receive', None)

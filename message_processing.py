@@ -3376,6 +3376,16 @@ def on_receive(packet, interface):
                 process_message(sender_id, message_string, interface, is_sync_message=True, sender_node_id=sender_node_id)
             elif to_id is not None and to_id != 0 and to_id != 255 and to_id == interface.myInfo.my_node_num:
                 log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "direct", "Accepted direct message")
+                # They are on the air right now: relayed mail waiting for this
+                # radio goes out on the next delivery pass instead of waiting
+                # out its retry.
+                try:
+                    from db_operations import wake_mail_dm_deliveries
+                    wake_mail_dm_deliveries(sender_node_id)
+                except Exception:
+                    # A single UPDATE that either committed or wrote nothing:
+                    # there is no transaction of ours to roll back.
+                    logging.debug("relay wake on direct message failed", exc_info=True)
                 process_message(sender_id, message_string, interface, is_sync_message=False, sender_node_id=sender_node_id)
             else:
                 log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "drop", "Ignored group/unknown message")

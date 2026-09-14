@@ -1877,9 +1877,15 @@ def handle_settings_steps(sender_id, message, interface, sender_node_id=None):
             send_message("Couldn't verify your device identity.", sender_id, interface)
             return
         enabled = not get_mail_relay_preference(sender_node_id)
-        action = "Enable" if enabled else "Disable"
-        send_message(f"{action} offline mail relay for all linked devices? [Y/N]",
-                     sender_id, interface)
+        if enabled:
+            # What turning it on means, in one MeshCore packet: when mail
+            # arrives, and that nothing is lost if it never does.
+            prompt = ("Enable offline mail relay for all linked devices? New mail is "
+                      "DMed to your radio when it answers, for up to 7 days. It stays "
+                      "in your inbox. [Y/N]")
+        else:
+            prompt = "Disable offline mail relay for all linked devices? [Y/N]"
+        send_message(prompt, sender_id, interface)
         update_user_state(sender_id, {'command': 'SETTINGS', 'step': 2,
                                       'relay_enabled': enabled})
         return

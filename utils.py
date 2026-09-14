@@ -907,6 +907,32 @@ def _pace_radio_send(interface, pause: float) -> None:
         pass  # interface refuses attributes; per-call pacing still applies
 
 
+def message_chunks(message, interface) -> list:
+    """The packets send_message would split this message into."""
+    return _split_into_chunks(message, max_len=get_max_text_bytes(interface))
+
+
+def send_one_chunk(chunk, destination, interface):
+    """Send one already-sized chunk: paced, under the send lock, logged.
+
+    Returns what sendText returned (its .id is the packet id) and raises on
+    failure, so a caller can tell a recipient that never acknowledged
+    (relay_ack.RecipientNoAck) from a radio that could not transmit.
+    """
+    with interface_send_lock(interface):
+        _pace_radio_send(interface, get_user_message_pause_seconds(interface))
+        d = interface.sendText(
+            text=chunk,
+            destinationId=destination,
+            wantAck=True,
+            wantResponse=False
+        )
+    destid = get_node_id_from_num(destination, interface)
+    log_chunk = chunk.replace('\n', '\\n')
+    logging.info(f"Sending message to user '{get_node_short_name(destid, interface)}' ({destid}) with sendID {d.id}: \"{log_chunk}\"")
+    return d
+
+
 def send_message(message, destination, interface) -> bool:
     """Send (chunked to the transport's limit). True if every chunk went.
 
@@ -927,21 +953,9 @@ def send_message(message, destination, interface) -> bool:
         return False
 
     delivered = True
-    send_lock = interface_send_lock(interface)
-    pause = get_user_message_pause_seconds(interface)
     for chunk in chunks:
         try:
-            with send_lock:
-                _pace_radio_send(interface, pause)
-                d = interface.sendText(
-                    text=chunk,
-                    destinationId=destination,
-                    wantAck=True,
-                    wantResponse=False
-                )
-            destid = get_node_id_from_num(destination, interface)
-            log_chunk = chunk.replace('\n', '\\n')
-            logging.info(f"Sending message to user '{get_node_short_name(destid, interface)}' ({destid}) with sendID {d.id}: \"{log_chunk}\"")
+            send_one_chunk(chunk, destination, interface)
         except Exception as e:
             delivered = False
             # WARNING, and name the transport: this was a bare INFO line
