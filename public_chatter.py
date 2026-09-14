@@ -1,11 +1,33 @@
 """Normalize passive public-channel radio traffic for durable history."""
 
 import hashlib
+import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 
 RETENTION_HOURS = 168
+
+# How far a just-heard message's time may sit from this node's clock before
+# the radio's clock, not the message, is taken to be wrong.
+#
+# A Meshtastic packet's rxTime is the RADIO's clock at the moment it heard
+# the packet, and a radio with no GPS, phone or network to set it keeps
+# whatever time it woke up with. bbs.local's radio came back on 2026-09-12
+# about 48 days slow, so every broadcast it heard -- LongFast and baconnet
+# alike -- looked seven weeks old, fell outside the 168-hour retention
+# window, and was dropped here without a word. Nothing reached Public
+# Chatter from that radio for two days.
+#
+# A day, not minutes, in the past: a radio holds packets for a client that
+# was away, and a BBS restart can be handed a genuine backlog stamped with
+# a correct, older time. Nothing a radio just delivered was heard a day ago.
+# Ten minutes in the future covers MeshCore senders' own clocks drifting.
+RADIO_CLOCK_MAX_AGE = timedelta(days=1)
+RADIO_CLOCK_MAX_AHEAD = timedelta(minutes=10)
+_CLOCK_WARNING_INTERVAL_SECONDS = 3600
+_last_clock_warning = {}
 
 # Destinations that mean "everyone", across the transports this BBS speaks.
 # Meshtastic broadcasts to 0xFFFFFFFF (meshtastic.BROADCAST_NUM); MeshCore
@@ -50,6 +72,32 @@ def _utc_datetime(value: Any, fallback: datetime) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _plausible_message_time(source_time: datetime, now: datetime, interface) -> datetime:
+    """The radio's time for a message just heard, unless that clock is wrong.
+
+    See RADIO_CLOCK_MAX_AGE. When the time is impossible this node's own
+    clock -- NTP-set, and correct to within the seconds it took the packet to
+    arrive -- is used instead, and the operator is told once an hour, because
+    a radio with the wrong time also misreports when it last heard every node.
+    """
+    skew = source_time - now
+    if -RADIO_CLOCK_MAX_AGE <= skew <= RADIO_CLOCK_MAX_AHEAD:
+        return source_time
+    key = str(getattr(interface, 'public_chatter_capture_node_id', '') or id(interface))
+    last = _last_clock_warning.get(key, 0.0)
+    if time.monotonic() - last >= _CLOCK_WARNING_INTERVAL_SECONDS:
+        _last_clock_warning[key] = time.monotonic()
+        days = abs(skew.total_seconds()) / 86400
+        logging.warning(
+            "Public chatter: the %s radio's clock is %.1f days %s this node's "
+            "(it stamped a message just heard %s). Using this node's time for "
+            "chatter; set the radio's time to fix it at the source.",
+            getattr(interface, 'protocol_name', 'radio'), days,
+            'behind' if skew.total_seconds() < 0 else 'ahead of',
+            _iso(source_time))
+    return now
 
 
 def _iso(value: datetime) -> str:
@@ -203,7 +251,11 @@ def normalize_broadcast(
         packet.get('rxTime', packet.get('sender_timestamp')),
         now,
     )
-    expires = source_time + timedelta(hours=RETENTION_HOURS)
+    # source_time stays as the radio reported it for the message id below:
+    # every node hearing this packet must derive the same id, and each has
+    # its own clock. Only the stored time and the lifetime use the correction.
+    message_time = _plausible_message_time(source_time, now, interface)
+    expires = message_time + timedelta(hours=RETENTION_HOURS)
     if expires <= now:
         return None
 
@@ -245,7 +297,7 @@ def normalize_broadcast(
         'sender_node_id': str(sender_node_id) if sender_node_id else None,
         'sender_name': sender_name,
         'content': content,
-        'message_timestamp': _iso(source_time),
+        'message_timestamp': _iso(message_time),
         'captured_at': _iso(now),
         'capture_node_id': str(getattr(interface, 'public_chatter_capture_node_id', '') or ''),
         'expires_at': _iso(expires),
