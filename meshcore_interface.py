@@ -21,10 +21,17 @@ from meshcore import EventType, MeshCore
 
 from player_identity import meshcore_player_number
 from pubsub import pub
+from relay_ack import RecipientNoAck
 
 
 # MeshCore's BaseChatMesh limits direct-message text to 10 AES blocks.
 MESHCORE_MAX_TEXT_BYTES = 160
+
+# How long a direct message waits for the recipient's ACK.
+MESHCORE_ACK_TIMEOUT_SECONDS = 12
+
+# What _send returns when the message went out and no ACK came back.
+_NO_ACK = object()
 
 # How many channel slots to poll for names at connect. MeshCore firmware
 # exposes a small fixed set; unconfigured slots answer empty or error, so
@@ -120,6 +127,14 @@ class MeshCoreInterface:
         self._receive_started = False
         self._closed = False
         self._num_to_key: dict[int, str] = {}
+        # When this radio last heard each contact, by our clock -- MeshCore
+        # reports none of its own (a contact's last_advert is the sender's
+        # clock, which can be years wrong). And which contacts have shown a
+        # sign of life since the delivery loop last looked, so relayed mail
+        # waiting for them goes out now rather than at its next retry.
+        self._last_heard: dict[str, int] = {}
+        self._wakes_lock = threading.Lock()
+        self._pending_wakes: set[str] = set()
         self._incoming: queue.Queue[Optional[dict[str, Any]]] = queue.Queue()
 
         self._loop = asyncio.new_event_loop()
@@ -206,6 +221,8 @@ class MeshCoreInterface:
         meshcore.subscribe(EventType.CONTACT_MSG_RECV, self._on_contact_message)
         meshcore.subscribe(EventType.CHANNEL_MSG_RECV, self._on_channel_message)
         meshcore.subscribe(EventType.NEW_CONTACT, self._on_contact_update)
+        meshcore.subscribe(EventType.ADVERTISEMENT, self._on_sign_of_life)
+        meshcore.subscribe(EventType.PATH_UPDATE, self._on_sign_of_life)
         await meshcore.ensure_contacts()
         self._refresh_nodes()
 
@@ -266,7 +283,42 @@ class MeshCoreInterface:
                 # the next full refresh. Make the freshly advertised contact
                 # immediately addressable by the BBS.
                 self._meshcore.contacts[public_key] = contact
+                self._heard(public_key)
             self._refresh_nodes()
+
+    async def _on_sign_of_life(self, event) -> None:
+        """An advert or a route update: the contact is on the air right now."""
+        public_key = _clean_key((event.payload or {}).get("public_key"))
+        if public_key:
+            self._heard(public_key)
+            node = self.nodes.get(public_key)
+            if node is not None:
+                node["lastHeard"] = self._last_heard[public_key]
+
+    def _heard(self, public_key: str) -> None:
+        self._last_heard[public_key] = int(time.time())
+        with self._wakes_lock:
+            self._pending_wakes.add(public_key)
+
+    def take_wakes(self) -> set:
+        """Contacts heard since the last call. Emptied by reading."""
+        with self._wakes_lock:
+            wakes, self._pending_wakes = self._pending_wakes, set()
+        return wakes
+
+    def has_contact(self, node_id: Any) -> bool:
+        """Whether this radio can DM that node. MeshCore encrypts a direct
+        message with the recipient's full public key, which only a contact
+        gives it; a node that is not a contact cannot be reached from here."""
+        if self._meshcore is None:
+            return False
+        clean = _clean_key(node_id)
+        if not clean:
+            return False
+        try:
+            return self._meshcore.get_contact_by_key_prefix(clean) is not None
+        except Exception:
+            return False
 
     def _refresh_nodes(self) -> None:
         if self._meshcore is None:
@@ -293,6 +345,11 @@ class MeshCoreInterface:
                     "longitude": contact.get("adv_lon"),
                 },
             }
+            if public_key in self._last_heard:
+                # Written to mesh_clients.last_heard_epoch by the roster sweep,
+                # which makes "recently seen" mean heard, as it does for
+                # Meshtastic, instead of merely still in the contact list.
+                nodes[public_key]["lastHeard"] = self._last_heard[public_key]
             num_to_key[number] = public_key
 
         local = self._meshcore.self_info
@@ -344,6 +401,10 @@ class MeshCoreInterface:
         public_key = self._resolve_received_key(payload.get("pubkey_prefix", ""))
         sender_id = self._configured_alias(public_key)
         sender_num = _node_num(public_key)
+        if public_key:
+            self._heard(public_key)
+            if public_key in self.nodes:
+                self.nodes[public_key]["lastHeard"] = self._last_heard[public_key]
         if public_key and public_key not in self.nodes:
             name = public_key[:12]
             self.nodes[public_key] = {
@@ -453,13 +514,22 @@ class MeshCoreInterface:
             raise ConnectionError("MeshCore interface is not connected")
         async with self._send_lock:
             if want_ack:
-                return await self._meshcore.commands.send_msg_with_retry(
-                    destination,
-                    text,
-                    max_attempts=1,
-                    max_flood_attempts=1,
-                    timeout=12,
-                )
+                # One send and a wait for its ACK -- what send_msg_with_retry
+                # did with max_attempts=1, done here so its single None
+                # ("no ACK" and "the radio refused the send" both came back
+                # as None) is split in two. The relay needs to know which:
+                # a recipient who did not answer is retried over hours, a
+                # radio that could not transmit in minutes.
+                sent = await self._meshcore.commands.send_msg(destination, text)
+                if sent is None or sent.type == EventType.ERROR:
+                    return sent
+                expected = (sent.payload or {}).get("expected_ack", b"")
+                code = (expected.hex() if isinstance(expected, (bytes, bytearray))
+                        else str(expected or ""))
+                ack = await self._meshcore.wait_for_event(
+                    EventType.ACK, attribute_filters={"code": code},
+                    timeout=MESHCORE_ACK_TIMEOUT_SECONDS)
+                return sent if ack is not None else _NO_ACK
             return await self._meshcore.commands.send_msg(destination, text)
 
     async def _send_channel(self, text: str, channel_index=None):
@@ -496,6 +566,8 @@ class MeshCoreInterface:
                 self._send(destination, text, wantAck), self._loop
             )
         result = future.result(timeout=self.send_timeout_seconds)
+        if result is _NO_ACK:
+            raise RecipientNoAck("MeshCore recipient did not acknowledge")
         if result is None or result.type == EventType.ERROR:
             detail = getattr(result, "payload", None)
             raise IOError(f"MeshCore send failed: {detail}")

@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -62,6 +63,14 @@ class _FakeCore:
         self.subscriptions = {}
         self.is_connected = True
         self.receive_started = False
+        self.ack = True
+        self.ack_waits = []
+
+    async def wait_for_event(self, event_type, attribute_filters=None, timeout=None):
+        self.ack_waits.append((event_type, attribute_filters, timeout))
+        if not self.ack:
+            return None
+        return types.SimpleNamespace(type=event_type, payload=attribute_filters)
 
     def subscribe(self, event_type, callback):
         self.subscriptions[event_type] = callback
@@ -129,13 +138,71 @@ class MeshCoreInterfaceTests(unittest.TestCase):
     def test_send_text_maps_to_meshcore_direct_message(self):
         result = self.interface.sendText("hello", PEER_KEY[:12])
         self.assertEqual(result.id, "01020304")
-        self.assertEqual(
-            _FakeMeshCoreFactory.last_core.commands.sent,
-            [(PEER_KEY, "hello")],
-        )
-        self.assertEqual(
-            _FakeMeshCoreFactory.last_core.commands.retry_options["timeout"], 12
-        )
+        core = _FakeMeshCoreFactory.last_core
+        self.assertEqual(core.commands.sent, [(PEER_KEY, "hello")])
+        # Waits for this message's own ACK, for as long as it always did.
+        self.assertEqual(core.ack_waits, [
+            (meshcore_interface.EventType.ACK, {"code": "01020304"}, 12)])
+
+    def test_no_ack_is_its_own_error(self):
+        """The relay retries a silent recipient over hours and a radio that
+        could not transmit in minutes, so the two must not look alike."""
+        import relay_ack
+        _FakeMeshCoreFactory.last_core.ack = False
+        with self.assertRaises(relay_ack.RecipientNoAck):
+            self.interface.sendText("hello", PEER_KEY[:12])
+
+    def test_a_refused_send_is_not_mistaken_for_no_ack(self):
+        import relay_ack
+        core = _FakeMeshCoreFactory.last_core
+
+        async def refuse(destination, text):
+            return types.SimpleNamespace(type=meshcore_interface.EventType.ERROR,
+                                         payload={"reason": "table full"})
+        core.commands.send_msg = refuse
+        with self.assertRaises(IOError) as caught:
+            self.interface.sendText("hello", PEER_KEY[:12])
+        self.assertNotIsInstance(caught.exception, relay_ack.RecipientNoAck)
+        self.assertEqual(core.ack_waits, [], "no ACK is waited for a send that never went")
+
+    def test_has_contact(self):
+        self.assertTrue(self.interface.has_contact(PEER_KEY))
+        self.assertTrue(self.interface.has_contact(PEER_KEY[:12]))
+        self.assertFalse(self.interface.has_contact("33" * 32))
+        self.assertFalse(self.interface.has_contact(""))
+
+    def _run(self, coroutine):
+        asyncio.run_coroutine_threadsafe(coroutine, self.interface._loop).result(timeout=2)
+
+    def test_signs_of_life_are_heard_and_woken(self):
+        for handler in (self.interface._on_sign_of_life, self.interface._on_contact_update):
+            with self.subTest(handler=handler.__name__):
+                self.interface.take_wakes()
+                self.interface._last_heard.clear()
+                before = int(time.time())
+                self._run(handler(types.SimpleNamespace(payload={"public_key": PEER_KEY})))
+                self.assertEqual(self.interface.take_wakes(), {PEER_KEY})
+                self.assertEqual(self.interface.take_wakes(), set(), "emptied by reading")
+                self.assertGreaterEqual(self.interface.nodes[PEER_KEY]["lastHeard"], before)
+
+    def test_a_direct_message_is_a_sign_of_life(self):
+        self.interface.take_wakes()
+        self._run(self.interface._on_contact_message(types.SimpleNamespace(payload={
+            "pubkey_prefix": PEER_KEY[:12], "txt_type": 0, "text": "hi"})))
+        self.assertEqual(self.interface.take_wakes(), {PEER_KEY})
+        self.assertIn("lastHeard", self.interface.nodes[PEER_KEY])
+
+    def test_last_heard_survives_a_contact_refresh(self):
+        self._run(self.interface._on_sign_of_life(
+            types.SimpleNamespace(payload={"public_key": PEER_KEY})))
+        heard = self.interface.nodes[PEER_KEY]["lastHeard"]
+        self.interface._refresh_nodes()
+        self.assertEqual(self.interface.nodes[PEER_KEY]["lastHeard"], heard)
+
+    def test_adverts_and_path_updates_are_subscribed(self):
+        core = _FakeMeshCoreFactory.last_core
+        self.assertIn(meshcore_interface.EventType.ADVERTISEMENT, core.subscriptions)
+        self.assertIn(meshcore_interface.EventType.PATH_UPDATE, core.subscriptions)
 
     def test_rejects_frames_over_meshcore_text_limit(self):
         with self.assertRaisesRegex(ValueError, "exceeds 160 bytes"):

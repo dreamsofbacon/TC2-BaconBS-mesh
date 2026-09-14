@@ -53,6 +53,7 @@ from utils import (
     get_hash_chunk_pause_seconds,
     is_zork_save_sync_enabled,
     compact_channel_manifest_key,
+    home_network,
 )
 
 
@@ -1670,6 +1671,22 @@ def _ensure_mail_dm_delivery_table(cursor) -> None:
                 );''')
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_mail_dm_deliveries_due
                     ON mail_dm_deliveries (state, not_before_epoch);''')
+    # Delivery progress, see server.deliver_due_mail_dms. MeshCore sends a
+    # mail one ACKed chunk at a time, so it has to remember how far it got and
+    # how many times the recipient failed to answer; Meshtastic sends the whole
+    # mail and is allowed one retry, so it remembers when and which packets.
+    cursor.execute("PRAGMA table_info(mail_dm_deliveries)")
+    columns = {row[1] for row in cursor.fetchall()}
+    for name, ddl in (
+        ('delivered_chunks', 'INTEGER NOT NULL DEFAULT 0'),
+        ('unreachable_attempts', 'INTEGER NOT NULL DEFAULT 0'),
+        ('meshtastic_sends', 'INTEGER NOT NULL DEFAULT 0'),
+        ('first_sent_epoch', 'INTEGER'),
+        ('packet_ids', "TEXT NOT NULL DEFAULT ''"),
+        ('last_wake_epoch', 'INTEGER'),
+    ):
+        if name not in columns:
+            cursor.execute(f"ALTER TABLE mail_dm_deliveries ADD COLUMN {name} {ddl}")
 
 
 def _ensure_content_status_columns(cursor) -> None:
@@ -2313,6 +2330,11 @@ def run_db_maintenance(do_vacuum: bool = False) -> dict:
     summary['api_mailbox_deleted'] = prune_api_mailbox(
         cfg.get('api_mailbox_max_age_days', 7), cfg.get('api_mailbox_max_rows', 5000))
     summary['public_chatter_deleted'] = prune_expired_public_chatter()
+    try:
+        summary['mail_relay_cancelled_non_radio'] = cancel_non_radio_mail_dm_deliveries()
+        summary['mail_relay_expired'] = expire_mail_dm_deliveries()
+    except Exception:
+        logging.exception("Mail relay queue cleanup failed during maintenance")
     # Picks up rows a peer still running older code wrote under a MeshCore
     # player's old number before it updated. Idempotent; see
     # migrate_meshcore_player_ids.
@@ -4626,6 +4648,15 @@ def _mail_recipient_scope(cursor, recipient_id) -> list[str]:
 MAIL_RELAY_REMOTE_GRACE_SECONDS = 90
 
 
+MAIL_RELAY_RADIO_NETWORKS = ('meshtastic', 'meshcore')
+MAIL_RELAY_MAX_AGE_DAYS = 7
+
+
+def is_mail_relay_radio_target(node_id) -> bool:
+    """Whether a relay DM could ever reach this id: a Meshtastic or MeshCore radio."""
+    return home_network(node_id) in MAIL_RELAY_RADIO_NETWORKS
+
+
 def enqueue_mail_dm_deliveries(unique_id: str, settle_seconds: int = 10) -> int:
     """Snapshot relay targets for one mail without backfilling future links."""
     conn = get_db_connection()
@@ -4656,6 +4687,10 @@ def enqueue_mail_dm_deliveries(unique_id: str, settle_seconds: int = 10) -> int:
         )
         consent_row = c.fetchone()
         targets = [recipient_id] if consent_row and bool(consent_row[0]) else []
+    # Only radios can be DMed. An account's SSH identity is one of its linked
+    # nodes, and queueing mail for it left a row that could never be delivered
+    # -- 21 of them were pending forever on the live fleet.
+    targets = [target for target in targets if is_mail_relay_radio_target(target)]
     if not targets:
         return 0
     now = datetime.now(timezone.utc)
@@ -4680,7 +4715,10 @@ def get_due_mail_dm_deliveries(now_epoch: Optional[int] = None, limit: int = 20)
     due_epoch = int(time.time()) if now_epoch is None else int(now_epoch)
     c.execute(
         """SELECT d.id, d.mail_unique_id, d.target_node_id, d.attempts,
-                  m.sender_short_name, m.subject, m.content
+                  m.sender_short_name, m.subject, m.content,
+                  d.created_at, d.delivered_chunks, d.unreachable_attempts,
+                  d.meshtastic_sends, d.first_sent_epoch, d.packet_ids,
+                  d.last_wake_epoch
            FROM mail_dm_deliveries d
            JOIN mail m ON m.unique_id = d.mail_unique_id
            WHERE d.state = 'pending' AND d.not_before_epoch <= ?
@@ -4689,8 +4727,135 @@ def get_due_mail_dm_deliveries(now_epoch: Optional[int] = None, limit: int = 20)
            LIMIT ?""",
         (due_epoch, max(1, min(100, int(limit)))),
     )
-    keys = ['id', 'mail_unique_id', 'target_node_id', 'attempts', 'sender_short_name', 'subject', 'content']
-    return [dict(zip(keys, row)) for row in c.fetchall()]
+    keys = ['id', 'mail_unique_id', 'target_node_id', 'attempts', 'sender_short_name', 'subject', 'content',
+            'created_at', 'delivered_chunks', 'unreachable_attempts', 'meshtastic_sends',
+            'first_sent_epoch', 'packet_ids', 'last_wake_epoch']
+    rows = []
+    for row in c.fetchall():
+        entry = dict(zip(keys, row))
+        entry['delivered_chunks'] = int(entry['delivered_chunks'] or 0)
+        entry['unreachable_attempts'] = int(entry['unreachable_attempts'] or 0)
+        entry['meshtastic_sends'] = int(entry['meshtastic_sends'] or 0)
+        entry['packet_ids'] = [p for p in str(entry['packet_ids'] or '').split(',') if p]
+        rows.append(entry)
+    return rows
+
+
+def record_mail_dm_chunk_acked(delivery_id: int, delivered_chunks: int) -> None:
+    """A MeshCore chunk was acknowledged by the recipient's radio."""
+    conn = get_db_connection()
+    conn.execute(
+        """UPDATE mail_dm_deliveries
+           SET delivered_chunks = ?, last_attempt_at = ?, last_error = ''
+           WHERE id = ? AND state = 'pending'""",
+        (int(delivered_chunks), datetime.now(timezone.utc).isoformat(), int(delivery_id)),
+    )
+    conn.commit()
+
+
+def record_mail_dm_unreachable(delivery_id: int, error: str, delay_seconds: int) -> None:
+    """The recipient did not acknowledge. Progress so far is kept."""
+    conn = get_db_connection()
+    conn.execute(
+        """UPDATE mail_dm_deliveries
+           SET unreachable_attempts = unreachable_attempts + 1,
+               last_attempt_at = ?, last_error = ?, not_before_epoch = ?
+           WHERE id = ? AND state = 'pending'""",
+        (
+            datetime.now(timezone.utc).isoformat(),
+            str(error or '')[:500],
+            int(time.time()) + max(1, int(delay_seconds)),
+            int(delivery_id),
+        ),
+    )
+    conn.commit()
+
+
+def record_mail_dm_meshtastic_send(delivery_id: int, packet_ids: list,
+                                   recheck_seconds: int) -> None:
+    """The first whole-mail Meshtastic send went out; look for its ACKs later."""
+    now = int(time.time())
+    conn = get_db_connection()
+    conn.execute(
+        """UPDATE mail_dm_deliveries
+           SET meshtastic_sends = 1, first_sent_epoch = ?, packet_ids = ?,
+               last_attempt_at = ?, last_error = '', not_before_epoch = ?
+           WHERE id = ? AND state = 'pending'""",
+        (
+            now,
+            ','.join(str(p) for p in packet_ids if p not in (None, '')),
+            datetime.now(timezone.utc).isoformat(),
+            now + max(1, int(recheck_seconds)),
+            int(delivery_id),
+        ),
+    )
+    conn.commit()
+
+
+def wake_mail_dm_deliveries(node_id: str) -> int:
+    """A sign of life from this radio: make its pending relay mail due now."""
+    normalized = str(node_id or '').strip()
+    if not normalized:
+        return 0
+    now = int(time.time())
+    conn = get_db_connection()
+    c = conn.cursor()
+    if home_network(normalized) == 'meshcore':
+        # The radio reports a full 64-hex key; a queued target may be the
+        # 12-hex prefix MeshCore addresses by, or the other way round.
+        key = normalized.lower().lstrip('!')
+        if len(key) < 12:
+            return 0
+        c.execute(
+            """UPDATE mail_dm_deliveries
+               SET not_before_epoch = MIN(not_before_epoch, ?), last_wake_epoch = ?
+               WHERE state = 'pending' AND LENGTH(target_node_id) >= 12
+                 AND (? LIKE LOWER(target_node_id) || '%' OR LOWER(target_node_id) LIKE ? || '%')""",
+            (now, now, key, key),
+        )
+    else:
+        c.execute(
+            """UPDATE mail_dm_deliveries
+               SET not_before_epoch = MIN(not_before_epoch, ?), last_wake_epoch = ?
+               WHERE target_node_id = ? AND state = 'pending'""",
+            (now, now, normalized),
+        )
+    conn.commit()
+    return max(0, c.rowcount)
+
+
+def expire_mail_dm_deliveries(max_age_days: int = MAIL_RELAY_MAX_AGE_DAYS,
+                              now: Optional[datetime] = None) -> int:
+    """Stop relaying mail nobody's radio took within the limit. It stays in the mailbox."""
+    cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=max_age_days)).isoformat()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """UPDATE mail_dm_deliveries
+           SET state = 'expired',
+               last_error = 'not delivered within ' || ? || ' days; still in mailbox'
+           WHERE state = 'pending' AND created_at < ?""",
+        (int(max_age_days), cutoff),
+    )
+    conn.commit()
+    return max(0, c.rowcount)
+
+
+def cancel_non_radio_mail_dm_deliveries() -> int:
+    """Cancel queued relay mail addressed to something that is not a radio."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    rows = c.execute(
+        "SELECT id, target_node_id FROM mail_dm_deliveries WHERE state = 'pending'").fetchall()
+    stale = [row[0] for row in rows if not is_mail_relay_radio_target(row[1])]
+    for delivery_id in stale:
+        c.execute(
+            """UPDATE mail_dm_deliveries SET state = 'cancelled', last_error = ?
+               WHERE id = ? AND state = 'pending'""",
+            ("not a radio; mail stays in the mailbox", int(delivery_id)),
+        )
+    conn.commit()
+    return len(stale)
 
 
 def get_latest_delivered_mail(recipient_id: str) -> Optional[dict]:
@@ -5328,7 +5493,10 @@ def upsert_mesh_clients(rows: list[dict]) -> None:
              hw_model = excluded.hw_model,
              role = excluded.role,
              battery_level = excluded.battery_level,
-             last_heard_epoch = excluded.last_heard_epoch,
+             -- Kept when this sweep has nothing newer. MeshCore only knows
+             -- when it last heard a node since the BBS started, so a restart
+             -- would otherwise wipe the time it was last heard.
+             last_heard_epoch = COALESCE(excluded.last_heard_epoch, mesh_clients.last_heard_epoch),
              last_seen = excluded.last_seen''',
         [
             {
