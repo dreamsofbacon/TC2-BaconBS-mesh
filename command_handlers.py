@@ -32,6 +32,7 @@ from db_operations import (
     get_mesh_client_names,
     get_account_alias, set_account_alias, create_link_code, redeem_link_code,
     describe_link_code, move_node_with_link_code,
+    account_has_ssh_password, create_password_reset_code, PASSWORD_RESET_TTL_MINUTES,
     record_link_attempt, link_rate_limit_ok, account_authorized,
     SSH_NODE_PREFIX,
     queue_delayed_link_code,
@@ -1980,6 +1981,7 @@ _ACCOUNT_MENU_TEXT = (
     "[4] Set shared alias\n"
     "[5] Unlink a device\n"
     "[6] Request code, delayed (dual-boot)\n"
+    "[7] Reset SSH password\n"
     "[0] Back"
 )
 
@@ -2069,6 +2071,9 @@ def handle_account_steps(sender_id, message, interface, sender_node_id=None):
             return
         if choice == '6':
             _handle_request_link_code(sender_id, interface, sender_node_id, delayed=True)
+            return
+        if choice == '7':
+            _handle_request_password_reset(sender_id, interface, sender_node_id)
             return
         send_message(_ACCOUNT_MENU_TEXT, sender_id, interface)
         return
@@ -2173,6 +2178,41 @@ def _handle_request_link_code(sender_id, interface, sender_node_id, delayed=Fals
             "use [1] instead.",
             sender_id, interface,
         )
+    handle_account_command(sender_id, interface)
+
+
+def _handle_request_password_reset(sender_id, interface, sender_node_id):
+    """Give a linked radio a one-time code for resetting the account's SSH
+    password. See db_operations.create_password_reset_code."""
+    if str(sender_node_id).startswith(SSH_NODE_PREFIX):
+        send_message("Request the reset from a radio linked to this account, "
+                     "not from SSH.", sender_id, interface)
+        handle_account_command(sender_id, interface)
+        return
+    account_id = get_account_id_for_node(sender_node_id)
+    if account_id is None:
+        send_message("This device isn't linked to an account, so there is no "
+                     "SSH password to reset.", sender_id, interface)
+        handle_account_command(sender_id, interface)
+        return
+    if not account_has_ssh_password(account_id):
+        send_message("Your account has no SSH password on this node. Reset it on "
+                     "the node where you signed up for SSH.", sender_id, interface)
+        handle_account_command(sender_id, interface)
+        return
+    if not link_rate_limit_ok(sender_node_id, 'password_reset', _account_link_requests_per_hour()):
+        record_link_attempt(sender_node_id, 'password_reset', False)
+        send_message("Too many reset requests. Try again later.", sender_id, interface)
+        handle_account_command(sender_id, interface)
+        return
+    code = create_password_reset_code(account_id, sender_node_id)
+    record_link_attempt(sender_node_id, 'password_reset', code is not None)
+    alias = get_account_alias(account_id) or "your username"
+    send_message(
+        f"SSH reset code: {code}\n"
+        f"One use, {PASSWORD_RESET_TTL_MINUTES} min. Log in over SSH as "
+        f"reset:{alias} with this code as the password, then choose a new one.",
+        sender_id, interface)
     handle_account_command(sender_id, interface)
 
 

@@ -1,6 +1,7 @@
 import configparser
 import base64
 import hashlib
+import hmac
 import functools
 
 from player_identity import player_key, meshcore_player_key, legacy_meshcore_number
@@ -1076,6 +1077,7 @@ def initialize_database():
     _ensure_channel_comment_sync_columns(c)
     _ensure_local_only_columns(c)
     _ensure_accounts_tables(c)
+    _ensure_password_reset_table(c)
     _ensure_mail_dm_delivery_table(c)
     _ensure_fleet_tables(c)
     _dedupe_channels_and_create_unique_index(c)
@@ -1652,6 +1654,18 @@ def _ensure_fleet_tables(cursor) -> None:
         # update_guard.py already compute locally out over the wire.
         cursor.execute(
             "ALTER TABLE node_versions ADD COLUMN rollout_detail TEXT NOT NULL DEFAULT ''")
+
+
+def _ensure_password_reset_table(cursor) -> None:
+    """One pending SSH password reset code per account, stored hashed."""
+    cursor.execute('''CREATE TABLE IF NOT EXISTS password_reset_codes (
+                    account_id TEXT PRIMARY KEY,
+                    code_hash TEXT NOT NULL,
+                    code_salt TEXT NOT NULL,
+                    requested_by_node_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                );''')
 
 
 def _ensure_mail_dm_delivery_table(cursor) -> None:
@@ -6878,6 +6892,102 @@ def create_ssh_account(alias: str, password_hash: str,
         conn.rollback()
         return None
     return account_id
+
+
+# ---------------------------------------------------------------------------
+# SSH password reset, proven with a linked radio.
+#
+# There was no way for an SSH user to recover a forgotten password. A radio
+# linked to the account is already proof of who they are -- the same proof
+# the link-code flow accepts -- so the radio asks for a one-time code
+# (Settings & Profile > Linked devices) and the user logs in over SSH as
+# "reset:<alias>" with that code as the password, then sets a new one.
+#
+# Codes are six digits, hashed at rest, one per account, and expire. They are
+# checked at login but only used up when the new password is written, so a
+# dropped connection does not waste one. Passwords live only on the node
+# where the account registered for SSH (accounts replicate without them), so
+# a reset is only possible there.
+# ---------------------------------------------------------------------------
+
+PASSWORD_RESET_TTL_MINUTES = 10
+
+
+def _hash_reset_code(code: str, salt_hex: str) -> str:
+    return hashlib.sha256(bytes.fromhex(salt_hex) + str(code).encode('utf-8')).hexdigest()
+
+
+def account_has_ssh_password(account_id: str) -> bool:
+    row = get_db_connection().execute(
+        "SELECT password_hash, password_salt FROM accounts WHERE account_id = ?",
+        (str(account_id),)).fetchone()
+    return bool(row and row[0] and row[1])
+
+
+def create_password_reset_code(account_id: str, requested_by_node_id: str,
+                               ttl_minutes: int = PASSWORD_RESET_TTL_MINUTES) -> Optional[str]:
+    """A fresh reset code for an account with an SSH password here, or None.
+
+    Replaces any earlier code for the same account.
+    """
+    if not account_has_ssh_password(account_id):
+        return None
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    salt = secrets.token_hex(16)
+    now = datetime.now()
+    conn = get_db_connection()
+    conn.execute(
+        """INSERT INTO password_reset_codes
+           (account_id, code_hash, code_salt, requested_by_node_id, created_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(account_id) DO UPDATE SET
+             code_hash = excluded.code_hash, code_salt = excluded.code_salt,
+             requested_by_node_id = excluded.requested_by_node_id,
+             created_at = excluded.created_at, expires_at = excluded.expires_at""",
+        (str(account_id), _hash_reset_code(code, salt), salt, str(requested_by_node_id),
+         now.strftime('%Y-%m-%d %H:%M:%S'),
+         (now + timedelta(minutes=max(1, int(ttl_minutes)))).strftime('%Y-%m-%d %H:%M:%S')))
+    conn.commit()
+    return code
+
+
+def check_password_reset_code(alias: str, code: str) -> Optional[str]:
+    """The account id if ``code`` is the live reset code for ``alias``, else None.
+
+    Does not use the code up; set_ssh_password_with_reset_code does.
+    """
+    credentials = get_ssh_credentials(alias)
+    code = str(code or '').strip()
+    if not credentials or len(code) != 6 or not code.isdigit():
+        return None
+    account_id = credentials[0]
+    row = get_db_connection().execute(
+        "SELECT code_hash, code_salt, expires_at FROM password_reset_codes WHERE account_id = ?",
+        (account_id,)).fetchone()
+    if not row:
+        return None
+    if row[2] < datetime.now().strftime('%Y-%m-%d %H:%M:%S'):
+        return None
+    if not hmac.compare_digest(_hash_reset_code(code, row[1]), row[0]):
+        return None
+    return account_id
+
+
+def set_ssh_password_with_reset_code(alias: str, code: str, password_hash: str,
+                                     password_salt: str) -> bool:
+    """Write the new password and use the code up, if the code is still good."""
+    account_id = check_password_reset_code(alias, code)
+    if account_id is None:
+        return False
+    conn = get_db_connection()
+    conn.execute(
+        """UPDATE accounts SET password_hash = ?, password_salt = ?, password_created_at = ?
+           WHERE account_id = ?""",
+        (str(password_hash), str(password_salt),
+         datetime.now().strftime('%Y-%m-%d %H:%M:%S'), account_id))
+    conn.execute("DELETE FROM password_reset_codes WHERE account_id = ?", (account_id,))
+    conn.commit()
+    return True
 
 
 def get_ssh_credentials(alias: str) -> Optional[tuple[str, str, str]]:

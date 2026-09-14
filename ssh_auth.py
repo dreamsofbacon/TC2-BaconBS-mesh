@@ -8,6 +8,7 @@ from cryptography.exceptions import InvalidKey
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 from db_operations import (
+    check_password_reset_code,
     create_ssh_account,
     get_account_alias,
     get_ssh_credentials,
@@ -28,6 +29,9 @@ class AuthResult:
     account_id: str
     alias: str
     registered: bool = False
+    # Set when the login was "reset:<alias>" with a valid reset code as the
+    # password. The session then asks for a new password and nothing else.
+    reset_code: str = ""
 
 
 def valid_alias(alias: str) -> bool:
@@ -62,12 +66,42 @@ def verify_password(password: str, password_hash: str,
         return False
 
 
+RESET_ATTEMPTS_PER_HOUR = 5
+
+
+def authenticate_reset(alias: str, code: str, source_address: str,
+                       attempts_per_hour: int = RESET_ATTEMPTS_PER_HOUR) -> AuthResult | None:
+    """Accept a password reset code for an alias (see db_operations).
+
+    Rate limited per address and per account: a six-digit code has a million
+    values, and five tries an hour keeps guessing hopeless.
+    """
+    clean_alias = str(alias or '').strip()
+    source_key = f"ssh-ip:{str(source_address or 'unknown').strip()}"
+    account_key = f"ssh-reset:{clean_alias.casefold()}"
+    if (not valid_alias(clean_alias)
+            or not link_rate_limit_ok(source_key, 'ssh_reset', attempts_per_hour)
+            or not link_rate_limit_ok(account_key, 'ssh_reset', attempts_per_hour)):
+        record_link_attempt(source_key, 'ssh_reset', False)
+        return None
+    account_id = check_password_reset_code(clean_alias, code)
+    record_link_attempt(source_key, 'ssh_reset', account_id is not None)
+    record_link_attempt(account_key, 'ssh_reset', account_id is not None)
+    if account_id is None:
+        return None
+    return AuthResult(account_id, get_account_alias(account_id) or clean_alias,
+                      False, str(code).strip())
+
+
 def authenticate(alias: str, password: str, source_address: str,
                  registration_enabled: bool = True,
                  registration_limit_per_hour: int = 5,
                  login_limit_per_hour: int = 20) -> AuthResult | None:
-    """Authenticate an alias, or explicitly register with ``new:<alias>``."""
+    """Authenticate an alias, register with ``new:<alias>``, or start a
+    password reset with ``reset:<alias>`` and the reset code as the password."""
     username = str(alias or '').strip()
+    if username.casefold().startswith('reset:'):
+        return authenticate_reset(username[6:], password, source_address)
     source_key = f"ssh-ip:{str(source_address or 'unknown').strip()}"
     registering = username.casefold().startswith('new:')
     clean_alias = username[4:] if registering else username

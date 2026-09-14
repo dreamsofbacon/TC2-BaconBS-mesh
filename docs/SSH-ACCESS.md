@@ -125,6 +125,22 @@ When the shared fields are blank, clients authenticate directly with
 service watches `config.ini`, so enablement, port, bind address, and credential
 changes saved in the web Settings page apply within a few seconds.
 
+### Resetting a forgotten password
+
+A radio linked to the account proves who the user is. On that radio, Settings
+& Profile > Linked devices > `[7] Reset SSH password` sends a one-time
+six-digit code, valid for 10 minutes. The user then logs in as
+`reset:<alias>` with the code as the SSH password (with the shared gate, they
+type `reset:<alias>` at the `BBS username:` prompt and then the code), and is
+asked for a new password twice. The session closes once it is changed.
+
+- The code is stored hashed, one per account, and used up only when the new
+  password is written.
+- Guessing is limited to 5 tries an hour, per address and per account.
+- A radio can request at most `[accounts] link_requests_per_hour` codes.
+- Passwords never leave the node where the account registered for SSH, so the
+  reset has to be requested and used on that node.
+
 This is the widest exposure of the options, and it is a legitimate choice for
 a hobbyist BBS — it is how essentially every dial-up board worked, and the
 content here is bulletins and games, not banking. But it means the port is

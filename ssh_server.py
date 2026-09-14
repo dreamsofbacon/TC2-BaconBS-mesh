@@ -16,7 +16,8 @@ import bbs_emulator
 import db_operations
 import ssh_terminal
 from app_paths import resolve_app_path
-from ssh_auth import AuthResult, authenticate, valid_alias, valid_password
+from ssh_auth import (AuthResult, authenticate, authenticate_reset, hash_password,
+                      valid_alias, valid_password)
 
 
 # How often to look for replies that arrived after the command that asked
@@ -145,6 +146,15 @@ class BBSClientSession(asyncssh.SSHServerSession):
         self._account_username = ""
         self._registration_password = ""
         self._auth_stage = "bbs" if auth else "account_username"
+        # A password reset: "reset:<alias>" with the code from a linked radio,
+        # either as the SSH login itself or typed at the shared-gate prompt.
+        self._reset_alias = ""
+        self._reset_code = ""
+        self._reset_password = ""
+        if auth is not None and getattr(auth, "reset_code", ""):
+            self._reset_alias = auth.alias
+            self._reset_code = auth.reset_code
+            self._auth_stage = "reset_new_password"
         self.channel = None
         self.session = None
         self._line = []
@@ -181,7 +191,13 @@ class BBSClientSession(asyncssh.SSHServerSession):
         if self.auth is None:
             self.channel.write(
                 "SSH access accepted. Register or log in to your BBS account.\r\n"
+                "Forgot your password? Enter reset:<username> with a code from a linked radio.\r\n"
                 "BBS username: ")
+            self._reset_idle_timer()
+            return True
+        if self._auth_stage == "reset_new_password":
+            self.channel.write(
+                f"Reset code accepted for {self._reset_alias}.\r\nNew password: ")
             self._reset_idle_timer()
             return True
         self._start_bbs()
@@ -241,9 +257,17 @@ class BBSClientSession(asyncssh.SSHServerSession):
         self._reset_idle_timer()
 
     def _handle_account_auth(self, line: str) -> None:
+        if self._auth_stage.startswith("reset_"):
+            self._handle_password_reset(line)
+            return
         if self._auth_stage == "account_username":
             if not line:
                 self.channel.write("BBS username: ")
+                return
+            if line.casefold().startswith("reset:"):
+                self._reset_alias = line[6:].strip()
+                self._auth_stage = "reset_code"
+                self.channel.write("Reset code from your linked radio: ")
                 return
             if not valid_alias(line):
                 self.channel.write(
@@ -306,6 +330,50 @@ class BBSClientSession(asyncssh.SSHServerSession):
         self._pending = False
         self._auth_stage = "bbs"
         self._start_bbs()
+
+    def _handle_password_reset(self, line: str) -> None:
+        if self._auth_stage == "reset_code":
+            auth = authenticate_reset(self._reset_alias, line, self.source_address)
+            if auth is None:
+                self._reset_alias = ""
+                self._auth_stage = "account_username"
+                self.channel.write("That reset code is not valid.\r\nBBS username: ")
+                return
+            self._reset_alias = auth.alias
+            self._reset_code = auth.reset_code
+            self._auth_stage = "reset_new_password"
+            self.channel.write("New password: ")
+            return
+
+        if self._auth_stage == "reset_new_password":
+            if not valid_password(line):
+                self.channel.write("Password must be 10-128 characters.\r\nNew password: ")
+                return
+            self._reset_password = line
+            self._auth_stage = "reset_confirm_password"
+            self.channel.write("Confirm new password: ")
+            return
+
+        if self._auth_stage == "reset_confirm_password":
+            if not hmac.compare_digest(line, self._reset_password):
+                self._reset_password = ""
+                self._auth_stage = "reset_new_password"
+                self.channel.write("Passwords do not match.\r\nNew password: ")
+                return
+            password_hash, password_salt = hash_password(self._reset_password)
+            self._reset_password = ""
+            changed = db_operations.set_ssh_password_with_reset_code(
+                self._reset_alias, self._reset_code, password_hash, password_salt)
+            self._reset_code = ""
+            if changed:
+                self.channel.write(
+                    f"Password changed. Log in again as {self._reset_alias} "
+                    "with your new password.\r\n")
+            else:
+                self.channel.write(
+                    "That reset code has expired or was already used. "
+                    "Request a new one from your linked radio.\r\n")
+            self.channel.exit(0 if changed else 1)
 
     def eof_received(self):
         if self.channel:
