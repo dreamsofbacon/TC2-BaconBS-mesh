@@ -14,9 +14,11 @@ import unittest
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
-# CircuitPython built-ins used by pico_node/code.py, which runs ON the Pico
+# CircuitPython built-ins used by the Pico cache node, which runs ON the Pico
 # and not on the BBS host. They are not installable for CPython and must
-# never be added to requirements.
+# never be added to requirements. The Pico code itself now lives in its own
+# repository (dreamsofbacon/baconbbs-pico); the guard stays so it cannot
+# creep back in through a requirements file.
 CIRCUITPYTHON_BUILTINS = {"alarm", "board", "busio", "digitalio"}
 
 # Import name -> distribution name, where they differ.
