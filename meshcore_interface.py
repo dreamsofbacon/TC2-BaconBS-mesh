@@ -545,6 +545,45 @@ class MeshCoreInterface:
             future.cancel()
             raise
 
+    def sync_device_time(self, epoch: int, tolerance_seconds: int = 30) -> str:
+        """Set the radio's clock to ``epoch`` if it is off. See radio_clock.
+
+        The radio is asked its time first, so a clock that is already right
+        is left alone. MeshCore firmware will not move its clock backwards,
+        so a radio that is ahead cannot be corrected from here; that is
+        reported rather than retried as though it were a transient failure.
+        """
+        async def run():
+            if self._meshcore is None or self._send_lock is None:
+                raise ConnectionError("MeshCore is disconnected")
+            async with self._send_lock:
+                commands = self._meshcore.commands
+                current = await commands.get_time()
+                radio_time = None
+                if current is not None and current.type == EventType.CURRENT_TIME:
+                    try:
+                        radio_time = int((current.payload or {}).get("time"))
+                    except (TypeError, ValueError):
+                        radio_time = None
+                if radio_time is not None and abs(radio_time - epoch) <= tolerance_seconds:
+                    return "already correct"
+                result = await commands.set_time(int(epoch))
+                if result is not None and result.type == EventType.OK:
+                    if radio_time is None:
+                        return "set"
+                    return f"set (was {radio_time - epoch:+d}s off)"
+                if radio_time is not None and radio_time > epoch:
+                    raise IOError(
+                        f"the radio is {radio_time - epoch}s ahead and MeshCore will not "
+                        "move its clock backwards")
+                raise IOError("MeshCore did not confirm the new time")
+        future = asyncio.run_coroutine_threadsafe(run(), self._loop)
+        try:
+            return future.result(timeout=self.send_timeout_seconds)
+        except TimeoutError:
+            future.cancel()
+            raise
+
     def getMyNodeInfo(self) -> dict[str, Any]:
         if self._meshcore is None:
             return {}
