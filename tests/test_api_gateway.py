@@ -212,6 +212,59 @@ class GatewayDispatchTests(unittest.TestCase):
                 self.assertIn(str(code), body)
                 self.assertIn(expected, body)
 
+    def _ai_404_with_installed(self, installed_doc, cfg=None):
+        """The chat POST answers 404; the model-list GET answers installed_doc."""
+        import urllib.error
+        seen = []
+
+        def _urlopen(req, timeout=None):
+            seen.append((req.get_method(), req.full_url))
+            if req.get_method() == "POST":
+                raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+            if installed_doc is None:
+                raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+            resp = io.BytesIO(json.dumps(installed_doc).encode())
+            resp.__enter__ = lambda *_: resp
+            resp.__exit__ = lambda *_: False
+            return resp
+
+        with patch.object(gateway, "_config_raw", lambda s, o: (cfg or self._ai_cfg()).get((s, o))), \
+                patch.object(gateway, "_max_response_bytes", lambda: 800), \
+                patch("urllib.request.urlopen", _urlopen):
+            status, body = gateway.perform_ai_chat("hi")
+        return status, body, seen
+
+    def test_a_404_for_a_model_nomad_does_not_have_says_so(self):
+        """The live failure: Nomad at the right path with no models installed
+        answered 404, and the BBS blamed the API dialect setting."""
+        status, body, seen = self._ai_404_with_installed([])
+        self.assertEqual(status, "ERR")
+        self.assertIn("qwen2.5:3b", body)
+        self.assertIn("not installed", body)
+        self.assertIn("installed: none", body)
+        self.assertNotIn("dialect", body)
+        self.assertIn(("GET", "https://ai.example.com/api/ollama/installed-models"), seen)
+
+    def test_it_lists_what_is_installed(self):
+        status, body, _ = self._ai_404_with_installed(
+            [{"name": "llama3.2:3b"}, {"model": "mistral:7b"}])
+        self.assertIn("installed: llama3.2:3b, mistral:7b", body)
+
+    def test_ollama_is_asked_through_its_own_model_list(self):
+        cfg = self._ai_cfg(ai_dialect="ollama")
+        status, body, seen = self._ai_404_with_installed({"models": []}, cfg)
+        self.assertIn("not installed", body)
+        self.assertIn(("GET", "https://ai.example.com/api/tags"), seen)
+
+    def test_a_404_with_the_model_installed_still_blames_the_path(self):
+        status, body, _ = self._ai_404_with_installed([{"name": "qwen2.5:3b"}])
+        self.assertIn("dialect", body)
+        self.assertNotIn("not installed", body)
+
+    def test_a_server_that_cannot_list_models_keeps_the_old_hint(self):
+        status, body, _ = self._ai_404_with_installed(None)
+        self.assertIn("dialect", body)
+
     def test_unmapped_http_error_still_reports_its_status(self):
         status, body = self._ai_chat_with_status(418)
         self.assertEqual(status, "ERR")

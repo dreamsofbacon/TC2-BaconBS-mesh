@@ -194,7 +194,9 @@
       captureWrap.appendChild(
         swatch("cc-" + palette.nodes[capture], true, capture));
       var label = document.createElement("span");
-      label.textContent = "Heard by " + shortNodeId(capture);
+      // The server names the radio and its node where it can; the key is
+      // the fallback, and stays in the tooltip either way.
+      label.textContent = "Heard by " + (entry.capture_label || shortNodeId(capture));
       label.title = capture;
       captureWrap.appendChild(label);
       meta.appendChild(captureWrap);
@@ -265,7 +267,7 @@
         return;
       }
       if (!nodes[nk]) {
-        nodes[nk] = { label: shortNodeId(nk), full: nk, count: 0 };
+        nodes[nk] = { label: entry.capture_label || shortNodeId(nk), full: nk, count: 0 };
       }
       nodes[nk].count++;
     });

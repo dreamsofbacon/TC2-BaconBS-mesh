@@ -717,6 +717,12 @@ def _describe_radio(interface, system_config: dict, *, bbs_nodes_key='bbs_nodes'
         'local_node_id': None,
         'local_short_name': None,
         'local_long_name': None,
+        # What this radio stamps on the public chatter it hears -- a
+        # different id namespace from local_node_id (a full MeshCore key, a
+        # Meshtastic base64 public key). Recorded so the web admin can say
+        # "Heard by <radio name> (<node>)" instead of printing the key.
+        'capture_node_id': (str(getattr(interface, 'public_chatter_capture_node_id', '') or '')
+                            or None),
         'bbs_nodes': list(getattr(interface, 'bbs_nodes', system_config.get(bbs_nodes_key, [])) or []),
         'allowed_nodes': list(getattr(interface, 'allowed_nodes', system_config.get(allowed_nodes_key, [])) or []),
         'connected': interface is not None,
@@ -1324,7 +1330,7 @@ def deliver_due_mail_dms(links, active_window_seconds: int = 900, retry_base_sec
         node_id = str(entry['target_node_id'])
         short_uid = str(entry['mail_unique_id'])[:8]
         if not is_mail_relay_radio_target(node_id):
-            cancel_mail_dm_delivery(entry['id'], "not a radio; mail stays in the mailbox")
+            cancel_mail_dm_delivery(entry['id'], "cannot receive direct messages; mail stays in the mailbox")
             continue
         if not get_mail_relay_preference(node_id):
             cancel_mail_dm_delivery(entry['id'], "recipient disabled mail relay")
@@ -1359,6 +1365,30 @@ def deliver_due_mail_dms(links, active_window_seconds: int = 900, retry_base_sec
             delivered += 1
             logging.info("Mail DM %s delivered to %s via %s, every chunk acknowledged.",
                          short_uid, node_id, link.name)
+            _relay_receipt(entry, node_id, link)
+            continue
+
+        if home_network(node_id) == 'mqtt':
+            # A user on an MQTT link. The broker confirms each publish (QoS 1),
+            # so a mail that was published whole is delivered -- there is no
+            # radio-level ACK to wait for, and no retry to spend.
+            client = active_by_node.get(node_id)
+            if client is None:
+                defer_mail_dm_delivery(entry['id'], 30)
+                continue
+            link = (links_by_name.get(str(client.get('link_name') or ''))
+                    or _link_for_node(links, node_id))
+            try:
+                for chunk in message_chunks(_relay_mail_text(entry), link.interface):
+                    send_one_chunk(chunk, node_id, link.interface)
+            except Exception as exc:
+                delay = _mail_dm_retry_delay(entry.get('attempts') or 0, retry_base_seconds)
+                retry_mail_dm_delivery(entry['id'], str(exc), delay)
+                logging.warning("Mail DM delivery to %s failed: %s", node_id, exc)
+                continue
+            mark_mail_dm_delivered(entry['id'])
+            delivered += 1
+            logging.info("Mail DM %s delivered to %s via %s.", short_uid, node_id, link.name)
             _relay_receipt(entry, node_id, link)
             continue
 

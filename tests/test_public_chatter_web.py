@@ -70,6 +70,22 @@ class PublicChatterWebTests(unittest.TestCase):
         self.assertEqual(len(data["entries"]), 1)
         self.assertEqual(data["entries"][0]["content"], "<img src=x onerror=alert(1)>")
 
+    def test_api_names_the_radio_that_heard_each_message(self):
+        """"Heard by 5a582498f3…f69930" named no radio and no town."""
+        self.add_message()
+        self.login()
+        with open(self.config_path, "a", encoding="utf-8") as config_file:
+            config_file.write("[node_names]\nchattanooga = !capture\n")
+        response = self.client.get("/api/public/chatter?hours=24")
+        entry = response.get_json()["entries"][0]
+        self.assertEqual(entry["capture_label"], "Meshtastic radio (chattanooga)")
+
+    def test_api_leaves_an_unknown_radio_unlabelled(self):
+        self.add_message()
+        self.login()
+        entry = self.client.get("/api/public/chatter?hours=24").get_json()["entries"][0]
+        self.assertNotIn("capture_label", entry)
+
     def test_radios_page_includes_public_chatter_panel(self):
         self.login()
         page = self.client.get("/radios")

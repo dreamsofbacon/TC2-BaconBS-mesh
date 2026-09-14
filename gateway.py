@@ -220,6 +220,35 @@ _AI_STATUS_HINTS = {
 }
 
 
+def _installed_ai_models(base: str, dialect: str, headers: dict):
+    """Model names the AI server has, or None if it cannot say.
+
+    Nomad lists them at /api/ollama/installed-models (a bare list); Ollama at
+    /api/tags ({"models": [...]}). Entries carry 'name' or 'model'.
+    """
+    path = "/api/ollama/installed-models" if dialect == 'nomad' else "/api/tags"
+    try:
+        req = urllib.request.Request(
+            f"{base}{path}", headers={k: v for k, v in headers.items() if k != "Content-Type"},
+            method='GET')
+        with urllib.request.urlopen(req, timeout=min(10, _request_timeout())) as resp:
+            doc = json.loads(resp.read().decode('utf-8', errors='replace'))
+    except Exception:
+        return None
+    items = doc.get('models') if isinstance(doc, dict) else doc
+    if not isinstance(items, list):
+        return None
+    names = []
+    for item in items:
+        if isinstance(item, dict):
+            name = item.get('name') or item.get('model')
+        else:
+            name = item
+        if name:
+            names.append(str(name))
+    return names
+
+
 def perform_ai_chat(prompt: str) -> Tuple[str, str]:
     """Relay a prompt to the configured Ollama / OpenAI-compatible chat endpoint."""
     base = (_config_raw('gateway', 'ai_base_url') or '').rstrip('/')
@@ -277,6 +306,17 @@ def perform_ai_chat(prompt: str) -> Tuple[str, str]:
             reply = reply.encode('utf-8')[:cap].decode('utf-8', errors='ignore') + "…[truncated]"
         return "200", reply
     except urllib.error.HTTPError as e:
+        if e.code == 404 and dialect in ('nomad', 'ollama'):
+            # Ollama answers 404 for a model it does not have, and Nomad
+            # passes that straight through -- as a web page, so it read as a
+            # wrong path. The live Nomad had the right path and no models at
+            # all. Ask the server which models it has before blaming the path.
+            installed = _installed_ai_models(base, dialect, headers)
+            if installed is not None and model not in installed:
+                have = ", ".join(installed[:4]) if installed else "none"
+                return "ERR", (f"AI model '{model}' is not installed on the AI server "
+                               f"(installed: {have}). Install it there, or set the "
+                               f"model in Settings > Gateway")
         # A bare "HTTP Error 403" over a mesh radio is a dead end -- the user
         # can't open devtools. Name the likely cause instead.
         hint = _AI_STATUS_HINTS.get(e.code)

@@ -4648,12 +4648,15 @@ def _mail_recipient_scope(cursor, recipient_id) -> list[str]:
 MAIL_RELAY_REMOTE_GRACE_SECONDS = 90
 
 
-MAIL_RELAY_RADIO_NETWORKS = ('meshtastic', 'meshcore')
+# Where a relay DM can actually be delivered: a radio, or a user on an MQTT
+# link (mqtt_interface sends them direct messages too). Not an SSH account or
+# an emulator session -- neither is anything a message can be pushed to.
+MAIL_RELAY_RADIO_NETWORKS = ('meshtastic', 'meshcore', 'mqtt')
 MAIL_RELAY_MAX_AGE_DAYS = 7
 
 
 def is_mail_relay_radio_target(node_id) -> bool:
-    """Whether a relay DM could ever reach this id: a Meshtastic or MeshCore radio."""
+    """Whether a relay DM could ever reach this id: a radio or an MQTT user."""
     return home_network(node_id) in MAIL_RELAY_RADIO_NETWORKS
 
 
@@ -4687,9 +4690,9 @@ def enqueue_mail_dm_deliveries(unique_id: str, settle_seconds: int = 10) -> int:
         )
         consent_row = c.fetchone()
         targets = [recipient_id] if consent_row and bool(consent_row[0]) else []
-    # Only radios can be DMed. An account's SSH identity is one of its linked
-    # nodes, and queueing mail for it left a row that could never be delivered
-    # -- 21 of them were pending forever on the live fleet.
+    # Only radios and MQTT users can be DMed. An account's SSH identity is one
+    # of its linked nodes, and queueing mail for it left a row that could
+    # never be delivered -- 21 of them were pending forever on the live fleet.
     targets = [target for target in targets if is_mail_relay_radio_target(target)]
     if not targets:
         return 0
@@ -5659,6 +5662,10 @@ def get_mesh_clients(
     return [dict(zip(keys, row)) for row in c.fetchall()]
 
 
+_ID_SHAPE_PROTOCOL_LABELS = {'ssh': 'SSH', 'emulator': 'Emulator', 'mqtt': 'MQTT',
+                             'meshcore': 'MeshCore', 'meshtastic': 'Meshtastic'}
+
+
 def get_mail_relay_directory(exclude_node_id: Optional[str] = None) -> list[dict]:
     """Return one offline-capable entry per opted-in account or node."""
     clients = get_mesh_clients()
@@ -5700,7 +5707,11 @@ def get_mail_relay_directory(exclude_node_id: Optional[str] = None) -> list[dict
             continue
         client = clients_by_node.get(node_id, {})
         key = f"account:{account[0]}" if account else f"node:{node_id}"
-        protocol = str(client.get('protocol') or '').strip() or 'Unknown'
+        # An SSH login or an emulator session is never in the radio roster, so
+        # it used to be listed as "(Unknown)" -- as was any radio not heard
+        # since the roster began. The id's own shape says which it is.
+        protocol = (str(client.get('protocol') or '').strip()
+                    or _ID_SHAPE_PROTOCOL_LABELS.get(home_network(node_id), 'Unknown'))
         display_name = (
             (account[1] if account else '')
             or str(client.get('long_name') or '').strip()
@@ -6970,11 +6981,14 @@ def redeem_link_code(code: str, node_id: str, network: str, max_devices: int = 6
 
     existing_account = get_account_id_for_node(node_id)
     if existing_account == account_id:
-        return False, "This device is already linked to that account."
-    if existing_account is not None:
-        return False, "This device is already linked to a different account. Unlink it there first."
+        return False, f"This device is already linked to your account, {account_display_name(account_id)}."
     if count_linked_nodes(account_id) >= max_devices:
         return False, "That account already has the maximum number of linked devices."
+    if existing_account is not None:
+        # The linked-devices screen asks before getting here (see
+        # describe_link_code); this is the refusal for any other caller.
+        return False, (f"This device is already on {account_display_name(existing_account)}, "
+                       f"not {account_display_name(account_id)}.")
 
     link_node_to_account(node_id, account_id, network, now=now_str)
     c.execute(
@@ -6983,6 +6997,87 @@ def redeem_link_code(code: str, node_id: str, network: str, max_devices: int = 6
     )
     conn.commit()
     return True, "Device linked successfully."
+
+
+def account_display_name(account_id) -> str:
+    """How an account is named to its owner: its alias in quotes, or a
+    placeholder that at least says it has none."""
+    alias = get_account_alias(account_id) if account_id else ''
+    return f"'{alias}'" if alias else "an unnamed account"
+
+
+def describe_link_code(code: str, node_id: str, max_devices: int = 6) -> dict:
+    """What entering this code on this device would do, without doing it.
+
+    status is one of: invalid, expired, same, other, full, ok. For 'other'
+    the device is already on a different account, and the linked-devices
+    screen asks whether to move it rather than refusing outright.
+
+    That case is common and was a trap. Turning on offline mail relay, or
+    requesting a code, gives a device an account of its own, so one person's
+    MeshCore and Meshtastic radios easily end up on two accounts. The refusal
+    said to unlink the device "there first" -- and a device that is its
+    account's only one can never be unlinked.
+    """
+    conn = get_db_connection()
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    row = conn.execute(
+        "SELECT code, account_id, expires_at FROM link_codes WHERE code = ? AND consumed_at IS NULL",
+        (str(code),)).fetchone()
+    if row is None or not secrets.compare_digest(row[0], str(code)):
+        return {'status': 'invalid'}
+    _code, account_id, expires_at = row
+    info = {'code_account_id': account_id,
+            'code_account_name': account_display_name(account_id)}
+    if expires_at < now_str:
+        return dict(info, status='expired')
+    existing = get_account_id_for_node(node_id)
+    if existing == account_id:
+        return dict(info, status='same')
+    if count_linked_nodes(account_id) >= max_devices:
+        return dict(info, status='full')
+    if existing is not None:
+        return dict(info, status='other', device_account_id=existing,
+                    device_account_name=account_display_name(existing),
+                    device_account_devices=count_linked_nodes(existing))
+    return dict(info, status='ok')
+
+
+def move_node_with_link_code(code: str, node_id: str, network: str,
+                             max_devices: int = 6) -> tuple:
+    """Move a device from its current account to the one this code is for.
+
+    The owner confirmed it on the device itself, with a valid code from the
+    other account -- proof of both. Unlike unlink_node this may leave the old
+    account with no devices; that account keeps its alias, and any SSH
+    password, and simply has nothing linked.
+
+    Local to this node, like unlinking: a peer never lets a sync frame move a
+    device between accounts (apply_synced_account_link), because that is how
+    someone would redirect another person's mail.
+    """
+    info = describe_link_code(code, node_id, max_devices)
+    status = info['status']
+    if status == 'invalid':
+        return False, "Invalid or already-used code."
+    if status == 'expired':
+        return False, "That code has expired. Request a new one."
+    if status == 'full':
+        return False, "That account already has the maximum number of linked devices."
+    if status == 'same':
+        return False, f"This device is already linked to your account, {info['code_account_name']}."
+    if status != 'other':
+        return redeem_link_code(code, node_id, network, max_devices)
+    conn = get_db_connection()
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn.execute("DELETE FROM linked_nodes WHERE node_id = ?", (str(node_id),))
+    conn.commit()
+    link_node_to_account(node_id, info['code_account_id'], network, now=now_str)
+    conn.execute(
+        "UPDATE link_codes SET consumed_at = ?, consumed_by_node_id = ? WHERE code = ?",
+        (now_str, str(node_id), str(code)))
+    conn.commit()
+    return True, f"Device moved to {info['code_account_name']}."
 
 
 def record_link_attempt(node_id: str, kind: str, success: bool) -> None:
