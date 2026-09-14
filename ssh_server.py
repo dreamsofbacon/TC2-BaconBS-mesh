@@ -14,6 +14,7 @@ import asyncssh
 
 import bbs_emulator
 import db_operations
+import ssh_terminal
 from app_paths import resolve_app_path
 from ssh_auth import AuthResult, authenticate, valid_alias, valid_password
 
@@ -151,9 +152,30 @@ class BBSClientSession(asyncssh.SSHServerSession):
         self._idle_handle = None
         self._late_handle = None
         self._closed = False
+        # Set from the client's pty request. No pty (a command run over ssh
+        # rather than an interactive login) means no colour and 80 columns.
+        self._width = ssh_terminal.DEFAULT_WIDTH
+        self._colour = False
 
     def connection_made(self, channel):
         self.channel = channel
+
+    def pty_requested(self, term_type, term_size, term_modes):
+        self._colour = ssh_terminal.wants_colour(term_type)
+        self._set_width(term_size[0] if term_size else 0)
+        return True
+
+    def terminal_size_changed(self, width, height, pixwidth, pixheight):
+        self._set_width(width)
+
+    def _set_width(self, width) -> None:
+        # One column short of the edge: a character in the last column puts
+        # many terminals into a pending-wrap state that swallows the CRLF.
+        try:
+            width = int(width)
+        except (TypeError, ValueError):
+            width = 0
+        self._width = (width - 1) if width > ssh_terminal.MIN_WIDTH else ssh_terminal.DEFAULT_WIDTH
 
     def shell_requested(self):
         if self.auth is None:
@@ -297,7 +319,10 @@ class BBSClientSession(asyncssh.SSHServerSession):
         """Write captured reply chunks to the terminal. True if any were."""
         wrote = False
         for chunk in chunks:
-            body = str(chunk.get("text") or "").replace("\n", "\r\n")
+            # Wrapped to the terminal's width and coloured for it. The BBS
+            # text itself is unchanged; see ssh_terminal.
+            body = ssh_terminal.render(str(chunk.get("text") or ""),
+                                       self._width, self._colour)
             self.channel.write(body + "\r\n")
             wrote = True
         return wrote
