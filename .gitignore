@@ -47,3 +47,18 @@ _fleet_apply.sh
 
 # Local radio command mailbox, never synchronized between nodes.
 radio_admin.db*
+
+# Editor and IDE state. Visual Studio wrote a solution, project files and a
+# .vs folder (with Copilot index databases) here, and all of it was committed.
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+.vscode/
+
+# Stray databases a script or a mistyped path created at the top level. The
+# BBS keeps its data in bulletins.db (ignored above) and data/trivia.db.
+/mesh_bbs.db
+/mesh_node.db
+/trivia.db
