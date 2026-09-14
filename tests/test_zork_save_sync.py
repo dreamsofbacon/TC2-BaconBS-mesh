@@ -257,14 +257,25 @@ class SyncPacingTests(unittest.TestCase):
         )
         conn.commit()
 
+        # db_operations.time is the time module itself, so this patch is
+        # process-wide: a retry thread another test left running sleeps
+        # through the same mock. Count only this thread's sleeps -- CI saw
+        # 2 != 1 on main with nothing in this path changed.
+        import threading
+        this_thread = threading.get_ident()
+        own_sleeps = []
+
+        def record(seconds):
+            if threading.get_ident() == this_thread:
+                own_sleeps.append(seconds)
+
         with mock.patch.object(db_operations, "send_mail_to_bbs_nodes") as send_mock, \
-             mock.patch.object(db_operations.time, "sleep") as sleep_mock:
+             mock.patch.object(db_operations.time, "sleep", side_effect=record):
             result = db_operations.sync_mail_to_nodes(["!peer1"], interface=object(), delay_ms=250)
 
         self.assertEqual(result["mail_synced"], 2)
         self.assertEqual(send_mock.call_count, 2)
-        self.assertEqual(sleep_mock.call_count, 1)
-        self.assertEqual(sleep_mock.call_args_list[0].args[0], 0.25)
+        self.assertEqual(own_sleeps, [0.25])
 
 
 class MainMenuNumberAliasTests(unittest.TestCase):
