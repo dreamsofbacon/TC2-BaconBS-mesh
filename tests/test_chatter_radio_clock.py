@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import types
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -117,6 +118,22 @@ class RadioClockTests(unittest.TestCase):
         clock = [line for line in logs.output if "clock" in line]
         self.assertEqual(len(clock), 1)
         self.assertIn("48.0 days behind", clock[0])
+
+    def test_the_first_warning_comes_on_a_machine_just_booted(self):
+        """monotonic() counts from boot. CI runners and a freshly rebooted Pi
+        are under an hour old, and the first warning used to wait for it."""
+        with mock.patch.object(public_chatter.time, "monotonic", return_value=120.0):
+            with self.assertLogs(level=logging.WARNING) as logs:
+                self.observe(self.now - timedelta(days=48))
+                logging.warning("sentinel")
+        self.assertEqual(len([line for line in logs.output if "clock" in line]), 1)
+
+    def test_it_warns_again_after_an_hour(self):
+        with self.assertLogs(level=logging.WARNING) as logs:
+            for uptime in (120.0, 3719.0, 3720.0):
+                with mock.patch.object(public_chatter.time, "monotonic", return_value=uptime):
+                    self.observe(self.now - timedelta(days=48))
+        self.assertEqual(len([line for line in logs.output if "clock" in line]), 2)
 
     def test_a_correct_clock_says_nothing(self):
         with self.assertLogs(level=logging.WARNING) as logs:

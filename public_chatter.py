@@ -86,9 +86,14 @@ def _plausible_message_time(source_time: datetime, now: datetime, interface) -> 
     if -RADIO_CLOCK_MAX_AGE <= skew <= RADIO_CLOCK_MAX_AHEAD:
         return source_time
     key = str(getattr(interface, 'public_chatter_capture_node_id', '') or id(interface))
-    last = _last_clock_warning.get(key, 0.0)
-    if time.monotonic() - last >= _CLOCK_WARNING_INTERVAL_SECONDS:
-        _last_clock_warning[key] = time.monotonic()
+    # None, not 0.0: monotonic time counts from boot, so on a machine up for
+    # less than an hour -- a Pi straight after the reboot that reset its
+    # radio's clock -- "an hour since 0.0" had not yet passed and the first
+    # warning never came.
+    last = _last_clock_warning.get(key)
+    clock_now = time.monotonic()
+    if last is None or clock_now - last >= _CLOCK_WARNING_INTERVAL_SECONDS:
+        _last_clock_warning[key] = clock_now
         days = abs(skew.total_seconds()) / 86400
         logging.warning(
             "Public chatter: the %s radio's clock is %.1f days %s this node's "
