@@ -580,16 +580,27 @@ def affiliated_node_labels() -> list:
     return labels
 
 
-def welcome_text(interface=None, *, max_bytes=None) -> str:
-    """The whole welcome, trimmed to what this transport can carry.
+WELCOME_MENU_HINT = "Send ? any time for the menu."
 
-    Assembled most-important-first and dropped from the end until it fits,
-    so a Meshtastic user gets the name and the greeting while an SSH user
-    gets everything. The name always survives: a welcome that has been
-    trimmed down to nothing still has to say where you are.
+
+def welcome_text() -> str:
+    """The whole welcome, on every transport, as a stranger's first contact.
+
+    It used to be trimmed to fit one packet, dropping sections from the end
+    until it did. With a real greeting that meant a radio user got the BBS
+    name and nothing else: the fleet greeting on the live fleet is 899 bytes,
+    so it never fit, and the 66-byte node line and the node list after it
+    went with it. Now every section is sent and send_message splits it into
+    as many packets as it takes -- about five on Meshtastic, seven on
+    MeshCore -- which the operator chose over a welcome nobody could read.
+
+    Line endings are normalised because the greeting is typed into a web
+    form: the browser submits CRLF, and a carriage return is a wasted byte
+    on the radio and a stray glyph on some clients.
+
+    First contact is the only time it is sent -- there is no command that
+    asks for it again -- so the menu hint is always part of it.
     """
-    if max_bytes is None:
-        max_bytes = get_max_text_bytes(interface)
     parts = [get_bbs_name()]
     for optional in (get_fleet_welcome(), get_node_welcome()):
         if optional:
@@ -598,13 +609,15 @@ def welcome_text(interface=None, *, max_bytes=None) -> str:
         labels = affiliated_node_labels()
         if labels:
             parts.append("Nodes: " + ", ".join(labels))
+    # Last, so it is the line a stranger reads just before the menu.
+    parts.append(WELCOME_MENU_HINT)
+    text = "\n".join(parts)
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
-    while len(parts) > 1:
-        text = "\n".join(parts)
-        if len(text.encode('utf-8')) <= max_bytes:
-            return text
-        parts.pop()
-    return parts[0]
+
+def welcome_messages(max_bytes: int) -> list:
+    """The welcome as the packets a transport of this size receives."""
+    return _split_into_chunks(welcome_text(), max_len=max_bytes)
 
 
 def is_bbs_role_management_enabled() -> bool:

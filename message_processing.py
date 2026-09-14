@@ -1989,9 +1989,10 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
     if not is_sync_message:
         # Before anything they typed is acted on, so a stranger's first
         # message gets an answer that says where they have arrived and then
-        # does what they asked. One extra message per person, ever.
+        # does what they asked. Once per person, ever: a profile synced from
+        # another node counts as having met the BBS.
         if _auto_update_profile(sender_id, interface):
-            handle_welcome_command(sender_id, interface, first_contact=True)
+            handle_welcome_command(sender_id, interface)
 
     bbs_nodes = interface.bbs_nodes
 
@@ -3141,8 +3142,6 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 handle_list_channels_command(sender_id, interface)
             elif global_lower in ("ver", "version"):
                 handle_version_command(sender_id, interface)
-            elif global_lower in ("welcome", "hello"):
-                handle_welcome_command(sender_id, interface)
             elif global_lower.startswith("role,,"):
                 handle_role_command(sender_id, global_message, interface, bbs_nodes)
             elif global_lower == "role":
