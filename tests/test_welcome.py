@@ -5,9 +5,9 @@ Two sections, because a fleet is two things at once. [bbs] name and
 node_welcome is this node's own line and never leaves it.
 
 The hard part is the trigger: the whole welcome runs to several packets, so
-it is sent once per person, on first contact, and never again. It used to be
-trimmed to fit one packet instead, which on the live fleet meant radio users
-saw only the BBS name -- the operator chose several packets, once, over that.
+it is sent unprompted once per person, on first contact, and after that only
+on request (!WELCOME, !HELLO). It used to be trimmed to fit one packet
+instead, which on the live fleet meant radio users saw only the BBS name.
 """
 
 import os
@@ -79,9 +79,16 @@ class WelcomeTextTests(unittest.TestCase):
     def test_sections_come_in_order_and_the_menu_hint_is_last(self):
         with _settings(name="Bacon BBS", welcome="Fleet line.",
                        node_welcome="Node line."):
-            lines = utils.welcome_text().split("\n")
+            lines = utils.welcome_text(first_contact=True).split("\n")
         self.assertEqual(lines, ["Bacon BBS", "Fleet line.", "Node line.",
                                  utils.WELCOME_MENU_HINT])
+
+    def test_on_request_there_is_no_menu_hint(self):
+        """Someone who typed !WELCOME already knows there is a menu."""
+        with _settings(name="Bacon BBS", welcome="Fleet line.",
+                       node_welcome="Node line."):
+            lines = utils.welcome_text().split("\n")
+        self.assertEqual(lines, ["Bacon BBS", "Fleet line.", "Node line."])
 
     def test_the_menu_hint_says_how_to_get_the_menu(self):
         self.assertIn("?", utils.WELCOME_MENU_HINT)
@@ -137,7 +144,8 @@ class WelcomeMessagesTests(unittest.TestCase):
         with _settings(name="Bacon BBS", welcome="Long greeting. " * 40):
             self.assertEqual(
                 utils.welcome_messages(220),
-                utils._split_into_chunks(utils.welcome_text(), max_len=220))
+                utils._split_into_chunks(utils.welcome_text(first_contact=True),
+                                         max_len=220))
 
 
 class NodeListTests(unittest.TestCase):
@@ -266,31 +274,36 @@ class HandlerTests(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def test_it_sends_the_whole_welcome(self):
+    def test_first_contact_adds_the_menu_hint(self):
+        seen = []
         with mock.patch.object(command_handlers, "welcome_text",
-                               lambda: "Bacon BBS\nA long greeting."):
-            command_handlers.handle_welcome_command("!user", object())
-        self.assertEqual(self.radio.sent, ["Bacon BBS\nA long greeting."])
+                               lambda first_contact=False: seen.append(first_contact) or "W"):
+            command_handlers.handle_welcome_command("!user", object(), first_contact=True)
+        self.assertEqual(seen, [True])
+        self.assertEqual(self.radio.sent, ["W"])
 
-    def test_the_quick_help_screen_no_longer_offers_it(self):
-        """It is a first-contact message only; advertising a command that
-        no longer exists would cost a refusal on air."""
+    def test_on_request_it_does_not(self):
+        seen = []
+        with mock.patch.object(command_handlers, "welcome_text",
+                               lambda first_contact=False: seen.append(first_contact) or "W"):
+            command_handlers.handle_welcome_command("!user", object())
+        self.assertEqual(seen, [False])
+
+    def test_the_quick_help_screen_advertises_it(self):
         with mock.patch.object(command_handlers, "_role_commands_available",
                                lambda s, i: False):
             command_handlers.handle_quick_help_command("!user", object())
-        self.assertNotIn("WELCOME", self.radio.text.upper())
+        self.assertIn("!WELCOME", self.radio.text)
 
 
 class WiringTests(unittest.TestCase):
-    def test_there_is_no_command_that_sends_it_again(self):
-        """The operator wants it seen once. !WELCOME and !HELLO asked for it
-        on demand, which at five to seven packets is not a small reply."""
+    def test_bang_welcome_and_hello_are_dispatched(self):
         import inspect
         import message_processing
         source = inspect.getsource(message_processing.process_message)
-        self.assertNotIn('"welcome"', source)
-        self.assertNotIn('"hello"', source)
-        self.assertEqual(source.count("handle_welcome_command("), 1)
+        self.assertIn('global_lower in ("welcome", "hello")', source)
+        self.assertIs(message_processing.handle_welcome_command,
+                      command_handlers.handle_welcome_command)
 
     def test_first_contact_is_wired_to_the_profile_upsert(self):
         """The greeting hangs off _auto_update_profile's return value, which
@@ -300,7 +313,8 @@ class WiringTests(unittest.TestCase):
         source = inspect.getsource(message_processing.process_message)
         self.assertIn(
             "if _auto_update_profile(sender_id, interface):\n"
-            "            handle_welcome_command(sender_id, interface)", source)
+            "            handle_welcome_command(sender_id, interface, first_contact=True)",
+            source)
 
     def test_a_profile_failure_never_greets(self):
         """_auto_update_profile swallows errors; it must return False when it
@@ -345,19 +359,29 @@ class SentOnceEndToEndTests(unittest.TestCase):
         self.assertIsNone(error)
         return [c["text"] if isinstance(c, dict) else str(c) for c in chunks]
 
-    def test_the_whole_welcome_arrives_on_the_first_message_only(self):
+    def test_the_whole_welcome_arrives_unprompted_on_the_first_message_only(self):
         greeting = " ".join(["Welcome sentence %d." % i for i in range(30)])
         with _settings(name="Bacon BBS", welcome=greeting,
                        node_welcome="You have reached Burlington."):
             first = "\n".join(self._texts("hi"))
-            again = [self._texts(text) for text in ("hi", "!welcome", "!hello")]
+            again = "\n".join(self._texts("hi"))
         self.assertIn("Welcome sentence 29.", first)
         self.assertIn("You have reached Burlington.", first)
         self.assertIn(utils.WELCOME_MENU_HINT, first)
-        for later in again:
-            joined = "\n".join(later)
-            self.assertNotIn("Welcome sentence", joined)
-            self.assertNotIn(utils.WELCOME_MENU_HINT, joined)
+        self.assertNotIn("Welcome sentence", again)
+
+    def test_bang_welcome_and_hello_send_it_again_in_full(self):
+        greeting = " ".join(["Welcome sentence %d." % i for i in range(30)])
+        with _settings(name="Bacon BBS", welcome=greeting,
+                       node_welcome="You have reached Burlington."):
+            self._texts("hi")
+            for command in ("!welcome", "!HELLO"):
+                with self.subTest(command=command):
+                    reply = "\n".join(self._texts(command))
+                    self.assertIn("Welcome sentence 0.", reply)
+                    self.assertIn("Welcome sentence 29.", reply)
+                    self.assertIn("You have reached Burlington.", reply)
+                    self.assertNotIn(utils.WELCOME_MENU_HINT, reply)
 
 
 if __name__ == "__main__":
