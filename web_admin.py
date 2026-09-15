@@ -54,6 +54,14 @@ TABLE_CONFIG = {
 }
 
 
+# Tables whose list page can delete several selected rows at once. Mail is
+# the one where clearing out a batch is routine, and until this the only way
+# was one row at a time, from a Delete button at the far right of a table
+# wide enough to push it off the screen.
+BULK_DELETE_TABLES = ("mail",)
+BULK_DELETE_LIMIT = 500
+
+
 TABLE_LIST_CONTENT = """
 <div class=\"card\">
   <h2>{{ table_title }}</h2>
@@ -7614,6 +7622,7 @@ def create_app(runtime_interface=None) -> Flask:
             create_label=("New Bulletin Post" if table == "bulletins" else "New Channel Entry" if table == "channels" else ""),
             edit_label=("Post/Edit" if table == "channels" else "Edit"),
             comments_enabled=(table == "channels"),
+            bulk_delete=(table in BULK_DELETE_TABLES),
             per_page=25,
             page=1,
             total_pages=None,
@@ -7846,6 +7855,46 @@ def create_app(runtime_interface=None) -> Flask:
             editable_fields=cfg["editable"],
             row=row,
           )
+
+    @app.post("/<table>/delete-selected")
+    @login_required
+    def table_delete_selected(table: str):
+        if table not in BULK_DELETE_TABLES:
+            flash("Deleting several rows at once is not available here.", "error")
+            return redirect(url_for("table_list", table=table if table in TABLE_CONFIG else "bulletins"))
+
+        back = {key: value for key in ("q", "node")
+                if (value := str(request.form.get(key, "") or "").strip())}
+        row_ids = set()
+        for value in request.form.getlist("row_ids"):
+            try:
+                row_ids.add(int(value))
+            except (TypeError, ValueError):
+                continue
+        if not row_ids:
+            flash("Select at least one message to delete.", "error")
+            return redirect(url_for("table_list", table=table, **back))
+        row_ids = sorted(row_ids)[:BULK_DELETE_LIMIT]
+
+        with get_db_connection() as conn:
+            rows = conn.execute(
+                f"SELECT id, unique_id FROM mail WHERE id IN ({','.join('?' * len(row_ids))})",
+                row_ids,
+            ).fetchall()
+        from db_operations import delete_mail
+        for row in rows:
+            # The same path as the single Delete: a tombstone, and peers are
+            # told, so the next sync does not put the message back.
+            if row["unique_id"]:
+                delete_mail(str(row["unique_id"]), None, [], None)
+            else:
+                execute_write("DELETE FROM mail WHERE id = ?", (row["id"],))
+
+        if rows:
+            nudge_sync_after_content_change()
+        count = len(rows)
+        flash(f"Deleted {count} message{'' if count == 1 else 's'}.", "success")
+        return redirect(url_for("table_list", table=table, **back))
 
     @app.post("/<table>/<int:row_id>/delete")
     @login_required
