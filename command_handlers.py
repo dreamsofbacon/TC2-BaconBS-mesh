@@ -2646,6 +2646,106 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
 
 
 
+# Deleting several mail messages at once, from either mail list: Mail > Read
+# (numbered by message id, as the list prints them) and !CM (numbered by
+# position). D starts it; the user sends the numbers, sees what will go, and
+# confirms. Each message is deleted exactly as the single Delete does.
+MAIL_BULK_SELECT_STEP = 11
+MAIL_BULK_CONFIRM_STEP = 12
+MAIL_BULK_STEPS = (MAIL_BULK_SELECT_STEP, MAIL_BULK_CONFIRM_STEP)
+_MAIL_BULK_PREVIEW_LINES = 5
+_MAIL_BULK_SELECT_PROMPT = ("Delete which? Send the numbers, like 3,5 or 3-7, "
+                            "or ALL. 0 to go back.")
+
+
+def _plural_messages(count: int) -> str:
+    return f"{count} message{'' if count == 1 else 's'}"
+
+
+def parse_number_selection(text: str, valid) -> tuple:
+    """Read "3,5 7-9" or "all" against the numbers on screen.
+
+    Returns (chosen, rejected): the listed numbers picked, in order, and the
+    pieces that were not a listed number or range. Ranges only pick the
+    listed numbers inside them, since mail ids have gaps.
+    """
+    valid = set(valid)
+    tokens = [token for token in re.split(r'[,\s]+', str(text or '').strip()) if token]
+    if len(tokens) == 1 and tokens[0].casefold() == 'all':
+        return sorted(valid), []
+    chosen, rejected = set(), []
+    for token in tokens:
+        match = re.fullmatch(r'(\d+)(?:-(\d+))?', token)
+        if not match:
+            rejected.append(token)
+            continue
+        low, high = int(match.group(1)), int(match.group(2) or match.group(1))
+        low, high = min(low, high), max(low, high)
+        picked = {number for number in valid if low <= number <= high}
+        if picked:
+            chosen |= picked
+        else:
+            rejected.append(token)
+    return sorted(chosen), rejected
+
+
+def start_mail_bulk_delete(sender_id, interface, command, mail, numbered_by):
+    """Ask which messages to delete. mail holds get_mail rows as listed;
+    numbered_by is 'id' (Mail > Read) or 'position' (!CM)."""
+    update_user_state(sender_id, {
+        'command': command, 'step': MAIL_BULK_SELECT_STEP,
+        'mail': [list(row) for row in mail], 'numbered_by': numbered_by,
+    })
+    send_message(_MAIL_BULK_SELECT_PROMPT, sender_id, interface)
+
+
+def handle_mail_bulk_delete_step(sender_id, message, state, interface, bbs_nodes):
+    text = str(message or '').strip()
+    mail = state.get('mail') or []
+    if is_cancel(text) or text == '0' or text.lower() in ('n', 'no'):
+        if state.get('step') == MAIL_BULK_CONFIRM_STEP:
+            send_message("Nothing deleted.", sender_id, interface)
+        handle_mail_command(sender_id, interface)
+        return
+
+    if state.get('step') == MAIL_BULK_SELECT_STEP:
+        by_number = {
+            (int(row[0]) if state.get('numbered_by') == 'id' else index + 1): row
+            for index, row in enumerate(mail)
+        }
+        chosen, rejected = parse_number_selection(text, by_number)
+        if rejected or not chosen:
+            listed = ', '.join(rejected) if rejected else text
+            send_message(f"Not in your list: {listed}. {_MAIL_BULK_SELECT_PROMPT}",
+                         sender_id, interface)
+            return
+        rows = [by_number[number] for number in chosen]
+        lines = [f"Delete {_plural_messages(len(rows))}?"]
+        for row in rows[:_MAIL_BULK_PREVIEW_LINES]:
+            lines.append(f"- {row[2]} ({row[1]})")
+        if len(rows) > _MAIL_BULK_PREVIEW_LINES:
+            lines.append(f"...and {len(rows) - _MAIL_BULK_PREVIEW_LINES} more")
+        lines.append("[Y]es [0]No")
+        state = dict(state, step=MAIL_BULK_CONFIRM_STEP,
+                     chosen_uids=[str(row[4]) for row in rows])
+        update_user_state(sender_id, state)
+        send_message("\n".join(lines), sender_id, interface)
+        return
+
+    if text.lower() not in ('y', 'yes'):
+        send_message("Reply Y to delete them, or 0 to keep them.", sender_id, interface)
+        return
+    sender_node_id = get_node_id_from_num(sender_id, interface)
+    # Only what is still in this mailbox: a message may have been deleted on
+    # another node, or by another session, since the list was shown.
+    present = {str(row[4]) for row in get_mail(sender_node_id)}
+    unique_ids = [uid for uid in state.get('chosen_uids') or [] if uid in present]
+    for unique_id in unique_ids:
+        delete_mail(unique_id, sender_node_id, bbs_nodes, interface)
+    send_message(f"Deleted {_plural_messages(len(unique_ids))} 🗑️", sender_id, interface)
+    handle_mail_command(sender_id, interface)
+
+
 def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
     message = message.strip()
     # "!x" is a cancel word, not the NX-style trailing-x shorthand.
@@ -2654,6 +2754,9 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
     if step in (3, 5, 7) and is_cancel(message):
         send_message("Mail cancelled.", sender_id, interface)
         handle_mail_command(sender_id, interface)
+        return
+    if step in MAIL_BULK_STEPS:
+        handle_mail_bulk_delete_step(sender_id, message, state, interface, bbs_nodes)
         return
 
     if step == 1:
@@ -2671,13 +2774,17 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             lens = scope_notice(sender_id, count_hidden_mail(sender_node_id, scope),
                                 noun='mail')
             if mail:
-                header = f"You have {len(mail)} mail messages. Select a message number to read:"
+                header = (f"You have {len(mail)} mail messages. Send a number to read it, "
+                          "D to delete several, or 0 to go back:")
                 if lens:
                     header = f"{lens}{LINE_BREAK}{header}"
                 send_message(header, sender_id, interface)
                 for msg in mail:
                     send_message(f"-{msg[0]}-\nDate: {msg[3]}\nFrom: {msg[1]}\nSubject: {msg[2]}", sender_id, interface)
-                update_user_state(sender_id, {'command': 'MAIL', 'step': 2})
+                # The list is kept for D, so the numbers deleted are the
+                # ones just shown.
+                update_user_state(sender_id, {'command': 'MAIL', 'step': 2,
+                                              'mail': [list(row) for row in mail]})
             else:
                 empty = "There are no messages in your mailbox.📭"
                 if lens:
@@ -2704,6 +2811,11 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             # with the session silently cleared. Treat it as the back
             # command it looks like before trying it as an id.
             handle_mail_command(sender_id, interface)
+            return
+        if message.lower() == 'd':
+            sender_node_id = get_node_id_from_num(sender_id, interface)
+            listed = state.get('mail') or get_mail(sender_node_id, get_view_scope(sender_id))
+            start_mail_bulk_delete(sender_id, interface, 'MAIL', listed, 'id')
             return
         try:
             mail_id = int(message)
@@ -3134,7 +3246,7 @@ def handle_check_mail_command(sender_id, interface):
             response = f"{lens}\n{response}"
         for i, msg in enumerate(mail):
             response += f"{i + 1:02d}. From: {msg[1]}, Subject: {msg[2]}\n"
-        response += "\nPlease reply with the number of the message you want to read."
+        response += "\nReply with a number to read it, D to delete several, or 0 to go back."
         send_message(response, sender_id, interface)
 
         update_user_state(sender_id, {'command': 'CHECK_MAIL', 'step': 1, 'mail': mail})
@@ -3152,6 +3264,9 @@ def handle_read_mail_command(sender_id, message, state, interface):
         # screen's only response was "Invalid message number. Please try
         # again." forever, with no way out but disconnecting.
         handle_mail_command(sender_id, interface)
+        return
+    if message.strip().lower() == 'd':
+        start_mail_bulk_delete(sender_id, interface, 'CHECK_MAIL', state.get('mail', []), 'position')
         return
     try:
         mail = state.get('mail', [])

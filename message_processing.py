@@ -19,6 +19,7 @@ from command_handlers import (
     handle_channel_directory_command, handle_channel_directory_steps, handle_send_mail_command,
     handle_read_mail_command, handle_check_mail_command, handle_quick_reply_command,
     handle_delete_mail_confirmation, handle_post_bulletin_command,
+    handle_mail_bulk_delete_step, MAIL_BULK_STEPS,
     handle_check_bulletin_command, handle_read_bulletin_command, handle_read_channel_command,
     handle_post_channel_command, handle_list_channels_command, handle_quick_help_command,
     handle_version_command, handle_welcome_command,
@@ -149,10 +150,10 @@ _TEXT_PROMPTS = {
     # bang-prefixed "!cancel" there falls all the way through to here. "0"
     # bare already worked (see handle_mail_steps' own check for it); this
     # is what makes the bang form of the same escape work too.
-    'MAIL': (2,),
+    'MAIL': (2, 11, 12),
     # The !CM numbered list has the identical "0"-as-back handling as MAIL
     # step 2 above, in handle_read_mail_command -- same reasoning, same fix.
-    'CHECK_MAIL': (1,),
+    'CHECK_MAIL': (1, 11, 12),
     'APIGW': (2,),
     # Ask Nomad ('N' on the main menu, and its own post-reply follow-up
     # prompt) had the same gap: "!cancel" typed at the question prompt
@@ -3235,6 +3236,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                         handle_read_mail_command(sender_id, message, state, interface)
                     elif step == 2:
                         handle_delete_mail_confirmation(sender_id, message, state, interface, bbs_nodes)
+                    elif step in MAIL_BULK_STEPS:
+                        handle_mail_bulk_delete_step(sender_id, message, state, interface, bbs_nodes)
                 elif command == 'CHECK_BULLETIN':
                     if step == 1:
                         handle_read_bulletin_command(sender_id, message, state, interface)
