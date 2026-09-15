@@ -1739,6 +1739,8 @@ def _ensure_content_status_columns(cursor) -> None:
         cursor.execute("ALTER TABLE bulletins ADD COLUMN source_timestamp TEXT")
     if 'received_at' not in bulletin_cols:
         cursor.execute("ALTER TABLE bulletins ADD COLUMN received_at TEXT")
+    if 'author_node_id' not in bulletin_cols:
+        cursor.execute("ALTER TABLE bulletins ADD COLUMN author_node_id TEXT")
 
     cursor.execute("PRAGMA table_info(mail)")
     mail_cols = {row[1] for row in cursor.fetchall()}
@@ -1778,6 +1780,8 @@ def _ensure_channel_comment_sync_columns(cursor) -> None:
         cursor.execute("ALTER TABLE channel_comments ADD COLUMN source_timestamp TEXT")
     if 'received_at' not in cc_cols:
         cursor.execute("ALTER TABLE channel_comments ADD COLUMN received_at TEXT")
+    if 'author_node_id' not in cc_cols:
+        cursor.execute("ALTER TABLE channel_comments ADD COLUMN author_node_id TEXT")
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_comments_unique_id_unique ON channel_comments(unique_id)")
 
     # Origin indexes for the Node View lens, created HERE rather than beside
@@ -3916,7 +3920,9 @@ def get_channel_id_by_name_url(name: str, url: str) -> Optional[int]:
     return int(row[0])
 
 
-def add_channel_comment(channel_id, sender_short_name, content, bbs_nodes=None, interface=None, unique_id=None, comment_date=None, source_node_id=None, source_timestamp=None):
+def add_channel_comment(channel_id, sender_short_name, content, bbs_nodes=None, interface=None, unique_id=None, comment_date=None, source_node_id=None, source_timestamp=None, author_node_id=None):
+    if not _valid_author_node_id(author_node_id):
+        author_node_id = None
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT id, name, url FROM channels WHERE id = ?", (channel_id,))
@@ -3965,13 +3971,15 @@ def add_channel_comment(channel_id, sender_short_name, content, bbs_nodes=None, 
                     (source_node_id, source_timestamp, existing_id),
                 )
                 conn.commit()
+            if author_node_id:
+                set_post_author('C', unique_id, author_node_id)
             _flush_pending_expected_content_length('channel_comments', unique_id, _pending_channel_comment_expected_lengths, 'channel comment')
             clear_sync_tombstone('channels', f"comment:{unique_id}")
             return unique_id
 
     c.execute(
-        "INSERT INTO channel_comments (channel_id, sender_short_name, date, content, unique_id, expected_content_length, content_complete, source_node_id, source_timestamp, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (int(channel[0]), sender_short_name, date, content, unique_id, len(str(content or '')), 1, source_node_id, source_timestamp, now_iso)
+        "INSERT INTO channel_comments (channel_id, sender_short_name, date, content, unique_id, expected_content_length, content_complete, source_node_id, source_timestamp, received_at, author_node_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (int(channel[0]), sender_short_name, date, content, unique_id, len(str(content or '')), 1, source_node_id, source_timestamp, now_iso, author_node_id)
     )
     conn.commit()
     _local_nid = get_local_node_id()
@@ -3996,6 +4004,7 @@ def add_channel_comment(channel_id, sender_short_name, content, bbs_nodes=None, 
             interface,
             source_node_id=source_node_id,
             source_timestamp=source_timestamp,
+            author_node_id=author_node_id,
         )
     return unique_id
 
@@ -4034,7 +4043,7 @@ def add_channel_comment_by_manifest_key(channel_key: str, sender_short_name: str
 def get_channel_comments(channel_id, source_node_ids=None):
     conn = get_db_connection()
     c = conn.cursor()
-    sql = "SELECT id, sender_short_name, date, content, unique_id, COALESCE(content_complete, 1) AS content_complete, COALESCE(expected_content_length, LENGTH(content)) AS expected_content_length, source_node_id, source_timestamp, received_at FROM channel_comments WHERE channel_id = ?"
+    sql = f"SELECT id, {_sender_name_sql('channel_comments', 'author_node_id')}, date, content, unique_id, COALESCE(content_complete, 1) AS content_complete, COALESCE(expected_content_length, LENGTH(content)) AS expected_content_length, source_node_id, source_timestamp, received_at FROM channel_comments WHERE channel_id = ?"
     params = [channel_id]
     clause, scope_params = origin_scope_clause('source_node_id', source_node_ids)
     if clause:
@@ -4063,7 +4072,7 @@ def get_channel_comment_by_unique_id(unique_id: str):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT ch.name, ch.url, cc.sender_short_name, cc.date, cc.content, cc.unique_id, COALESCE(cc.expected_content_length, LENGTH(cc.content)), COALESCE(cc.content_complete, 1), cc.source_node_id, cc.source_timestamp "
+        "SELECT ch.name, ch.url, cc.sender_short_name, cc.date, cc.content, cc.unique_id, COALESCE(cc.expected_content_length, LENGTH(cc.content)), COALESCE(cc.content_complete, 1), cc.source_node_id, cc.source_timestamp, cc.author_node_id "
         "FROM channel_comments cc JOIN channels ch ON ch.id = cc.channel_id WHERE cc.unique_id = ?",
         (str(unique_id),),
     )
@@ -4212,7 +4221,40 @@ def append_channel_comment_content(unique_id: str, char_offset: Optional[int], a
 
 
 
-def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interface, unique_id=None, local_only: bool = False, date=None, source_node_id=None, source_timestamp=None):
+def _valid_author_node_id(value) -> bool:
+    """A device id as it appears on the wire and in linked_nodes: one field,
+    no separators or spaces, and short enough for a MeshCore key."""
+    text = str(value or '')
+    return (0 < len(text) <= 128 and '|' not in text
+            and not any(ch.isspace() for ch in text))
+
+
+_POST_AUTHOR_TABLES = {'B': 'bulletins', 'C': 'channel_comments'}
+
+
+def set_post_author(kind: str, unique_id: str, author_node_id: str) -> bool:
+    """Record which device wrote a bulletin ('B') or channel comment ('C').
+
+    The first author recorded stays: a later frame cannot move a post onto
+    someone else's account. Not part of the record hash -- older peers never
+    store it -- so nodes agree on a record whether or not they have it.
+    Returns true when the row was updated.
+    """
+    table = _POST_AUTHOR_TABLES.get(str(kind))
+    if table is None or not unique_id or not _valid_author_node_id(author_node_id):
+        return False
+    conn = get_db_connection()
+    cursor = conn.execute(
+        f"UPDATE {table} SET author_node_id = ? WHERE unique_id = ? AND author_node_id IS NULL",
+        (str(author_node_id), str(unique_id)),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interface, unique_id=None, local_only: bool = False, date=None, source_node_id=None, source_timestamp=None, author_node_id=None):
+    if not _valid_author_node_id(author_node_id):
+        author_node_id = None
     conn = get_db_connection()
     c = conn.cursor()
     original_date = str(date).strip() if date else datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -4260,11 +4302,13 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
                     (source_node_id, source_timestamp, existing_id),
                 )
                 conn.commit()
+            if author_node_id:
+                set_post_author('B', unique_id, author_node_id)
             _flush_pending_expected_content_length('bulletins', unique_id, _pending_bulletin_expected_lengths, 'bulletin')
             clear_sync_tombstone('bulletins', str(unique_id))
             return unique_id
     c.execute(
-        "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only, expected_content_length, content_complete, source_node_id, source_timestamp, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only, expected_content_length, content_complete, source_node_id, source_timestamp, received_at, author_node_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             board,
             sender_short_name,
@@ -4278,6 +4322,7 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
             source_node_id,
             source_timestamp,
             now_iso,
+            author_node_id,
         ),
     )
     conn.commit()
@@ -4295,7 +4340,8 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
     _flush_pending_expected_content_length('bulletins', unique_id, _pending_bulletin_expected_lengths, 'bulletin')
     clear_sync_tombstone('bulletins', str(unique_id))
     if (not local_only) and bbs_nodes and interface:
-        send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface, date=original_date, source_node_id=source_node_id, source_timestamp=source_timestamp)
+        send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface, date=original_date, source_node_id=source_node_id, source_timestamp=source_timestamp,
+                                   author_node_id=author_node_id)
 
     # New logic to send group chat notification for urgent bulletins
     if board.lower() == "urgent":
@@ -4494,7 +4540,7 @@ def delete_user_profile(user_id, bbs_nodes=None, interface=None,
 def get_bulletins(board, source_node_ids=None):
     conn = get_db_connection()
     c = conn.cursor()
-    sql = "SELECT id, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject || ' [incomplete]' ELSE subject END, sender_short_name, date, unique_id FROM bulletins WHERE board = ? COLLATE NOCASE"
+    sql = f"SELECT id, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject || ' [incomplete]' ELSE subject END, {_sender_name_sql('bulletins', 'author_node_id')}, date, unique_id FROM bulletins WHERE board = ? COLLATE NOCASE"
     params = [board]
     clause, scope_params = origin_scope_clause('source_node_id', source_node_ids)
     if clause:
@@ -4526,7 +4572,7 @@ def get_bulletin_content(bulletin_id):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT sender_short_name, date, subject, content, unique_id, COALESCE(content_complete, 1), COALESCE(expected_content_length, LENGTH(content)) FROM bulletins WHERE id = ?",
+        f"SELECT {_sender_name_sql('bulletins', 'author_node_id')}, date, subject, content, unique_id, COALESCE(content_complete, 1), COALESCE(expected_content_length, LENGTH(content)) FROM bulletins WHERE id = ?",
         (bulletin_id,),
     )
     return c.fetchone()
@@ -4890,7 +4936,7 @@ def get_latest_delivered_mail(recipient_id: str) -> Optional[dict]:
         return None
     placeholders = ','.join('?' for _ in recipient_ids)
     c.execute(
-        f"""SELECT m.id, m.sender, {_MAIL_SENDER_NAME_SQL.format(table='m')}, m.subject, m.unique_id,
+        f"""SELECT m.id, m.sender, {_sender_name_sql('m')}, m.subject, m.unique_id,
                    d.delivered_at
             FROM mail_dm_deliveries d
             JOIN mail m ON m.unique_id = d.mail_unique_id
@@ -4928,7 +4974,7 @@ def get_latest_mailbox_message(recipient_id: str) -> Optional[dict]:
         return None
     placeholders = ','.join('?' for _ in recipient_ids)
     c.execute(
-        f"""SELECT id, {_MAIL_SENDER_NAME_SQL.format(table='mail')}, subject
+        f"""SELECT id, {_sender_name_sql('mail')}, subject
             FROM mail
             WHERE recipient IN ({placeholders})
               AND COALESCE(content_complete, 1) = 1
@@ -5017,17 +5063,20 @@ def retry_mail_dm_delivery(delivery_id: int, error: str, delay_seconds: int) -> 
     conn.commit()
 
 
-# The name to show for a mail's sender: the sending device's account alias as
-# it is NOW, falling back to the name stored when the mail was written. Names
-# are captured at authorship, so mail sent before someone linked their device
-# or set an alias kept a radio short name -- often just the tail of the device
-# id -- for good. The row records the sending device, so it can be looked up
-# live. The stored column is untouched, which keeps sync hashes as they are.
-_MAIL_SENDER_NAME_SQL = (
-    "COALESCE(NULLIF((SELECT a.alias FROM linked_nodes ln "
-    "JOIN accounts a ON a.account_id = ln.account_id "
-    "WHERE ln.node_id = {table}.sender), ''), {table}.sender_short_name)"
-)
+# The name to show for a post's author: the writing device's account alias as
+# it is NOW, falling back to the name stored when the post was written. Names
+# are captured at authorship, so a post written before someone linked their
+# device or set an alias kept a radio short name -- often just the tail of the
+# device id -- for good. Mail records the sending device (sender); bulletins
+# and channel comments record it in author_node_id, for posts made since that
+# column was added. The stored name is untouched, which keeps sync hashes as
+# they are.
+def _sender_name_sql(table: str, node_column: str = 'sender') -> str:
+    return (
+        "COALESCE(NULLIF((SELECT a.alias FROM linked_nodes ln "
+        "JOIN accounts a ON a.account_id = ln.account_id "
+        f"WHERE ln.node_id = {table}.{node_column}), ''), {table}.sender_short_name)"
+    )
 
 
 def get_mail(recipient_id, source_node_ids=None):
@@ -5037,7 +5086,7 @@ def get_mail(recipient_id, source_node_ids=None):
     if not recipient_ids:
         return []
     placeholders = ','.join('?' for _ in recipient_ids)
-    sql = f"SELECT id, {_MAIL_SENDER_NAME_SQL.format(table='mail')}, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject || ' [incomplete]' ELSE subject END, date, unique_id FROM mail WHERE recipient IN ({placeholders})"
+    sql = f"SELECT id, {_sender_name_sql('mail')}, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject || ' [incomplete]' ELSE subject END, date, unique_id FROM mail WHERE recipient IN ({placeholders})"
     params = list(recipient_ids)
     clause, scope_params = origin_scope_clause('source_node_id', source_node_ids)
     if clause:
@@ -5087,7 +5136,7 @@ def get_mail_content(mail_id, recipient_id, source_node_ids=None):
     if not recipient_ids:
         return None
     placeholders = ','.join('?' for _ in recipient_ids)
-    sql = f"SELECT {_MAIL_SENDER_NAME_SQL.format(table='mail')}, date, subject, content, unique_id, COALESCE(content_complete, 1), COALESCE(expected_content_length, LENGTH(content)) FROM mail WHERE id = ? AND recipient IN ({placeholders})"
+    sql = f"SELECT {_sender_name_sql('mail')}, date, subject, content, unique_id, COALESCE(content_complete, 1), COALESCE(expected_content_length, LENGTH(content)) FROM mail WHERE id = ? AND recipient IN ({placeholders})"
     params = [mail_id, *recipient_ids]
     clause, scope_params = origin_scope_clause('source_node_id', source_node_ids)
     if clause:
@@ -7579,7 +7628,7 @@ def get_bulletin_by_unique_id(unique_id: str):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT board, sender_short_name, date, subject, content, unique_id, source_node_id, source_timestamp FROM bulletins WHERE unique_id = ? ORDER BY LENGTH(content) DESC, id ASC",
+        "SELECT board, sender_short_name, date, subject, content, unique_id, source_node_id, source_timestamp, author_node_id FROM bulletins WHERE unique_id = ? ORDER BY LENGTH(content) DESC, id ASC",
         (unique_id,),
     )
     return c.fetchone()
@@ -7756,10 +7805,11 @@ def sync_bulletins_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] 
     try:
         if total_items and delay_seconds > 0:
             time.sleep(delay_seconds)
-        c.execute("SELECT board, sender_short_name, date, subject, content, unique_id, source_node_id, source_timestamp FROM bulletins WHERE local_only = 0")
-        for board, sender_short_name, bulletin_date, subject, content, unique_id, source_node_id, source_timestamp in c.fetchall():
+        c.execute("SELECT board, sender_short_name, date, subject, content, unique_id, source_node_id, source_timestamp, author_node_id FROM bulletins WHERE local_only = 0")
+        for board, sender_short_name, bulletin_date, subject, content, unique_id, source_node_id, source_timestamp, author_node_id in c.fetchall():
             send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface, date=bulletin_date,
-                                       source_node_id=source_node_id, source_timestamp=source_timestamp)
+                                       source_node_id=source_node_id, source_timestamp=source_timestamp,
+                                       author_node_id=author_node_id)
             bulletins_synced += 1
             pct = int((bulletins_synced * 100) / total_items) if total_items else 100
             _update_sync_progress(progress_percent=pct, completed_items=bulletins_synced,
@@ -7815,10 +7865,10 @@ def sync_channels_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] =
                                   last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         c.execute(
             "SELECT ch.name, ch.url, cc.sender_short_name, cc.date, cc.content, cc.unique_id, "
-            "cc.source_node_id, cc.source_timestamp "
+            "cc.source_node_id, cc.source_timestamp, cc.author_node_id "
             "FROM channel_comments cc JOIN channels ch ON ch.id = cc.channel_id WHERE ch.local_only = 0 ORDER BY cc.date ASC, cc.unique_id ASC"
         )
-        for channel_name, channel_url, sender_short_name, comment_date, content, unique_id, source_node_id, source_timestamp in c.fetchall():
+        for channel_name, channel_url, sender_short_name, comment_date, content, unique_id, source_node_id, source_timestamp, author_node_id in c.fetchall():
             send_channel_comment_to_bbs_nodes(
                 make_channel_manifest_key(channel_name, channel_url),
                 sender_short_name,
@@ -7829,6 +7879,7 @@ def sync_channels_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] =
                 interface,
                 source_node_id=source_node_id,
                 source_timestamp=source_timestamp,
+                author_node_id=author_node_id,
             )
             channels_synced += 1
             pct = int((channels_synced * 100) / total_items) if total_items else 100

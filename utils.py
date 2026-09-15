@@ -52,7 +52,7 @@ def get_max_text_bytes(interface=None) -> int:
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat', 'role', 'bbsid', 'acct', 'mdlv')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state, 'role'=user roles, 'bbsid'=fleet BBS name/greeting, 'acct'=fleet accounts (identity only, never credentials), 'mdlv'=mail relay delivery receipts
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat', 'role', 'bbsid', 'acct', 'mdlv', 'auth')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state, 'role'=user roles, 'bbsid'=fleet BBS name/greeting, 'acct'=fleet accounts (identity only, never credentials), 'mdlv'=mail relay delivery receipts, 'auth'=author device on bulletins and channel comments
 
 # Single-char scope codes used by the 'scc' wire capability.  Senders gate
 # encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
@@ -1275,7 +1275,33 @@ def resolve_display_name(node_id, interface):
     return get_node_short_name(node_id, interface)
 
 
-def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface, date=None, source_node_id=None, source_timestamp=None):
+def send_post_author_to_bbs_nodes(kind, unique_id, author_node_id, bbs_nodes, interface):
+    """Tell capable peers which device wrote a bulletin ('B') or channel
+    comment ('C'), so its name can follow that device's account.
+
+    A frame of its own, sent after the record, because the record frames are
+    parsed from both ends and an old peer would read an extra field as the
+    source timestamp. Peers without 'auth' never see it and keep showing the
+    stored name. Losing it costs only the name: a peer missing the record
+    asks for it again, and the resend carries the author too.
+    """
+    if not author_node_id or not unique_id:
+        return
+    try:
+        from db_operations import peer_supports
+    except Exception:
+        return
+    capable = [node_id for node_id in bbs_nodes if peer_supports(node_id, 'auth')]
+    if not capable:
+        return
+    wire_uid = encode_uid(unique_id, peers_all_support(capable, 'cuid'))
+    message = f"POSTAUTHOR|{kind}|{wire_uid}|{author_node_id}"
+    pause = get_sync_pause_seconds(interface)
+    for node_id in capable:
+        _send_one_sync(message, node_id, interface, pause)
+
+
+def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface, date=None, source_node_id=None, source_timestamp=None, author_node_id=None):
     header = f"BULLETIN|{board}|{sender_short_name}|{subject}|"
     _use_epoch = peers_all_support(bbs_nodes, 'epoch')
     if source_node_id and source_timestamp:
@@ -1295,6 +1321,7 @@ def send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, uniqu
         bbs_nodes=bbs_nodes, interface=interface,
         pause_seconds=get_sync_pause_seconds(interface),
     )
+    send_post_author_to_bbs_nodes('B', unique_id, author_node_id, bbs_nodes, interface)
 
 
 def send_mail_to_bbs_nodes(sender_id, sender_short_name, recipient_id, subject, content, unique_id, bbs_nodes,
@@ -1501,7 +1528,7 @@ def peers_all_support(peer_ids, cap: str) -> bool:
         return False
 
 
-def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_date, content, unique_id, bbs_nodes, interface, source_node_id=None, source_timestamp=None):
+def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_date, content, unique_id, bbs_nodes, interface, source_node_id=None, source_timestamp=None, author_node_id=None):
     _use_epoch = peers_all_support(bbs_nodes, 'epoch')
     _use_plain = peers_all_support(bbs_nodes, 'nob64')
     comment_date_wire = encode_ts_minute(comment_date, _use_epoch) if comment_date else (comment_date or "")
@@ -1564,6 +1591,7 @@ def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_da
             bbs_nodes=legacy_peers, interface=interface,
             pause_seconds=get_sync_pause_seconds(interface),
         )
+    send_post_author_to_bbs_nodes('C', unique_id, author_node_id, bbs_nodes, interface)
 
 
 def send_public_chatter_to_bbs_nodes(row, bbs_nodes, interface):

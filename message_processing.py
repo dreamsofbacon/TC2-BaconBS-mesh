@@ -41,7 +41,7 @@ from command_handlers import (
     is_cancel,
 )
 from db_operations import (
-    add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel,
+    add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel, set_post_author,
     add_channel_comment_by_manifest_key, delete_channel_comment, delete_channel,
     decode_channel_manifest_key, make_channel_manifest_key,
     append_bulletin_content, append_mail_content,
@@ -1402,7 +1402,8 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
             logging.info(f"Sending requested bulletin to {destination_node_id} key={key}")
             send_bulletin_to_bbs_nodes(row[0], row[1], row[3], row[4], row[5], [destination_node_id], interface, date=row[2],
                                        source_node_id=row[6] if len(row) > 6 else None,
-                                       source_timestamp=row[7] if len(row) > 7 else None)
+                                       source_timestamp=row[7] if len(row) > 7 else None,
+                                       author_node_id=row[8] if len(row) > 8 else None)
         else:
             logging.warning(f"Requested bulletin missing locally for resend key={key}")
     elif scope == 'mail':
@@ -1427,6 +1428,7 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
                     row[2], row[3], row[4], row[5], [destination_node_id], interface,
                     source_node_id=row[8] if len(row) > 8 else None,
                     source_timestamp=row[9] if len(row) > 9 else None,
+                    author_node_id=row[10] if len(row) > 10 else None,
                 )
             else:
                 logging.warning(f"Requested channel comment missing locally for resend key={key}")
@@ -1447,6 +1449,7 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
                 row[2], row[3], row[4], row[5], [destination_node_id], interface,
                 source_node_id=row[8] if len(row) > 8 else None,
                 source_timestamp=row[9] if len(row) > 9 else None,
+                author_node_id=row[10] if len(row) > 10 else None,
             )
         else:
             logging.warning(f"Requested channel comment missing locally for resend key={key}")
@@ -2197,6 +2200,13 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed BULLETINMETA length ignored: {message}")
                 return
             apply_bulletin_expected_content_length(decode_uid(parts[1]), expected_length)
+        elif message.startswith("POSTAUTHOR|"):
+            # Wire format: POSTAUTHOR|B or C|unique_id|author_node_id
+            parts = message.split("|", 3)
+            if len(parts) != 4 or parts[1] not in ('B', 'C') or not parts[2]:
+                logging.warning(f"Malformed POSTAUTHOR sync message ignored: {message}")
+                return
+            set_post_author(parts[1], decode_uid(parts[2]), parts[3])
         elif message.startswith("MAILCONT|"):
             parts = message.split("|", 3)
             if len(parts) < 3 or not parts[1]:
