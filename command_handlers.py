@@ -2636,7 +2636,8 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
                 send_message("Error: Unable to retrieve your node information.", sender_id, interface)
                 update_user_state(sender_id, None)
                 return
-            unique_id = add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interface)
+            unique_id = add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interface,
+                                     author_node_id=node_id)
             send_message(f"Your bulletin '{subject}' has been posted to {board}.\n(╯°□°)╯📄📌[{board}]", sender_id, interface)
             handle_bb_steps(sender_id, 'e', 1, state, interface, bbs_nodes)
         else:
@@ -3040,9 +3041,11 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
             if not content:
                 send_message("Comment was empty. Nothing posted.", sender_id, interface)
             else:
-                node_short_name = resolve_display_name(get_node_id_from_num(sender_id, interface), interface) or "Unknown"
+                author_node_id = get_node_id_from_num(sender_id, interface)
+                node_short_name = resolve_display_name(author_node_id, interface) or "Unknown"
                 add_channel_comment(state.get('channel_id'), node_short_name, content,
-                                    bbs_nodes=interface.bbs_nodes, interface=interface)
+                                    bbs_nodes=interface.bbs_nodes, interface=interface,
+                                    author_node_id=author_node_id)
                 send_message("Comment posted.", sender_id, interface)
             send_message("[1]View comments [2]Comment [0]Exit", sender_id, interface)
             update_user_state(sender_id, {
@@ -3208,9 +3211,11 @@ def handle_post_bulletin_command(sender_id, message, interface, bbs_nodes):
             return
 
         _, board_name, subject, content = parts
-        sender_short_name = resolve_display_name(get_node_id_from_num(sender_id, interface), interface)
+        author_node_id = get_node_id_from_num(sender_id, interface)
+        sender_short_name = resolve_display_name(author_node_id, interface)
 
-        unique_id = add_bulletin(board_name, sender_short_name, subject, content, bbs_nodes, interface)
+        unique_id = add_bulletin(board_name, sender_short_name, subject, content, bbs_nodes, interface,
+                                 author_node_id=author_node_id)
         send_message(f"Your bulletin '{subject}' has been posted to {board_name}.", sender_id, interface)
 
 

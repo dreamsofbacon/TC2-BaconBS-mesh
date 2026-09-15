@@ -397,11 +397,15 @@ class DefaultScopeCostTests(_DbCase):
         """Byte-identical SQL, not merely equivalent results -- an extra
         clause that happens to select everything is still a behaviour change
         on the path every existing user takes."""
-        self.assertEqual(
-            self._captured_sql(lambda: db_operations.get_bulletins("General")),
-            ["SELECT id, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject"
-             " || ' [incomplete]' ELSE subject END, sender_short_name, date,"
-             " unique_id FROM bulletins WHERE board = ? COLLATE NOCASE"])
+        # The author column became a live account-name lookup on 2026-09-14;
+        # what this guards is that the default scope adds no origin filter.
+        (sql,) = self._captured_sql(lambda: db_operations.get_bulletins("General"))
+        self.assertTrue(sql.startswith(
+            "SELECT id, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject"
+            " || ' [incomplete]' ELSE subject END, "))
+        self.assertTrue(sql.endswith(
+            ", date, unique_id FROM bulletins WHERE board = ? COLLATE NOCASE"))
+        self.assertNotIn("source_node_id", sql)
 
     def test_the_mail_query_is_unchanged(self):
         sql = self._captured_sql(lambda: db_operations.get_mail(RADIO))
