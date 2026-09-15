@@ -22,13 +22,20 @@ class MailBulkDeleteTests(_WebAdminHarness):
     def setUp(self):
         super().setUp()
         self.trigger_path = Path(self.temp_dir.name) / "manual_sync.trigger"
-        extra_env = mock.patch.dict(
+        self.extra_env = mock.patch.dict(
             os.environ, {"BBS_MANUAL_SYNC_TRIGGER_PATH": str(self.trigger_path)}, clear=False)
-        extra_env.start()
-        self.addCleanup(extra_env.stop)
+        self.extra_env.start()
         db_operations.initialize_database()
         self.client = create_app().test_client()
         self.login(self.client)
+
+    def tearDown(self):
+        # Before the harness's own patch is stopped: stopping this one
+        # afterwards would restore the environment it snapshotted, which
+        # still held the harness's temp paths, and leak them into every
+        # later test.
+        self.extra_env.stop()
+        super().tearDown()
 
     def mail(self, subject):
         unique_id = db_operations.add_mail("!11112222", "Pers", "!abcd1234", subject, "Body", [], None)
