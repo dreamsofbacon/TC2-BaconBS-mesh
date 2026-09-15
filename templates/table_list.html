@@ -58,11 +58,25 @@
   </div>
 </div>
 
+{% if bulk_delete %}
+<form method="post" action="{{ url_for('table_delete_selected', table=table_name) }}"
+      id="bulk-delete-form" class="bulk-actions" data-bulk-delete
+      data-noun="{{ 'message' if table_name == 'mail' else 'row' }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+  {% if node_filter %}<input type="hidden" name="node" value="{{ node_filter }}">{% endif %}
+  <button type="submit" class="btn btn-sm btn-danger" data-bulk-submit disabled>Delete selected</button>
+  <span class="text-muted" data-bulk-count aria-live="polite">Tick messages to delete several at once.</span>
+</form>
+{% endif %}
 <div class="table-scroll-container">
   <table id="data-table" class="data-table" data-table-id="{{ table_name }}"
          data-reorderable="{{ url_for('api_reorder', table=table_name) }}">
     <thead>
       <tr>
+        {% if bulk_delete %}
+        <th class="col-select"><input type="checkbox" data-bulk-all aria-label="Select every row on this page"></th>
+        {% endif %}
         <th class="col-handle" aria-label="Drag to reorder"></th>
         <th class="col-expand" aria-label="Expand row"></th>
         {% for column in display_columns %}
@@ -84,6 +98,11 @@
     <tbody data-reorderable="{{ url_for('api_reorder', table=table_name) }}">
       {% for row in rows %}
       <tr class="data-row" data-row-id="{{ row['id'] }}">
+        {% if bulk_delete %}
+        <td class="col-select"><input type="checkbox" name="row_ids" value="{{ row['id'] }}"
+            form="bulk-delete-form" data-bulk-row
+            aria-label="Select {{ row.get('subject') or ('row ' ~ row['id']) }}"></td>
+        {% endif %}
         <td class="reorder-handle col-handle" title="Drag to reorder" aria-label="Drag handle">⋮⋮</td>
         <td class="col-expand">
           <button class="expand-btn btn btn-sm btn-icon" type="button" aria-label="Expand row" aria-expanded="false">
@@ -129,7 +148,7 @@
       </tr>
       <!-- Expand detail row -->
       <tr class="row-detail" aria-hidden="true">
-        <td colspan="{{ display_columns|length + 3 }}" class="row-detail-cell">
+        <td colspan="{{ display_columns|length + (4 if bulk_delete else 3) }}" class="row-detail-cell">
           <dl class="row-detail-grid">
             {% for column in display_columns %}
             <div>
@@ -143,7 +162,7 @@
       {% endfor %}
       {% if not rows %}
       <tr class="empty-row">
-        <td colspan="{{ display_columns|length + 3 }}" class="empty-state">
+        <td colspan="{{ display_columns|length + (4 if bulk_delete else 3) }}" class="empty-state">
           <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" width="48" height="48" aria-hidden="true"><circle cx="24" cy="24" r="20"/><path d="M16 24h16M24 16v16" stroke-linecap="round"/></svg>
           <p>No {{ table_title | lower }} found{% if search_query %} matching "<strong>{{ search_query }}</strong>"{% endif %}.</p>
           {% if create_url %}
@@ -172,5 +191,8 @@
   <span class="btn btn-sm" aria-disabled="true">Next →</span>
   {% endif %}
 </div>
+{% endif %}
+{% if bulk_delete %}
+<script src="{{ url_for('static', filename='js/bulk-delete.js', v=asset_version) }}"></script>
 {% endif %}
 {% endblock %}

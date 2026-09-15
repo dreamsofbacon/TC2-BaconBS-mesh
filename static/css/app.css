@@ -672,6 +672,16 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 
 .table-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 
+/* Delete several selected rows (Mail). */
+.bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 16px;
+}
+.col-select input { width: 16px; height: 16px; cursor: pointer; }
+
 /* Toolbar inner layout — actions row sits below the title and stretches full width */
 .table-toolbar-actions {
   display: flex;
@@ -947,6 +957,7 @@ td[data-col="sender_short_name"] { white-space: nowrap; width: 1%; }
 .pairing-list code { overflow-wrap: anywhere; }
 
 /* Pin-width columns */
+.col-select,
 .col-actions,
 td[data-col="board"],
 td[data-col="date"],
