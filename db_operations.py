@@ -1,4 +1,5 @@
 import configparser
+import atexit
 import base64
 import hashlib
 import hmac
@@ -582,6 +583,59 @@ def get_config_path() -> str:
     return os.getenv('BBS_CONFIG_PATH', 'config.ini')
 
 
+# Diagnostic logging was this node's heaviest writer by far. Every log line
+# opened its own connection, committed its own fsynced transaction, and then
+# ran a prune that rewrote the table -- for one row. bbs.local and forgecam
+# were each writing about 25 GB a day onto consumer SD cards.
+#
+# Events are held in memory and written in batches instead: a batch goes out
+# when it reaches CONNECTION_EVENT_FLUSH_ROWS, or after
+# CONNECTION_EVENT_FLUSH_SECONDS, whichever comes first, so a quiet node
+# still writes what it has within a few seconds. The prune runs once every
+# CONNECTION_EVENT_PRUNE_EVERY rows rather than on every insert, which lets
+# the table overshoot its cap by a few hundred rows between prunes.
+#
+# This log is diagnostic, so it is the one place that trades durability for
+# the card's life: its writes are synchronous=NORMAL, and a power cut can
+# lose the last few seconds of it. Content -- mail, bulletins, comments --
+# keeps synchronous=FULL and is never buffered.
+CONNECTION_EVENT_FLUSH_SECONDS = 5.0
+CONNECTION_EVENT_FLUSH_ROWS = 50
+CONNECTION_EVENT_PRUNE_EVERY = 500
+# If the database cannot be written at all, the buffer must not grow without
+# limit. Oldest first, since the newest lines are the ones being read.
+CONNECTION_EVENT_MAX_BUFFER = 5000
+
+_connection_event_lock = threading.Lock()
+_connection_event_buffer: list = []
+_connection_event_timer = None
+_connection_events_since_prune = 0
+
+
+def _connection_event_row(sender_num, sender_node_id, sender_short_name,
+                          to_id, message_type, event_text) -> tuple:
+    return (
+        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        str(sender_num) if sender_num is not None else None,
+        sender_node_id,
+        sender_short_name or '',
+        str(to_id) if to_id is not None else None,
+        message_type,
+        event_text,
+    )
+
+
+def _schedule_connection_event_flush() -> None:
+    """Caller holds _connection_event_lock."""
+    global _connection_event_timer
+    if _connection_event_timer is not None:
+        return
+    timer = threading.Timer(CONNECTION_EVENT_FLUSH_SECONDS, flush_connection_events)
+    timer.daemon = True
+    _connection_event_timer = timer
+    timer.start()
+
+
 def _write_connection_event_direct(
     db_path: str,
     sender_num: Optional[int],
@@ -591,40 +645,88 @@ def _write_connection_event_direct(
     message_type: str,
     event_text: str,
 ) -> None:
-    conn = sqlite3.connect(db_path, timeout=CONNECTION_EVENT_TIMEOUT_SECONDS)
-    try:
-        _configure_db_connection(conn, busy_timeout_ms=CONNECTION_EVENT_BUSY_TIMEOUT_MS)
-        conn.execute(
-            '''CREATE TABLE IF NOT EXISTS connection_events (
-                   id INTEGER PRIMARY KEY AUTOINCREMENT,
-                   event_time TEXT NOT NULL,
-                   sender_num TEXT,
-                   sender_node_id TEXT,
-                   sender_short_name TEXT,
-                   to_id TEXT,
-                   message_type TEXT NOT NULL,
-                   event_text TEXT NOT NULL
-               );'''
-        )
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        conn.execute(
-            '''INSERT INTO connection_events
-               (event_time, sender_num, sender_node_id, sender_short_name, to_id, message_type, event_text)
-               VALUES (?, ?, ?, ?, ?, ?, ?)''',
-            (
-                now,
-                str(sender_num) if sender_num is not None else None,
-                sender_node_id,
-                sender_short_name or '',
-                str(to_id) if to_id is not None else None,
-                message_type,
-                event_text,
+    """Queue one event. Written with the next batch, not on this thread."""
+    row = _connection_event_row(sender_num, sender_node_id, sender_short_name,
+                                to_id, message_type, event_text)
+    with _connection_event_lock:
+        _connection_event_buffer.append((db_path, row))
+        overflow = len(_connection_event_buffer) - CONNECTION_EVENT_MAX_BUFFER
+        if overflow > 0:
+            del _connection_event_buffer[:overflow]
+        ready = len(_connection_event_buffer) >= CONNECTION_EVENT_FLUSH_ROWS
+        if not ready:
+            _schedule_connection_event_flush()
+    if ready:
+        flush_connection_events()
+
+
+def flush_connection_events() -> int:
+    """Write every queued event. Returns how many rows were written.
+
+    Called on a timer, when a batch fills, at shutdown, and by tests. Rows
+    that cannot be written are dropped rather than retried: this is a
+    diagnostic log, and a database that refuses writes must not turn into
+    unbounded memory use.
+    """
+    global _connection_event_timer, _connection_events_since_prune
+    with _connection_event_lock:
+        timer, _connection_event_timer = _connection_event_timer, None
+        pending, _connection_event_buffer[:] = list(_connection_event_buffer), []
+    if timer is not None:
+        timer.cancel()
+    if not pending:
+        return 0
+
+    by_path: dict = {}
+    for db_path, row in pending:
+        by_path.setdefault(db_path, []).append(row)
+
+    written = 0
+    for db_path, rows in by_path.items():
+        try:
+            conn = sqlite3.connect(db_path, timeout=CONNECTION_EVENT_TIMEOUT_SECONDS)
+        except sqlite3.Error:
+            continue
+        try:
+            _configure_db_connection(conn, busy_timeout_ms=CONNECTION_EVENT_BUSY_TIMEOUT_MS)
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.execute(
+                '''CREATE TABLE IF NOT EXISTS connection_events (
+                       id INTEGER PRIMARY KEY AUTOINCREMENT,
+                       event_time TEXT NOT NULL,
+                       sender_num TEXT,
+                       sender_node_id TEXT,
+                       sender_short_name TEXT,
+                       to_id TEXT,
+                       message_type TEXT NOT NULL,
+                       event_text TEXT NOT NULL
+                   );'''
             )
-        )
-        _prune_connection_events(conn, _get_max_connection_log_rows())
-        conn.commit()
-    finally:
-        conn.close()
+            conn.executemany(
+                '''INSERT INTO connection_events
+                   (event_time, sender_num, sender_node_id, sender_short_name, to_id, message_type, event_text)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                rows,
+            )
+            written += len(rows)
+            with _connection_event_lock:
+                _connection_events_since_prune += len(rows)
+                due = _connection_events_since_prune >= CONNECTION_EVENT_PRUNE_EVERY
+                if due:
+                    _connection_events_since_prune = 0
+            if due:
+                _prune_connection_events(conn, _get_max_connection_log_rows())
+            conn.commit()
+        except sqlite3.Error:
+            # Diagnostic only: a busy or unwritable database must never
+            # delay or abort the packet being recorded.
+            pass
+        finally:
+            conn.close()
+    return written
+
+
+atexit.register(flush_connection_events)
 
 
 def install_connection_log_handler(db_path: Optional[str] = None) -> None:
@@ -646,6 +748,7 @@ def install_connection_log_handler(db_path: Optional[str] = None) -> None:
 
 
 def remove_connection_log_handler() -> None:
+    flush_connection_events()
     root_logger = logging.getLogger()
     with _connection_log_handler_lock:
         for handler in list(root_logger.handlers):
