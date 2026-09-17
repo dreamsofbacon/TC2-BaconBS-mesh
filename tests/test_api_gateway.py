@@ -566,3 +566,46 @@ class GapFillTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AiSystemPromptTests(unittest.TestCase):
+    """The AI answers for this BBS, so it must use this BBS's words.
+
+    Reported 2026-09-14: Nomad called the boards "forums". The live
+    [gateway] ai_system_prompt was empty, so nothing had ever told it
+    otherwise.
+    """
+
+    def _prompt_sent(self, configured):
+        cfg = {
+            ('gateway', 'ai_base_url'): 'https://ai.example.com',
+            ('gateway', 'ai_dialect'): 'nomad',
+            ('gateway', 'ai_model'): 'qwen2.5:3b',
+            ('gateway', 'ai_system_prompt'): configured,
+        }
+        captured = {}
+
+        def _fake_urlopen(req, timeout=None):
+            captured['payload'] = json.loads(req.data.decode("utf-8"))
+            resp = io.BytesIO(json.dumps({"message": {"content": "ok"}}).encode())
+            resp.__enter__ = lambda *_: resp
+            resp.__exit__ = lambda *_: False
+            return resp
+
+        with patch.object(gateway, "_config_raw", lambda s, o: cfg.get((s, o))), \
+             patch("urllib.request.urlopen", _fake_urlopen):
+            gateway.perform_ai_chat("what is here?")
+        messages = captured['payload']['messages']
+        system = [m for m in messages if m['role'] == 'system']
+        return system[0]['content'] if system else ''
+
+    def test_an_empty_setting_still_teaches_it_the_bbs_words(self):
+        system = self._prompt_sent('')
+        for word in ("Bulletins", "Channels", "Mail", "Public Chatter"):
+            with self.subTest(word=word):
+                self.assertIn(word, system)
+        self.assertIn("Never call any of them forums", system)
+
+    def test_an_operators_own_prompt_wins(self):
+        self.assertEqual(self._prompt_sent("Speak only in haiku."),
+                         "Speak only in haiku.")

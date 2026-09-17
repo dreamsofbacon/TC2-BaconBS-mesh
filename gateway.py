@@ -249,6 +249,20 @@ def _installed_ai_models(base: str, dialect: str, headers: dict):
     return names
 
 
+# The model answers for this BBS, so it has to use this BBS's words. Left to
+# itself it calls the boards "forums" and the channels "threads", which are
+# not things here and send people looking for menus that do not exist. This
+# is only the fallback: an operator's own [gateway] ai_system_prompt wins.
+DEFAULT_AI_SYSTEM_PROMPT = (
+    "You are the assistant for a small off-grid mesh radio BBS, answering over "
+    "a slow radio link. Be direct and conversational, and keep replies under "
+    "170 characters. Use this BBS's own words for its features: Bulletins are "
+    "public posts on boards, Channels are shared topics with comments, Mail is "
+    "private between two people, and Public Chatter is radio traffic the node "
+    "overheard. Never call any of them forums, threads or subreddits."
+)
+
+
 def perform_ai_chat(prompt: str) -> Tuple[str, str]:
     """Relay a prompt to the configured Ollama / OpenAI-compatible chat endpoint."""
     base = (_config_raw('gateway', 'ai_base_url') or '').rstrip('/')
@@ -256,7 +270,7 @@ def perform_ai_chat(prompt: str) -> Tuple[str, str]:
         return "ERR", "AI relay not configured (ai_base_url)"
     dialect = (_config_raw('gateway', 'ai_dialect') or 'ollama').lower()
     model = _config_raw('gateway', 'ai_model') or 'llama3.2'
-    system = _config_raw('gateway', 'ai_system_prompt') or ''
+    system = _config_raw('gateway', 'ai_system_prompt') or DEFAULT_AI_SYSTEM_PROMPT
     messages = ([{"role": "system", "content": system}] if system else []) + \
                [{"role": "user", "content": prompt}]
     headers = {"Content-Type": "application/json"}

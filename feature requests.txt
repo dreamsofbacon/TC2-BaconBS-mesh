@@ -10,7 +10,6 @@ The Pico cache node is now its own project, `dreamsofbacon/baconbbs-pico`, with 
 
 ## Open: User Experience and Defects
 
-- [ ] Ensure Project Nomad uses BBS terms such as "Bulletins" and "Channels," not "forums." The word comes from the AI's replies, not from this codebase, so this is a config change: the live `[gateway] ai_system_prompt` says nothing about BBS terminology.
 
 ## Open: Product and Operations
 
@@ -33,6 +32,7 @@ The Pico cache node is now its own project, `dreamsofbacon/baconbbs-pico`, with 
 
 ## Needs Verification: User and Service Workflows
 
+- [ ] Nomad's BBS vocabulary (on `main`, not yet deployed). `[gateway] ai_system_prompt` is empty on bbs.local, so nothing had ever told the model what things are called here. The BBS now sends its own prompt when that setting is blank: short replies, and Bulletins / Channels / Mail / Public Chatter by name, never "forums" or "threads". An operator's own prompt still replaces it entirely. Covered by tests; needs a live question to Nomad once a model is installed there.
 - [ ] Fleet status traffic (on `main`, not yet deployed). It was not rollout noise: measured on bbs.local 2026-09-17, steady state was about 13 `FLEETVER`, 13 `NODEVER` and 13 `FLEETSTATUS` frames a minute, because the apply check ran every 60 seconds and advertised to every peer each time regardless of change. The periodic advert now goes out only when something changed -- target, version, rollout state -- or every 15 minutes; the apply check itself still runs every minute, and a deploy still advertises immediately. Covered by tests. After deploying, recount the frames and confirm a deploy still reaches all three nodes promptly.
 - [ ] SD card write load (on `main`, not yet deployed). Connection events -- which every log line becomes -- are now held in memory and written in batches of 50 or every 5 seconds, in one transaction, instead of a connection, an fsynced commit and a whole-table prune per line; the prune runs once per 500 rows, so the table can overshoot its cap by a few hundred. The log alone drops to synchronous=NORMAL and can lose its last few seconds in a power cut; mail, bulletins and comments keep synchronous=FULL and are never buffered. Covered by tests. Measure the real write rate on bbs.local and forgecam after deploying, since the 25 GB/day figure was measured before this. Back up `config.ini` from both nodes.
 - [ ] Open-list fixes, on `main` and not yet deployed. Quick Commands print each command's fields (`!SM,,to,,subject,,message`). Deleting the message you are reading asks "Delete ...? [Y]es [0]No" first, in both mail readers -- it used to take effect on the keypress, in both, so the note that `!CM` already confirmed was wrong. A linking code that is not six digits says so instead of sharing the "Invalid or already-used code" reply. A lone `0` at the channel comment composer means Back, as it does elsewhere, rather than becoming the comment's last line. `!AU` returns to the screen it was typed on. Covered by tests; not yet used on a radio.
