@@ -1508,8 +1508,31 @@ def _apply_fleet_target_if_due(system_config: dict) -> bool:
     return False
 
 
-def _advertise_fleet_state(system_config: dict, bbs_nodes, interface) -> int:
-    """Send this node's durable fleet target and running version to peers."""
+# Fleet state went out to every peer on every apply check -- once a minute,
+# for ever. On bbs.local that was about 13 FLEETVER, 13 NODEVER and 13
+# FLEETSTATUS frames a minute in steady state, none of them saying anything
+# new, and each one a log line and an SD card write on every node that heard
+# it. The periodic caller now advertises only when something changed (a new
+# target, a new version, a different rollout state) or when the heartbeat
+# below is due, so a peer that missed an advert or arrived afterwards still
+# learns this node's state. Triggered adverts -- a stored target, a deploy --
+# still go out immediately.
+FLEET_ADVERT_HEARTBEAT_SECONDS: float = 900.0
+_fleet_advert_last: dict = {}
+
+
+def _reset_fleet_advert_state() -> None:
+    """Test hook: forget what was last advertised, and to whom."""
+    _fleet_advert_last.clear()
+
+
+def _advertise_fleet_state(system_config: dict, bbs_nodes, interface,
+                           force: bool = True) -> int:
+    """Send this node's durable fleet target and running version to peers.
+
+    With force=False nothing is sent unless the state changed or the
+    heartbeat is due.
+    """
     fleet = (system_config or {}).get('fleet') or {}
     group = str(fleet.get('group', '')).strip()
     if str(fleet.get('updates', 'off')).lower() == 'off' or not group:
@@ -1521,15 +1544,9 @@ def _advertise_fleet_state(system_config: dict, bbs_nodes, interface) -> int:
         from version_info import get_app_version, get_git_commit_short
         target = get_fleet_target(group)
         peers = list(bbs_nodes or [])
-        sent = 0
-        if target:
-            sent += send_fleet_target_to_bbs_nodes(
-                target.get('instruction', ''), peers, interface)
         node_id = get_local_node_id()
         app_version = get_app_version()
         commit = get_git_commit_short()
-        sent += send_node_version_to_bbs_nodes(
-            node_id, app_version, commit, peers, interface)
         update_state = fleet_update.read_update_state()
         rollout_state = str(update_state.get('state') or (
             'healthy' if target and str(target.get('commit', '')).startswith(commit)
@@ -1550,6 +1567,25 @@ def _advertise_fleet_state(system_config: dict, bbs_nodes, interface) -> int:
                                   if attempts else f"crash-looped, reverted to {restored}")
             elif rollout_state == 'rollback_failed':
                 rollout_detail = "crash-looped and the revert itself failed"
+        signature = (
+            group, str((target or {}).get('instruction') or ''), node_id,
+            app_version, commit, str((target or {}).get('commit') or ''),
+            rollout_state, rollout_detail,
+        )
+        audience = tuple(sorted(str(peer) for peer in peers))
+        if not force:
+            said, said_at = _fleet_advert_last.get(audience, (None, 0.0))
+            if (said == signature
+                    and (time.time() - said_at) < FLEET_ADVERT_HEARTBEAT_SECONDS):
+                return 0
+        _fleet_advert_last[audience] = (signature, time.time())
+
+        sent = 0
+        if target:
+            sent += send_fleet_target_to_bbs_nodes(
+                target.get('instruction', ''), peers, interface)
+        sent += send_node_version_to_bbs_nodes(
+            node_id, app_version, commit, peers, interface)
         sent += send_fleet_status_to_bbs_nodes(
             node_id, app_version, commit,
             str((target or {}).get('commit') or ''), rollout_state,
@@ -1560,18 +1596,19 @@ def _advertise_fleet_state(system_config: dict, bbs_nodes, interface) -> int:
         return 0
 
 
-def _advertise_fleet_state_to_links(system_config: dict, links) -> int:
+def _advertise_fleet_state_to_links(system_config: dict, links,
+                                   force: bool = True) -> int:
     sent = 0
     for link in links or []:
         if getattr(link, 'enabled', True) and link.interface is not None:
             sent += _advertise_fleet_state(
-                system_config, link.bbs_nodes, link.interface)
+                system_config, link.bbs_nodes, link.interface, force=force)
     return sent
 
 
-def _process_fleet_target(system_config: dict, links) -> bool:
+def _process_fleet_target(system_config: dict, links, force: bool = True) -> bool:
     """Advertise the durable target before an apply can exit the process."""
-    _advertise_fleet_state_to_links(system_config, links)
+    _advertise_fleet_state_to_links(system_config, links, force=force)
     return _apply_fleet_target_if_due(system_config)
 
 
@@ -2686,7 +2723,9 @@ def main():
             if now >= next_fleet_apply_check:
                 next_fleet_apply_check = now + _FLEET_APPLY_POLL_INTERVAL
                 try:
-                    if _process_fleet_target(system_config, links):
+                    # The apply check itself is local and cheap; only the
+                    # advertisement that goes with it is rate-limited.
+                    if _process_fleet_target(system_config, links, force=False):
                         logging.warning("Fleet update applied; exiting to "
                                         "restart on the new version.")
                         return

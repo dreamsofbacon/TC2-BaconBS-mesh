@@ -548,10 +548,10 @@ class AdvertisementTests(unittest.TestCase):
         order = []
         with mock.patch.object(
                 server, "_advertise_fleet_state_to_links",
-                side_effect=lambda *_: order.append("advertise")), \
+                side_effect=lambda *_a, **_k: order.append("advertise")), \
                 mock.patch.object(
                     server, "_apply_fleet_target_if_due",
-                    side_effect=lambda *_: order.append("apply") or True):
+                    side_effect=lambda *_a, **_k: order.append("apply") or True):
             applied = server._process_fleet_target(
                 {"fleet": {"group": GROUP, "updates": "auto"}}, [])
 
