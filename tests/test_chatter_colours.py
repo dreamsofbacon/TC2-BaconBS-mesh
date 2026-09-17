@@ -20,7 +20,23 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 JS = (ROOT / "static" / "js" / "public-chatter.js").read_text(encoding="utf-8")
-HTML = (ROOT / "templates" / "public_chatter.html").read_text(encoding="utf-8")
+HTML = (ROOT / "templates" / "radios.html").read_text(encoding="utf-8")
+
+
+def _declarations(text: str) -> str:
+    """The stylesheet with its comments and spacing taken out.
+
+    These tests read the page that is actually served, which writes its CSS
+    one declaration per line; what they are about is which declarations are
+    there, not how they are laid out.
+    """
+    import re as _re
+    text = _re.sub(r"/\*.*?\*/", "", text, flags=_re.S)
+    text = _re.sub(r"\s+", " ", text)
+    return _re.sub(r"\s*([:;,])\s*", r"\1", text)
+
+
+CSS = _declarations(HTML)
 
 
 def palette_size():
@@ -111,7 +127,7 @@ class NeutralWhenUnattributedTests(unittest.TestCase):
         """"Not recorded" is an absence, not a station you could ask to see,
         so it renders as a static chip rather than a button."""
         self.assertIn('note.className = "legend-chip is-static"', JS)
-        self.assertIn(".legend-chip.is-static { cursor:default", HTML)
+        self.assertIn(".legend-chip.is-static { cursor:default", CSS)
 
 
 class IdentityKeyTests(unittest.TestCase):

@@ -638,15 +638,32 @@ def _begin_mail_to_directory_entry(sender_id, interface, entry: dict) -> None:
     })
 
 
+def _directory_return(sender_id) -> str:
+    """Where [0] Back should go from the Relay Directory: the screen !AU was
+    typed on. It used to be the Mail menu wherever it came from, which left
+    anyone who ran it from the main menu somewhere they had not been."""
+    state = get_user_state(sender_id) or {}
+    return 'mail' if state.get('command') in ('MAIL', 'CHECK_MAIL') else 'main'
+
+
+def leave_mail_directory(sender_id, interface, state) -> None:
+    if (state or {}).get('return_to') == 'main':
+        handle_help_command(sender_id, interface)
+    else:
+        handle_mail_command(sender_id, interface)
+
+
 def handle_active_users_command(sender_id, interface):
+    return_to = _directory_return(sender_id)
     entries = get_mail_relay_directory()
     if not entries:
         send_message("No users have opted into offline mail relay.", sender_id, interface)
-        handle_mail_command(sender_id, interface)
+        leave_mail_directory(sender_id, interface, {'return_to': return_to})
         return
     send_message(_mail_directory_page(entries, 0, selecting=False), sender_id, interface)
     update_user_state(sender_id, {
         'command': 'MAIL', 'step': 10, 'directory': entries, 'directory_page': 0,
+        'return_to': return_to,
     })
 
 
@@ -2226,6 +2243,14 @@ def _handle_submit_link_code(sender_id, interface, sender_node_id, code):
         send_message("Too many attempts. Try again later.", sender_id, interface)
         handle_account_command(sender_id, interface)
         return
+    if not re.fullmatch(r'\d{6}', str(code or '').strip()):
+        # Not a code at all, so it is a typo rather than a wrong or spent
+        # code -- which is what "Invalid or already-used" reads as, and it
+        # sent people hunting for a fresh code they did not need.
+        send_message("A linking code is six digits, like 123456. "
+                     "Check it and try again.", sender_id, interface)
+        handle_account_command(sender_id, interface)
+        return
     info = describe_link_code(code, sender_node_id, max_devices=_account_max_linked_devices())
     if info['status'] == 'other':
         if str(sender_node_id).startswith(SSH_NODE_PREFIX):
@@ -2652,7 +2677,12 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
 # confirms. Each message is deleted exactly as the single Delete does.
 MAIL_BULK_SELECT_STEP = 11
 MAIL_BULK_CONFIRM_STEP = 12
-MAIL_BULK_STEPS = (MAIL_BULK_SELECT_STEP, MAIL_BULK_CONFIRM_STEP)
+# Delete is the one choice on the read screen that cannot be undone, and it
+# sits next to Keep and Reply, so a mistyped key threw a message away with no
+# way back. It now asks, the same way deleting several does.
+MAIL_DELETE_CONFIRM_STEP = 13
+MAIL_BULK_STEPS = (MAIL_BULK_SELECT_STEP, MAIL_BULK_CONFIRM_STEP,
+                   MAIL_DELETE_CONFIRM_STEP)
 _MAIL_BULK_PREVIEW_LINES = 5
 _MAIL_BULK_SELECT_PROMPT = ("Delete which? Send the numbers, like 3,5 or 3-7, "
                             "or ALL. 0 to go back.")
@@ -2697,6 +2727,30 @@ def start_mail_bulk_delete(sender_id, interface, command, mail, numbered_by):
         'mail': [list(row) for row in mail], 'numbered_by': numbered_by,
     })
     send_message(_MAIL_BULK_SELECT_PROMPT, sender_id, interface)
+
+
+def ask_before_deleting_mail(sender_id, interface, command, state):
+    """Confirm one message before it goes. Keeps what the reader already
+    holds, so [0] No can put the reader back where it was."""
+    update_user_state(sender_id, dict(state, command=command,
+                                      step=MAIL_DELETE_CONFIRM_STEP))
+    send_message(f"Delete \"{state.get('subject') or 'this message'}\"? [Y]es [0]No",
+                 sender_id, interface)
+
+
+def handle_mail_delete_confirm_step(sender_id, message, state, interface, bbs_nodes):
+    text = str(message or '').strip().lower()
+    if text in ('y', 'yes'):
+        sender_node_id = get_node_id_from_num(sender_id, interface)
+        delete_mail(state.get('unique_id'), sender_node_id, bbs_nodes, interface)
+        send_message("The message has been deleted 🗑️", sender_id, interface)
+        handle_mail_command(sender_id, interface)
+        return
+    if is_cancel(text) or text in ('0', 'n', 'no'):
+        send_message("The message has been kept in your inbox.✉️", sender_id, interface)
+        handle_mail_command(sender_id, interface)
+        return
+    send_message("Reply Y to delete it, or 0 to keep it.", sender_id, interface)
 
 
 def handle_mail_bulk_delete_step(sender_id, message, state, interface, bbs_nodes):
@@ -2754,6 +2808,9 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
     if step in (3, 5, 7) and is_cancel(message):
         send_message("Mail cancelled.", sender_id, interface)
         handle_mail_command(sender_id, interface)
+        return
+    if step == MAIL_DELETE_CONFIRM_STEP:
+        handle_mail_delete_confirm_step(sender_id, message, state, interface, bbs_nodes)
         return
     if step in MAIL_BULK_STEPS:
         handle_mail_bulk_delete_step(sender_id, message, state, interface, bbs_nodes)
@@ -2852,11 +2909,7 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
         _mail_step4_alias = {'2': 'd', '3': 'r', '1': 'k'}
         choice4 = _mail_step4_alias.get(message.lower(), message.lower())
         if choice4 == "d":
-            unique_id = state['unique_id']
-            sender_node_id = get_node_id_from_num(sender_id, interface)
-            delete_mail(unique_id, sender_node_id, bbs_nodes, interface)
-            send_message("The message has been deleted 🗑️", sender_id, interface)
-            update_user_state(sender_id, None)
+            ask_before_deleting_mail(sender_id, interface, 'MAIL', state)
         elif choice4 == "r":
             _begin_mail_reply(
                 sender_id, interface, state['mail_id'], state['sender'], state['subject'])
@@ -2956,7 +3009,7 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
         # the BBS, but this handler only ever accepted 'x' -- so the one key
         # the screen told you to press was the one that did nothing.
         if choice in ('0', 'x'):
-            handle_mail_command(sender_id, interface)
+            leave_mail_directory(sender_id, interface, state)
             return
         if choice in ('n', 'p'):
             page = max(0, min(page + (1 if choice == 'n' else -1), page_count - 1))
@@ -3126,7 +3179,8 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
             send_message(controls, sender_id, interface)
             return
         if choice == 'c':
-            send_message(f"Send your comment. Send END when finished, or {CANCEL_HINT} to stop.", sender_id, interface)
+            send_message(f"Send your comment. Send END when finished, or 0 / {CANCEL_HINT} to stop.",
+                         sender_id, interface)
             update_user_state(sender_id, {
                 'command': 'CHANNEL_DIRECTORY',
                 'step': 7,
@@ -3138,7 +3192,10 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
         send_message("Invalid choice. Use 1, 2, or 0.", sender_id, interface)
 
     elif step == 7:
-        if is_cancel(message):
+        # A lone "0" is Back on every other screen, so it was typed here to
+        # leave -- and was stored as the comment's last line instead. Live
+        # comment 14 on Introductions ends with one.
+        if is_cancel(message) or message.strip() == '0':
             send_message("Comment cancelled.", sender_id, interface)
             send_message("[1]View comments [2]Comment [0]Exit", sender_id, interface)
             update_user_state(sender_id, {
@@ -3300,11 +3357,7 @@ def handle_delete_mail_confirmation(sender_id, message, state, interface, bbs_no
         choice = _kdr_alias.get(choice, choice)
 
         if choice == 'd':
-            unique_id = state['unique_id']
-            sender_node_id = get_node_id_from_num(sender_id, interface)
-            delete_mail(unique_id, sender_node_id, bbs_nodes, interface)
-            send_message("The message has been deleted 🗑️", sender_id, interface)
-            update_user_state(sender_id, None)
+            ask_before_deleting_mail(sender_id, interface, 'CHECK_MAIL', state)
         elif choice == 'r':
             _begin_mail_reply(
                 sender_id, interface, state['mail_id'], state['sender'], state['subject'])
@@ -3537,10 +3590,12 @@ def _this_node_label() -> str:
 def handle_quick_help_command(sender_id, interface):
     response = (
         "✈️QUICK COMMANDS✈️\n"
-        "!SM,, - Send Mail\n!CM - Check Mail\n!R - Reply to latest mail\n"
+        "!SM,,to,,subject,,message - Send Mail\n!CM - Check Mail\n"
+        "!R - Reply to latest mail\n"
         "!AU - Relay Directory\n"
-        "!PB,, - Post Bulletin\n!CB,, - Check Bulletins\n"
-        "!CHP,, - Post Channel\n!CHL - List Channels\n"
+        "!PB,,board,,subject,,text - Post Bulletin\n"
+        "!CB,,board - Check Bulletins\n"
+        "!CHP,,name,,link - Post Channel\n!CHL - List Channels\n"
         "!VER - This node and its version\n"
         "!WELCOME - What this BBS is\n"
         "Global menus: !Q !B !G !H !P !N !A !S !V !X"

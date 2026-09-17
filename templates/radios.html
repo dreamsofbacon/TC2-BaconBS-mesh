@@ -186,7 +186,10 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    margin: 0;
+    /* Top right of the panel, whatever width the heading takes, and out of
+       the header's end alignment so it sits in the corner. */
+    margin: 0 0 0 auto;
+    align-self: flex-start;
   }
 
   .chatter-search-group label {
@@ -282,6 +285,10 @@
     color: inherit; text-align: left; background: none; cursor: pointer; border: 1px solid transparent;
     border-radius: var(--radius-pill, 999px); padding: 2px 8px;
   }
+  .legend-chip:hover { border-color: var(--border, #2b3645); }
+  .legend-chip:focus-visible { outline: 2px solid var(--border-focus, #5b8def); outline-offset: 1px; }
+  /* "Not recorded" is an absence, not a station you can ask to see. */
+  .legend-chip.is-static { cursor: default; padding-left: 6px; }
   .legend-chip[aria-pressed="true"] {
     background: var(--surface-3, #243044);
     border-color: var(--cc, var(--border-focus, #5b8def));
@@ -295,6 +302,19 @@
   .cc-3 { --cc:#c3cf3a; } .cc-4 { --cc:#f2c14e; } .cc-5 { --cc:#f08a3c; }
   .cc-6 { --cc:#ef6b6b; } .cc-7 { --cc:#ec6bb0; } .cc-8 { --cc:#b07bea; }
   .cc-9 { --cc:#8b93f0; }
+  /* Defined per theme because a hue that reads on #0f141b is invisible on
+     white. Every class above needs one here, or that station loses its
+     colour in the light theme without anything failing. */
+  [data-theme="light"] .cc-0 { --cc:#1d5fd0; }
+  [data-theme="light"] .cc-1 { --cc:#00786d; }
+  [data-theme="light"] .cc-2 { --cc:#2f7d32; }
+  [data-theme="light"] .cc-3 { --cc:#6b7000; }
+  [data-theme="light"] .cc-4 { --cc:#9a6700; }
+  [data-theme="light"] .cc-5 { --cc:#b45309; }
+  [data-theme="light"] .cc-6 { --cc:#c0392b; }
+  [data-theme="light"] .cc-7 { --cc:#b3277f; }
+  [data-theme="light"] .cc-8 { --cc:#7326b8; }
+  [data-theme="light"] .cc-9 { --cc:#3f45c4; }
 
   .chatter-message { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
   .chatter-state { padding: 24px 12px; text-align: center; color: var(--text-muted, #9ca3af); }
@@ -319,6 +339,7 @@
     .chatter-legend { grid-column: 1; }
     .chatter-search-group {
       width: 100%;
+      margin-left: 0;
     }
     .chatter-search-group .form-control {
       width: auto;
@@ -358,12 +379,12 @@
         <h2 id="chatter-panel-heading">Public chatter</h2>
       </div>
       <div class="chatter-shell">
-        <div class="chatter-header">
+        <header class="chatter-header">
           <div class="form-group chatter-search-group">
             <label for="chatter-search">Search</label>
             <input class="form-control" id="chatter-search" type="search" placeholder="Message or sender">
           </div>
-        </div>
+        </header>
 
         <section class="chatter-controls" aria-label="Chatter filters">
           <section class="chatter-legend" id="chatter-legend" title="Click to filter; pick several to combine" aria-label="Colour legend and filters" hidden>

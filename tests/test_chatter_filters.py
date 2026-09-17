@@ -22,7 +22,23 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 JS = (ROOT / "static" / "js" / "public-chatter.js").read_text(encoding="utf-8")
-HTML = (ROOT / "templates" / "public_chatter.html").read_text(encoding="utf-8")
+HTML = (ROOT / "templates" / "radios.html").read_text(encoding="utf-8")
+
+
+def _declarations(text: str) -> str:
+    """The stylesheet with its comments and spacing taken out.
+
+    These tests read the page that is actually served, which writes its CSS
+    one declaration per line; what they are about is which declarations are
+    there, not how they are laid out.
+    """
+    import re as _re
+    text = _re.sub(r"/\*.*?\*/", "", text, flags=_re.S)
+    text = _re.sub(r"\s+", " ", text)
+    return _re.sub(r"\s*([:;,])\s*", r"\1", text)
+
+
+CSS = _declarations(HTML)
 WEB_ADMIN = (ROOT / "web_admin.py").read_text(encoding="utf-8")
 
 
@@ -71,7 +87,7 @@ class TheLegendIsTheControlTests(unittest.TestCase):
         self.assertIn('[aria-pressed="true"]', HTML)
 
     def test_it_is_focusable_visibly(self):
-        self.assertIn(".legend-chip:focus-visible", HTML)
+        self.assertIn(".legend-chip:focus-visible", CSS)
 
     def test_there_is_no_separate_network_control(self):
         """A channel key is already network-qualified, so selecting channels
@@ -97,6 +113,13 @@ class TheLegendIsTheControlTests(unittest.TestCase):
         self.assertIn("Click to filter", HTML)
 
 
+def _chatter_header() -> str:
+    """The chatter panel's own header. Sliced from its start, since the
+    dashboard header further up the page closes first."""
+    start = HTML.index('<header class="chatter-header">')
+    return HTML[start:HTML.index("</header>", start)]
+
+
 class LayoutTests(unittest.TestCase):
     """The legend is a control, so it belongs with the controls -- and the
     page exists to show the feed, so the controls must not eat the screen
@@ -117,27 +140,22 @@ class LayoutTests(unittest.TestCase):
 
     def test_search_is_in_the_header_not_the_controls(self):
         """Top right of the page, opposite the title."""
-        header = HTML[HTML.index('<header class="chatter-header">'):
-                      HTML.index("</header>")]
+        header = _chatter_header()
         self.assertIn('id="chatter-search"', header)
         self.assertNotIn('id="chatter-search"', self.controls_block())
 
-    def test_search_comes_after_the_strapline_in_the_markup(self):
-        """So it lands on the right of a space-between header, and reads in
-        the order it appears.
-
-        Anchored on the strapline rather than an <h1>: the page title moved
-        into the nav bar's page-name chip, so this header no longer carries
-        a heading of its own to sit opposite.
-        """
-        header = HTML[HTML.index('<header class="chatter-header">'):
-                      HTML.index("</header>")]
-        self.assertLess(header.index('class="text-muted"'),
-                        header.index('id="chatter-search"'))
+    def test_the_header_carries_the_search_and_nothing_else(self):
+        """Since the chatter feed became a panel on the radios page, the
+        panel heading sits above this header, so the search is all it holds
+        -- and nothing from the controls row may drift up into it."""
+        header = _chatter_header()
+        self.assertIn('id="chatter-search"', header)
+        for stray in ("chatter-legend", "chatter-hours", "chatter-presets"):
+            with self.subTest(stray=stray):
+                self.assertNotIn(stray, header)
 
     def test_it_is_no_longer_in_the_header(self):
-        header = HTML[HTML.index('<header class="chatter-header">'):
-                      HTML.index("</header>")]
+        header = _chatter_header()
         self.assertNotIn("chatter-legend", header)
 
     def test_the_legend_never_scrolls(self):
@@ -152,47 +170,48 @@ class LayoutTests(unittest.TestCase):
     def test_the_history_presets_sit_beside_the_input(self):
         """Under it, they cost the row a second line for nothing."""
         self.assertIn('<div class="history-row">', HTML)
-        self.assertRegex(HTML, r"\.history-row \{ display:flex")
+        self.assertRegex(CSS, r"\.history-row \{ display:flex")
 
-    def test_the_legend_gets_three_quarters_of_the_width(self):
+    def test_the_legend_gets_most_of_the_width(self):
         """It holds every channel and node, which is what a person reads;
         the time filter beside it needs far less."""
-        self.assertRegex(
-            HTML,
+        match = re.search(
             r"\.chatter-controls \{[^}]*grid-template-columns:"
-            r"minmax\(0,3fr\) minmax\(0,1fr\)")
+            r"minmax\(0,([\d.]+)fr\) minmax\(0,([\d.]+)fr\)", CSS)
+        self.assertIsNotNone(match, "the controls row is no longer two columns")
+        legend, filters = float(match.group(1)), float(match.group(2))
+        self.assertGreaterEqual(legend, filters * 2)
 
     def test_the_legend_is_left_of_the_time_filter(self):
-        self.assertRegex(HTML, r"\.chatter-legend\s+\{ grid-column:1;")
-        self.assertRegex(HTML, r"\.chatter-history-group \{ grid-column:2;")
+        self.assertRegex(CSS, r"\.chatter-legend \{ grid-column:1;")
+        self.assertRegex(CSS, r"\.chatter-history-group \{ grid-column:2;")
         self.assertLess(self.controls_block().index('id="chatter-legend"'),
                         self.controls_block().index('id="chatter-hours"'))
 
     def test_search_is_one_line(self):
         """Label beside the box, not above it. Labels are display:block
         globally, so this has to say otherwise explicitly."""
-        self.assertRegex(HTML, r"\.chatter-search-group \{[^}]*display:flex")
+        self.assertRegex(CSS, r"\.chatter-search-group \{[^}]*display:flex")
         self.assertRegex(
-            HTML, r"\.chatter-search-group label \{[^}]*display:inline")
+            CSS, r"\.chatter-search-group label \{[^}]*display:inline")
         self.assertRegex(
-            HTML, r"\.chatter-search-group label \{[^}]*margin:0")
+            CSS, r"\.chatter-search-group label \{[^}]*margin:0")
 
     def test_search_sits_in_the_corner_not_level_with_the_strapline(self):
         """The header is align-items:end, which would drop it to the bottom
         of the title block; the corner needs that overridden."""
-        self.assertRegex(HTML, r"\.chatter-header \{[^}]*align-items:end")
+        self.assertRegex(CSS, r"\.chatter-header \{[^}]*align-items:(flex-)?end")
         self.assertRegex(
-            HTML, r"\.chatter-search-group \{[^}]*align-self:flex-start")
+            CSS, r"\.chatter-search-group \{[^}]*align-self:flex-start")
 
     def test_search_is_pushed_to_the_right(self):
         """Whatever width the title takes."""
         self.assertRegex(
-            HTML, r"\.chatter-search-group \{[^}]*margin:0 0 0 auto")
+            CSS, r"\.chatter-search-group \{[^}]*margin:0 0 0 auto")
 
     def test_it_gives_the_width_back_when_the_header_stacks(self):
-        block = HTML[HTML.index("@media (max-width:720px)"):]
-        block = block[:block.index("\n  }")]
-        self.assertIn("margin-left:0", block)
+        block = CSS[CSS.index("@media (max-width:720px)"):]
+        self.assertIn("margin-left:0", block[:block.index("} }") + 3])
 
     def test_the_time_filter_offers_six_presets(self):
         presets = re.search(r"for value, label in \[(.*?)\]", HTML).group(1)
@@ -207,18 +226,20 @@ class LayoutTests(unittest.TestCase):
         made the same six buttons rearrange with the window, so the one you
         were reaching for moved."""
         self.assertRegex(
-            HTML,
-            r"\.chatter-presets \{ display:grid; "
-            r"grid-template-columns:repeat\(3, minmax\(0,1fr\)\)")
-        self.assertNotIn(".chatter-presets { display:flex", HTML)
+            CSS,
+            r"\.chatter-presets \{ display:grid;"
+            r"grid-template-columns:repeat\(3,minmax\(0,1fr\)\)")
+        self.assertNotIn(".chatter-presets { display:flex", CSS)
 
     def test_nothing_re_wraps_them_at_a_narrow_width(self):
         """A stray flex-wrap in a media query would undo the fixed grid."""
         for query in ("720px", "430px"):
-            block = HTML[HTML.index("@media (max-width:%s)" % query):]
-            block = block[:block.index("\n  }")]
+            marker = "@media (max-width:%s)" % query
+            if marker not in CSS:
+                continue  # this page has no breakpoint there
+            block = CSS[CSS.index(marker):]
             with self.subTest(query=query):
-                self.assertNotIn("chatter-presets", block)
+                self.assertNotIn("chatter-presets", block[:block.index("} }") + 3])
 
     def test_each_preset_maps_to_the_hours_it_names(self):
         """3d and 7d are the odd ones: the control is in hours."""
@@ -239,8 +260,8 @@ class LayoutTests(unittest.TestCase):
 
     def test_it_stacks_rather_than_squeezing_on_a_narrow_screen(self):
         self.assertRegex(
-            HTML, r"@media \(max-width:720px\)[\s\S]*?"
-                  r"\.chatter-controls \{ grid-template-columns:1fr; \}")
+            CSS, r"@media \(max-width:720px\)[\s\S]*?"
+                 r"\.chatter-controls \{ grid-template-columns:1fr;\s*\}")
 
 
 class SelectionSemanticsTests(unittest.TestCase):

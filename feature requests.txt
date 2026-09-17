@@ -11,11 +11,6 @@ The Pico cache node is now its own project, `dreamsofbacon/baconbbs-pico`, with 
 ## Open: User Experience and Defects
 
 - [ ] Ensure Project Nomad uses BBS terms such as "Bulletins" and "Channels," not "forums." The word comes from the AI's replies, not from this codebase, so this is a config change: the live `[gateway] ai_system_prompt` says nothing about BBS terminology.
-- [ ] Add a confirmation step before Mail > Read permanently deletes a message. The `!CM` reader already confirms deletion, but the normal Mail reader's `[2] Delete` still deletes immediately.
-- [ ] Show complete required arguments in Quick Commands for `!SM`, `!PB`, `!CB`, and `!CHP`; the list currently shows only `!SM,,` etc., and the full formats appear only after a malformed command.
-- [ ] Validate linked-device codes as six numeric digits before looking them up. Malformed input currently gets "Invalid or already-used code", the same reply as a consumed code; only an expired code has its own message.
-- [ ] Stop the channel comment composer capturing a back keystroke as content. The reported stray `0` is not a separate entry between comments: it is the final line of comment 14 (Introductions, by Pers, 2026-08-29). Also decide whether to clean up that comment.
-- [ ] Standardize shortcut return context. `!AU` always returns to the Mail menu (`handle_active_users_command` calls `handle_mail_command`), wherever it was invoked from.
 
 ## Open: Product and Operations
 
@@ -27,7 +22,6 @@ The Pico cache node is now its own project, `dreamsofbacon/baconbbs-pico`, with 
 - [ ] Consider combining Linux services where that improves deployment and failure isolation.
 - [ ] Restructure modules where it reduces complexity without disrupting the running system.
 - [ ] Extend MeshCore support with user account rooms and relayed room text.
-- [ ] Repoint `tests/test_chatter_colours.py` and `tests/test_chatter_filters.py` at `templates/radios.html`. They read the orphaned `templates/public_chatter.html`, which no route has served since Radios and Public Chatter merged; against the served page, 16 of their assertions fail, so the chatter layout is effectively untested.
 
 ## Open: Security and Hygiene
 
@@ -41,6 +35,8 @@ The Pico cache node is now its own project, `dreamsofbacon/baconbbs-pico`, with 
 
 ## Needs Verification: User and Service Workflows
 
+- [ ] Open-list fixes, on `main` and not yet deployed. Quick Commands print each command's fields (`!SM,,to,,subject,,message`). Deleting the message you are reading asks "Delete ...? [Y]es [0]No" first, in both mail readers -- it used to take effect on the keypress, in both, so the note that `!CM` already confirmed was wrong. A linking code that is not six digits says so instead of sharing the "Invalid or already-used code" reply. A lone `0` at the channel comment composer means Back, as it does elsewhere, rather than becoming the comment's last line. `!AU` returns to the screen it was typed on. Covered by tests; not yet used on a radio.
+- [ ] Public Chatter layout is under test again. `tests/test_chatter_colours.py` and `tests/test_chatter_filters.py` now read `templates/radios.html`, the page that is actually served, and the orphaned `templates/public_chatter.html` is deleted. Three things the served page had lost came back with it: the light-theme colour palette (station colours were dark-theme only), the legend's focus ring, and the plain styling for the "not recorded" chip. Checked in tests against the template, not in a browser.
 - [ ] SSH terminal output (v0.1.661): text wraps at word boundaries to the client's terminal width and follows window resizes; menu titles, options, tips and errors are coloured whenever the client opens a terminal. Covered by tests; not yet seen in a real SSH client.
 - [ ] SSH password reset from a linked radio (v0.1.661): Settings & Profile > Linked devices > `[7] Reset SSH password` sends a one-time six-digit code, valid 10 minutes; the user logs in as `reset:<alias>` with it (or types that at the shared gate's username prompt) and sets a new password. Codes are stored hashed; guessing is limited to 5 tries an hour per address and per account. Covered by end-to-end SSH tests, and the reset table exists on bbs.local; not yet tried from a real radio.
 - [ ] Names follow the account (v0.1.661). Mail "From" shows the sending device's current account alias. Public Chatter from a linked radio shows the device name, then the account in brackets (radio feed and web page). New bulletins and channel comments record the writing device and show its account alias; the device travels to peers in a `POSTAUTHOR` frame, only to nodes advertising `auth`. Posts made before this keep their stored name. Covered by tests; bbs.local has the new author columns and all its peers advertise `auth`, but no post with a recorded author has been seen crossing the fleet yet.
