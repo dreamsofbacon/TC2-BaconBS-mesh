@@ -1,28 +1,15 @@
+
+
+
+
 # Feature Requests and Verification Status
 
-Last reviewed: 2026-09-14. `main` is at v0.1.655; the fleet (bbs.local, BaconBBS-VT2, Chattanooga) runs v0.1.651. v0.1.652-v0.1.655 are merged with CI green but not deployed. Status is based on repository history, focused regression coverage, the live `baconbot` SSH beta-test sessions, field-validation notes, and checks against the running code and live `bbs.local` database. Detailed UX findings are in `BBS-BETA-TEST-REPORT-2026-09-07.md`.
+Last reviewed: 2026-09-15. `main` and the whole fleet (bbs.local, BaconBBS-VT2, Chattanooga) are on v0.1.664, deployed 2026-09-15 03:02 UTC; all three nodes reported healthy. Status is based on repository history, focused regression coverage, the live `baconbot` SSH beta-test sessions, field-validation notes, and checks against the running code and live `bbs.local` database. Detailed UX findings are in `BBS-BETA-TEST-REPORT-2026-09-07.md`.
 
 The Pico cache node is now its own project, `dreamsofbacon/baconbbs-pico`, with its own feature request file.
 
-## Merged, Awaiting Deploy (v0.1.652-v0.1.655)
-
-- [ ] Relay Directory: the browse footer said `[#] Write`, which read as a key to press, and `#` did nothing. It now shows the numbers to type (`[1-4] Write`), and `#` or `W` explains what to type. SSH logins and emulator sessions in the directory are labelled "SSH" and "Emulator" instead of "(Unknown)". (v0.1.652)
-- [ ] Project Nomad errors: the gateway reported a 404 as a wrong API path. The real cause is that the Nomad instance at `ai.bmcse.com` has no AI models installed, and Nomad passes Ollama's "model not found" through as a 404. On a 404 the gateway now asks the server which models it has and names the missing one. The server still needs a model installed (see Open: Product and Operations). (v0.1.652)
-- [ ] Node View names the node you are on: "This node (burlington)". Checked against a copy of the live bbs.local database. (v0.1.652)
-- [ ] Web chatter names the radio that heard each message, e.g. "Heard by 🥓 BBS (burlington)" or "Heard by MeshCore radio (chattanooga)", instead of the radio's key. Remote radios are named by network and by their `[node_names]` entry; a remote radio's own name is never known locally. Checked against a copy of the live bbs.local database. (v0.1.652)
-- [ ] Linking a device that is already linked: the same account is now called "your account"; a different account is named on both sides with an offer to move the device (`[Y/N]`), and the code is used only on Yes. This fixes a dead end: turning on relay or requesting a code gives a device its own account, and a device alone on its account could never be unlinked. SSH logins are never moved. (v0.1.652)
-- [ ] Relay mail to MQTT users restored. v0.1.650 treated only Meshtastic and MeshCore nodes as relay targets and would have cancelled mail for MQTT users; none were queued on the live fleet. (v0.1.652)
-- [ ] A plain `pytest` from the repo root runs the same suite as CI (`pytest.ini`: `testpaths = tests`). It had been collecting `test_remote_db.py`, a one-off script, and crashing before any test ran. (v0.1.653)
-- [ ] Removed 58 files that were not part of the BBS: 27 game-bot scripts and the Trivia King answer key (`trivia_answers.pkl`), 14 debug and inspection scripts, Visual Studio's `.vs/` and project files, two empty databases, and a duplicate root `trivia.db`. `.gitignore` now keeps editor state and those stray databases out. (v0.1.654)
-- [ ] Moved `pico_node/`, `hardware/` and the six Pico tests, with their history, to `dreamsofbacon/baconbbs-pico` (private). The BBS keeps subscriber mode (`[sync] subscriber_nodes`). (v0.1.655)
-
 ## Open: User Experience and Defects
 
-- [ ] SSH output does not word-wrap correctly. (Reported 2026-09-14; not yet investigated.)
-- [ ] Use colour on SSH connections. (Idea, 2026-09-14.)
-- [ ] Let an SSH user reset their own password, using a linked device to prove who they are. There is no user-side reset today. (Idea, 2026-09-14.)
-- [ ] SSH connections appear as "Unknown" under node name in the Mail section; show them as an SSH connection. v0.1.652 fixes this label in the Relay Directory only; other Mail screens were not checked. (Reported 2026-09-14.)
-- [ ] Channel comments and messages still show a device ID instead of the linked account's name. (Reported 2026-09-14; not yet investigated.)
 - [ ] Ensure Project Nomad uses BBS terms such as "Bulletins" and "Channels," not "forums." The word comes from the AI's replies, not from this codebase, so this is a config change: the live `[gateway] ai_system_prompt` says nothing about BBS terminology.
 - [ ] Add a confirmation step before Mail > Read permanently deletes a message. The `!CM` reader already confirms deletion, but the normal Mail reader's `[2] Delete` still deletes immediately.
 - [ ] Show complete required arguments in Quick Commands for `!SM`, `!PB`, `!CB`, and `!CHP`; the list currently shows only `!SM,,` etc., and the full formats appear only after a malformed command.
@@ -54,7 +41,14 @@ The Pico cache node is now its own project, `dreamsofbacon/baconbbs-pico`, with 
 
 ## Needs Verification: User and Service Workflows
 
-- [ ] Multi-device accounts: successfully link a second device, set/observe a shared alias, unlink with confirmation, protect the final device, test rate/expiry limits, and (after v0.1.652) move a device between two accounts with a code.
+- [ ] SSH terminal output (v0.1.661): text wraps at word boundaries to the client's terminal width and follows window resizes; menu titles, options, tips and errors are coloured whenever the client opens a terminal. Covered by tests; not yet seen in a real SSH client.
+- [ ] SSH password reset from a linked radio (v0.1.661): Settings & Profile > Linked devices > `[7] Reset SSH password` sends a one-time six-digit code, valid 10 minutes; the user logs in as `reset:<alias>` with it (or types that at the shared gate's username prompt) and sets a new password. Codes are stored hashed; guessing is limited to 5 tries an hour per address and per account. Covered by end-to-end SSH tests, and the reset table exists on bbs.local; not yet tried from a real radio.
+- [ ] Names follow the account (v0.1.661). Mail "From" shows the sending device's current account alias. Public Chatter from a linked radio shows the device name, then the account in brackets (radio feed and web page). New bulletins and channel comments record the writing device and show its account alias; the device travels to peers in a `POSTAUTHOR` frame, only to nodes advertising `auth`. Posts made before this keep their stored name. Covered by tests; bbs.local has the new author columns and all its peers advertise `auth`, but no post with a recorded author has been seen crossing the fleet yet.
+- [ ] Delete several mail messages at once. Web admin (v0.1.663): the Mail page has a checkbox on each row, select-all, and "Delete selected" with a confirmation; the old per-row Delete sat in the last column, usually scrolled off screen. Radio and SSH (v0.1.664): Mail > Read and `!CM` take `D`, then numbers such as `3,5`, `3-7` or `ALL` (Mail > Read uses the message numbers it prints, `!CM` its list positions), show what will be deleted, and delete on `Y`. Both use the same delete as a single message, so peers drop their copies. Covered by tests; not yet used on the fleet.
+- [ ] SSH connections shown as "Unknown" in Mail: v0.1.652 fixed the Relay Directory, and a walk through the other Mail screens on a copy of the live database found no other "Unknown" label. Confirm from a real SSH session.
+- [ ] Multi-device accounts: successfully link a second device, set/observe a shared alias, unlink with confirmation, protect the final device, and test rate/expiry limits.
+- [ ] Moving a device between accounts (v0.1.652): a code entered on a device already on another account names both accounts and offers to move it (`[Y/N]`), using the code only on Yes; the same account is called "your account"; SSH logins are never moved. This fixes a dead end, since turning on relay or requesting a code gives a device its own account and a device alone on its account could never be unlinked. Deployed and covered by tests; not yet tried on a real device.
+- [ ] Relay mail to MQTT users (v0.1.652): restored after v0.1.650 treated only Meshtastic and MeshCore nodes as relay targets. Covered by tests; no MQTT user has had relay mail queued on the live fleet.
 - [ ] SSH account lifecycle: registration, repeated login/session limits, password reset/change flows, and account linking across client identities.
 - [ ] Gateway: live allow-listed HTTP GET, store-and-forward, rate limiting, and a peer-gateway Nomad follow-up. Ask Nomad itself fails until a model is installed (see Open: Product and Operations).
 - [ ] Relayed mail on air (v0.1.650). MeshCore: mail goes one chunk at a time, each only after the recipient's radio acknowledges the last; unanswered attempts retry at 10 min, 30 min, 1 h, 3 h, then every 6 h. Meshtastic: sent when the recipient was recently heard; delivered if every packet is acknowledged, otherwise sent once more the next time they are heard. Both stop after 7 days, and the mail stays in the mailbox. None of this has been exercised on air. Live so far: 28 undeliverable `ssh:` deliveries were cancelled on bbs.local, and Materva's pending MeshCore mail is left to Chattanooga, whose radio has his contact.
@@ -104,6 +98,13 @@ The Pico cache node is now its own project, `dreamsofbacon/baconbbs-pico`, with 
 - [x] Resolved the permanent sync mismatch with Chattanooga. Nodes stored the same instant in their own time zones (bbs.local New York, Chattanooga UTC), so hashes never matched; hashes now read timestamps as UTC, channel comment dates are no longer hashed, and a peer's delete of a channel a node never had is remembered. Live: all six content hashes matched across the three nodes, and repair traffic, about 1,900 frames in the 43 minutes before the deploy, dropped to none. (v0.1.643)
 - [x] Kept Public Chatter working when a radio's clock is wrong, and made the BBS set each attached radio's clock from NTP-synced host time at connect and every 6 hours. Live: bbs.local's Meshtastic radio had been about 48 days slow and its broadcasts, baconnet included, were being dropped; after the deploy its last-heard times were current again and baconnet traffic was captured. Its MeshCore radio was 73,370,439 s slow and was corrected. (v0.1.645-v0.1.647)
 - [x] Removed the Utilities menu and the Wall of Shame, which only ever listed Meshtastic devices on the user's own radio link; Fortune is `[F]` on the Games menu. Confirmed in the emulator on bbs.local. (v0.1.651)
+- [x] Relay Directory: the browse footer said `[#] Write`, which read as a key to press, and `#` did nothing. It now shows the numbers to type (`[1-2] Write` with bbs.local's two entries), and `#` or `W` explains what to type; SSH logins and emulator sessions are labelled "SSH" and "Emulator" instead of "(Unknown)". Confirmed against bbs.local's live data. (v0.1.652)
+- [x] Project Nomad errors name the real cause. Nomad passes Ollama's "model not found" through as a 404, which the gateway reported as a wrong API path; on a 404 it now asks the server which models it has. Live on bbs.local: "AI model 'qwen2.5:3b' is not installed on the AI server (installed: none)". The server still needs a model (see Open: Product and Operations). (v0.1.652)
+- [x] Node View names the node you are on: "This node (burlington)". Confirmed against bbs.local's live data. (v0.1.652)
+- [x] Web chatter names the radio that heard each message instead of printing its key. Live on bbs.local: "🥓 BBS (burlington)" for its own Meshtastic radio and "MeshCore radio (chattanooga)" for Chattanooga's. Remote radios are named by network and their `[node_names]` entry, since a remote radio's own name is never known locally. (v0.1.652)
+- [x] A plain `pytest` from the repo root runs the same suite as CI (`pytest.ini`: `testpaths = tests`); it had been collecting `test_remote_db.py`, a one-off script, and crashing before any test ran. (v0.1.653)
+- [x] Removed 58 files that were not part of the BBS: 27 game-bot scripts and the Trivia King answer key (`trivia_answers.pkl`), 14 debug and inspection scripts, Visual Studio's `.vs/` and project files, two empty databases, and a duplicate root `trivia.db`. `.gitignore` keeps editor state and those stray databases out. Gone from the live checkouts since the v0.1.656 deploy. (v0.1.654)
+- [x] Moved `pico_node/`, `hardware/` and the six Pico tests, with their history, to `dreamsofbacon/baconbbs-pico` (private). The BBS keeps subscriber mode (`[sync] subscriber_nodes`). (v0.1.655)
 
 ## Verified: Core Capabilities
 
