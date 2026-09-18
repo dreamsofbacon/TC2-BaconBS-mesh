@@ -120,3 +120,35 @@ class FleetAdvertRateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EveryCallSiteIsGatedTests(unittest.TestCase):
+    """The rate limit only means something if the paths that ride the sync
+    tick use it. Three of them did not, which is why the live fleet still
+    saw about one advert a minute per peer after the limit shipped.
+
+    Derived from the source rather than listed by hand, so a fourth call
+    site added later is checked without anyone remembering to.
+    """
+
+    def setUp(self):
+        import pathlib
+        self.source = (pathlib.Path(__file__).parent.parent / "server.py").read_text(encoding="utf-8")
+
+    def _calls(self):
+        import re
+        return re.findall(r"^\s*(?:sent \+= )?_advertise_fleet_state\((.*?)\)\s*$",
+                          self.source, re.M)
+
+    def test_every_call_site_says_which_it_wants(self):
+        """No call site relies on the default: a new one has to decide."""
+        calls = self._calls()
+        self.assertGreaterEqual(len(calls), 3, "the call sites moved")
+        ungated = [call for call in calls if "force=" not in call]
+        self.assertEqual(ungated, [], f"these adverts do not say force=: {ungated}")
+
+    def test_the_scheduled_tick_is_gated(self):
+        self.assertIn("_advertise_fleet_state(system_config, destinations, interface, force=False)",
+                      self.source)
+        self.assertIn("_advertise_fleet_state(system_config, _forced, interface, force=False)",
+                      self.source)

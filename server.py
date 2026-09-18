@@ -2143,7 +2143,8 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
                 send_sync_state_to_bbs_nodes(local_counts, destinations, interface)
                 send_have_to_bbs_nodes(get_local_node_id(), list(destinations), interface)
                 send_peer_gossip_to_bbs_nodes(get_local_node_id(), list(destinations), interface)
-                _advertise_fleet_state(system_config, destinations, interface)
+                # A person asked for this sync, so say everything, unasked.
+                _advertise_fleet_state(system_config, destinations, interface, force=True)
             # Manual sync clears all phase sets so every phase reruns from scratch.
             link.mail_synced_nodes.clear()
             link.bulletins_synced_nodes.clear()
@@ -2167,7 +2168,7 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
                 send_sync_state_to_bbs_nodes(local_counts, destinations, interface)
                 send_have_to_bbs_nodes(get_local_node_id(), list(destinations), interface)
                 send_peer_gossip_to_bbs_nodes(get_local_node_id(), list(destinations), interface)
-                _advertise_fleet_state(system_config, destinations, interface)
+                _advertise_fleet_state(system_config, destinations, interface, force=False)
                 logging.info(
                     f"[{link.name}] Scheduled sync interval reached ({link_sync_interval:.0f}s); "
                     f"sent SYNCSTATE to {len(destinations)} peer(s)"
@@ -2200,7 +2201,7 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
                         send_sync_state_to_bbs_nodes(local_counts, _forced, interface)
                         send_have_to_bbs_nodes(get_local_node_id(), _forced, interface)
                         send_peer_gossip_to_bbs_nodes(get_local_node_id(), list(_forced), interface)
-                        _advertise_fleet_state(system_config, _forced, interface)
+                        _advertise_fleet_state(system_config, _forced, interface, force=False)
                         logging.info(
                             f"[{link.name}] Scheduled sync interval reached ({link_sync_interval:.0f}s); "
                             f"state unchanged but {len(behind_peers)} peer(s) behind — "
