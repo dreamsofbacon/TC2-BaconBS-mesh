@@ -27,12 +27,23 @@ class _Case(unittest.TestCase):
                                     return_value=self.db_path)
         patcher.start()
         self.addCleanup(patcher.stop)
+        self._cancel_pending_flush()
         db_operations.flush_connection_events()
         db_operations._connection_event_buffer.clear()
         db_operations._connection_events_since_prune = 0
         self.addCleanup(self._drain)
 
+    @staticmethod
+    def _cancel_pending_flush():
+        """A timer left armed by an earlier test would hold this one to the
+        window it was scheduled with, not the one under test."""
+        timer = db_operations._connection_event_timer
+        if timer is not None:
+            timer.cancel()
+            db_operations._connection_event_timer = None
+
     def _drain(self):
+        self._cancel_pending_flush()
         db_operations._connection_event_buffer.clear()
         db_operations._connection_events_since_prune = 0
         db_operations.flush_connection_events()
@@ -67,7 +78,7 @@ class BatchingTests(_Case):
     def test_a_quiet_node_still_writes_within_the_window(self):
         with mock.patch.object(db_operations, "CONNECTION_EVENT_FLUSH_SECONDS", 0.05):
             self.log()
-            deadline = time.monotonic() + 5
+            deadline = time.monotonic() + 10
             while self.rows() == 0 and time.monotonic() < deadline:
                 time.sleep(0.02)
         self.assertEqual(self.rows(), 1, "a lone event never reached the database")

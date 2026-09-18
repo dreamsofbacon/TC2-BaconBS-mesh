@@ -17,9 +17,11 @@ import unittest
 from unittest import mock
 
 import db_operations
-from test_fleet_wire import _install_fake_meshtastic_package
+import radio_stubs
 
-_install_fake_meshtastic_package()
+# The shared stubs, not a private copy: installing is additive, so every
+# importer keeps the same module object whatever the test order.
+radio_stubs.install()
 import server  # noqa: E402  -- needs the stub package above
 
 CONFIG = {"fleet": {"group": "baconbbsvt", "updates": "auto"}}
