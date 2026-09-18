@@ -23,9 +23,6 @@ The Pico cache node is now its own project, `dreamsofbacon/baconbbs-pico`, with 
 - [ ] Secure the Project Nomad API at `ai.bmcse.com`. Its `/api` routes have no authentication, so anyone who can reach it can install or uninstall services (`/api/system/services/...`) and download or delete models (`/api/ollama/models`). Put it behind authentication or off the public internet.
 - [ ] Change or retire the `arthurdent` test account's password. Several debug scripts removed in v0.1.654 contained it, and they remain in this public repository's git history.
 - [ ] Identify fleet signing key `fkf5f136`. Every node trusts it alongside `fkec622a`, it is not the admin machine's key, and every node applies instructions it signs automatically (`updates = auto`). Remove it from `trusted_keys` if it is not yours.
-- [ ] Remove or document the second SSH key on bbs.local, `bacon-deploy-20260910`, installed by a remote session for a one-off deploy.
-- [ ] Delete the stale `/home/bacon/TC2-BBS-mesh` checkout on bbs.local. It is inert, but its `config.ini` declares the wrong fleet group and it has already caused one mistaken deploy attempt.
-- [ ] Clean up leftover test identities on bbs.local: the `walkthru1` SSH account and six emulator-range profiles (`emu1`, `emu2`, four `baconbot`), one carrying another tester's bio.
 - [ ] Delete the pre-migration database backups `bulletins.db.pre-identity-migration` on bbs.local and forgecam once the v0.1.642 MeshCore identity migration is no longer in question.
 
 ## Needs Verification: User and Service Workflows
@@ -63,6 +60,7 @@ The Pico cache node is now its own project, `dreamsofbacon/baconbbs-pico`, with 
 
 ## Verified: 2026-09 Beta Follow-Up
 
+- [x] Live clean-up on bbs.local, 2026-09-17. The `bacon-deploy-20260910` SSH key is removed (`~/backups/authorized_keys.before-cleanup-20260917`); the stale `/home/bacon/TC2-BBS-mesh` checkout is deleted after being archived to `~/backups/TC2-BBS-mesh-before-delete-20260917.tar.gz`; the `walkthru1` SSH account and all eight emulator-range profiles (`emu1`, two `emu2`, five `baconbot`, including the one carrying another tester's bio) were removed through `delete_account` and `delete_user_profile`, so peers get tombstones rather than syncing them back. All three services stayed up.
 - [x] Fixed `!CB`, Mail reader `[0] Back`, and explicit post-send return to the Mail menu. (v0.1.601)
 - [x] Made Stats report populated hardware, role, and recent-activity information instead of all-zero/`Unknown` summaries. (v0.1.602)
 - [x] Made `!R` target the newest ordinary mailbox message without requiring it to be opened and kept first. (v0.1.603)
