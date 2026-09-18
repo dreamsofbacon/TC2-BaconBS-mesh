@@ -189,15 +189,16 @@ class BBSClientSession(asyncssh.SSHServerSession):
 
     def shell_requested(self):
         if self.auth is None:
-            self.channel.write(
-                "SSH access accepted. Register or log in to your BBS account.\r\n"
-                "Forgot your password? Enter reset:<username> with a code from a linked radio.\r\n"
-                "BBS username: ")
+            self._say(
+                "SSH access accepted. Register or log in to your BBS account.\n"
+                "Forgot your password? Enter reset:<username> with a code from "
+                "a linked radio.",
+                prompt="BBS username: ")
             self._reset_idle_timer()
             return True
         if self._auth_stage == "reset_new_password":
-            self.channel.write(
-                f"Reset code accepted for {self._reset_alias}.\r\nNew password: ")
+            self._say(f"Reset code accepted for {self._reset_alias}.",
+                      prompt="New password: ")
             self._reset_idle_timer()
             return True
         self._start_bbs()
@@ -208,12 +209,10 @@ class BBSClientSession(asyncssh.SSHServerSession):
             self.auth.account_id, self.auth.alias,
             max_text_bytes=self.config.max_text_bytes)
         if self.auth.registered:
-            self.channel.write(
-                f"Account {self.auth.alias} created. Future logins use "
-                f"{self.auth.alias}.\r\n")
-        self.channel.write(
-            "Connected to Bacon BBS. [0] goes back, and disconnects from the "
-            "main menu.\r\n")
+            self._say(f"Account {self.auth.alias} created. Future logins use "
+                      f"{self.auth.alias}.")
+        self._say("Connected to Bacon BBS. [0] goes back, and disconnects "
+                  "from the main menu.")
         self._send_to_bbs("?")
         self._reset_idle_timer()
         self._schedule_drain()
@@ -280,10 +279,11 @@ class BBSClientSession(asyncssh.SSHServerSession):
                 self.channel.write("BBS password: ")
             elif not self.config.registration_enabled:
                 self._account_username = ""
-                self.channel.write("That account does not exist and registration is disabled.\r\nBBS username: ")
+                self._say("That account does not exist and registration is "
+                          "disabled.", prompt="BBS username: ")
             elif db_operations.alias_conflicts_with_roster(line):
                 self._account_username = ""
-                self.channel.write("That username is unavailable.\r\nBBS username: ")
+                self._say("That username is unavailable.", prompt="BBS username: ")
             else:
                 self._auth_stage = "registration_password"
                 self.channel.write("New account. Create password: ")
@@ -291,7 +291,8 @@ class BBSClientSession(asyncssh.SSHServerSession):
 
         if self._auth_stage == "registration_password":
             if not valid_password(line):
-                self.channel.write("Password must be 10-128 characters.\r\nCreate password: ")
+                self._say("Password must be 10-128 characters.",
+                          prompt="Create password: ")
                 return
             self._registration_password = line
             self._auth_stage = "registration_confirm"
@@ -302,7 +303,7 @@ class BBSClientSession(asyncssh.SSHServerSession):
             if not hmac.compare_digest(line, self._registration_password):
                 self._registration_password = ""
                 self._auth_stage = "registration_password"
-                self.channel.write("Passwords do not match.\r\nCreate password: ")
+                self._say("Passwords do not match.", prompt="Create password: ")
                 return
             line = self._registration_password
             self._registration_password = ""
@@ -319,11 +320,10 @@ class BBSClientSession(asyncssh.SSHServerSession):
         if auth is None:
             self._account_username = ""
             self._auth_stage = "account_username"
-            self.channel.write("BBS authentication failed.\r\nBBS username: ")
+            self._say("BBS authentication failed.", prompt="BBS username: ")
             return
         if not self.limiter.promote_pending(auth.account_id):
-            self.channel.write(
-                "That account is already signed in somewhere else.\r\n")
+            self._say("That account is already signed in somewhere else.")
             self.channel.exit(1)
             return
         self.auth = auth
@@ -337,7 +337,7 @@ class BBSClientSession(asyncssh.SSHServerSession):
             if auth is None:
                 self._reset_alias = ""
                 self._auth_stage = "account_username"
-                self.channel.write("That reset code is not valid.\r\nBBS username: ")
+                self._say("That reset code is not valid.", prompt="BBS username: ")
                 return
             self._reset_alias = auth.alias
             self._reset_code = auth.reset_code
@@ -347,7 +347,8 @@ class BBSClientSession(asyncssh.SSHServerSession):
 
         if self._auth_stage == "reset_new_password":
             if not valid_password(line):
-                self.channel.write("Password must be 10-128 characters.\r\nNew password: ")
+                self._say("Password must be 10-128 characters.",
+                          prompt="New password: ")
                 return
             self._reset_password = line
             self._auth_stage = "reset_confirm_password"
@@ -358,7 +359,7 @@ class BBSClientSession(asyncssh.SSHServerSession):
             if not hmac.compare_digest(line, self._reset_password):
                 self._reset_password = ""
                 self._auth_stage = "reset_new_password"
-                self.channel.write("Passwords do not match.\r\nNew password: ")
+                self._say("Passwords do not match.", prompt="New password: ")
                 return
             password_hash, password_salt = hash_password(self._reset_password)
             self._reset_password = ""
@@ -366,13 +367,11 @@ class BBSClientSession(asyncssh.SSHServerSession):
                 self._reset_alias, self._reset_code, password_hash, password_salt)
             self._reset_code = ""
             if changed:
-                self.channel.write(
-                    f"Password changed. Log in again as {self._reset_alias} "
-                    "with your new password.\r\n")
+                self._say(f"Password changed. Log in again as {self._reset_alias} "
+                          "with your new password.")
             else:
-                self.channel.write(
-                    "That reset code has expired or was already used. "
-                    "Request a new one from your linked radio.\r\n")
+                self._say("That reset code has expired or was already used. "
+                          "Request a new one from your linked radio.")
             self.channel.exit(0 if changed else 1)
 
     def eof_received(self):
@@ -382,6 +381,20 @@ class BBSClientSession(asyncssh.SSHServerSession):
 
     def connection_lost(self, exc):
         self._cleanup()
+
+    def _say(self, text: str, prompt: str = "") -> None:
+        """Write the server's own words, wrapped like everything else.
+
+        These lines are written straight to the channel rather than coming
+        back from the BBS, so they missed the wrapper: on a 60-column
+        terminal the connection banner ran to 74 characters and wrapped
+        wherever the terminal happened to break it. A prompt is written
+        after it, unwrapped, because it has to keep the cursor on its line.
+        """
+        body = ssh_terminal.render(text, self._width, self._colour)
+        self.channel.write(body + "\r\n")
+        if prompt:
+            self.channel.write(prompt)
 
     def _write_chunks(self, chunks) -> bool:
         """Write captured reply chunks to the terminal. True if any were."""
@@ -400,7 +413,7 @@ class BBSClientSession(asyncssh.SSHServerSession):
         self._write_chunks(chunks)
         if error:
             logging.error("SSH BBS handler error for %s: %s", self.auth.alias, error)
-            self.channel.write("The BBS could not process that command.\r\n")
+            self._say("The BBS could not process that command.")
         # [0] Exit at the top level. The handler cannot close the connection
         # itself -- it has no idea it is talking to SSH -- so it raises this
         # flag and the transport hangs up.
@@ -458,7 +471,8 @@ class BBSClientSession(asyncssh.SSHServerSession):
         if not self.channel or self._closed:
             return
         try:
-            self.channel.write("\r\nSession closed after being idle.\r\n")
+            self.channel.write("\r\n")
+            self._say("Session closed after being idle.")
             self.channel.exit(0)
         except BrokenPipeError:
             self._cleanup()

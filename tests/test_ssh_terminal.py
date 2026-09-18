@@ -4,8 +4,13 @@ Reported 2026-09-14: SSH did not word-wrap -- long lines broke mid-word at the
 terminal's edge -- and SSH could use colour. Both belong to the SSH front end
 only; radios must never see a wrapped line or an escape code.
 """
+import asyncio
+import os
+import re
 import types
 import unittest
+
+import asyncssh
 
 import ssh_terminal as t
 from ssh_server import BBSClientSession, SSHConfig, SessionLimiter
@@ -137,3 +142,57 @@ class SessionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ServerOwnLinesWrapTests(unittest.IsolatedAsyncioTestCase):
+    """Found in the field, 2026-09-17: on a 60-column terminal the connection
+    banner ran to 74 characters. Everything the BBS itself sends was wrapped;
+    the few lines the SSH front end writes on its own account were not."""
+
+    async def asyncSetUp(self):
+        import sqlite3
+        import tempfile
+        import db_operations
+        from ssh_server import SSHConfig, start_server
+        self.temp_dir = tempfile.TemporaryDirectory()
+        db_operations.thread_local.connection = sqlite3.connect(":memory:")
+        db_operations.initialize_database()
+        self.listener = await start_server(SSHConfig(
+            enabled=True, host="127.0.0.1", port=0,
+            host_key=os.path.join(self.temp_dir.name, "host_key"),
+            idle_timeout_seconds=30))
+        self.connections = []
+
+    async def asyncTearDown(self):
+        import bbs_emulator
+        import db_operations
+        for connection in self.connections:
+            connection.close()
+        for connection in self.connections:
+            await asyncio.wait_for(connection.wait_closed(), timeout=5)
+        self.listener.close()
+        await self.listener.wait_closed()
+        for token in list(bbs_emulator._sessions):
+            bbs_emulator.end_session(token)
+        connection = getattr(db_operations.thread_local, "connection", None)
+        if connection is not None:
+            connection.close()
+            del db_operations.thread_local.connection
+        self.temp_dir.cleanup()
+
+    async def _opening(self, width):
+        connection = await asyncssh.connect(
+            "127.0.0.1", port=self.listener.get_port(), username=f"new:Caller{width}",
+            password="long-enough-password", known_hosts=None)
+        self.connections.append(connection)
+        process = await connection.create_process(term_type="xterm", term_size=(width, 24))
+        return await process.stdout.readuntil("> ")
+
+    async def test_the_registration_and_connection_lines_fit_the_terminal(self):
+        for width in (60, 100):
+            opening = re.sub(r"\x1b\[[0-9;]*m", "", await self._opening(width))
+            longest = max(len(line) for line in opening.replace("\r", "").split("\n"))
+            with self.subTest(width=width):
+                self.assertLessEqual(longest, width,
+                                     f"a line ran to {longest} on a {width}-column terminal")
+            self.assertIn("Connected to Bacon BBS", opening)
