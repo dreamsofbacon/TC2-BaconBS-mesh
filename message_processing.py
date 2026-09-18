@@ -156,7 +156,9 @@ _TEXT_PROMPTS = {
     # The !CM numbered list has the identical "0"-as-back handling as MAIL
     # step 2 above, in handle_read_mail_command -- same reasoning, same fix.
     'CHECK_MAIL': (1, 11, 12, 13),
-    'APIGW': (2,),
+    # Step 3 is where a door's argument is typed; 1 and 2 are number
+    # picks off the service menus.
+    'APIGW': (3,),
     # Ask Nomad ('N' on the main menu, and its own post-reply follow-up
     # prompt) had the same gap: "!cancel" typed at the question prompt
     # fell through to here as a global command, matched nothing, and was

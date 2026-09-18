@@ -2,9 +2,9 @@
 
 A requester node sends an APIREQ over the mesh; a gateway node (this module)
 validates the requester against the node allow-list, performs the outbound call
-(generic HTTP proxy, or an AI chat relay to an Ollama / OpenAI-compatible
-endpoint such as Project Nomad), truncates the result for LoRa, and hands it
-back to a transport-agnostic ``reply_fn(status, body)`` — which the caller wires
+(a door from ``services.py``, or an AI chat relay to an Ollama /
+OpenAI-compatible endpoint such as Project Nomad), truncates the result for
+LoRa, and hands it back to a transport-agnostic ``reply_fn(status, body)`` — which the caller wires
 to either an APIRESP over the mesh or a direct DM when the gateway is local.
 
 Safety: requester node-id allow-list, outbound host + scheme allow-list, SSRF
@@ -25,6 +25,7 @@ import urllib.request
 from collections import defaultdict, deque
 from typing import Callable, Optional, Tuple
 
+import services
 from utils import _config_bool, _config_int, _config_raw
 from db_operations import account_authorized
 
@@ -60,28 +61,15 @@ def _rate_limit_per_node() -> int:
 
 
 def allowed_hosts() -> list:
-    """Sites this node will fetch on a user's behalf. Empty means none.
+    """Sites this node will fetch for a raw ``kind='h'`` request. Empty = none.
 
-    Empty is the safe default and also, on a node whose operator never set
-    it, the reason Web Fetch has never worked: every URL is refused. The
-    callers ask this *before* prompting so a user is not invited to type a
-    URL that cannot succeed.
+    This is the old free-form Web Fetch allow-list. Nothing on the menu
+    produces such a request any more -- doors carry their own vetted hosts
+    (see services.py) -- but an older peer on the mesh can still send one,
+    so the path stays, guarded exactly as it was. Empty remains the default,
+    which means a raw fetch is refused unless an operator opted in.
     """
     return _csv('gateway', 'allowed_hosts', '')
-
-
-def web_fetch_blocked_reason() -> str:
-    """Why Web Fetch cannot serve any URL here, in a user's words, or ''.
-
-    Only meaningful when this node is the gateway; a requester forwarding
-    to a peer cannot see the peer's list and must not guess at one.
-    """
-    if not is_gateway_enabled():
-        return ""
-    if not allowed_hosts():
-        return ("Web Fetch is not set up on this node -- the operator has "
-                "not allowed any sites yet.")
-    return ""
 
 
 def gateway_allowed_nodes() -> list:
@@ -415,7 +403,10 @@ def handle_apireq(rid: str, requester_id: str, kind: str, payload: str,
     def _worker():
         try:
             US = "\x1f"
-            if kind == 'r':  # relay
+            if kind == 'd':  # door -- a curated text service
+                door_id, _, arg = payload.partition(US)
+                status, result = services.run_door(door_id.strip(), arg)
+            elif kind == 'r':  # relay
                 target, _, body = payload.partition(US)
                 if target.strip().lower() == 'ai':
                     status, result = perform_ai_chat(body)

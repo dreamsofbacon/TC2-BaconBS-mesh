@@ -52,7 +52,7 @@ def get_max_text_bytes(interface=None) -> int:
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat', 'role', 'bbsid', 'acct', 'mdlv', 'auth', 'acctmv')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state, 'role'=user roles, 'bbsid'=fleet BBS name/greeting, 'acct'=fleet accounts (identity only, never credentials), 'mdlv'=mail relay delivery receipts, 'auth'=author device on bulletins and channel comments, 'acctmv'=device moves and unlinks travel between nodes
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat', 'role', 'bbsid', 'acct', 'mdlv', 'auth', 'acctmv', 'door')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state, 'role'=user roles, 'bbsid'=fleet BBS name/greeting, 'acct'=fleet accounts (identity only, never credentials), 'mdlv'=mail relay delivery receipts, 'auth'=author device on bulletins and channel comments, 'acctmv'=device moves and unlinks travel between nodes, 'door'=curated text services (APIREQ kind 'd')
 
 # Single-char scope codes used by the 'scc' wire capability.  Senders gate
 # encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
@@ -1877,12 +1877,21 @@ def resend_api_response_ranges(rid, range_spec, interface) -> bool:
     return True
 
 
-def select_gateway_peer(interface):
+def select_gateway_peer(interface, need_cap=None):
     """Return the first peer in bbs_nodes that advertises the 'apigw' capability,
-    or None if no gateway is reachable."""
+    or None if no gateway is reachable.
+
+    ``need_cap`` narrows that to a gateway that also understands a particular
+    request kind. A node running a build from before doors existed advertises
+    'apigw' and would accept the request, then answer "unknown relay target" a
+    minute later over the radio -- so doors ask for 'door' as well and treat a
+    gateway that lacks it as no gateway at all."""
     for peer in (getattr(interface, 'bbs_nodes', []) or []):
-        if peers_all_support([peer], 'apigw'):
-            return peer
+        if not peers_all_support([peer], 'apigw'):
+            continue
+        if need_cap and not peers_all_support([peer], need_cap):
+            continue
+        return peer
     return None
 
 

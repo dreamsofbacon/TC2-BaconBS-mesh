@@ -182,7 +182,7 @@ MAIN_MENU_LABELS = {
     'G': "Games",
     'H': "Public Chatter",
     'N': "Ask Nomad",
-    'A': "Web Fetch",
+    'A': "Services",
     # One entry, not two. Profile and Settings were split on "who you are"
     # against "what the BBS does for you", which is a real distinction and
     # a poor one to make someone guess at from the main menu: both answers
@@ -204,11 +204,11 @@ MENU_LABELS = {
 # item list would otherwise never show them -- exactly how the API Gateway
 # stayed invisible under Utilities.
 #
-# Ask Nomad is required alongside Profile/Web Fetch/Settings/Node View: it
+# Ask Nomad is required alongside Profile/Services/Settings/Node View: it
 # used to be reachable only through Utilities > API Gateway's chooser, which
-# was quietly replaced by a direct jump into Web Fetch (see
+# was quietly replaced by a direct jump into the URL prompt (see
 # handle_apigw_command) and left Ask Nomad with no menu path of its own on
-# any config written before this. Web Fetch and Ask Nomad are the two halves
+# any config written before this. Services and Ask Nomad are the two halves
 # of what used to be one combined API Gateway entry; each now gets its own
 # line rather than being buried behind a chooser.
 MENU_REQUIRED = {
@@ -1423,53 +1423,45 @@ def _apigw_authorized(sender_id, interface) -> bool:
     return gateway.is_requester_authorized(node_id, getattr(interface, 'allowed_nodes', None))
 
 
-def _web_fetch_prompt(interface, tail: str) -> str:
-    """The URL prompt, naming the sites that will actually work.
-
-    "must be an allowed host" asked the user to guess at a list only the
-    operator can read. Naming it costs a few bytes and turns the prompt
-    into its own answer.
-    """
-    import gateway
-    hosts = gateway.allowed_hosts() if gateway.is_gateway_enabled() else []
-    head = "Enter the URL to fetch"
-    if not hosts:
-        return f"{head}{tail}"
-    budget = max(0, get_max_text_bytes(interface) - len(f"{head} (allowed: )") - len(tail))
-    shown = []
-    for host in hosts:
-        candidate = ", ".join(shown + [host])
-        if shown and len(candidate.encode('utf-8')) > budget:
-            shown.append("...")
-            break
-        shown.append(host)
-    return f"{head} (allowed: {', '.join(shown)}){tail}"
+def _door_groups() -> list:
+    """Service groups with at least one door that can run here, in menu order."""
+    import services
+    groups = []
+    for door_id in services.available_door_ids():
+        group = services.DOORS[door_id]['group']
+        if group not in groups:
+            groups.append(group)
+    return groups
 
 
-def _refuse_web_fetch(sender_id, interface) -> bool:
-    """Say up front when no URL could possibly work, and stay out of the
-    URL prompt. A user who types one anyway waits out a round trip over
-    the radio to be told 'no allowed_hosts configured' -- which is how
-    this feature spent its life looking broken."""
-    import gateway
-    reason = gateway.web_fetch_blocked_reason()
-    if not reason:
-        return False
-    send_message(reason, sender_id, interface)
-    handle_help_command(sender_id, interface)
-    return True
+def _doors_in_group(group: str) -> list:
+    import services
+    return [door_id for door_id in services.available_door_ids()
+            if services.DOORS[door_id]['group'] == group]
 
 
 def handle_apigw_command(sender_id, interface):
+    """The service menu: groups first, doors inside.
+
+    One flat list of every door is three LoRa packets and asks someone to
+    read seventeen lines to find the weather. Two short screens cost one
+    extra keypress and one extra packet, and each screen fits in one.
+    """
     if not _apigw_authorized(sender_id, interface):
-        send_message("API gateway: your node is not on the allow-list.", sender_id, interface)
+        send_message("Services: your node is not on the allow-list.", sender_id, interface)
         handle_help_command(sender_id, interface)
         return
-    if _refuse_web_fetch(sender_id, interface):
+    groups = _door_groups()
+    if not groups:
+        send_message("No services are set up on this node.", sender_id, interface)
+        handle_help_command(sender_id, interface)
         return
-    send_message(_web_fetch_prompt(interface, f", or {CANCEL_HINT} to stop:"),
-                 sender_id, interface)
-    update_user_state(sender_id, {'command': 'APIGW', 'step': 2, 'mode': 'http'})
+    menu = "📡 Services 📡\n"
+    for index, group in enumerate(groups, start=1):
+        menu += f"[{index}] {group}\n"
+    menu += "[0] Back"
+    send_message(menu, sender_id, interface)
+    update_user_state(sender_id, {'command': 'APIGW', 'step': 1})
 
 
 _APIGW_UNIT_SEP = "\x1f"
@@ -1553,7 +1545,7 @@ def _apigw_submit(sender_id, interface, kind, payload, label):
         update_user_state(sender_id, None)
         return
 
-    peer = select_gateway_peer(interface)
+    peer = select_gateway_peer(interface, 'door' if kind == 'd' else None)
     if not peer:
         send_message("No internet gateway is reachable on the mesh right now.", sender_id, interface)
         update_user_state(sender_id, None)
@@ -1572,6 +1564,7 @@ def _apigw_submit(sender_id, interface, kind, payload, label):
 
 
 def handle_apigw_steps(sender_id, message, interface):
+    import services
     choice = message.strip()
     state = get_user_state(sender_id) or {}
     step = state.get('step', 1)
@@ -1580,28 +1573,52 @@ def handle_apigw_steps(sender_id, message, interface):
         return
 
     if step == 1:
-        if choice == '1':
-            update_user_state(sender_id, {'command': 'APIGW', 'step': 2, 'mode': 'ai'})
-            send_message("Type your question for Project Nomad:", sender_id, interface)
-        elif choice == '2':
-            if _refuse_web_fetch(sender_id, interface):
-                return
-            update_user_state(sender_id, {'command': 'APIGW', 'step': 2, 'mode': 'http'})
-            send_message(_web_fetch_prompt(interface, ":"), sender_id, interface)
-        else:
-            send_message("Send 1, 2, or 0 to exit.", sender_id, interface)
+        groups = _door_groups()
+        if not (choice.isdigit() and 1 <= int(choice) <= len(groups)):
+            send_message(f"Send 1-{len(groups)}, or 0 to exit.", sender_id, interface)
+            return
+        group = groups[int(choice) - 1]
+        doors = _doors_in_group(group)
+        menu = f"{group}\n"
+        for index, door_id in enumerate(doors, start=1):
+            menu += f"[{index}] {services.DOORS[door_id]['name']}\n"
+        menu += "[0] Back"
+        send_message(menu, sender_id, interface)
+        update_user_state(sender_id, {'command': 'APIGW', 'step': 2, 'group': group})
         return
 
-    # step 2 — the composed input
-    mode = state.get('mode', 'ai')
+    if step == 2:
+        # 0 goes up one screen, not out: the group list is where you decide
+        # you picked the wrong group, and dumping to the main menu from here
+        # made you walk the whole tree again.
+        if choice.lower() in ('x', '0', 'exit'):
+            handle_apigw_command(sender_id, interface)
+            return
+        doors = _doors_in_group(state.get('group', ''))
+        if not (choice.isdigit() and 1 <= int(choice) <= len(doors)):
+            send_message(f"Send 1-{len(doors)}, or 0 to go back.", sender_id, interface)
+            return
+        door_id = doors[int(choice) - 1]
+        door = services.DOORS[door_id]
+        if door.get('arg'):
+            send_message(f"{door['name']} — {door['arg']}:", sender_id, interface)
+            update_user_state(sender_id, {'command': 'APIGW', 'step': 3,
+                                          'group': state.get('group'), 'door': door_id})
+            return
+        _apigw_submit(sender_id, interface, 'd', door_id, door['name'])
+        return
+
+    # step 3 — the door's argument
+    door = services.DOORS.get(state.get('door', ''))
+    if not door:
+        handle_help_command(sender_id, interface)
+        return
     if not choice:
         send_message("Empty input — cancelled.", sender_id, interface)
         handle_help_command(sender_id, interface)
         return
-    if mode == 'ai':
-        _apigw_submit(sender_id, interface, 'r', f"ai{_APIGW_UNIT_SEP}{choice}", "Project Nomad")
-    else:
-        _apigw_submit(sender_id, interface, 'h', f"GET{_APIGW_UNIT_SEP}{choice}{_APIGW_UNIT_SEP}", "HTTP")
+    _apigw_submit(sender_id, interface, 'd',
+                  f"{state['door']}{_APIGW_UNIT_SEP}{choice}", door['name'])
 
 
 # ── Ask Nomad: homescreen shortcut + post-reply follow-up ──────────────────

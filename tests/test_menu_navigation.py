@@ -30,7 +30,7 @@ class MainMenuContentsTests(unittest.TestCase):
         rendered = ch.build_menu(["Q", "B", "U", "P", "N", "X"], self.MAIN)
         self.assertIn("Games", rendered)
         self.assertIn("Public Chatter", rendered)
-        self.assertIn("Web Fetch", rendered)
+        self.assertIn("Services", rendered)
         self.assertIn("Settings", rendered)
         self.assertIn("Node View", rendered)
 
@@ -40,21 +40,21 @@ class MainMenuContentsTests(unittest.TestCase):
         rendered = ch.build_menu(["Q", "B", "U", "P", "N", "X"], self.MAIN)
         for expected in ("[1] Quick Commands", "[2] BBS", "[3] Games",
                          "[4] Public Chatter",
-                         "[5] Ask Nomad", "[6] Web Fetch",
+                         "[5] Ask Nomad", "[6] Services",
                          "[7] Settings & Profile", "[8] Node View",
                          "[0] Exit"):
             self.assertIn(expected, rendered)
 
     def test_a_trimmed_config_closes_the_gap_instead_of_skipping_numbers(self):
         """The baconbot case: a config written before Profile, Ask Nomad,
-        Web Fetch, Settings, Node View, Games and Public Chatter existed.
+        Services, Settings, Node View, Games and Public Chatter existed.
         The menu used to read [1][2][3][6][7] -- holes that mean nothing to
         someone who just found the BBS. None of these seven can be hidden
         by an old or trimmed config any more; every one is either in
         MENU_REQUIRED or MENU_REQUIRED_AFTER."""
         rendered = ch.build_menu(["Q", "B", "U", "X"], self.MAIN)
         for expected in ("[3] Games", "[4] Public Chatter",
-                         "[5] Ask Nomad", "[6] Web Fetch",
+                         "[5] Ask Nomad", "[6] Services",
                          "[7] Settings & Profile", "[8] Node View"):
             self.assertIn(expected, rendered)
 
@@ -100,7 +100,7 @@ class MainMenuContentsTests(unittest.TestCase):
 
     def test_no_duplicates_when_config_already_lists_them(self):
         rendered = ch.build_menu(["Q", "B", "A", "S", "P", "G", "H", "X"], self.MAIN)
-        self.assertEqual(rendered.count("Web Fetch"), 1)
+        self.assertEqual(rendered.count("Services"), 1)
         self.assertEqual(rendered.count("Settings"), 1)
         self.assertEqual(rendered.count("Profile"), 1)
         self.assertEqual(rendered.count("Games"), 1)
@@ -328,33 +328,46 @@ class ChannelDirectoryNavigationTests(unittest.TestCase):
 
 
 class ApiGatewayNavigationTests(unittest.TestCase):
-    def test_main_action_opens_web_fetch_prompt(self):
+    def test_main_action_opens_the_service_groups(self):
         sent = []
         with mock.patch.object(ch, "_apigw_authorized", return_value=True), \
                 mock.patch.object(ch, "send_message", side_effect=lambda text, *_args: sent.append(text)):
             ch.handle_apigw_command(1234, _FakeInterface())
-        self.assertIn("URL to fetch", sent[-1])
-        self.assertEqual(ch.get_user_state(1234), {
-            'command': 'APIGW', 'step': 2, 'mode': 'http',
-        })
+        self.assertIn("Services", sent[-1])
+        self.assertIn("Weather & Safety", sent[-1])
+        self.assertEqual(ch.get_user_state(1234), {'command': 'APIGW', 'step': 1})
+
+    def test_zero_inside_a_group_goes_back_one_screen_not_out(self):
+        """The group list is exactly where you realise you picked the wrong
+        group; dropping to the main menu made you walk the tree again."""
+        sent = []
+        with mock.patch.object(ch, "_apigw_authorized", return_value=True), \
+                mock.patch.object(ch, "send_message", side_effect=lambda text, *_args: sent.append(text)):
+            ch.update_user_state(1234, {'command': 'APIGW', 'step': 2,
+                                        'group': 'Weather & Safety'})
+            ch.handle_apigw_steps(1234, "0", _FakeInterface())
+        self.assertIn("Services", sent[-1])
+        self.assertEqual(ch.get_user_state(1234), {'command': 'APIGW', 'step': 1})
 
     def test_cancel_returns_to_main_menu(self):
         sent = []
         # Same ambient-database dependency as GamesAndChatterNavigationTests
         # above: cancelling redraws the main menu, badge and all.
-        with mock.patch.object(ch, "get_mail", return_value=[]),                 mock.patch.object(ch, "send_message", side_effect=lambda text, *_args: sent.append(text)):
-            ch.update_user_state(1234, {'command': 'APIGW', 'step': 2, 'mode': 'ai'})
+        with mock.patch.object(ch, "get_mail", return_value=[]), \
+                mock.patch.object(ch, "send_message", side_effect=lambda text, *_args: sent.append(text)):
+            ch.update_user_state(1234, {'command': 'APIGW', 'step': 3, 'door': 'wx'})
             ch.handle_apigw_steps(1234, "!cancel", _FakeInterface())
         self.assertIn("Bacon BBS", sent[-1])
 
-    def test_a_bare_zero_is_now_part_of_the_question(self):
-        """Step 2 is free text, so "0" is something the user typed, not a
-        command. The menu step above still takes bare keys."""
-        sent = []
-        with mock.patch.object(ch, "send_message", side_effect=lambda text, *_args: sent.append(text)):
-            ch.update_user_state(1234, {'command': 'APIGW', 'step': 2, 'mode': 'ai'})
+    def test_a_bare_zero_is_part_of_a_doors_argument(self):
+        """Step 3 is free text -- a ZIP can start with 0, and a bare "0"
+        there is something the user typed, not a command."""
+        submitted = []
+        with mock.patch.object(ch, "_apigw_submit",
+                               side_effect=lambda *a, **k: submitted.append(a)):
+            ch.update_user_state(1234, {'command': 'APIGW', 'step': 3, 'door': 'wx'})
             ch.handle_apigw_steps(1234, "0", _FakeInterface())
-        self.assertNotIn("Bacon BBS", sent[-1])
+        self.assertEqual("wx" + chr(31) + "0", submitted[-1][3])
 
 
 class MenuFeedbackTests(unittest.TestCase):
@@ -431,7 +444,7 @@ class HiddenEntryTests(unittest.TestCase):
     def test_a_hidden_letter_is_refused_bare(self):
         # 'b' (BBS), omitted from this items list: every OTHER main-menu
         # letter is now in MENU_REQUIRED or MENU_REQUIRED_AFTER (Profile,
-        # Ask Nomad, Web Fetch, Settings, Node View, Games, Public Chatter),
+        # Ask Nomad, Services, Settings, Node View, Games, Public Chatter),
         # so none of them can demonstrate a genuinely hidden entry any more.
         # An operator choosing to omit BBS itself still can.
         import message_processing as mp
