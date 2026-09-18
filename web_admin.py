@@ -5302,6 +5302,14 @@ def create_app(runtime_interface=None) -> Flask:
             if save_mismatch_lines:
               diagnostics["zork_save_peer_mismatches"] = "\n".join(save_mismatch_lines)
             diagnostics["peer_hash_graph"] = graph_rows
+          elif not bbs_nodes:
+            # A single node is not "unknown" or "waiting": there is nothing
+            # to compare against, and saying so stops the page reading like
+            # a fault on a node that simply has no peers.
+            single = "Single node: no sync peers configured"
+            diagnostics["peer_sync_status"] = single
+            diagnostics["peer_sync_counts"] = single
+            diagnostics["peer_scope_mismatches"] = single
           else:
             diagnostics["peer_sync_status"] = "No peer reports yet"
             diagnostics["peer_sync_counts"] = "No peer status received yet"
@@ -6386,11 +6394,14 @@ def create_app(runtime_interface=None) -> Flask:
       now_epoch = int(datetime.utcnow().timestamp())
       seconds_until_next = max(next_run_epoch - now_epoch, 0) if next_run_epoch > 0 else 0
 
-      peer_mismatch = False
-      peer_status_text = "no peer reports"
-      mismatch_snapshot = get_peer_mismatch_snapshot()
-      peer_mismatch = bool(mismatch_snapshot.get("mismatch", False))
-      peer_status_text = str(mismatch_snapshot.get("status_text", "no peer reports"))
+      expected_nodes, _, _, _ = load_sync_settings(app.config["CONFIG_PATH"])
+      if not expected_nodes:
+        peer_mismatch = False
+        peer_status_text = "single node"
+      else:
+        mismatch_snapshot = get_peer_mismatch_snapshot()
+        peer_mismatch = bool(mismatch_snapshot.get("mismatch", False))
+        peer_status_text = str(mismatch_snapshot.get("status_text", "no peer reports"))
 
       return jsonify({
         "in_progress": in_progress,
