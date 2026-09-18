@@ -1611,10 +1611,27 @@ def handle_apigw_steps(sender_id, message, interface):
 # follow-up (or return to the main menu) once a reply arrives, instead of
 # re-navigating the whole menu tree for every question.
 
+def _ask_nomad_unavailable_reason() -> str:
+    """Empty when Ask Nomad looks usable. Never raises: a check that cannot
+    answer must not be what stops someone asking."""
+    try:
+        from gateway import ai_unavailable_reason
+        return ai_unavailable_reason()
+    except Exception:
+        return ''
+
+
 def handle_ask_nomad_command(sender_id, interface):
     """Main-menu shortcut ('N'): jumps straight to the question prompt."""
     if not _apigw_authorized(sender_id, interface):
         send_message("API gateway: your node is not on the allow-list.", sender_id, interface)
+        handle_help_command(sender_id, interface)
+        return
+    unavailable = _ask_nomad_unavailable_reason()
+    if unavailable:
+        # Better than taking the question and failing after the round trip,
+        # which on a radio is two waits and a wasted transmission.
+        send_message(f"Ask Nomad is unavailable: {unavailable}.", sender_id, interface)
         handle_help_command(sender_id, interface)
         return
     send_message(f"Type your question for Project Nomad, or {CANCEL_HINT} to stop:",

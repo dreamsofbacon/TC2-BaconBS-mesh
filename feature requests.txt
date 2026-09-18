@@ -13,15 +13,15 @@ The Pico cache node is now its own project, `dreamsofbacon/baconbbs-pico`, with 
 
 ## Open: Product and Operations
 
-- [ ] Install an AI model on the Project Nomad server. `https://ai.bmcse.com/api/ollama/installed-models` returns an empty list, so every Ask Nomad question fails; the BBS asks for `qwen2.5:3b` (`[gateway] ai_model` on bbs.local). Install that model in Nomad's AI Assistant, or set `ai_model` to one that is installed.
+- [ ] Install an AI model on the Project Nomad server, or point `[gateway] ai_model` at one that exists. `https://ai.bmcse.com/api/ollama/installed-models` returns an empty list, so every Ask Nomad question fails. The server is Materva's, not ours, so this needs them. Until it is done the BBS now says "Ask Nomad is unavailable: the AI server has no model installed" when someone opens Ask Nomad, rather than taking the question and failing after the round trip (on `main`, not yet deployed).
 - [ ] Consider combining Linux services where that improves deployment and failure isolation.
 - [ ] Restructure modules where it reduces complexity without disrupting the running system.
 - [ ] Extend MeshCore support with user account rooms and relayed room text.
 
 ## Open: Security and Hygiene
 
-- [ ] Old blobs remain reachable outside this repository's branches: GitHub refuses to rewrite `refs/pull/1..7` (its own read-only PR refs), the `materva/TC2-BaconBS-mesh` fork has its own copy, and so does any existing clone. Ask GitHub support to purge the PR refs if that matters; both passwords are already rotated, so what is left is a record, not a key.
-- [ ] Secure the Project Nomad API at `ai.bmcse.com`. Its `/api` routes have no authentication, so anyone who can reach it can install or uninstall services (`/api/system/services/...`) and download or delete models (`/api/ollama/models`). Put it behind authentication or off the public internet.
+- [ ] Old blobs remain reachable outside this repository's branches: GitHub refuses to rewrite `refs/pull/1..7` (its own read-only PR refs), and the `materva/TC2-BaconBS-mesh` fork has its own copy. Both need someone else -- GitHub support for the PR refs, Materva for the fork -- and both passwords are already rotated, so what is left is a record, not a key.
+- [ ] Secure the Project Nomad API at `ai.bmcse.com` -- Materva's machine, so this is a request to them, not a change we can make. Its `/api` routes have no authentication, so anyone who can reach it can install or uninstall services (`/api/system/services/...`) and download or delete models (`/api/ollama/models`). What this node sends there is only the question text and the model name -- no node ids, aliases or credentials -- and replies are size-capped and time-limited, so the exposure is theirs rather than ours.
 - [ ] Identify fleet signing key `fkf5f136`. Every node trusts it alongside `fkec622a`, it is not the admin machine's key, and every node applies instructions it signs automatically (`updates = auto`). Remove it from `trusted_keys` if it is not yours.
 - [ ] Delete the pre-migration database backups `bulletins.db.pre-identity-migration` on bbs.local and forgecam once the v0.1.642 MeshCore identity migration is no longer in question.
 

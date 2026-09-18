@@ -220,7 +220,7 @@ _AI_STATUS_HINTS = {
 }
 
 
-def _installed_ai_models(base: str, dialect: str, headers: dict):
+def _installed_ai_models(base: str, dialect: str, headers: dict, timeout=None):
     """Model names the AI server has, or None if it cannot say.
 
     Nomad lists them at /api/ollama/installed-models (a bare list); Ollama at
@@ -231,7 +231,8 @@ def _installed_ai_models(base: str, dialect: str, headers: dict):
         req = urllib.request.Request(
             f"{base}{path}", headers={k: v for k, v in headers.items() if k != "Content-Type"},
             method='GET')
-        with urllib.request.urlopen(req, timeout=min(10, _request_timeout())) as resp:
+        with urllib.request.urlopen(
+                req, timeout=timeout or min(10, _request_timeout())) as resp:
             doc = json.loads(resp.read().decode('utf-8', errors='replace'))
     except Exception:
         return None
@@ -261,6 +262,61 @@ DEFAULT_AI_SYSTEM_PROMPT = (
     "private between two people, and Public Chatter is radio traffic the node "
     "overheard. Never call any of them forums, threads or subreddits."
 )
+
+
+# Asking a question the AI server cannot answer costs a radio user two
+# round trips to find out: type the question, wait, read the error. The AI
+# server here is someone else's machine -- when it has no model installed,
+# every question fails -- so the answer is to say so at the door instead.
+#
+# Deliberately fails OPEN: a slow or silent check leaves the feature offered,
+# because being unable to ask is worse than a wasted question. Cached, so a
+# busy screen does not re-ask the server for every visitor.
+AI_AVAILABILITY_TTL_SECONDS = 300.0
+AI_AVAILABILITY_TIMEOUT_SECONDS = 3.0
+_ai_availability: dict = {}
+
+
+def _reset_ai_availability() -> None:
+    """Test hook, and what Settings calls after the model or URL changes."""
+    _ai_availability.clear()
+
+
+def ai_unavailable_reason() -> str:
+    """Why Ask Nomad cannot work right now, or '' when it looks usable."""
+    # Only this node's own AI server can be checked. A node whose gateway is
+    # off, or which has no AI server of its own, may still be served by a
+    # peer gateway ('apigw'), and there is no way to ask it from here -- so
+    # neither case is reported as unavailable.
+    if not is_gateway_enabled():
+        return ''
+    base = (_config_raw('gateway', 'ai_base_url') or '').rstrip('/')
+    if not base:
+        return ''
+    dialect = (_config_raw('gateway', 'ai_dialect') or 'ollama').lower()
+    model = _config_raw('gateway', 'ai_model') or 'llama3.2'
+    key = (base, dialect, model)
+    cached = _ai_availability.get(key)
+    now = time.time()
+    if cached is not None and cached[0] > now:
+        return cached[1]
+
+    headers = {}
+    api_key = _config_raw('gateway', 'ai_api_key')
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    reason = ''
+    try:
+        installed = _installed_ai_models(base, dialect, headers,
+                                         timeout=AI_AVAILABILITY_TIMEOUT_SECONDS)
+    except Exception:
+        installed = None
+    if installed is not None and model not in installed:
+        reason = (f"the AI server has no model installed"
+                  if not installed else
+                  f"the AI server does not have '{model}' installed")
+    _ai_availability[key] = (now + AI_AVAILABILITY_TTL_SECONDS, reason)
+    return reason
 
 
 def perform_ai_chat(prompt: str) -> Tuple[str, str]:

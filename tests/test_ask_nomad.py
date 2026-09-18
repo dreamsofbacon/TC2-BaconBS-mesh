@@ -621,3 +621,77 @@ class UserMessagePacingTests(unittest.TestCase):
         unchanged, and turbo nodes are the busiest ones."""
         with mock.patch.object(utils, "_is_sync_turbo_enabled", return_value=True):
             self.assertEqual(utils.get_user_message_pause_seconds(self._Lora()), 2.0)
+
+
+class AvailabilityCheckTests(unittest.TestCase):
+    """Asking a question the AI server cannot answer costs a radio user two
+    waits and a wasted transmission to find out. The live AI server is
+    someone else's machine and currently has no model installed, so the BBS
+    says so at the door instead -- but only when it can establish it.
+    """
+
+    def setUp(self):
+        import gateway
+        self.gateway = gateway
+        gateway._reset_ai_availability()
+        self.addCleanup(gateway._reset_ai_availability)
+
+    def _reason(self, installed, enabled=True, base="https://ai.example.com", model="qwen2.5:3b"):
+        config = {
+            ('gateway', 'enabled'): 'true' if enabled else 'false',
+            ('gateway', 'ai_base_url'): base,
+            ('gateway', 'ai_dialect'): 'nomad',
+            ('gateway', 'ai_model'): model,
+        }
+        with mock.patch.object(self.gateway, "_config_raw", lambda s, o: config.get((s, o))), \
+             mock.patch.object(self.gateway, "is_gateway_enabled", lambda: enabled), \
+             mock.patch.object(self.gateway, "_installed_ai_models",
+                               lambda *a, **k: installed):
+            return self.gateway.ai_unavailable_reason()
+
+    def test_no_models_at_all_is_named(self):
+        self.assertIn("no model installed", self._reason([]))
+
+    def test_the_wrong_model_is_named(self):
+        self.assertIn("qwen2.5:3b", self._reason(["llama3.2"]))
+
+    def test_the_configured_model_being_there_is_fine(self):
+        self.assertEqual(self._reason(["qwen2.5:3b", "llama3.2"]), "")
+
+    def test_a_server_that_will_not_say_leaves_the_feature_offered(self):
+        """Fail open: being unable to ask is worse than a wasted question."""
+        self.assertEqual(self._reason(None), "")
+
+    def test_a_node_without_its_own_ai_server_is_not_judged(self):
+        """It may be served by a peer gateway, which cannot be checked."""
+        self.assertEqual(self._reason([], enabled=False), "")
+        self.assertEqual(self._reason([], base=""), "")
+
+    def test_the_answer_is_cached(self):
+        calls = []
+
+        def counting(*a, **k):
+            calls.append(1)
+            return []
+
+        config = {('gateway', 'ai_base_url'): "https://ai.example.com",
+                  ('gateway', 'ai_dialect'): 'nomad', ('gateway', 'ai_model'): 'm'}
+        with mock.patch.object(self.gateway, "_config_raw", lambda s, o: config.get((s, o))), \
+             mock.patch.object(self.gateway, "is_gateway_enabled", lambda: True), \
+             mock.patch.object(self.gateway, "_installed_ai_models", counting):
+            first = self.gateway.ai_unavailable_reason()
+            second = self.gateway.ai_unavailable_reason()
+        self.assertEqual(first, second)
+        self.assertEqual(len(calls), 1, "asked the AI server twice for one answer")
+
+    def test_the_menu_says_so_instead_of_taking_a_question(self):
+        import command_handlers as ch
+        sent = []
+        with mock.patch.object(ch, "send_message", side_effect=lambda t, *a, **k: sent.append(t)), \
+             mock.patch.object(ch, "_apigw_authorized", return_value=True), \
+             mock.patch.object(ch, "handle_help_command", lambda *a, **k: None), \
+             mock.patch.object(ch, "_ask_nomad_unavailable_reason",
+                               return_value="the AI server has no model installed"):
+            ch.handle_ask_nomad_command(1234, types.SimpleNamespace())
+        self.assertIn("Ask Nomad is unavailable: the AI server has no model installed.", sent)
+        self.assertIsNone(ch.get_user_state(1234))
