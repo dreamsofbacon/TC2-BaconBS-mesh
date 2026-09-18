@@ -79,7 +79,8 @@ from db_operations import (
     get_sync_tombstone_deleted_at,
     get_node_role, ROLE_BANNED, apply_synced_node_role,
     apply_synced_account_identity, apply_synced_account_meta,
-    apply_synced_account_link, mark_mail_dm_delivered_elsewhere,
+    apply_synced_account_link, apply_synced_account_unlink,
+    mark_mail_dm_delivered_elsewhere,
     get_recent_sync_tombstones,
     has_sync_tombstone,
     rollback_db_connection,
@@ -2675,6 +2676,12 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 return
             apply_synced_account_link(parts[1].strip(), parts[2].strip(),
                                       parts[3].strip(), parts[4].strip())
+        elif message.startswith("ACCTUNLINK|"):
+            parts = message.split("|", 2)
+            if len(parts) != 3 or not parts[1] or not parts[2]:
+                logging.warning(f"Malformed ACCTUNLINK ignored: {message}")
+                return
+            apply_synced_account_unlink(parts[1].strip(), parts[2].strip())
         elif message.startswith("BBSID|"):
             parts = message.split("|", 3)
             if len(parts) != 4 or not parts[1] or not parts[3]:
@@ -3328,7 +3335,7 @@ def on_receive(packet, interface):
                                    "CHANNEL|", "DELETE_CHANNEL|", "CHANNELCOMMENT|", "CHANNELCOMMENTCONT|", "CHANNELCOMMENTMETA|", "DELETE_CHANNELCOMMENT|",
                                    "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
                                    "PROFILESYNC|", "RELAYPREF|", "SCORESYNC|", "ROLE|", "BBSID|",
-                                   "ACCT|", "ACCTMETA|", "ACCTLINK|", "MAILDLV|", "POSTAUTHOR|",
+                                   "ACCT|", "ACCTMETA|", "ACCTLINK|", "ACCTUNLINK|", "MAILDLV|", "POSTAUTHOR|",
                                    "FLEETVER|", "FLEETVERCONT|", "NODEVER|", "FLEETSTATUS|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|", "HASHZGAP|",
                                    "HAVE|", "WANT|", "EVENT|", "PEERGOSSIP|",

@@ -6387,6 +6387,68 @@ def get_accounts_for_sync() -> list:
     return [dict(zip(keys, row)) for row in rows]
 
 
+def _ensure_unlinked_nodes_table() -> None:
+    conn = get_db_connection()
+    conn.execute("""CREATE TABLE IF NOT EXISTS unlinked_nodes (
+                        node_id TEXT PRIMARY KEY,
+                        unlinked_at TEXT NOT NULL
+                    )""")
+    conn.commit()
+
+
+UNLINK_TOMBSTONE_MAX_AGE_DAYS = 60
+
+
+def record_node_unlink(node_id: str, unlinked_at: str = '') -> str:
+    """Remember that this device was taken off its account, and when.
+
+    A link travels between nodes; without this a removal could not, so the
+    peer that still held the old link kept routing that person's mail to a
+    radio they had unlinked, and re-advertised it back.
+    """
+    _ensure_unlinked_nodes_table()
+    stamp = str(unlinked_at or '').strip() or datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    conn.execute(
+        """INSERT INTO unlinked_nodes (node_id, unlinked_at) VALUES (?, ?)
+           ON CONFLICT(node_id) DO UPDATE SET
+               unlinked_at = CASE WHEN excluded.unlinked_at > unlinked_nodes.unlinked_at
+                                  THEN excluded.unlinked_at ELSE unlinked_nodes.unlinked_at END""",
+        (str(node_id), stamp))
+    conn.commit()
+    return stamp
+
+
+def get_node_unlink_time(node_id: str) -> str:
+    _ensure_unlinked_nodes_table()
+    row = get_db_connection().execute(
+        "SELECT unlinked_at FROM unlinked_nodes WHERE node_id = ?",
+        (str(node_id),)).fetchone()
+    return str(row[0]) if row else ''
+
+
+def clear_node_unlink(node_id: str) -> None:
+    """A device linked again here: its removal is no longer the last word."""
+    _ensure_unlinked_nodes_table()
+    conn = get_db_connection()
+    conn.execute("DELETE FROM unlinked_nodes WHERE node_id = ?", (str(node_id),))
+    conn.commit()
+
+
+def get_node_unlinks_for_sync() -> list:
+    """Recent removals. Old ones are dropped: every node has long since
+    applied them, and the table is not a permanent record."""
+    _ensure_unlinked_nodes_table()
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(days=UNLINK_TOMBSTONE_MAX_AGE_DAYS)).isoformat()
+    conn = get_db_connection()
+    conn.execute("DELETE FROM unlinked_nodes WHERE unlinked_at < ?", (cutoff,))
+    conn.commit()
+    rows = conn.execute(
+        "SELECT node_id, unlinked_at FROM unlinked_nodes ORDER BY node_id").fetchall()
+    return [{'node_id': row[0], 'unlinked_at': row[1]} for row in rows]
+
+
 def get_account_links_for_sync() -> list:
     conn = get_db_connection()
     rows = conn.execute(
@@ -6527,11 +6589,20 @@ def apply_synced_account_meta(account_id, mail_relay_enabled, mail_relay_updated
 
 
 def apply_synced_account_link(node_id, account_id, network, linked_at) -> bool:
-    """Attach a device to a peer-learned account.
+    """Attach a device to a peer-learned account, or move it to one.
 
-    A device already linked to a different account here is left alone. That
-    link is what routes a person's mail to a radio, so honouring a remote
-    re-assignment would let any node on the broker redirect it.
+    A device's link is what routes its owner's mail, so a move used to be
+    refused outright here -- which meant a move made on one node was never
+    true anywhere else, and the old node kept delivering that person's mail
+    to the radio they had moved away, then re-advertised the stale link back.
+
+    A move is now accepted when it is NEWER than the link held here, and a
+    removal (record_node_unlink) counts as an event of its own: a link older
+    than the removal is ignored rather than resurrected. That makes the last
+    thing the owner actually did the thing that wins, on every node.
+
+    An `ssh:` id is still never moved: an SSH login is its own account, and
+    moving it would strand the password that belongs to it.
     """
     from utils import is_account_sync_enabled
     if not is_account_sync_enabled() or not _is_account_id(account_id):
@@ -6545,20 +6616,69 @@ def apply_synced_account_link(node_id, account_id, network, linked_at) -> bool:
     if c.execute("SELECT 1 FROM accounts WHERE account_id = ?",
                  (account_id,)).fetchone() is None:
         return False
-    row = c.execute("SELECT account_id FROM linked_nodes WHERE node_id = ?",
+    stamp = str(linked_at or '').strip() or datetime.now(timezone.utc).isoformat()
+    unlinked_at = get_node_unlink_time(normalized_node)
+    row = c.execute("SELECT account_id, linked_at FROM linked_nodes WHERE node_id = ?",
                     (normalized_node,)).fetchone()
-    if row is not None:
-        if str(row[0]) != account_id:
-            logging.warning(
-                "Refused to move device %s to account %s: linked to %s here.",
-                normalized_node[:24], account_id[:12], str(row[0])[:12])
+    if row is None:
+        if unlinked_at and unlinked_at >= stamp:
+            # Removed here after this link was made: a peer still holding the
+            # old link must not put it back.
+            return False
+        c.execute("INSERT INTO linked_nodes (node_id, account_id, network, linked_at)"
+                  " VALUES (?, ?, ?, ?)",
+                  (normalized_node, account_id,
+                   str(network or '').strip()[:16] or 'unknown', stamp))
+        conn.commit()
+        clear_node_unlink(normalized_node)
+        return True
+    if str(row[0]) == account_id:
         return False
-    c.execute("INSERT INTO linked_nodes (node_id, account_id, network, linked_at)"
-              " VALUES (?, ?, ?, ?)",
-              (normalized_node, account_id,
-               str(network or '').strip()[:16] or 'unknown',
-               str(linked_at or datetime.now(timezone.utc).isoformat())))
+    if normalized_node.startswith(SSH_NODE_PREFIX):
+        logging.warning("Refused to move SSH login %s: it is its own account.",
+                        normalized_node[:24])
+        return False
+    local_stamp = str(row[1] or '')
+    if stamp <= local_stamp:
+        logging.info(
+            "Kept device %s on account %s: local link (%s) is not older than "
+            "the one offered for %s (%s).",
+            normalized_node[:24], str(row[0])[:12], local_stamp or 'unknown',
+            account_id[:12], stamp)
+        return False
+    c.execute("UPDATE linked_nodes SET account_id = ?, network = ?, linked_at = ?"
+              " WHERE node_id = ?",
+              (account_id, str(network or '').strip()[:16] or 'unknown',
+               stamp, normalized_node))
     conn.commit()
+    clear_node_unlink(normalized_node)
+    logging.info("Moved device %s to account %s (newer link).",
+                 normalized_node[:24], account_id[:12])
+    return True
+
+
+def apply_synced_account_unlink(node_id, unlinked_at) -> bool:
+    """A peer says this device was taken off its account. Newest wins."""
+    from utils import is_account_sync_enabled
+    if not is_account_sync_enabled():
+        return False
+    normalized_node = str(node_id or '').strip()
+    stamp = str(unlinked_at or '').strip()
+    if not normalized_node or not stamp:
+        return False
+    if normalized_node.startswith(SSH_NODE_PREFIX):
+        return False
+    record_node_unlink(normalized_node, stamp)
+    conn = get_db_connection()
+    row = conn.execute("SELECT linked_at FROM linked_nodes WHERE node_id = ?",
+                       (normalized_node,)).fetchone()
+    if row is None:
+        return False
+    if str(row[0] or '') > stamp:
+        return False  # linked again since, somewhere
+    conn.execute("DELETE FROM linked_nodes WHERE node_id = ?", (normalized_node,))
+    conn.commit()
+    logging.info("Unlinked device %s: a peer removed it.", normalized_node[:24])
     return True
 
 
@@ -6766,6 +6886,7 @@ def unlink_node(node_id: str) -> bool:
         return False
     c.execute("DELETE FROM linked_nodes WHERE node_id = ?", (str(node_id),))
     conn.commit()
+    record_node_unlink(node_id)
     return True
 
 
@@ -7333,9 +7454,9 @@ def move_node_with_link_code(code: str, node_id: str, network: str,
     account with no devices; that account keeps its alias, and any SSH
     password, and simply has nothing linked.
 
-    Local to this node, like unlinking: a peer never lets a sync frame move a
-    device between accounts (apply_synced_account_link), because that is how
-    someone would redirect another person's mail.
+    The move is stamped and travels to peers: apply_synced_account_link takes
+    the newer of the two links, so the last thing the owner did wins on every
+    node rather than only on the one they typed the code into.
     """
     info = describe_link_code(code, node_id, max_devices)
     status = info['status']
@@ -7350,10 +7471,11 @@ def move_node_with_link_code(code: str, node_id: str, network: str,
     if status != 'other':
         return redeem_link_code(code, node_id, network, max_devices)
     conn = get_db_connection()
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now_str = datetime.now(timezone.utc).isoformat()
     conn.execute("DELETE FROM linked_nodes WHERE node_id = ?", (str(node_id),))
     conn.commit()
     link_node_to_account(node_id, info['code_account_id'], network, now=now_str)
+    clear_node_unlink(node_id)
     conn.execute(
         "UPDATE link_codes SET consumed_at = ?, consumed_by_node_id = ? WHERE code = ?",
         (now_str, str(node_id), str(code)))
@@ -8242,6 +8364,7 @@ ACCOUNT_READVERTISE_SECONDS = 900.0
 # (peer, account_id) -> the stamps last sent.
 _advertised_accounts: dict = {}
 _advertised_account_links: dict = {}
+_advertised_account_unlinks: dict = {}
 _accounts_last_full_sweep: dict = {}
 
 
@@ -8263,7 +8386,8 @@ def sync_accounts_to_nodes(bbs_nodes: list, interface, force: bool = False) -> i
         return 0
     from utils import (is_account_sync_enabled, send_account_to_bbs_nodes,
                        send_account_meta_to_bbs_nodes,
-                       send_account_link_to_bbs_nodes, get_max_exported_role)
+                       send_account_link_to_bbs_nodes,
+                       send_account_unlink_to_bbs_nodes, get_max_exported_role)
     if not is_account_sync_enabled():
         return 0
     export_ceiling = normalize_role(get_max_exported_role())
@@ -8317,6 +8441,20 @@ def sync_accounts_to_nodes(bbs_nodes: list, interface, force: bool = False) -> i
                 continue
             if send_account_link_to_bbs_nodes(link, [peer_id], interface):
                 _advertised_account_links[key] = account_id
+                sent += 1
+
+    for removal in get_node_unlinks_for_sync():
+        node_id = str(removal.get('node_id') or '')
+        stamp = str(removal.get('unlinked_at') or '')
+        if not node_id or not stamp:
+            continue
+        for peer_id in bbs_nodes:
+            key = (str(peer_id), node_id)
+            if (not force and str(peer_id) not in sweeping
+                    and _advertised_account_unlinks.get(key) == stamp):
+                continue
+            if send_account_unlink_to_bbs_nodes(node_id, stamp, [peer_id], interface):
+                _advertised_account_unlinks[key] = stamp
                 sent += 1
     return sent
 

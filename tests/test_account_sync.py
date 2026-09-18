@@ -150,16 +150,27 @@ class DeviceLinkTests(_DbCase):
             "!04058ac8", PEER, "meshtastic", stamp()))
         self.assertEqual(db_operations.get_account_id_for_node("!04058ac8"), PEER)
 
-    def test_a_peer_cannot_move_a_device_that_is_already_someone_elses(self):
-        """The link is what routes a person's mail to a radio. If a peer could
-        reassign it, any node on the broker could redirect that mail."""
+    def _already_linked(self, when=-60):
         self.account(LOCAL, "bacon")
         conn = db_operations.get_db_connection()
         conn.execute("INSERT INTO linked_nodes (node_id, account_id, network, linked_at)"
-                     " VALUES (?, ?, 'meshtastic', ?)", ("!04058ac8", LOCAL, stamp(-60)))
+                     " VALUES (?, ?, 'meshtastic', ?)", ("!04058ac8", LOCAL, stamp(when)))
         conn.commit()
-        self.assertFalse(db_operations.apply_synced_account_link(
+
+    def test_a_newer_link_moves_the_device(self):
+        """Moves are made on one node and have to be true on the others, or
+        that node keeps delivering the owner's mail to the radio they moved
+        away from. The newer of the two links is the one they made last."""
+        self._already_linked()
+        self.assertTrue(db_operations.apply_synced_account_link(
             "!04058ac8", PEER, "meshtastic", stamp()))
+        self.assertEqual(db_operations.get_account_id_for_node("!04058ac8"), PEER)
+
+    def test_an_older_link_never_takes_a_device_back(self):
+        """A peer that has not caught up keeps re-advertising the old link."""
+        self._already_linked(when=-60)
+        self.assertFalse(db_operations.apply_synced_account_link(
+            "!04058ac8", PEER, "meshtastic", stamp(-600)))
         self.assertEqual(db_operations.get_account_id_for_node("!04058ac8"), LOCAL)
 
     def test_a_device_for_an_account_we_have_never_heard_of_is_refused(self):

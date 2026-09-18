@@ -52,7 +52,7 @@ def get_max_text_bytes(interface=None) -> int:
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat', 'role', 'bbsid', 'acct', 'mdlv', 'auth')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state, 'role'=user roles, 'bbsid'=fleet BBS name/greeting, 'acct'=fleet accounts (identity only, never credentials), 'mdlv'=mail relay delivery receipts, 'auth'=author device on bulletins and channel comments
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat', 'role', 'bbsid', 'acct', 'mdlv', 'auth', 'acctmv')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state, 'role'=user roles, 'bbsid'=fleet BBS name/greeting, 'acct'=fleet accounts (identity only, never credentials), 'mdlv'=mail relay delivery receipts, 'auth'=author device on bulletins and channel comments, 'acctmv'=device moves and unlinks travel between nodes
 
 # Single-char scope codes used by the 'scc' wire capability.  Senders gate
 # encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
@@ -2260,6 +2260,25 @@ def send_account_link_to_bbs_nodes(link, bbs_nodes, interface):
     sent = 0
     for peer_id in bbs_nodes or []:
         if peer_supports(peer_id, 'acct'):
+            _send_one_sync(message, peer_id, interface)
+            sent += 1
+    return sent
+
+
+def send_account_unlink_to_bbs_nodes(node_id, unlinked_at, bbs_nodes, interface):
+    """Advertise that a device was taken off its account.
+
+    Its own frame, and its own capability: a peer that only knows about
+    links would otherwise keep re-advertising the one this removes.
+    """
+    try:
+        from db_operations import peer_supports
+    except Exception:
+        return 0
+    message = "ACCTUNLINK|{0}|{1}".format(str(node_id), str(unlinked_at))
+    sent = 0
+    for peer_id in bbs_nodes or []:
+        if peer_supports(peer_id, 'acct') and peer_supports(peer_id, 'acctmv'):
             _send_one_sync(message, peer_id, interface)
             sent += 1
     return sent
