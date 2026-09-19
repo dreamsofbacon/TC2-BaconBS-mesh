@@ -938,30 +938,9 @@
     <h3>Services</h3>
     <p class="text-muted">
       Every service on the <code>[A] Services</code> menu works as soon as the
-      gateway is on — there is no list to fill in first. One door is yours to
-      choose:
+      gateway is on — there is no list to fill in first. News feeds are the
+      exception, and they are managed just below, outside this form.
     </p>
-    <div class="form-group">
-      <label for="gateway_rss_url">News feed (RSS or Atom)</label>
-      <input type="url" id="gateway_rss_url" name="gateway_rss_url" class="form-control"
-             list="gateway_rss_suggestions" placeholder="https://feeds.npr.org/1001/rss.xml"
-             value="{{ gateway.rss_url }}">
-      <datalist id="gateway_rss_suggestions">
-        <option value="https://feeds.npr.org/1001/rss.xml" label="NPR News">
-        <option value="https://feeds.bbci.co.uk/news/world/rss.xml" label="BBC World">
-        <option value="https://www.aljazeera.com/xml/rss/all.xml" label="Al Jazeera">
-        <option value="https://www.arrl.org/news/rss" label="ARRL (ham radio)">
-        <option value="https://feeds.arstechnica.com/arstechnica/index" label="Ars Technica">
-        <option value="https://www.nasa.gov/news-release/feed/" label="NASA">
-      </datalist>
-      <p class="text-muted">
-        Shown as <code>Services &rarr; News &rarr; News feed</code>. Headlines only —
-        five titles, no article bodies, which is the whole point over a radio link.
-        Click the box for a few suggestions, or paste any feed (a local paper,
-        a club, a weather office). <strong>Leave blank and the door is simply not
-        shown</strong>; Hacker News is built in either way.
-      </p>
-    </div>
 
     <hr style="margin:1.5rem 0">
     <h3>Limits &amp; legacy raw fetch</h3>
@@ -999,6 +978,124 @@
              style="width:120px" min="0" value="{{ gateway.rate_limit_per_node }}">
     </div>
     <button class="btn btn-primary" type="submit">Save Gateway Settings</button>
+  </form>
+
+  <hr style="margin:2rem 0">
+  <h3>News feeds</h3>
+  <p class="text-muted">
+    Feeds appear under <code>Services &rarr; News</code>, filed by category.
+    Headlines only — five titles, no article bodies, which is the point over a
+    radio link. The list is <strong>shared across the fleet</strong>: a feed you
+    add here reaches your other nodes over MQTT within a few minutes.
+  </p>
+  <p class="text-muted">
+    A feed belongs to the node that added it. You can edit or retire your own;
+    a feed from another node can be <strong>hidden</strong> here, which affects
+    this BBS's menu only and is never sent anywhere.
+    {% if feeds.local_ids %}This node is
+    <code>{{ feeds.local_ids|join('</code>, <code>')|safe }}</code>.{% endif %}
+  </p>
+
+  {% if feeds.feeds %}
+  <div class="table-scroll-container">
+  <table class="table" style="width:100%">
+    <thead>
+      <tr><th>Name</th><th>Category</th><th>Feed</th><th>Owner</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for feed in feeds.feeds %}
+      <tr{% if feed.blocked %} style="opacity:.55"{% endif %}>
+        <td>
+          <strong>{{ feed.name }}</strong>
+          {% if feed.blocked %}<br><span class="text-muted">hidden here</span>{% endif %}
+        </td>
+        <td>{{ feed.category or '—' }}</td>
+        <td style="word-break:break-all"><small>{{ feed.url }}</small></td>
+        <td>
+          {% if feed.owned %}<span title="This node added it">this node</span>
+          {% else %}<small>{{ feed.author_node_id }}</small>{% endif %}
+        </td>
+        <td style="white-space:nowrap">
+          <form method="post" action="{{ url_for('settings_page') }}#gateway"
+                style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="settings_section" value="feeds">
+            <input type="hidden" name="feed_id" value="{{ feed.feed_id }}">
+            <input type="hidden" name="feed_action"
+                   value="{% if feed.blocked %}unblock{% else %}block{% endif %}">
+            <button class="btn" type="submit">
+              {% if feed.blocked %}Show{% else %}Hide{% endif %}
+            </button>
+          </form>
+          {% if feed.owned %}
+          <form method="post" action="{{ url_for('settings_page') }}#gateway"
+                style="display:inline"
+                onsubmit="return confirm('Retire {{ feed.name }} for every node in the fleet?')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="settings_section" value="feeds">
+            <input type="hidden" name="feed_id" value="{{ feed.feed_id }}">
+            <input type="hidden" name="feed_action" value="delete">
+            <button class="btn btn-danger" type="submit">Retire</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="text-muted"><em>No feeds yet. Hacker News is built in and always
+  available under Services &rarr; News.</em></p>
+  {% endif %}
+
+  <h4 style="margin-top:1.5rem">Add a feed</h4>
+  <form method="post" action="{{ url_for('settings_page') }}#gateway">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="feeds">
+    <input type="hidden" name="feed_action" value="save">
+    <div class="form-group">
+      <label for="feed_name">Name (as it appears on the radio menu)</label>
+      <input type="text" id="feed_name" name="feed_name" class="form-control"
+             maxlength="40" placeholder="NPR News" style="max-width:320px" required>
+    </div>
+    <div class="form-group">
+      <label for="feed_category">Category</label>
+      <input type="text" id="feed_category" name="feed_category" class="form-control"
+             maxlength="24" list="feed_categories" placeholder="World"
+             style="max-width:320px">
+      <datalist id="feed_categories">
+        {% for name in feeds.categories %}<option value="{{ name }}">{% endfor %}
+        <option value="World"><option value="Local"><option value="Tech">
+        <option value="Ham radio"><option value="Science">
+      </datalist>
+      <p class="text-muted">
+        Feeds sharing a category share a sub-menu. Leave it blank and the feed
+        lands under <em>Other</em>. News stays a single flat list until there is
+        more than one category, so the extra keypress only appears once it earns
+        its place.
+      </p>
+    </div>
+    <div class="form-group">
+      <label for="feed_url">Feed URL (RSS or Atom)</label>
+      <input type="text" id="feed_url" name="feed_url" class="form-control"
+             list="feed_suggestions" placeholder="https://feeds.npr.org/1001/rss.xml"
+             required>
+      <datalist id="feed_suggestions">
+        <option value="https://feeds.npr.org/1001/rss.xml" label="NPR News">
+        <option value="https://feeds.bbci.co.uk/news/world/rss.xml" label="BBC World">
+        <option value="https://www.aljazeera.com/xml/rss/all.xml" label="Al Jazeera">
+        <option value="https://www.arrl.org/news/rss" label="ARRL (ham radio)">
+        <option value="https://feeds.arstechnica.com/arstechnica/index" label="Ars Technica">
+        <option value="https://www.nasa.gov/news-release/feed/" label="NASA">
+      </datalist>
+      <p class="text-muted">
+        Checked when you save: the feed is fetched and read once, and the first
+        headline comes back as proof. A feed that does not parse is refused here
+        rather than on someone's radio.
+      </p>
+    </div>
+    <button class="btn btn-primary" type="submit">Add Feed</button>
   </form>
 </section>
 

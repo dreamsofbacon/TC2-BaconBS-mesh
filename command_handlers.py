@@ -1426,9 +1426,10 @@ def _apigw_authorized(sender_id, interface) -> bool:
 def _door_groups() -> list:
     """Service groups with at least one door that can run here, in menu order."""
     import services
+    doors = services.all_doors()
     groups = []
     for door_id in services.available_door_ids():
-        group = services.DOORS[door_id]['group']
+        group = doors[door_id]['group']
         if group not in groups:
             groups.append(group)
     return groups
@@ -1436,8 +1437,32 @@ def _door_groups() -> list:
 
 def _doors_in_group(group: str) -> list:
     import services
+    doors = services.all_doors()
     return [door_id for door_id in services.available_door_ids()
-            if services.DOORS[door_id]['group'] == group]
+            if doors[door_id]['group'] == group]
+
+
+def _send_category_list(sender_id, interface, group):
+    """The middle screen, for a group deep enough to have one."""
+    import services
+    menu = group + NEWLINE
+    for index, name in enumerate(services.categories_in_group(group), start=1):
+        menu += f"[{index}] {name}" + NEWLINE
+    menu += "[0] Back"
+    send_message(menu, sender_id, interface)
+    update_user_state(sender_id, {'command': 'APIGW', 'step': 4, 'group': group})
+
+
+def _send_door_list(sender_id, interface, heading, doors, state):
+    """The screen that lists doors, and the state that reads its numbers."""
+    import services
+    catalogue = services.all_doors()
+    menu = heading + NEWLINE
+    for index, door_id in enumerate(doors, start=1):
+        menu += f"[{index}] {catalogue[door_id]['name']}" + NEWLINE
+    menu += "[0] Back"
+    send_message(menu, sender_id, interface)
+    update_user_state(sender_id, state)
 
 
 def handle_apigw_command(sender_id, interface):
@@ -1465,6 +1490,7 @@ def handle_apigw_command(sender_id, interface):
 
 
 _APIGW_UNIT_SEP = "\x1f"
+NEWLINE = chr(10)
 
 # "Asked … reply will arrive shortly" is only worth a packet when the answer
 # is genuinely slow (e.g. the model is cold-loading). A warm endpoint answers
@@ -1578,28 +1604,53 @@ def handle_apigw_steps(sender_id, message, interface):
             send_message(f"Send 1-{len(groups)}, or 0 to exit.", sender_id, interface)
             return
         group = groups[int(choice) - 1]
-        doors = _doors_in_group(group)
-        menu = f"{group}\n"
-        for index, door_id in enumerate(doors, start=1):
-            menu += f"[{index}] {services.DOORS[door_id]['name']}\n"
-        menu += "[0] Back"
-        send_message(menu, sender_id, interface)
-        update_user_state(sender_id, {'command': 'APIGW', 'step': 2, 'group': group})
+        if services.categories_in_group(group):
+            # Only News has earned this so far, and only once a second
+            # category exists -- see services.categories_in_group.
+            _send_category_list(sender_id, interface, group)
+            return
+        _send_door_list(sender_id, interface, group, _doors_in_group(group),
+                        {'command': 'APIGW', 'step': 2, 'group': group})
         return
 
-    if step == 2:
-        # 0 goes up one screen, not out: the group list is where you decide
-        # you picked the wrong group, and dumping to the main menu from here
-        # made you walk the whole tree again.
+    if step == 4:
+        group = state.get('group', '')
         if choice.lower() in ('x', '0', 'exit'):
             handle_apigw_command(sender_id, interface)
             return
-        doors = _doors_in_group(state.get('group', ''))
+        categories = services.categories_in_group(group)
+        if not (choice.isdigit() and 1 <= int(choice) <= len(categories)):
+            send_message(f"Send 1-{len(categories)}, or 0 to go back.",
+                         sender_id, interface)
+            return
+        category = categories[int(choice) - 1]
+        _send_door_list(sender_id, interface, category,
+                        services.doors_in_category(group, category),
+                        {'command': 'APIGW', 'step': 2, 'group': group,
+                         'category': category})
+        return
+
+    if step == 2:
+        # 0 goes up one screen, not out: the list above is where you decide
+        # you picked the wrong one, and dumping to the main menu from here
+        # made you walk the whole tree again. With a category in play, one
+        # screen up is the category list, not the group list.
+        if choice.lower() in ('x', '0', 'exit'):
+            if state.get('category'):
+                _send_category_list(sender_id, interface, state.get('group', ''))
+            else:
+                handle_apigw_command(sender_id, interface)
+            return
+        if state.get('category'):
+            doors = services.doors_in_category(state.get('group', ''),
+                                               state.get('category', ''))
+        else:
+            doors = _doors_in_group(state.get('group', ''))
         if not (choice.isdigit() and 1 <= int(choice) <= len(doors)):
             send_message(f"Send 1-{len(doors)}, or 0 to go back.", sender_id, interface)
             return
         door_id = doors[int(choice) - 1]
-        door = services.DOORS[door_id]
+        door = services.all_doors()[door_id]
         if door.get('arg'):
             send_message(f"{door['name']} — {door['arg']}:", sender_id, interface)
             update_user_state(sender_id, {'command': 'APIGW', 'step': 3,
@@ -1609,7 +1660,7 @@ def handle_apigw_steps(sender_id, message, interface):
         return
 
     # step 3 — the door's argument
-    door = services.DOORS.get(state.get('door', ''))
+    door = services.all_doors().get(state.get('door', ''))
     if not door:
         handle_help_command(sender_id, interface)
         return

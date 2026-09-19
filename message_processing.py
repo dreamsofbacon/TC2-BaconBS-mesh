@@ -2684,6 +2684,23 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 logging.warning(f"Malformed ACCTUNLINK ignored: {message}")
                 return
             apply_synced_account_unlink(parts[1].strip(), parts[2].strip())
+        elif message.startswith("FEED|"):
+            # id|name|url|category|author|updated_at|deleted
+            parts = message.split("|", 7)
+            if len(parts) != 8:
+                logging.warning(f"Malformed FEED ignored: {message}")
+                return
+            try:
+                from db_operations import apply_synced_feed
+                applied = apply_synced_feed(
+                    parts[1], decode_text(parts[2]), decode_text(parts[3]),
+                    decode_text(parts[4]), parts[5], parts[6],
+                    parts[7].strip() == '1', sender_node_id)
+            except Exception as exc:
+                logging.warning(f"FEED from {sender_node_id} could not be applied: {exc}")
+                return
+            if applied:
+                logging.info(f"Adopted feed {parts[1]} from {sender_node_id}")
         elif message.startswith("BBSID|"):
             parts = message.split("|", 3)
             if len(parts) != 4 or not parts[1] or not parts[3]:
@@ -3337,6 +3354,7 @@ def on_receive(packet, interface):
                                    "CHANNEL|", "DELETE_CHANNEL|", "CHANNELCOMMENT|", "CHANNELCOMMENTCONT|", "CHANNELCOMMENTMETA|", "DELETE_CHANNELCOMMENT|",
                                    "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
                                    "PROFILESYNC|", "RELAYPREF|", "SCORESYNC|", "ROLE|", "BBSID|",
+                                   "FEED|",
                                    "ACCT|", "ACCTMETA|", "ACCTLINK|", "ACCTUNLINK|", "MAILDLV|", "POSTAUTHOR|",
                                    "FLEETVER|", "FLEETVERCONT|", "NODEVER|", "FLEETSTATUS|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|", "HASHZGAP|",

@@ -1183,6 +1183,7 @@ def initialize_database():
     _ensure_password_reset_table(c)
     _ensure_mail_dm_delivery_table(c)
     _ensure_fleet_tables(c)
+    _ensure_feed_tables(c)
     _dedupe_channels_and_create_unique_index(c)
     _dedupe_messages_and_create_unique_indexes(c)
     conn.commit()
@@ -1763,6 +1764,204 @@ def _ensure_fleet_tables(cursor) -> None:
         # update_guard.py already compute locally out over the wire.
         cursor.execute(
             "ALTER TABLE node_versions ADD COLUMN rollout_detail TEXT NOT NULL DEFAULT ''")
+
+
+def _ensure_feed_tables(cursor) -> None:
+    """News feeds the fleet shares, and the ones this node refuses to show.
+
+    Two tables with deliberately different reach, which is the whole design.
+
+    ``fleet_feeds`` travels. A feed carries the node that created it, and
+    only that node may change or retire it -- so adding a feed to your own
+    BBS does not hand the other operators something they must live with,
+    and does not let them rewrite what you published.
+
+    ``feed_blocks`` never leaves this node. It is the other half of that
+    bargain: you cannot delete a peer's feed out of the fleet, but you can
+    always refuse to put it in front of your own users. A block is about
+    this BBS's menu, not about the feed, so syncing it would be claiming
+    authority over someone else's node.
+    """
+    cursor.execute('''CREATE TABLE IF NOT EXISTS fleet_feeds (
+                    feed_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT '',
+                    author_node_id TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_fleet_feeds_author
+                      ON fleet_feeds(author_node_id);''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS feed_blocks (
+                    feed_id TEXT PRIMARY KEY,
+                    blocked_at TEXT NOT NULL
+                );''')
+
+
+# A retired feed leaves a row behind rather than vanishing, because a delete
+# has to travel: without the tombstone the next peer to sync would helpfully
+# hand the feed straight back. Swept once it is older than any peer's
+# plausible absence.
+FEED_TOMBSTONE_MAX_AGE_DAYS = 60
+FEED_NAME_MAX_LENGTH = 40
+FEED_CATEGORY_MAX_LENGTH = 24
+
+
+def _feed_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec='microseconds')
+
+
+def _clean_feed_text(value, limit: int) -> str:
+    """One line, no control characters, short enough to fit a radio menu."""
+    text = " ".join(str(value or "").split())
+    text = "".join(ch for ch in text if ch.isprintable())
+    return text[:limit]
+
+
+def list_feeds(include_deleted: bool = False, include_blocked: bool = True) -> list:
+    """Every feed this node knows, newest name order, with its block state."""
+    conn = get_db_connection()
+    sql = ("SELECT f.feed_id, f.name, f.url, f.category, f.author_node_id,"
+           " f.updated_at, f.deleted,"
+           " CASE WHEN b.feed_id IS NULL THEN 0 ELSE 1 END AS blocked"
+           " FROM fleet_feeds f LEFT JOIN feed_blocks b ON b.feed_id = f.feed_id")
+    where = [] if include_deleted else ["f.deleted = 0"]
+    if not include_blocked:
+        where.append("b.feed_id IS NULL")
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY f.category, f.name"
+    keys = ('feed_id', 'name', 'url', 'category', 'author_node_id',
+            'updated_at', 'deleted', 'blocked')
+    return [dict(zip(keys, row)) for row in conn.execute(sql).fetchall()]
+
+
+def get_feed(feed_id: str) -> dict:
+    for feed in list_feeds(include_deleted=True):
+        if feed['feed_id'] == str(feed_id or ''):
+            return feed
+    return {}
+
+
+def save_feed(name: str, url: str, category: str, author_node_id: str,
+              feed_id: str = '') -> str:
+    """Create or update a feed this node owns. Returns its id, or ''.
+
+    Refuses to touch a feed another node authored: that is the ownership
+    rule, and it is enforced here rather than in the web admin so the sync
+    path and the form cannot disagree about it.
+    """
+    author = str(author_node_id or '').strip()
+    name = _clean_feed_text(name, FEED_NAME_MAX_LENGTH)
+    category = _clean_feed_text(category, FEED_CATEGORY_MAX_LENGTH)
+    url = str(url or '').strip()
+    if not author or not name or not url:
+        return ''
+    if feed_id:
+        existing = get_feed(feed_id)
+        if not existing or existing['author_node_id'] != author:
+            return ''
+    else:
+        feed_id = uuid.uuid4().hex[:16]
+    conn = get_db_connection()
+    conn.execute(
+        "INSERT INTO fleet_feeds (feed_id, name, url, category, author_node_id,"
+        " updated_at, deleted) VALUES (?, ?, ?, ?, ?, ?, 0)"
+        " ON CONFLICT(feed_id) DO UPDATE SET name=excluded.name, url=excluded.url,"
+        " category=excluded.category, updated_at=excluded.updated_at, deleted=0",
+        (feed_id, name, url, category, author, _feed_now()))
+    conn.commit()
+    return feed_id
+
+
+def delete_feed(feed_id: str, author_node_id: str) -> bool:
+    """Retire a feed this node owns, leaving a tombstone so it travels."""
+    author = str(author_node_id or '').strip()
+    existing = get_feed(feed_id)
+    if not existing or not author or existing['author_node_id'] != author:
+        return False
+    conn = get_db_connection()
+    conn.execute("UPDATE fleet_feeds SET deleted = 1, updated_at = ?"
+                 " WHERE feed_id = ?", (_feed_now(), str(feed_id)))
+    conn.commit()
+    return True
+
+
+def set_feed_blocked(feed_id: str, blocked: bool) -> bool:
+    """Hide or restore a feed on THIS node's menu. Never leaves this node."""
+    if not get_feed(feed_id):
+        return False
+    conn = get_db_connection()
+    if blocked:
+        conn.execute("INSERT OR REPLACE INTO feed_blocks (feed_id, blocked_at)"
+                     " VALUES (?, ?)", (str(feed_id), _feed_now()))
+    else:
+        conn.execute("DELETE FROM feed_blocks WHERE feed_id = ?", (str(feed_id),))
+    conn.commit()
+    return True
+
+
+def get_feeds_for_sync() -> list:
+    """Every feed worth telling peers about, tombstones included."""
+    return list_feeds(include_deleted=True)
+
+
+def apply_synced_feed(feed_id, name, url, category, author_node_id,
+                      updated_at, deleted, sender_node_id) -> bool:
+    """Take a peer's feed, if the peer is entitled to say it.
+
+    Two guards, and they are the ownership model:
+
+    * a feed may only be changed by the node that authored it, so a peer
+      relaying someone else's feed cannot quietly rewrite it on the way;
+    * newest stamp wins, so a node that was offline through an edit cannot
+      undo it by re-advertising what it still remembers.
+
+    Unsigned like every other sync frame, so a determined peer inside the
+    fleet could still forge an author. The defence against a peer you do
+    not trust is not to list it in bbs_nodes -- and, failing that, the
+    block list, which is local and needs nobody's agreement.
+    """
+    feed_id = str(feed_id or '').strip()
+    author = str(author_node_id or '').strip()
+    stamp = str(updated_at or '').strip()
+    name = _clean_feed_text(name, FEED_NAME_MAX_LENGTH)
+    category = _clean_feed_text(category, FEED_CATEGORY_MAX_LENGTH)
+    url = str(url or '').strip()
+    if not feed_id or not author or not stamp or not url or not name:
+        return False
+
+    existing = get_feed(feed_id)
+    if existing:
+        if existing['author_node_id'] != author:
+            logging.info("Ignoring feed %s from %s: authored by %s",
+                         feed_id, sender_node_id, existing['author_node_id'])
+            return False
+        if str(existing['updated_at']) >= stamp:
+            return False
+
+    conn = get_db_connection()
+    conn.execute(
+        "INSERT INTO fleet_feeds (feed_id, name, url, category, author_node_id,"
+        " updated_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        " ON CONFLICT(feed_id) DO UPDATE SET name=excluded.name, url=excluded.url,"
+        " category=excluded.category, updated_at=excluded.updated_at,"
+        " deleted=excluded.deleted",
+        (feed_id, name, url, category, author, stamp, 1 if deleted else 0))
+    conn.commit()
+    return True
+
+
+def prune_feed_tombstones(max_age_days: int = FEED_TOMBSTONE_MAX_AGE_DAYS) -> int:
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(days=max(1, int(max_age_days)))
+              ).isoformat(timespec='microseconds')
+    conn = get_db_connection()
+    cursor = conn.execute(
+        "DELETE FROM fleet_feeds WHERE deleted = 1 AND updated_at < ?", (cutoff,))
+    conn.commit()
+    return cursor.rowcount or 0
 
 
 def _ensure_password_reset_table(cursor) -> None:
@@ -8354,6 +8553,59 @@ def sync_node_roles_to_nodes(bbs_nodes: list, interface, force: bool = False) ->
                 _advertised_roles[key] = updated_at
                 sent += 1
     return sent
+
+
+_advertised_feeds: dict = {}
+_feeds_last_full_sweep: dict = {}
+
+# Same reasoning as ROLE_READVERTISE_SECONDS: no hash scope covers feeds, so
+# a frame lost in the air is only healed by being said again.
+FEED_READVERTISE_SECONDS = 900.0
+
+
+def sync_feeds_to_nodes(bbs_nodes: list, interface, force: bool = False) -> int:
+    """Advertise feeds that changed since we last told each peer.
+
+    Every feed travels, not only the ones authored here, so a fleet where
+    two nodes cannot hear each other but both hear a third still converges.
+    Relaying is safe because apply_synced_feed trusts the author carried in
+    the frame, not whoever passed it along.
+
+    Change-driven, so a fleet whose feed list is settled costs no airtime.
+    That matters on the LoRa links even though the fleet mostly meets over
+    MQTT, where a whole list would fit in a single 32KB frame.
+    """
+    if not bbs_nodes or not interface:
+        return 0
+    from utils import send_feed_to_bbs_nodes
+
+    now = time.time()
+    sweeping = set()
+    for peer_id in bbs_nodes:
+        if now - _feeds_last_full_sweep.get(str(peer_id), 0.0) >= FEED_READVERTISE_SECONDS:
+            sweeping.add(str(peer_id))
+            _feeds_last_full_sweep[str(peer_id)] = now
+
+    sent = 0
+    for feed in get_feeds_for_sync():
+        stamp = str(feed.get('updated_at') or '')
+        if not stamp:
+            continue
+        for peer_id in bbs_nodes:
+            key = (str(peer_id), str(feed.get('feed_id')))
+            if (not force and str(peer_id) not in sweeping
+                    and _advertised_feeds.get(key) == stamp):
+                continue
+            if send_feed_to_bbs_nodes(feed, [peer_id], interface):
+                _advertised_feeds[key] = stamp
+                sent += 1
+    return sent
+
+
+def _reset_feed_advertisements() -> None:
+    """Test hook, and what a fresh link needs so a reconnect re-advertises."""
+    _advertised_feeds.clear()
+    _feeds_last_full_sweep.clear()
 
 
 # How far ahead of us a peer's account stamp may be: see

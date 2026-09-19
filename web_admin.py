@@ -475,6 +475,50 @@ def load_subscriber_settings(config_path: str) -> dict:
   return {"subscriber_nodes_text": "\n".join(nodes)}
 
 
+def _check_feed_url(url: str):
+  """Fetch a feed once and read it, so a bad one is caught in the browser.
+
+  Finding out over the radio that a feed does not parse costs a round trip
+  and tells the user nothing they can act on. Here it costs a second and
+  comes back with the first headline as proof.
+  """
+  import services
+  try:
+    body = services._fetch(url, 15)
+  except Exception as exc:
+    return False, f"could not fetch it ({type(exc).__name__})"
+  try:
+    text = services._parse_rss_titles(body)
+  except Exception as exc:
+    return False, f"it is not a readable RSS or Atom feed ({exc})"
+  first = text.splitlines()[0].lstrip("- ").strip()
+  return True, first[:120]
+
+
+def load_feed_settings() -> dict:
+  """The fleet's news feeds, split by whether this node may edit them.
+
+  ``owned`` is the ownership rule made visible: a feed belongs to the node
+  that added it, and every other node gets a block switch instead of an
+  edit button. Rendering both as the same row with different controls is
+  what keeps that rule legible rather than surprising.
+  """
+  from db_operations import list_feeds
+  mine = set(get_persisted_local_link_ids() or [])
+  feeds = []
+  for feed in list_feeds(include_deleted=False):
+    entry = dict(feed)
+    entry["owned"] = str(feed.get("author_node_id") or "") in mine
+    feeds.append(entry)
+  categories = sorted({f["category"] for f in feeds if f["category"]},
+                      key=str.casefold)
+  return {
+    "feeds": feeds,
+    "categories": categories,
+    "local_ids": sorted(mine),
+  }
+
+
 def _normalise_feed_url(raw: str) -> str:
   """The News feed door's URL, as typed, made into something fetchable.
 
@@ -514,7 +558,6 @@ def load_gateway_settings(config_path: str) -> dict:
     "ai_api_key": g("ai_api_key"),
     "ai_model": g("ai_model", "llama3.2"),
     "ai_system_prompt": g("ai_system_prompt"),
-    "rss_url": g("rss_url"),
     "allowed_hosts": g("allowed_hosts"),
     "allowed_schemes": g("allowed_schemes", "https") or "https",
     "allowed_nodes": g("allowed_nodes"),
@@ -4203,8 +4246,6 @@ def create_app(runtime_interface=None) -> Flask:
       for key in ("ai_base_url", "ai_model", "ai_system_prompt", "ai_api_key",
                   "allowed_hosts", "allowed_schemes", "allowed_nodes"):
         config.set("gateway", key, form.get(f"gateway_{key}", "").strip())
-      config.set("gateway", "rss_url",
-                 _normalise_feed_url(form.get("gateway_rss_url", "")))
       dialect = form.get("gateway_ai_dialect", "ollama").strip().lower()
       if dialect not in ("ollama", "openai", "nomad"):
         dialect = "ollama"
@@ -5380,6 +5421,7 @@ def create_app(runtime_interface=None) -> Flask:
       sync_runtime_settings = get_sync_runtime_settings()
       diagnostics = build_settings_diagnostics()
       gateway_settings = load_gateway_settings(app.config["CONFIG_PATH"])
+      feed_settings = load_feed_settings()
       storage_settings = load_storage_settings(app.config["CONFIG_PATH"])
       public_chatter_settings = load_public_chatter_settings(app.config["CONFIG_PATH"])
       ssh_settings = load_ssh_settings(app.config["CONFIG_PATH"])
@@ -5398,6 +5440,7 @@ def create_app(runtime_interface=None) -> Flask:
         title="Settings",
         show_nav=True,
         gateway=gateway_settings,
+        feeds=feed_settings,
         storage=storage_settings,
         public_chatter=public_chatter_settings,
         ssh=ssh_settings,
@@ -6321,6 +6364,57 @@ def create_app(runtime_interface=None) -> Flask:
           save_gateway_settings(request.form)
           flash("API gateway settings saved.", "success")
           return redirect(url_for("settings_page") + "#gateway")
+
+        if section == "feeds":
+          from db_operations import delete_feed, save_feed, set_feed_blocked
+          action = request.form.get("feed_action", "").strip()
+          feed_id = request.form.get("feed_id", "").strip()
+          local_ids = get_persisted_local_link_ids() or []
+          author = local_ids[0] if local_ids else ""
+          anchor = url_for("settings_page") + "#gateway"
+
+          if action in ("block", "unblock"):
+            # Local only, and deliberately available for every feed --
+            # including this node's own, which is the quickest way to take
+            # one off the menu without retiring it for the whole fleet.
+            if set_feed_blocked(feed_id, action == "block"):
+              flash("Feed hidden on this node." if action == "block"
+                    else "Feed shown again on this node.", "success")
+            else:
+              flash("No such feed.", "error")
+            return redirect(anchor)
+
+          if not author:
+            # Without a link id there is nothing to sign the feed as, and a
+            # feed with no author can never be edited or retired again.
+            flash("This node has no known node ID yet, so it cannot own a "
+                  "feed. Bring a radio or MQTT link up first.", "error")
+            return redirect(anchor)
+
+          if action == "delete":
+            if delete_feed(feed_id, author):
+              flash("Feed retired for the whole fleet.", "success")
+            else:
+              flash("That feed belongs to another node; you can hide it here, "
+                    "but only its own node can retire it.", "error")
+            return redirect(anchor)
+
+          url = _normalise_feed_url(request.form.get("feed_url", ""))
+          name = request.form.get("feed_name", "").strip()
+          category = request.form.get("feed_category", "").strip()
+          if not name or not url:
+            flash("A feed needs a name and a working http(s) URL.", "error")
+            return redirect(anchor)
+          ok, detail = _check_feed_url(url)
+          if not ok:
+            flash(f"That feed did not work: {detail}", "error")
+            return redirect(anchor)
+          if save_feed(name, url, category, author, feed_id):
+            flash(f"Saved. First headline: {detail}", "success")
+          else:
+            flash("That feed belongs to another node and cannot be edited here.",
+                  "error")
+          return redirect(anchor)
 
         if section == "subscribers":
           save_subscriber_settings(request.form)

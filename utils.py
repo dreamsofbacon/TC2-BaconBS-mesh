@@ -52,7 +52,7 @@ def get_max_text_bytes(interface=None) -> int:
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat', 'role', 'bbsid', 'acct', 'mdlv', 'auth', 'acctmv', 'door')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state, 'role'=user roles, 'bbsid'=fleet BBS name/greeting, 'acct'=fleet accounts (identity only, never credentials), 'mdlv'=mail relay delivery receipts, 'auth'=author device on bulletins and channel comments, 'acctmv'=device moves and unlinks travel between nodes, 'door'=curated text services (APIREQ kind 'd')
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat', 'role', 'bbsid', 'acct', 'mdlv', 'auth', 'acctmv', 'door', 'feed')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state, 'role'=user roles, 'bbsid'=fleet BBS name/greeting, 'acct'=fleet accounts (identity only, never credentials), 'mdlv'=mail relay delivery receipts, 'auth'=author device on bulletins and channel comments, 'acctmv'=device moves and unlinks travel between nodes, 'door'=curated text services (APIREQ kind 'd'), 'feed'=fleet-wide news feeds, owned by the node that added them
 
 # Single-char scope codes used by the 'scc' wire capability.  Senders gate
 # encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
@@ -2333,6 +2333,51 @@ def send_fleet_identity_to_bbs_nodes(key, value, updated_at, bbs_nodes, interfac
     sent = 0
     for peer_id in bbs_nodes or []:
         if peer_supports(peer_id, 'bbsid'):
+            _send_one_sync(message, peer_id, interface)
+            sent += 1
+    return sent
+
+
+def send_feed_to_bbs_nodes(feed, bbs_nodes, interface):
+    """Tell peers about one news feed, including one that was retired.
+
+    Name, URL and category are operator free text and a '|' in any of them
+    would split the frame, so all three are encoded. The author travels with
+    the feed rather than being inferred from the sender: a frame can be
+    relayed, and the receiving side decides what to do with it -- see
+    db_operations.apply_synced_feed, which is where the ownership rule
+    lives.
+    """
+    try:
+        from db_operations import peer_supports
+    except Exception:
+        return 0
+    message = ("FEED|{id}|{name}|{url}|{cat}|{author}|{stamp}|{gone}".format(
+        id=str(feed.get('feed_id') or ''),
+        name=encode_text(str(feed.get('name') or '')),
+        url=encode_text(str(feed.get('url') or '')),
+        cat=encode_text(str(feed.get('category') or '')),
+        author=str(feed.get('author_node_id') or ''),
+        stamp=str(feed.get('updated_at') or ''),
+        gone='1' if feed.get('deleted') else '0'))
+    # A feed's three free-text fields are base64'd, which costs a third on
+    # top, so a long name and a long URL together can outgrow a LoRa packet
+    # even though they are nothing on the 32KB MQTT links where the fleet
+    # mostly meets. There is no reassembly for this frame, so an oversized
+    # one would go out truncated and be dropped as malformed at the far end
+    # -- silently, and only on the radio links. Skipped and named instead.
+    budget = get_max_text_bytes(interface)
+    if len(message.encode('utf-8')) > budget:
+        logging.warning(
+            "Feed %r not advertised over %s: %d bytes exceeds the %d-byte limit. "
+            "Shorten its name or URL for it to reach peers on this link.",
+            feed.get('name'), getattr(interface, 'protocol_name', 'this link'),
+            len(message.encode('utf-8')), budget)
+        return 0
+
+    sent = 0
+    for peer_id in bbs_nodes or []:
+        if peer_supports(peer_id, 'feed'):
             _send_one_sync(message, peer_id, interface)
             sent += 1
     return sent

@@ -40,6 +40,7 @@ from radio_link import RadioLink
 from radio_admin import RadioAdminWorker, describe as describe_admin_radio
 from db_operations import (
     sync_node_roles_to_nodes,
+    sync_feeds_to_nodes,
     sync_fleet_identity_to_nodes,
     sync_accounts_to_nodes,
     initialize_database,
@@ -2263,6 +2264,14 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
         sync_fleet_identity_to_nodes(sorted(current_bbs_nodes), link.interface)
     except Exception:
         logging.debug(f"[{link.name}] identity advertisement failed", exc_info=True)
+
+    # News feeds ride the tick too. Unlike the name and greeting, a feed is
+    # owned by the node that added it, so this is every node publishing its
+    # own and relaying what it has heard -- not one editor broadcasting.
+    try:
+        sync_feeds_to_nodes(sorted(current_bbs_nodes), link.interface)
+    except Exception:
+        logging.debug(f"[{link.name}] feed advertisement failed", exc_info=True)
 
     # Accounts ride the same tick, for the same two reasons, and with the
     # same change-driven cost: who exists on this BBS and which radios are

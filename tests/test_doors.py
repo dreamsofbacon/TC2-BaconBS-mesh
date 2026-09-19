@@ -13,8 +13,10 @@ captures of what the live services actually sent on 2026-09-18 -- shapes, not
 inventions. No test here touches the network: ``_fetch`` is the seam.
 """
 
+import io
 import os
 import sys
+import types
 import unittest
 from unittest import mock
 
@@ -64,15 +66,6 @@ class RegistryTests(unittest.TestCase):
             if group not in seen:
                 seen.append(group)
             self.assertEqual(seen[-1], group, f"{door_id} breaks its group run")
-
-    def test_a_door_with_no_configured_url_is_not_offered(self):
-        """The news-feed door is the operator's own. Unset, it is left off
-        the menu rather than offered and then refused."""
-        with mock.patch.object(services, '_config_raw', return_value=''):
-            self.assertNotIn('rss', services.available_door_ids())
-        with mock.patch.object(services, '_config_raw',
-                               return_value='https://example.com/feed.xml'):
-            self.assertIn('rss', services.available_door_ids())
 
     def test_hosts_are_derived_from_the_templates(self):
         hosts = services.door_hosts()
@@ -433,8 +426,8 @@ class GatewayDispatchTests(unittest.TestCase):
             self.assertEqual('!old', utils.select_gateway_peer(interface))
 
 
-class NewsFeedSettingTests(unittest.TestCase):
-    """The one door an operator chooses, set from the web admin."""
+class FeedUrlTests(unittest.TestCase):
+    """The URL an operator types, made into something fetchable."""
 
     def setUp(self):
         import web_admin
@@ -467,29 +460,287 @@ class NewsFeedSettingTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertEqual("", self.web_admin._normalise_feed_url(raw))
 
-    def test_a_refused_url_is_stored_as_nothing_so_no_door_is_offered(self):
-        """Storing an unusable URL would put a door on the menu that can only
-        fail. Storing nothing leaves it off, which is true."""
-        with mock.patch.object(services, '_config_raw',
-                               return_value=self.web_admin._normalise_feed_url("nonsense")):
-            self.assertNotIn('rss', services.available_door_ids())
+    def test_a_feed_is_read_before_it_is_accepted(self):
+        """A feed that does not parse is refused in the browser, with the
+        first headline as proof when it does."""
+        good = ('<rss><channel><item><title>A headline</title></item>'
+                '</channel></rss>')
+        with mock.patch.object(services, '_fetch', return_value=good):
+            ok, detail = self.web_admin._check_feed_url("https://a.example/f")
+        self.assertTrue(ok)
+        self.assertEqual("A headline", detail)
 
-    def test_the_setting_reaches_the_form_and_the_door(self):
+        with mock.patch.object(services, '_fetch', return_value="<html>nope</html>"):
+            ok, detail = self.web_admin._check_feed_url("https://a.example/f")
+        self.assertFalse(ok)
+        self.assertIn("not a readable", detail)
+
+        with mock.patch.object(services, '_fetch', side_effect=OSError("boom")):
+            ok, detail = self.web_admin._check_feed_url("https://a.example/f")
+        self.assertFalse(ok)
+        self.assertIn("could not fetch", detail)
+
+
+class FeedOwnershipTests(unittest.TestCase):
+    """Who may change a feed, and what everyone else can do instead."""
+
+    ME = '!aaaa1111'
+    THEM = '!bbbb2222'
+
+    def setUp(self):
         import tempfile
-        import textwrap
-        with tempfile.TemporaryDirectory() as folder:
-            path = os.path.join(folder, "config.ini")
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write(textwrap.dedent("""\
-                    [gateway]
-                    enabled = true
-                    rss_url = https://feeds.npr.org/1001/rss.xml
-                    """))
-            settings = self.web_admin.load_gateway_settings(path)
-        self.assertEqual("https://feeds.npr.org/1001/rss.xml", settings["rss_url"])
-        with mock.patch.object(services, '_config_raw', return_value=settings["rss_url"]):
-            self.assertIn('rss', services.available_door_ids())
-            self.assertEqual(settings["rss_url"], services._door_url_template('rss'))
+        folder = tempfile.mkdtemp()
+        patcher = mock.patch.dict(os.environ,
+                                  {'BBS_DB_PATH': os.path.join(folder, 'feeds.db')})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        import db_operations
+        db_operations.close_db_connection() if hasattr(
+            db_operations, 'close_db_connection') else None
+        self.db = db_operations
+        self.db.initialize_database()
+        self.addCleanup(self._drop_connection)
+
+    def _drop_connection(self):
+        try:
+            self.db.get_db_connection().close()
+        except Exception:
+            pass
+
+    def test_a_feed_can_be_edited_by_the_node_that_added_it(self):
+        feed_id = self.db.save_feed('NPR', 'https://a.example/f', 'World', self.ME)
+        self.assertTrue(feed_id)
+        self.assertEqual(feed_id,
+                         self.db.save_feed('NPR News', 'https://a.example/f2',
+                                           'World', self.ME, feed_id))
+        self.assertEqual('NPR News', self.db.get_feed(feed_id)['name'])
+
+    def test_another_node_cannot_edit_or_retire_it(self):
+        """The ownership rule, enforced in the data layer so the web form
+        and the sync path cannot disagree about it."""
+        feed_id = self.db.save_feed('NPR', 'https://a.example/f', 'World', self.ME)
+        self.assertEqual('', self.db.save_feed('Hijacked', 'https://evil.example/f',
+                                               'World', self.THEM, feed_id))
+        self.assertFalse(self.db.delete_feed(feed_id, self.THEM))
+        self.assertEqual('NPR', self.db.get_feed(feed_id)['name'])
+
+    def test_what_another_node_can_do_is_hide_it(self):
+        feed_id = self.db.save_feed('Theirs', 'https://a.example/f', 'World', self.THEM)
+        self.assertIn(feed_id, [f['feed_id'] for f in
+                                self.db.list_feeds(include_blocked=False)])
+        self.assertTrue(self.db.set_feed_blocked(feed_id, True))
+        self.assertNotIn(feed_id, [f['feed_id'] for f in
+                                   self.db.list_feeds(include_blocked=False)])
+        # ...and the feed itself is untouched, so the fleet still has it.
+        self.assertEqual('Theirs', self.db.get_feed(feed_id)['name'])
+        self.assertTrue(self.db.set_feed_blocked(feed_id, False))
+        self.assertIn(feed_id, [f['feed_id'] for f in
+                                self.db.list_feeds(include_blocked=False)])
+
+    def test_retiring_leaves_a_tombstone_so_the_delete_can_travel(self):
+        """Without the row, the next peer to sync hands the feed back."""
+        feed_id = self.db.save_feed('NPR', 'https://a.example/f', 'World', self.ME)
+        self.assertTrue(self.db.delete_feed(feed_id, self.ME))
+        self.assertNotIn(feed_id, [f['feed_id'] for f in self.db.list_feeds()])
+        self.assertIn(feed_id, [f['feed_id'] for f in self.db.get_feeds_for_sync()])
+
+    def test_a_peer_may_only_change_the_feeds_it_authored(self):
+        feed_id = self.db.save_feed('Mine', 'https://a.example/f', 'World', self.ME)
+        later = '2099-01-01T00:00:00.000000+00:00'
+        self.assertFalse(self.db.apply_synced_feed(
+            feed_id, 'Stolen', 'https://evil.example/f', 'World',
+            self.THEM, later, False, self.THEM))
+        self.assertEqual('Mine', self.db.get_feed(feed_id)['name'])
+
+    def test_the_author_may_change_it_from_anywhere(self):
+        feed_id = self.db.save_feed('Mine', 'https://a.example/f', 'World', self.ME)
+        later = '2099-01-01T00:00:00.000000+00:00'
+        self.assertTrue(self.db.apply_synced_feed(
+            feed_id, 'Renamed', 'https://a.example/f', 'World',
+            self.ME, later, False, self.THEM))
+        self.assertEqual('Renamed', self.db.get_feed(feed_id)['name'])
+
+    def test_an_older_stamp_cannot_undo_a_newer_edit(self):
+        """A node that was offline through an edit must not resurrect what
+        it still remembers."""
+        feed_id = self.db.save_feed('Current', 'https://a.example/f', 'World', self.ME)
+        self.assertFalse(self.db.apply_synced_feed(
+            feed_id, 'Stale', 'https://a.example/old', 'World',
+            self.ME, '2000-01-01T00:00:00.000000+00:00', False, self.ME))
+        self.assertEqual('Current', self.db.get_feed(feed_id)['name'])
+
+    def test_a_retirement_travels_as_an_update(self):
+        feed_id = self.db.save_feed('Theirs', 'https://a.example/f', 'World', self.THEM)
+        later = '2099-01-01T00:00:00.000000+00:00'
+        self.assertTrue(self.db.apply_synced_feed(
+            feed_id, 'Theirs', 'https://a.example/f', 'World',
+            self.THEM, later, True, self.THEM))
+        self.assertNotIn(feed_id, [f['feed_id'] for f in self.db.list_feeds()])
+
+    def test_a_feed_with_no_author_is_refused(self):
+        """It could never be edited or retired again."""
+        self.assertEqual('', self.db.save_feed('Orphan', 'https://a.example/f',
+                                               'World', ''))
+
+    def test_names_and_categories_are_trimmed_to_fit_a_radio_menu(self):
+        feed_id = self.db.save_feed('N' * 200, 'https://a.example/f',
+                                    'C' * 200, self.ME)
+        feed = self.db.get_feed(feed_id)
+        self.assertEqual(self.db.FEED_NAME_MAX_LENGTH, len(feed['name']))
+        self.assertEqual(self.db.FEED_CATEGORY_MAX_LENGTH, len(feed['category']))
+
+    def test_a_newline_cannot_be_smuggled_into_a_menu(self):
+        feed_id = self.db.save_feed('Real\n[9] Fake', 'https://a.example/f',
+                                    'World', self.ME)
+        self.assertNotIn('\n', self.db.get_feed(feed_id)['name'])
+
+
+class FeedMenuTests(unittest.TestCase):
+    """Sub-grouping: a level that appears only once it is earned."""
+
+    def _doors(self, entries):
+        """Patch in a set of feed doors without touching the database."""
+        return mock.patch.object(services, '_feed_doors', return_value=entries)
+
+    def _feed(self, name, category):
+        return {'name': name, 'group': 'News', 'category': category,
+                'url': 'https://a.example/f', 'parse': services._parse_rss_titles,
+                'cache': 900}
+
+    def test_one_category_is_not_worth_a_screen(self):
+        """Hacker News ships filed under Tech, so a single feed filed the
+        same way leaves News a flat list."""
+        with self._doors({'feed:1': self._feed('NPR', 'Tech')}):
+            self.assertEqual([], services.categories_in_group('News'))
+
+    def test_a_second_category_earns_the_screen(self):
+        with self._doors({'feed:1': self._feed('NPR', 'World')}):
+            self.assertEqual(['Tech', 'World'], services.categories_in_group('News'))
+
+    def test_categories_are_alphabetical_with_the_catch_all_last(self):
+        with self._doors({'feed:1': self._feed('NPR', 'World'),
+                          'feed:2': self._feed('ARRL', 'Ham radio'),
+                          'feed:3': self._feed('Local paper', '')}):
+            self.assertEqual(['Ham radio', 'Tech', 'World', 'Other'],
+                             services.categories_in_group('News'))
+
+    def test_an_unfiled_door_is_still_reachable(self):
+        """The bug this bucket exists for: with categories in play, the
+        category screen is the only way in, so a door filed nowhere would
+        have no way to be reached at all."""
+        with self._doors({'feed:1': self._feed('NPR', 'World'),
+                          'feed:2': self._feed('Local paper', '')}):
+            reachable = []
+            for category in services.categories_in_group('News'):
+                reachable += services.doors_in_category('News', category)
+            self.assertIn('feed:2', reachable)
+            self.assertIn('hn', reachable)
+
+    def test_a_group_with_no_categories_keeps_two_levels(self):
+        self.assertEqual([], services.categories_in_group('Weather & Safety'))
+
+    def test_a_feed_cannot_shadow_a_bundled_door(self):
+        """Feed ids are namespaced, so a feed called wx does not replace
+        the weather."""
+        with self._doors({'feed:wx': self._feed('wx', 'World')}):
+            self.assertEqual('Weather now', services.all_doors()['wx']['name'])
+
+    def test_a_feed_door_runs_as_a_feed(self):
+        body = '<rss><channel><item><title>Headline</title></item></channel></rss>'
+        with self._doors({'feed:1': self._feed('NPR', 'World')}), \
+                mock.patch.object(services, '_fetch', return_value=body):
+            services._reset_cache()
+            status, text = services.run_door('feed:1')
+        self.assertEqual("200", status)
+        self.assertEqual("- Headline", text)
+
+
+class FeedWireTests(unittest.TestCase):
+    """The frame that carries a feed between nodes."""
+
+    def _frame_for(self, name, url, category):
+        import utils
+        feed = {'feed_id': 'abc123', 'name': name, 'url': url,
+                'category': category, 'author_node_id': '!aaaa1111',
+                'updated_at': '2026-09-19T20:00:00.000000+00:00', 'deleted': False}
+        sent = []
+        with mock.patch.object(utils, '_send_one_sync',
+                               side_effect=lambda msg, *a, **k: sent.append(msg)), \
+                mock.patch('db_operations.peer_supports', return_value=True):
+            utils.send_feed_to_bbs_nodes(feed, ['!peer'], object())
+        return sent[0]
+
+    def test_a_pipe_in_a_name_cannot_split_the_frame(self):
+        """Name, URL and category are operator free text, and '|' is the
+        field separator."""
+        import utils
+        frame = self._frame_for('NPR | News', 'https://a.example/f', 'World & Co')
+        parts = frame.split('|', 7)
+        self.assertEqual(8, len(parts))
+        self.assertEqual('NPR | News', utils.decode_text(parts[2]))
+        self.assertEqual('World & Co', utils.decode_text(parts[4]))
+
+    def test_a_realistic_feed_fits_a_lora_packet(self):
+        """The fleet meets over MQTT, where 32KB is nothing, but the same
+        frame goes out over the radio links too."""
+        frame = self._frame_for('NPR News', 'https://feeds.npr.org/1001/rss.xml',
+                                'World')
+        self.assertLessEqual(len(frame.encode('utf-8')), 220)
+
+    def test_an_oversized_feed_is_skipped_rather_than_truncated(self):
+        """Base64 costs a third on top, so a long name and a long URL can
+        outgrow a LoRa packet. There is no reassembly for this frame, so
+        sending it anyway means a truncated frame dropped as malformed at
+        the far end -- silently, and only on the radio links."""
+        import utils
+        feed = {'feed_id': 'abc123', 'name': 'N' * 40,
+                'url': 'https://a.example/' + 'u' * 120, 'category': 'C' * 24,
+                'author_node_id': '!aaaa1111',
+                'updated_at': '2026-09-19T20:00:00.000000+00:00', 'deleted': False}
+        interface = types.SimpleNamespace(max_text_bytes=220,
+                                          protocol_name='meshtastic')
+        with mock.patch('db_operations.peer_supports', return_value=True), \
+                mock.patch.object(utils, '_send_one_sync') as send:
+            self.assertEqual(0, utils.send_feed_to_bbs_nodes(feed, ['!peer'], interface))
+        send.assert_not_called()
+
+    def test_a_retirement_is_marked_in_the_frame(self):
+        import utils
+        feed = {'feed_id': 'abc123', 'name': 'Gone', 'url': 'https://a.example/f',
+                'category': '', 'author_node_id': '!aaaa1111',
+                'updated_at': '2026-09-19T20:00:00.000000+00:00', 'deleted': True}
+        sent = []
+        with mock.patch.object(utils, '_send_one_sync',
+                               side_effect=lambda msg, *a, **k: sent.append(msg)), \
+                mock.patch('db_operations.peer_supports', return_value=True):
+            utils.send_feed_to_bbs_nodes(feed, ['!peer'], object())
+        self.assertTrue(sent[0].endswith('|1'))
+
+    def test_a_peer_without_the_capability_is_not_sent_one(self):
+        import utils
+        feed = {'feed_id': 'abc', 'name': 'N', 'url': 'https://a.example/f',
+                'category': '', 'author_node_id': '!a',
+                'updated_at': '2026-09-19T20:00:00Z', 'deleted': False}
+        with mock.patch('db_operations.peer_supports', return_value=False), \
+                mock.patch.object(utils, '_send_one_sync') as send:
+            self.assertEqual(0, utils.send_feed_to_bbs_nodes(feed, ['!old'], object()))
+        send.assert_not_called()
+
+    def test_the_capability_is_advertised(self):
+        import utils
+        self.assertIn('feed', utils.WIRE_CAPABILITIES)
+
+    def test_the_frame_is_classified_as_sync_traffic(self):
+        """The trap BBSID fell into: a frame can be sent, received, and
+        handled, and still be dropped before dispatch because its prefix
+        is missing from the allow-list that decides what is sync traffic.
+        Both halves have to exist, so both are checked."""
+        source = io.open('message_processing.py', encoding='utf-8').read()
+        self.assertIn('message.startswith("FEED|")', source)
+        # The allow-list, not the handler that happens to mention the same
+        # prefix: anchor on a run of entries only the list contains.
+        start = source.index('"SCORESYNC|", "ROLE|", "BBSID|"')
+        self.assertIn('"FEED|"', source[start:start + 200])
 
 
 if __name__ == '__main__':

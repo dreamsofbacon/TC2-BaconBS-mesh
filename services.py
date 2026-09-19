@@ -466,15 +466,8 @@ DOORS: dict = {
     'hn': {
         'name': 'Hacker News',
         'group': 'News',
+        'category': 'Tech',
         'url': 'https://hnrss.org/frontpage',
-        'parse': _parse_rss_titles,
-        'cache': 900,
-    },
-    'rss': {
-        'name': 'News feed',
-        'group': 'News',
-        'url': None,  # operator's own, from [gateway] rss_url
-        'config_url': ('gateway', 'rss_url'),
         'parse': _parse_rss_titles,
         'cache': 900,
     },
@@ -488,10 +481,114 @@ for _door in DOORS.values():
         GROUP_ORDER.append(_door['group'])
 
 
+# ── Feeds as doors ───────────────────────────────────────────────────────────
+#
+# A feed is a door whose URL an operator chose, so it cannot live in the
+# static registry above. Feeds are fleet-wide and owned by the node that
+# added them (db_operations.fleet_feeds); each becomes a door under News,
+# filed by the category its author typed.
+
+FEED_DOOR_PREFIX = 'feed:'
+FEED_GROUP = 'News'
+
+
+def _feed_doors() -> dict:
+    """Every feed this node will show, as door entries keyed by door id."""
+    try:
+        from db_operations import list_feeds
+        feeds = list_feeds(include_deleted=False, include_blocked=False)
+    except Exception:
+        return {}
+    doors = {}
+    for feed in feeds:
+        doors[FEED_DOOR_PREFIX + str(feed['feed_id'])] = {
+            'name': feed['name'],
+            'group': FEED_GROUP,
+            'category': feed['category'],
+            'url': feed['url'],
+            'parse': _parse_rss_titles,
+            'cache': 900,
+        }
+    return doors
+
+
+def all_doors() -> dict:
+    """The static registry plus this node's feeds.
+
+    Feed ids are namespaced, so a feed called 'wx' cannot shadow the
+    weather door.
+    """
+    doors = dict(DOORS)
+    doors.update(_feed_doors())
+    return doors
+
+
+# Where a door lands when its author filed it nowhere. Without this bucket
+# an uncategorised door in a group that HAS categories is unreachable: the
+# category screen is the only way in, and it lists nothing that would hold
+# it. That is how the built-in Hacker News door first disappeared the moment
+# a second feed was added.
+UNFILED_CATEGORY = 'Other'
+
+
+def _category_of(entry: dict) -> str:
+    return (entry.get('category') or '').strip()
+
+
+def categories_in_group(group: str) -> list:
+    """Categories inside one group, in menu order, or [] for a group that
+    does not need a second level.
+
+    A group earns sub-menus only once its doors are filed into more than
+    one category. Weather has none and stays two keypresses deep; News
+    grows a level the moment a second category exists, and not before --
+    an extra screen costs a packet and a keypress on a radio.
+    """
+    doors = all_doors()
+    named = []
+    unfiled = False
+    for door_id in available_door_ids():
+        entry = doors.get(door_id) or {}
+        if entry.get('group') != group:
+            continue
+        name = _category_of(entry)
+        if not name:
+            unfiled = True
+        elif name not in named:
+            named.append(name)
+    if len(named) + (1 if unfiled else 0) < 2:
+        return []
+    # Alphabetical, with the catch-all last. Discovery order would put a
+    # built-in door's category above the operator's own for no reason a
+    # reader could see, and would shuffle as feeds come and go.
+    return sorted(named, key=str.casefold) + ([UNFILED_CATEGORY] if unfiled else [])
+
+
+def doors_in_category(group: str, category: str) -> list:
+    """Door ids inside one category of one group.
+
+    The catch-all bucket collects the doors with no category of their own,
+    so nothing in a sub-grouped menu is left with no way to reach it.
+    """
+    doors = all_doors()
+    wanted = (category or '').strip()
+    catch_all = wanted == UNFILED_CATEGORY
+    result = []
+    for door_id in available_door_ids():
+        entry = doors.get(door_id) or {}
+        if entry.get('group') != group:
+            continue
+        name = _category_of(entry)
+        if (catch_all and not name) or (name and name == wanted):
+            result.append(door_id)
+    return result
+
+
 def door_ids() -> list:
     """Every door id, grouped in GROUP_ORDER -- the menu's order."""
+    doors = all_doors()
     return [door_id for group in GROUP_ORDER
-            for door_id, door in DOORS.items() if door['group'] == group]
+            for door_id, door in doors.items() if door['group'] == group]
 
 
 def available_door_ids() -> list:
@@ -501,10 +598,10 @@ def available_door_ids() -> list:
 
 
 def _door_url_template(door_id: str) -> str:
-    door = DOORS.get(door_id) or {}
-    if door.get('url'):
-        return door['url']
-    section_option = door.get('config_url')
+    entry = all_doors().get(str(door_id or '')) or {}
+    if entry.get('url'):
+        return entry['url']
+    section_option = entry.get('config_url')
     if section_option:
         return (_config_raw(*section_option) or '').strip()
     return ''
@@ -514,7 +611,7 @@ def door_hosts() -> set:
     """Hosts the registry can reach, for the audit that asks what this node
     talks to. Derived from the templates, so it cannot drift from them."""
     hosts = set()
-    for door_id in DOORS:
+    for door_id in all_doors():
         template = _door_url_template(door_id)
         if template:
             host = urllib.parse.urlparse(template).hostname
@@ -570,7 +667,7 @@ def run_door(door_id: str, arg: str = '', timeout: Optional[int] = None,
 
     Blocking; the gateway already runs this on a worker thread.
     """
-    door = DOORS.get(door_id)
+    door = all_doors().get(str(door_id or ''))
     if not door:
         return "ERR", f"unknown service '{door_id}'"
     arg = _clean_arg(arg)
