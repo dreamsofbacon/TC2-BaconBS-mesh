@@ -8,6 +8,7 @@ import re
 import sqlite3
 import ssl
 import time
+import urllib.parse
 import uuid
 import secrets
 import configparser
@@ -474,6 +475,34 @@ def load_subscriber_settings(config_path: str) -> dict:
   return {"subscriber_nodes_text": "\n".join(nodes)}
 
 
+def _normalise_feed_url(raw: str) -> str:
+  """The News feed door's URL, as typed, made into something fetchable.
+
+  People paste a feed address the way they read it -- "feeds.npr.org/1001/
+  rss.xml" -- and a URL with no scheme is not fetched, it is refused, which
+  on a radio reads as the door being broken. Anything that is not plainly
+  http(s) is dropped rather than stored: the door is then simply not shown,
+  which is truthful, where a stored-but-unusable URL puts a door on the menu
+  that can only fail.
+  """
+  url = (raw or "").strip()
+  if not url or any(ch.isspace() for ch in url):
+    return ""
+  # A leading "scheme:" is honoured as one -- so javascript: and file: are
+  # rejected as the wrong scheme rather than quietly turned into a host by
+  # prefixing https:// to them.
+  if re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:", url):
+    if not re.match(r"^https?://", url, re.I):
+      return ""
+  else:
+    url = "https://" + url
+  parsed = urllib.parse.urlparse(url)
+  host = parsed.hostname or ""
+  if not host or "." not in host:
+    return ""
+  return url
+
+
 def load_gateway_settings(config_path: str) -> dict:
   """Read the [gateway] section for the web-admin form (with defaults)."""
   config = read_config_file(config_path)
@@ -485,6 +514,7 @@ def load_gateway_settings(config_path: str) -> dict:
     "ai_api_key": g("ai_api_key"),
     "ai_model": g("ai_model", "llama3.2"),
     "ai_system_prompt": g("ai_system_prompt"),
+    "rss_url": g("rss_url"),
     "allowed_hosts": g("allowed_hosts"),
     "allowed_schemes": g("allowed_schemes", "https") or "https",
     "allowed_nodes": g("allowed_nodes"),
@@ -4173,6 +4203,8 @@ def create_app(runtime_interface=None) -> Flask:
       for key in ("ai_base_url", "ai_model", "ai_system_prompt", "ai_api_key",
                   "allowed_hosts", "allowed_schemes", "allowed_nodes"):
         config.set("gateway", key, form.get(f"gateway_{key}", "").strip())
+      config.set("gateway", "rss_url",
+                 _normalise_feed_url(form.get("gateway_rss_url", "")))
       dialect = form.get("gateway_ai_dialect", "ollama").strip().lower()
       if dialect not in ("ollama", "openai", "nomad"):
         dialect = "ollama"

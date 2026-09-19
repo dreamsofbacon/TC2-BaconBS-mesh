@@ -869,12 +869,13 @@
 <section class="card settings-panel" id="gateway" data-settings-panel="gateway" style="max-width:800px">
   <h2>API Gateway / Project Nomad</h2>
   <p class="text-muted">
-    When enabled, this internet-connected node fulfills API requests from offline
-    mesh peers — a generic HTTP GET to an allowed host, or an AI prompt relayed to
-    a locally-hosted Project Nomad (Ollama / OpenAI-compatible) endpoint. By
-    default any node in the general allow-list may use the gateway; set an
-    "Allowed requester nodes" list below to lock it down to specific nodes. Add
-    <code>A</code> (Web Fetch) to the main menu items to expose it to users.
+    When enabled, this internet-connected node answers requests from offline mesh
+    peers: the <strong>Services</strong> menu (weather, NWS alerts, band
+    conditions, Wikipedia and the rest — see below), and AI prompts relayed to a
+    Project Nomad (Ollama / OpenAI-compatible) endpoint. By default any node in
+    the general allow-list may use the gateway; set an "Allowed requester nodes"
+    list below to lock it down to specific nodes. Add <code>A</code> (Services)
+    to the main menu items to expose it to users.
   </p>
   <form method="post" action="{{ url_for('settings_page') }}#gateway">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -934,12 +935,48 @@
     </div>
 
     <hr style="margin:1.5rem 0">
-    <h3>HTTP proxy &amp; limits</h3>
+    <h3>Services</h3>
+    <p class="text-muted">
+      Every service on the <code>[A] Services</code> menu works as soon as the
+      gateway is on — there is no list to fill in first. One door is yours to
+      choose:
+    </p>
+    <div class="form-group">
+      <label for="gateway_rss_url">News feed (RSS or Atom)</label>
+      <input type="url" id="gateway_rss_url" name="gateway_rss_url" class="form-control"
+             list="gateway_rss_suggestions" placeholder="https://feeds.npr.org/1001/rss.xml"
+             value="{{ gateway.rss_url }}">
+      <datalist id="gateway_rss_suggestions">
+        <option value="https://feeds.npr.org/1001/rss.xml" label="NPR News">
+        <option value="https://feeds.bbci.co.uk/news/world/rss.xml" label="BBC World">
+        <option value="https://www.aljazeera.com/xml/rss/all.xml" label="Al Jazeera">
+        <option value="https://www.arrl.org/news/rss" label="ARRL (ham radio)">
+        <option value="https://feeds.arstechnica.com/arstechnica/index" label="Ars Technica">
+        <option value="https://www.nasa.gov/news-release/feed/" label="NASA">
+      </datalist>
+      <p class="text-muted">
+        Shown as <code>Services &rarr; News &rarr; News feed</code>. Headlines only —
+        five titles, no article bodies, which is the whole point over a radio link.
+        Click the box for a few suggestions, or paste any feed (a local paper,
+        a club, a weather office). <strong>Leave blank and the door is simply not
+        shown</strong>; Hacker News is built in either way.
+      </p>
+    </div>
+
+    <hr style="margin:1.5rem 0">
+    <h3>Limits &amp; legacy raw fetch</h3>
     <div class="form-group">
       <label for="gateway_allowed_hosts">Allowed HTTP hosts (comma separated)</label>
       <input type="text" id="gateway_allowed_hosts" name="gateway_allowed_hosts" class="form-control"
              placeholder="wttr.in,api.example.com" value="{{ gateway.allowed_hosts }}">
-      <p class="text-muted">Outbound HTTP GET is restricted to these hosts. Private/loopback addresses are always blocked.</p>
+      <p class="text-muted">
+        <strong>Not needed for Services.</strong> This is the old free-form "fetch
+        any URL" request, which nothing on the menu produces any more — a peer
+        running an older build can still send one, and it is answered only for
+        hosts named here. Blank refuses every raw fetch, which is what you want
+        unless you are deliberately hosting for an old node. Private/loopback
+        addresses are always blocked.
+      </p>
     </div>
     <div class="form-group">
       <label for="gateway_allowed_schemes">Allowed schemes</label>

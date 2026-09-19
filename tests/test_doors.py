@@ -433,5 +433,64 @@ class GatewayDispatchTests(unittest.TestCase):
             self.assertEqual('!old', utils.select_gateway_peer(interface))
 
 
+class NewsFeedSettingTests(unittest.TestCase):
+    """The one door an operator chooses, set from the web admin."""
+
+    def setUp(self):
+        import web_admin
+        self.web_admin = web_admin
+
+    def test_a_feed_pasted_without_a_scheme_still_works(self):
+        """People paste a feed the way they read it. A URL with no scheme is
+        not fetched, it is refused, and on a radio that reads as the door
+        being broken."""
+        self.assertEqual("https://feeds.npr.org/1001/rss.xml",
+                         self.web_admin._normalise_feed_url("feeds.npr.org/1001/rss.xml"))
+
+    def test_surrounding_whitespace_is_forgiven(self):
+        self.assertEqual("https://a.example/f.xml",
+                         self.web_admin._normalise_feed_url("  https://a.example/f.xml  "))
+
+    def test_both_web_schemes_are_kept_as_typed(self):
+        for url in ("https://a.example/f", "http://a.example/f"):
+            self.assertEqual(url, self.web_admin._normalise_feed_url(url))
+
+    def test_a_scheme_that_is_not_the_web_is_refused(self):
+        """Left alone, prefixing https:// to "javascript:alert(1)" turns a
+        scheme into a hostname and stores something fetchable-looking."""
+        for url in ("javascript:alert(1)", "file:///etc/passwd", "ftp://a.example/f"):
+            with self.subTest(url=url):
+                self.assertEqual("", self.web_admin._normalise_feed_url(url))
+
+    def test_something_that_is_not_a_url_is_refused(self):
+        for raw in ("", "   ", "not a url", "localhost/feed", "https:// spaced.example/f"):
+            with self.subTest(raw=raw):
+                self.assertEqual("", self.web_admin._normalise_feed_url(raw))
+
+    def test_a_refused_url_is_stored_as_nothing_so_no_door_is_offered(self):
+        """Storing an unusable URL would put a door on the menu that can only
+        fail. Storing nothing leaves it off, which is true."""
+        with mock.patch.object(services, '_config_raw',
+                               return_value=self.web_admin._normalise_feed_url("nonsense")):
+            self.assertNotIn('rss', services.available_door_ids())
+
+    def test_the_setting_reaches_the_form_and_the_door(self):
+        import tempfile
+        import textwrap
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "config.ini")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(textwrap.dedent("""\
+                    [gateway]
+                    enabled = true
+                    rss_url = https://feeds.npr.org/1001/rss.xml
+                    """))
+            settings = self.web_admin.load_gateway_settings(path)
+        self.assertEqual("https://feeds.npr.org/1001/rss.xml", settings["rss_url"])
+        with mock.patch.object(services, '_config_raw', return_value=settings["rss_url"]):
+            self.assertIn('rss', services.available_door_ids())
+            self.assertEqual(settings["rss_url"], services._door_url_template('rss'))
+
+
 if __name__ == '__main__':
     unittest.main()
