@@ -187,5 +187,138 @@ class BulletinListTests(unittest.TestCase):
         self.assertEqual(1, len(self.sent) - before)
 
 
+class OwnPostDeleteTests(unittest.TestCase):
+    """F14 -- posting to the wrong board had no remedy short of finding a
+    moderator. The delete travels as a tombstone either way, so the
+    machinery already existed; only the offer was missing."""
+
+    def setUp(self):
+        self.iface = _Interface()
+        self.sent = []
+        patcher = mock.patch.object(
+            ch, 'send_message',
+            side_effect=lambda text, *a, **k: self.sent.append(text) or True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(ch.update_user_state, 4245, None)
+        self.state = {'command': 'BULLETIN_READ', 'step': 3, 'board': 'General',
+                      'bulletins': [(1, 'Mine')]}
+        self.content = ('me', '2026-09-20', 'Mine', 'the body', 'uid-1', 1, None)
+
+    def _read(self, mine):
+        with mock.patch.object(ch, 'get_bulletin_content', return_value=self.content), \
+                mock.patch.object(ch, '_can_moderate', return_value=False), \
+                mock.patch.object(ch, '_wrote_this_post', return_value=mine):
+            ch.handle_bb_steps(4245, '1', 3, self.state, self.iface, [])
+        return ch.get_user_state(4245)
+
+    def test_your_own_post_offers_delete(self):
+        self._read(mine=True)
+        self.assertIn('[D]elete', self.sent[-1])
+
+    def test_someone_elses_post_does_not(self):
+        self._read(mine=False)
+        self.assertNotIn('[D]elete', self.sent[-1])
+
+    def test_delete_asks_first(self):
+        """It goes from every node and a radio user cannot undo it."""
+        state = self._read(mine=True)
+        ch.handle_bb_steps(4245, 'D', 3, state, self.iface, [])
+        self.assertIn('[Y]es', self.sent[-1])
+        self.assertEqual('BULLETIN_OWN_DELETE',
+                         ch.get_user_state(4245)['command'])
+
+    def test_answering_no_keeps_it(self):
+        state = {'command': 'BULLETIN_OWN_DELETE', 'step': 1,
+                 'unique_id': 'uid-1', 'subject': 'Mine', 'board': 'General'}
+        with mock.patch.object(ch, 'delete_bulletin') as gone, \
+                mock.patch.object(ch, 'handle_bulletin_command'):
+            ch.handle_bulletin_own_delete_steps(4245, '0', self.iface, state, [])
+        gone.assert_not_called()
+        self.assertIn('Left alone', self.sent[-1])
+
+    def test_confirming_deletes_it(self):
+        state = {'command': 'BULLETIN_OWN_DELETE', 'step': 1,
+                 'unique_id': 'uid-1', 'subject': 'Mine', 'board': 'General'}
+        with mock.patch.object(ch, '_wrote_this_post', return_value=True), \
+                mock.patch.object(ch, 'delete_bulletin') as gone, \
+                mock.patch.object(ch, 'handle_bulletin_command'):
+            ch.handle_bulletin_own_delete_steps(4245, 'Y', self.iface, state, [])
+        gone.assert_called_once()
+
+    def test_authorship_is_rechecked_at_the_point_of_action(self):
+        """A confirm arrives seconds after the offer; the moderator path
+        re-checks its role for the same reason."""
+        state = {'command': 'BULLETIN_OWN_DELETE', 'step': 1,
+                 'unique_id': 'uid-1', 'subject': 'Mine', 'board': 'General'}
+        with mock.patch.object(ch, '_wrote_this_post', return_value=False), \
+                mock.patch.object(ch, 'delete_bulletin') as gone, \
+                mock.patch.object(ch, 'handle_bulletin_command'):
+            ch.handle_bulletin_own_delete_steps(4245, 'Y', self.iface, state, [])
+        gone.assert_not_called()
+        self.assertIn('not yours', self.sent[-1])
+
+    def test_a_post_with_no_recorded_author_is_not_yours(self):
+        """Posts predating v0.1.661 have no author. Unknown must not mean
+        deletable."""
+        with mock.patch.object(ch, 'get_post_author', return_value=''):
+            self.assertFalse(ch._wrote_this_post(4245, self.iface, 'old-uid'))
+
+
+class PostCountTests(unittest.TestCase):
+    """F11 -- the profile's Msgs: counted keystrokes."""
+
+    def setUp(self):
+        import tempfile
+        folder = tempfile.mkdtemp()
+        patcher = mock.patch.dict(os.environ,
+                                  {'BBS_DB_PATH': os.path.join(folder, 'c.db')})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        import db_operations
+        self.db = db_operations
+        self.db.initialize_database()
+        self.addCleanup(self._close)
+
+    def _close(self):
+        try:
+            self.db.get_db_connection().close()
+        except Exception:
+            pass
+
+    def test_nothing_written_is_zero(self):
+        """A brand-new account showed Msgs:4 straight after registering."""
+        self.assertEqual(0, self.db.count_posts_by(['!aaaa1111'], ['someone']))
+
+    def test_a_bulletin_counts_once(self):
+        conn = self.db.get_db_connection()
+        conn.execute("INSERT INTO bulletins (board, sender_short_name, date,"
+                     " subject, content, unique_id, author_node_id)"
+                     " VALUES ('General','someone','2026-09-20','s','c','u1','!aaaa1111')")
+        conn.commit()
+        self.assertEqual(1, self.db.count_posts_by(['!aaaa1111'], []))
+
+    def test_an_old_post_counts_when_its_name_still_maps(self):
+        """Posts before v0.1.661 carry no author, only a sender name."""
+        conn = self.db.get_db_connection()
+        conn.execute("INSERT INTO bulletins (board, sender_short_name, date,"
+                     " subject, content, unique_id)"
+                     " VALUES ('General','oldname','2026-01-01','s','c','u2')")
+        conn.commit()
+        self.assertEqual(1, self.db.count_posts_by([], ['oldname']))
+        self.assertEqual(0, self.db.count_posts_by(['!aaaa1111'], []))
+
+    def test_somebody_elses_post_is_not_counted(self):
+        conn = self.db.get_db_connection()
+        conn.execute("INSERT INTO bulletins (board, sender_short_name, date,"
+                     " subject, content, unique_id, author_node_id)"
+                     " VALUES ('General','them','2026-09-20','s','c','u3','!bbbb2222')")
+        conn.commit()
+        self.assertEqual(0, self.db.count_posts_by(['!aaaa1111'], ['someone']))
+
+    def test_no_identity_counts_nothing(self):
+        self.assertEqual(0, self.db.count_posts_by([], []))
+
+
 if __name__ == '__main__':
     unittest.main()

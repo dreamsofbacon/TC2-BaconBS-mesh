@@ -11,6 +11,7 @@ from meshtastic import BROADCAST_NUM
 
 from db_operations import (
     add_bulletin, add_mail, delete_mail, delete_bulletin,
+    count_posts_by, get_post_author,
     delete_channel_comment,
     get_content_source_nodes,
     get_node_role, set_node_role, get_role_updated_at,
@@ -348,8 +349,12 @@ HELP_TIPS = {
                 "what the BBS does for you. [5] switches these tips off.",
     'BULLETIN_MENU': "Tip: the boards are set by this node's operator. A "
                      "bulletin is public and reaches every Bacon BBS node.",
-    'MAIL': "Tip: Read opens your inbox. Send writes to one person. Relay "
-            "Directory lists who agreed to have mail pushed to their radio.",
+    # The old tip read as though Send were the general case and the
+    # directory a subset of it. It is the other way round: Send IS the
+    # directory, and someone who has not opted in cannot be written to at
+    # all -- which is the whole of F6 in the field report.
+    'MAIL': "Tip: you can write to anyone who has switched on Offline mail "
+            "relay in their own Settings. Read opens your inbox.",
     'CHANNEL_DIRECTORY': "Tip: a channel is a topic with replies under it. View "
                          "opens one to read and reply, Post starts a new one.",
     # True in both configurations, which the first version was not. High
@@ -1181,8 +1186,12 @@ def _mail_recipient_refusal(query: str, sender_node_id, prefix: str = "") -> str
             str(node_id) for node_id in match.get('node_ids', [])}:
         return (f"{prefix}That is you. Mail is for reaching somebody else -- "
                 "anything you send yourself is already in your inbox.")
-    return (f"{prefix}That relay user was not found, is ambiguous, or has "
-            "not opted in.")
+    # The rule is never explained at the point it is hit. Two brand-new
+    # accounts cannot write to each other until one of them finds an
+    # unrelated setting, and nothing here said which.
+    return (f"{prefix}No match. Mail only reaches people who have switched "
+            "on Settings > [3] Offline mail relay -- they turn it on "
+            "themselves, on their own device. Send !AU to see who has.")
 
 
 def _resolve_mail_relay_recipient(recipient: str, sender_node_id=None):
@@ -1886,7 +1895,22 @@ def _settings_menu_text(sender_id, interface, sender_node_id=None) -> str:
         if alias and alias != short_name:
             lines.append(f"Posts as: {alias}")
 
-        stats = f"Since:{(first_seen or '?')[:10]} Msgs:{msg_count}"
+        # Not msg_count: user_profiles.messages_sent counts every inbound
+        # message, so a brand-new account that had posted nothing showed
+        # "Msgs:4" straight after registering and climbed by one on every
+        # menu selection. Next to "Since:" that reads as posts. Derived
+        # here instead -- see db_operations.count_posts_by for why it is
+        # not simply stored.
+        posted = 0
+        try:
+            node_ids = list(get_linked_node_ids(account_id) or []) if account_id else []
+            if node_id and node_id not in node_ids:
+                node_ids.append(node_id)
+            names = [n for n in (alias, short_name) if n]
+            posted = count_posts_by(node_ids, names)
+        except Exception:
+            logging.debug("could not count posts for the profile", exc_info=True)
+        stats = f"Since:{(first_seen or '?')[:10]} Posts:{posted}"
         try:
             role = normalize_role(get_node_role(node_id)) if node_id else ''
         except Exception:
@@ -2748,6 +2772,21 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
         if message.strip().lower() in ('0', 'x', 'exit'):
             handle_bulletin_command(sender_id, interface)
             return
+        if message.strip().lower() == 'd' and state.get('unique_id'):
+            # Only offered on a post this reader wrote; confirmed for the
+            # same reason a moderator's delete is -- it travels to every
+            # node and a radio user cannot undo it from the radio.
+            send_message(f"Delete your post \"{state.get('subject')}\"? "
+                         "It goes from every node. [Y]es [0]No",
+                         sender_id, interface)
+            update_user_state(sender_id, {'command': 'BULLETIN_OWN_DELETE',
+                                          'step': 1,
+                                          'board': state.get('board'),
+                                          'boards': state.get('boards', []),
+                                          'bulletins': state.get('bulletins', []),
+                                          'unique_id': state.get('unique_id'),
+                                          'subject': state.get('subject')})
+            return
         try:
             index = int(message) - 1
             if index < 0 or index >= len(bulletins):
@@ -2768,8 +2807,17 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
         # nothing offering "next" or "back to the list". Stay on the list
         # instead. The invitation rides in the same message: a second one
         # would be another packet for a line of text.
-        more = (LINE_BREAK + "Reply with another number, or [0] to go back."
-                if not _can_moderate(sender_id, interface) else "")
+        # A post you wrote is yours to retract. Without this, posting to
+        # the wrong board or with a typo had no remedy short of finding a
+        # moderator -- and the delete travels as a tombstone either way, so
+        # the machinery already existed.
+        mine = _wrote_this_post(sender_id, interface, unique_id)
+        if _can_moderate(sender_id, interface):
+            more = ""
+        elif mine:
+            more = LINE_BREAK + "[D]elete this post, another number, or [0] to go back."
+        else:
+            more = LINE_BREAK + "Reply with another number, or [0] to go back."
         send_message(f"From: {sender_short_name}\nDate: {date}\nSubject: {subject}\n- - - - - - -\n{content}{notice}{more}", sender_id, interface)
         # Only a moderator is offered anything here, and only they are held
         # on the post afterwards. Everyone else bounces straight back to the
@@ -2785,7 +2833,9 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
         update_user_state(sender_id, {'command': 'BULLETIN_READ', 'step': 3,
                                       'board': board_name,
                                       'boards': state.get('boards', []),
-                                      'bulletins': bulletins})
+                                      'bulletins': bulletins,
+                                      'unique_id': unique_id if mine else None,
+                                      'subject': subject if mine else None})
 
     elif step == 4:
         if is_cancel(message):
@@ -3146,7 +3196,16 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
             return
         selected, problem = _directory_selection(entries, page, message)
         if problem == 'not_a_number':
-            send_message("Invalid selection. Reply with a listed number, N, P, or X.", sender_id, interface)
+            # N, P and X were named and none of them is rendered; [A] and
+            # [0], which are, went unmentioned. A reader who only sees the
+            # error had no way to learn that A is how you reach someone by
+            # name.
+            keys = ["a number from the list", "[A] to enter a name",
+                    "[0] to go back"]
+            if state.get('pages', 1) > 1:
+                keys.insert(1, "[N]ext or [P]revious for more")
+            send_message("Invalid selection. Reply with "
+                         + ", ".join(keys) + ".", sender_id, interface)
             return
         if problem:
             send_message("Invalid selection. Please choose a listed user.", sender_id, interface)
@@ -3871,6 +3930,49 @@ def _can_moderate(sender_id, interface) -> bool:
     """
     node_id = get_node_id_from_num(sender_id, interface)
     return bool(node_id) and role_at_least(get_node_role(node_id), ROLE_MOD)
+
+
+def _wrote_this_post(sender_id, interface, unique_id) -> bool:
+    """Whether the reader is the author of this post.
+
+    False when the post predates author recording (v0.1.661), which is the
+    safe way round: an unknown author is not yours to delete.
+    """
+    try:
+        author = get_post_author('B', unique_id)
+        if not author:
+            return False
+        node_id = get_node_id_from_num(sender_id, interface)
+        if node_id and str(author) == str(node_id):
+            return True
+        account_id = get_account_id_for_node(node_id) if node_id else None
+        if not account_id:
+            return False
+        return str(author) in {str(n) for n in (get_linked_node_ids(account_id) or [])}
+    except Exception:
+        logging.debug("could not establish post authorship", exc_info=True)
+        return False
+
+
+def handle_bulletin_own_delete_steps(sender_id, message, interface, state,
+                                     bbs_nodes=None):
+    """The confirm step for someone retracting their own post."""
+    choice = str(message or '').strip().lower()
+    if choice in ('y', 'yes'):
+        if not _wrote_this_post(sender_id, interface, state.get('unique_id')):
+            # Re-checked at the point of action, the way the moderator path
+            # re-checks the role.
+            send_message("That post is not yours.", sender_id, interface)
+        else:
+            delete_bulletin(state.get('unique_id'), bbs_nodes or [], interface)
+            logging.info("Bulletin %s retracted by its author %s",
+                         state.get('unique_id'),
+                         get_node_id_from_num(sender_id, interface))
+            send_message("Deleted. Peers drop their copies on the next sync.",
+                         sender_id, interface)
+    else:
+        send_message("Left alone.", sender_id, interface)
+    handle_bulletin_command(sender_id, interface)
 
 
 def handle_bulletin_moderate_steps(sender_id, message, interface, state, bbs_nodes=None):

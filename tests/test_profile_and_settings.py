@@ -103,7 +103,10 @@ class ProfileScreenTests(_Case):
         db_operations.update_user_bio(1234, "likes radios")
         ch.handle_profile_command(1234, self.iface, sender_node_id="!abc")
         self.assertIn("bac", self.last)
-        self.assertIn("Msgs:", self.last)
+        # Posts, not Msgs: the old field counted every inbound message,
+        # so it read as "you have posted 87 things" on an account that
+        # had posted nothing.
+        self.assertIn("Posts:", self.last)
         self.assertIn("likes radios", self.last)
 
     def test_linked_devices_is_reachable_from_profile(self):

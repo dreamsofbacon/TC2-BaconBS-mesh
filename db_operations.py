@@ -4613,6 +4613,84 @@ def set_post_author(kind: str, unique_id: str, author_node_id: str) -> bool:
     return cursor.rowcount > 0
 
 
+def get_post_author(kind: str, unique_id: str) -> str:
+    """The device that wrote a bulletin ('B') or channel comment ('C'), or ''.
+
+    Posts made before v0.1.661 have no author recorded, so this is empty for
+    them rather than wrong -- callers must treat "unknown" as "not yours".
+    """
+    table = _POST_AUTHOR_TABLES.get(str(kind))
+    if table is None or not unique_id:
+        return ''
+    try:
+        row = get_db_connection().execute(
+            f"SELECT author_node_id FROM {table} WHERE unique_id = ?",
+            (str(unique_id),)).fetchone()
+    except Exception:
+        logging.debug("could not read the author of %s", unique_id, exc_info=True)
+        return ''
+    return str(row[0]) if row and row[0] else ''
+
+
+def count_posts_by(node_ids, aliases=None) -> int:
+    """How much this person has actually written: bulletins, comments, mail.
+
+    Not the same question as user_profiles.messages_sent, which counts every
+    inbound message -- every menu keypress, every invalid choice -- and so
+    read as "Msgs:87" next to "Since:" on an account that had posted nothing.
+    That field syncs fleet-wide with a max-wins merge, so changing what it
+    counts would fight peer data and need a coordinated reset; this is
+    derived at render time instead, and cannot drift.
+
+    Bulletins and comments only carry an author from v0.1.661 on, so older
+    rows are matched on the sender name when it still equals an account
+    alias exactly. Where it does not, they are left out: an undercount is
+    true, where a guess would not be. Mail has always carried its sender.
+    """
+    ids = [str(n) for n in (node_ids or []) if n]
+    names = [str(a) for a in (aliases or []) if a]
+    if not ids and not names:
+        return 0
+    conn = get_db_connection()
+    total = 0
+
+    def _count(table, id_column, name_column):
+        clauses, params = [], []
+        if ids:
+            clauses.append(f"{id_column} IN ({','.join('?' * len(ids))})")
+            params.extend(ids)
+        if names:
+            clauses.append(f"{name_column} IN ({','.join('?' * len(names))})")
+            params.extend(names)
+        try:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE " + " OR ".join(clauses),
+                params).fetchone()
+        except Exception:
+            logging.debug("could not count %s", table, exc_info=True)
+            return 0
+        return int(row[0]) if row else 0
+
+    total += _count('bulletins', 'author_node_id', 'sender_short_name')
+    total += _count('channel_comments', 'author_node_id', 'sender_short_name')
+    if names or ids:
+        # Mail is counted by who sent it; there is no author column to fall
+        # back from, and none is needed.
+        clauses, params = [], []
+        if names:
+            clauses.append(f"sender_short_name IN ({','.join('?' * len(names))})")
+            params.extend(names)
+        if clauses:
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM mail WHERE " + " OR ".join(clauses),
+                    params).fetchone()
+                total += int(row[0]) if row else 0
+            except Exception:
+                logging.debug("could not count mail", exc_info=True)
+    return total
+
+
 def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interface, unique_id=None, local_only: bool = False, date=None, source_node_id=None, source_timestamp=None, author_node_id=None):
     if not _valid_author_node_id(author_node_id):
         author_node_id = None

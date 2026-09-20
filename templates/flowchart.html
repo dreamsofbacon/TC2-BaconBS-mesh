@@ -218,20 +218,28 @@
 </div>
 
 <div class="card">
-  <h3>BBS Commands (over the mesh)</h3>
-  <p class="text-muted">Send a direct message to the BBS node. Any message returns the main menu. Make selections by sending the bracketed letter or number.</p>
+  <h3>BBS Commands</h3>
+  <p class="text-muted">
+    The same menus answer a direct message over the mesh and a terminal over
+    SSH. Menus are <strong>numbered</strong>; you reply with the number on the
+    screen. <code>docs/MENU-MAP.txt</code> has the full tree, verified against
+    a live node.
+  </p>
   <div class="table-scroll-container">
   <table>
     <thead><tr><th>Menu</th><th>Selections</th></tr></thead>
     <tbody>
-      <tr><td>Main Menu (💾Bacon BBS💾)</td><td><strong>Q</strong> BBS Menu, <strong>B</strong> BBS Submenu, <strong>G</strong> Games, <strong>P</strong> Profile, <strong>X</strong> Exit</td></tr>
-      <tr><td>BBS Menu (📰)</td><td><strong>M</strong> Mail, <strong>B</strong> Bulletins, <strong>C</strong> Channel Directory, <strong>J</strong> JS8Call gateway, <strong>X</strong> Exit</td></tr>
-      <tr><td>Games (🎮)</td><td>Door games, <strong>S</strong> Scores, <strong>H</strong> Hall of Fame, <strong>F</strong> Fortune, <strong>0</strong> Back</td></tr>
-      <tr><td>Mail</td><td>Read inbox, send to a node short name, delete; long messages chunk automatically.</td></tr>
-      <tr><td>Bulletins</td><td>Browse by board, read post, post new (Urgent board may require an allow-listed node).</td></tr>
-      <tr><td>Channels</td><td>List directory, view a channel, read &amp; add comments.</td></tr>
-      <tr><td>Games</td><td>Launch Zork (dfrotz), continue saved game, view Hall of Fame.</td></tr>
-      <tr><td>Profile</td><td>View / set short name, long name, callsign, location.</td></tr>
+      <tr><td>Main Menu</td><td><strong>1</strong> Quick Commands, <strong>2</strong> BBS, <strong>3</strong> Games, <strong>4</strong> Public Chatter, <strong>5</strong> Ask Nomad, <strong>6</strong> Services, <strong>7</strong> Settings &amp; Profile, <strong>8</strong> Node View, <strong>0</strong> Exit. Numbers shift on a node with a trimmed <code>main_menu_items</code>; the letters below do not.</td></tr>
+      <tr><td>Jumping about</td><td><code>!Q !B !G !H !N !A !S !V !P !X</code> reach any main-menu item from anywhere, and <code>?</code> shows the menu. <code>!cancel</code> backs out of a form. An open door game keeps its own input, <code>!</code> and <code>?</code> included.</td></tr>
+      <tr><td>BBS Menu</td><td><strong>1</strong> Mail, <strong>2</strong> Bulletins, <strong>3</strong> Channel Dir, <strong>0</strong> Back. <strong>4</strong> JS8CALL appears only where a JS8Call link is configured.</td></tr>
+      <tr><td>Mail</td><td>Read, Send, Relay Directory. <strong>Mail only reaches someone who has switched on Offline mail relay in their own Settings</strong> &mdash; there is no way to write to an account that has not. Reading offers Keep, Delete or Reply; deletes confirm first, and several can go at once.</td></tr>
+      <tr><td>Bulletins</td><td>Pick a board by number, name or first letter, then Read or Post. Reading keeps you on the list for the next post. A post you wrote offers Delete; so does any post for a moderator. The Urgent board is radio-only on most nodes.</td></tr>
+      <tr><td>Channels</td><td>View a channel to read and add comments, or Post to start one.</td></tr>
+      <tr><td>Games</td><td>Ten titles including Trivia King and Baconfall, plus <strong>S</strong> Scores, <strong>H</strong> Hall of Fame, <strong>F</strong> Fortune, <strong>0</strong> Back. <strong>X</strong> leaves a game without losing your place.</td></tr>
+      <tr><td>Services</td><td>Curated text services, grouped: Weather &amp; Safety, Propagation &amp; Sky, Reference, News. Each returns a few lines rather than a web page. News carries whatever feeds the fleet has added.</td></tr>
+      <tr><td>Ask Nomad</td><td>One question at a time to the configured AI endpoint; the answer arrives asynchronously and carries no context from the previous question.</td></tr>
+      <tr><td>Settings &amp; Profile</td><td>Edit bio, Linked devices (including Reset SSH password), Offline mail relay, Node View, Help tips, About this node, View Stats. There are no short name, callsign or location fields.</td></tr>
+      <tr><td>Public Chatter</td><td>Radio traffic the node overheard, not BBS posts. Pick a time window, then filter by channel.</td></tr>
     </tbody>
   </table>
   </div>

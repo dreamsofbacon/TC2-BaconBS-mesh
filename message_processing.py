@@ -36,7 +36,7 @@ from command_handlers import (
     handle_public_chatter_command, handle_public_chatter_steps,
     handle_node_view_command, handle_node_view_steps,
     handle_role_command, handle_who_command,
-    handle_bulletin_moderate_steps, handle_comment_moderate_steps,
+    handle_bulletin_moderate_steps, handle_bulletin_own_delete_steps, handle_comment_moderate_steps,
     deliver_ask_nomad_reply,
     handle_exit_command, send_board_action_menu,
     menu_items_for, menu_layout, menu_number_alias,
@@ -3131,6 +3131,11 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             return
         if state and state.get('command') == 'NODE_VIEW' and not _navigating:
             handle_node_view_steps(sender_id, message, interface, state)
+            return
+        if (state and state.get('command') == 'BULLETIN_OWN_DELETE'
+                and not _navigating):
+            handle_bulletin_own_delete_steps(sender_id, message, interface,
+                                             state, bbs_nodes)
             return
         if (state and state.get('command') == 'BULLETIN_MODERATE'
                 and not _navigating):

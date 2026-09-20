@@ -82,7 +82,11 @@ class RelayRefusalTests(unittest.TestCase):
 
     def test_a_genuine_miss_still_says_not_found(self):
         message = ch._mail_recipient_refusal("nobody-by-that-name", ME)
-        self.assertIn("not found", message)
+        # The refusal now names the rule and where to change it: the
+        # recipient must switch relay on themselves, which was never
+        # said at the point of failure.
+        self.assertIn("No match", message)
+        self.assertIn("Offline mail relay", message)
         self.assertNotIn("That is you", message)
 
     def test_addressing_somebody_else_is_not_treated_as_yourself(self):
