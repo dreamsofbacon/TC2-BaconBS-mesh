@@ -243,10 +243,15 @@ class BBSClientSession(asyncssh.SSHServerSession):
                 self._line.clear()
                 if self._auth_stage != "bbs":
                     self._handle_account_auth(line)
-                elif line:
-                    self._send_to_bbs(line)
                 else:
-                    self._write_prompt()
+                    # An empty line used to stop here and reprint the bare
+                    # prompt, so pressing Enter answered with a blank screen
+                    # at every prompt on the system -- which on a terminal
+                    # this small is indistinguishable from a hang. Hand it to
+                    # the BBS like any other input and let the router decide;
+                    # it redraws the menu, except inside a door game or at a
+                    # prompt collecting text, where a blank line is content.
+                    self._send_to_bbs(line)
                 continue
             self._last_was_cr = False
             if character.isprintable() and len(self._line) < 4096:
