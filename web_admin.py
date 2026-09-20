@@ -526,6 +526,35 @@ def load_ai_model_status() -> dict:
   return status
 
 
+def preferred_author_node_id(config_path: str) -> str:
+  """The local link id to stamp on something this node publishes.
+
+  A node can hold several link ids -- bbs.local answers to both
+  mqtt:baconbbs:bbs-main and mqtt:baconbbsvt:Burlington-NNE. Taking the
+  first alphabetically stamped feeds with an id from a network the fleet
+  does not sync on: ownership still worked, because a node checks all of
+  its own ids, but the other operators saw feeds signed by a node they
+  have never heard of.
+
+  So prefer a link id that shares a network with a configured sync peer,
+  which is by definition one the peers can place.
+  """
+  local_ids = get_persisted_local_link_ids() or []
+  if len(local_ids) < 2:
+    return local_ids[0] if local_ids else ""
+  try:
+    peers = [str(peer.get("node_id") or "") for peer in load_sync_peers(config_path)]
+  except Exception:
+    logging.debug("could not read sync peers for feed authorship", exc_info=True)
+    return local_ids[0]
+  for node_id in local_ids:
+    # "mqtt:baconbbsvt:Burlington-NNE" -> "mqtt:baconbbsvt:"
+    prefix = node_id.rsplit(":", 1)[0] + ":"
+    if ":" in node_id and any(peer.startswith(prefix) for peer in peers):
+      return node_id
+  return local_ids[0]
+
+
 def load_feed_settings() -> dict:
   """The fleet's news feeds, split by whether this node may edit them.
 
@@ -535,6 +564,9 @@ def load_feed_settings() -> dict:
   what keeps that rule legible rather than surprising.
   """
   from db_operations import list_feeds
+  # Ownership is judged against EVERY id this node answers to, not just the
+  # one it publishes under -- a feed stamped before the preference changed
+  # is still this node's to edit.
   mine = set(get_persisted_local_link_ids() or [])
   feeds = []
   for feed in list_feeds(include_deleted=False):
@@ -6406,12 +6438,26 @@ def create_app(runtime_interface=None) -> Flask:
           return redirect(url_for("settings_page") + "#gateway")
 
         if section == "feeds":
-          from db_operations import delete_feed, save_feed, set_feed_blocked
+          from db_operations import (delete_feed, get_feed, save_feed,
+                                     set_feed_blocked)
           action = request.form.get("feed_action", "").strip()
           feed_id = request.form.get("feed_id", "").strip()
-          local_ids = get_persisted_local_link_ids() or []
-          author = local_ids[0] if local_ids else ""
+          author = preferred_author_node_id(app.config["CONFIG_PATH"])
           anchor = url_for("settings_page") + "#gateway"
+
+          if action == "recheck":
+            # A feed is checked when it is added and then trusted forever,
+            # so one that dies keeps failing on the radio with nothing here
+            # saying so. This is that check, on demand.
+            feed = get_feed(feed_id)
+            if not feed:
+              flash("No such feed.", "error")
+              return redirect(anchor)
+            ok, detail = _check_feed_url(feed["url"])
+            flash(f"{feed['name']}: {detail}" if ok
+                  else f"{feed['name']} is not working: {detail}",
+                  "success" if ok else "error")
+            return redirect(anchor)
 
           if action in ("block", "unblock"):
             # Local only, and deliberately available for every feed --
@@ -6449,6 +6495,22 @@ def create_app(runtime_interface=None) -> Flask:
           if not ok:
             flash(f"That feed did not work: {detail}", "error")
             return redirect(anchor)
+          if feed_id:
+            # Editing keeps the feed's own author, so a feed does not change
+            # hands because its owner renamed it. That substitution is only
+            # safe once this node is known to BE the owner: handing
+            # save_feed the existing author unconditionally satisfies its
+            # ownership check with the answer it was meant to test, which
+            # let any node rewrite any feed in the fleet.
+            existing = get_feed(feed_id)
+            if not existing:
+              flash("No such feed.", "error")
+              return redirect(anchor)
+            if existing["author_node_id"] not in (get_persisted_local_link_ids() or []):
+              flash("That feed belongs to another node; you can hide it here, "
+                    "but only its own node can change it.", "error")
+              return redirect(anchor)
+            author = existing["author_node_id"]
           if save_feed(name, url, category, author, feed_id):
             flash(f"Saved. First headline: {detail}", "success")
           else:

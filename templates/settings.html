@@ -34,7 +34,7 @@
       </a>
       <a class="settings-nav-link" href="#gateway" data-panel-link="gateway">
         <span class="settings-nav-title">API Gateway</span>
-        <span class="settings-nav-hint">HTTP proxy and Project Nomad AI</span>
+        <span class="settings-nav-hint">Services, news feeds, Project Nomad</span>
       </a>
       <a class="settings-nav-link" href="#accounts" data-panel-link="accounts">
         <span class="settings-nav-title">Account Linking</span>
@@ -1057,6 +1057,14 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="settings_section" value="feeds">
             <input type="hidden" name="feed_id" value="{{ feed.feed_id }}">
+            <input type="hidden" name="feed_action" value="recheck">
+            <button class="btn" type="submit" title="Fetch it now and show the first headline">Check</button>
+          </form>
+          <form method="post" action="{{ url_for('settings_page') }}#gateway"
+                style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="settings_section" value="feeds">
+            <input type="hidden" name="feed_id" value="{{ feed.feed_id }}">
             <input type="hidden" name="feed_action"
                    value="{% if feed.blocked %}unblock{% else %}block{% endif %}">
             <button class="btn" type="submit">
@@ -1064,6 +1072,8 @@
             </button>
           </form>
           {% if feed.owned %}
+          <button class="btn" type="button"
+                  onclick="document.getElementById('feed-edit-{{ feed.feed_id }}').hidden = !document.getElementById('feed-edit-{{ feed.feed_id }}').hidden">Edit</button>
           <form method="post" action="{{ url_for('settings_page') }}#gateway"
                 style="display:inline"
                 onsubmit="return confirm('Retire {{ feed.name }} for every node in the fleet?')">
@@ -1076,6 +1086,36 @@
           {% endif %}
         </td>
       </tr>
+      {% if feed.owned %}
+      <tr id="feed-edit-{{ feed.feed_id }}" hidden>
+        <td colspan="5">
+          <form method="post" action="{{ url_for('settings_page') }}#gateway">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="settings_section" value="feeds">
+            <input type="hidden" name="feed_action" value="save">
+            <input type="hidden" name="feed_id" value="{{ feed.feed_id }}">
+            <div class="form-group">
+              <label for="feed_name_{{ feed.feed_id }}">Name</label>
+              <input type="text" id="feed_name_{{ feed.feed_id }}" name="feed_name"
+                     class="form-control" maxlength="40" style="max-width:320px"
+                     value="{{ feed.name }}" required>
+            </div>
+            <div class="form-group">
+              <label for="feed_category_{{ feed.feed_id }}">Category</label>
+              <input type="text" id="feed_category_{{ feed.feed_id }}" name="feed_category"
+                     class="form-control" maxlength="24" list="feed_categories"
+                     style="max-width:320px" value="{{ feed.category }}">
+            </div>
+            <div class="form-group">
+              <label for="feed_url_{{ feed.feed_id }}">Feed URL</label>
+              <input type="text" id="feed_url_{{ feed.feed_id }}" name="feed_url"
+                     class="form-control" value="{{ feed.url }}" required>
+            </div>
+            <button class="btn btn-primary" type="submit">Save Changes</button>
+          </form>
+        </td>
+      </tr>
+      {% endif %}
       {% endfor %}
     </tbody>
   </table>
@@ -1086,6 +1126,15 @@
   {% endif %}
 
   <h4 style="margin-top:1.5rem">Add a feed</h4>
+  {% if not feeds.local_ids %}
+  <p class="text-muted">
+    <strong>Not yet.</strong> A feed is owned by the node that adds it, and this
+    node has no node ID recorded — which happens before its first radio or MQTT
+    link has ever connected. A feed saved without one could never be edited or
+    retired again, so the form is closed rather than quietly taking something
+    that cannot be undone. Bring a link up, and this section opens by itself.
+  </p>
+  {% else %}
   <form method="post" action="{{ url_for('settings_page') }}#gateway">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="settings_section" value="feeds">
@@ -1133,6 +1182,7 @@
     </div>
     <button class="btn btn-primary" type="submit">Add Feed</button>
   </form>
+  {% endif %}
 </section>
 
 <section class="card settings-panel" id="admin" data-settings-panel="admin" style="max-width:600px">

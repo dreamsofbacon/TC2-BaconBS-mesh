@@ -830,5 +830,138 @@ class DoorFollowUpTests(unittest.TestCase):
         self.assertIn("kind in ('r', 'd')", body)
 
 
+class FeedAdminRouteTests(unittest.TestCase):
+    """The web-admin side of feeds, through the real routes.
+
+    Every check here exists because the same rule has to hold in two
+    places: the data layer refuses what it should, and the form must not
+    hand it an answer that satisfies the check by accident.
+    """
+
+    def setUp(self):
+        import tempfile
+        folder = tempfile.mkdtemp()
+        patcher = mock.patch.dict(os.environ,
+                                  {'BBS_DB_PATH': os.path.join(folder, 'feeds.db')})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        import db_operations
+        import web_admin
+        self.db = db_operations
+        self.web_admin = web_admin
+        self.db.initialize_database()
+        self.addCleanup(self._drop_connection)
+
+        self.local_id = 'mqtt:net:me'
+        ids = mock.patch.object(web_admin, 'get_persisted_local_link_ids',
+                                return_value=[self.local_id])
+        ids.start()
+        self.addCleanup(ids.stop)
+
+        self.app = web_admin.create_app()
+        self.client = self.app.test_client()
+        with self.client.session_transaction() as session:
+            session['logged_in'] = True
+
+    def _drop_connection(self):
+        try:
+            self.db.get_db_connection().close()
+        except Exception:
+            pass
+
+    def _post(self, **form):
+        form.setdefault('settings_section', 'feeds')
+        form['csrf_token'] = self.client.get(
+            '/api/csrf-token').get_json()['csrf_token']
+        return self.client.post('/settings', data=form,
+                                follow_redirects=True).get_data(as_text=True)
+
+    def test_a_feed_you_own_can_be_edited_in_place(self):
+        """Without this the only way to fix a typo was retire and re-add,
+        which mints a new id and leaves a tombstone behind."""
+        feed_id = self.db.save_feed('Old Name', 'https://a.example/f', 'World',
+                                    self.local_id)
+        with mock.patch.object(self.web_admin, '_check_feed_url',
+                               return_value=(True, 'a headline')):
+            self._post(feed_action='save', feed_id=feed_id, feed_name='New Name',
+                       feed_category='World', feed_url='https://a.example/f')
+        feed = self.db.get_feed(feed_id)
+        self.assertEqual('New Name', feed['name'])
+        self.assertEqual(feed_id, feed['feed_id'], "editing minted a new id")
+        self.assertEqual(0, feed['deleted'], "editing left a tombstone")
+
+    def test_another_nodes_feed_cannot_be_edited_through_the_form(self):
+        """The regression this pins: keeping a feed's author across an edit
+        is right, but handing save_feed that author unconditionally answers
+        its ownership check with the very thing it was meant to test -- and
+        every node could then rewrite every feed in the fleet."""
+        feed_id = self.db.save_feed('Theirs', 'https://a.example/f', 'World',
+                                    'mqtt:net:someone-else')
+        with mock.patch.object(self.web_admin, '_check_feed_url',
+                               return_value=(True, 'a headline')):
+            page = self._post(feed_action='save', feed_id=feed_id,
+                              feed_name='Hijacked', feed_category='World',
+                              feed_url='https://evil.example/f')
+        self.assertEqual('Theirs', self.db.get_feed(feed_id)['name'])
+        self.assertIn('belongs to another node', page)
+
+    def test_a_feed_can_be_rechecked_on_demand(self):
+        """A feed is checked when added and then trusted forever, so one
+        that dies keeps failing on the radio with nothing here saying so."""
+        feed_id = self.db.save_feed('Mine', 'https://a.example/f', 'World',
+                                    self.local_id)
+        with mock.patch.object(self.web_admin, '_check_feed_url',
+                               return_value=(True, 'a fresh headline')):
+            page = self._post(feed_action='recheck', feed_id=feed_id)
+        self.assertIn('a fresh headline', page)
+
+        with mock.patch.object(self.web_admin, '_check_feed_url',
+                               return_value=(False, 'could not fetch it')):
+            page = self._post(feed_action='recheck', feed_id=feed_id)
+        self.assertIn('is not working', page)
+
+    def test_a_peers_feed_can_still_be_rechecked(self):
+        """Checking is reading, not owning."""
+        feed_id = self.db.save_feed('Theirs', 'https://a.example/f', 'World',
+                                    'mqtt:net:someone-else')
+        with mock.patch.object(self.web_admin, '_check_feed_url',
+                               return_value=(True, 'a headline')):
+            page = self._post(feed_action='recheck', feed_id=feed_id)
+        self.assertIn('a headline', page)
+
+    def test_the_author_id_is_one_the_fleet_will_recognise(self):
+        """A node can answer to several link ids. Taking the first
+        alphabetically stamped feeds with an id from a network the fleet
+        does not sync on, so peers saw feeds signed by a node they had
+        never heard of."""
+        with mock.patch.object(self.web_admin, 'get_persisted_local_link_ids',
+                               return_value=['mqtt:aaa:bbs-main',
+                                             'mqtt:fleet:Burlington']), \
+                mock.patch.object(self.web_admin, 'load_sync_peers',
+                                  return_value=[{'node_id': 'mqtt:fleet:VT2'},
+                                                {'node_id': 'mqtt:fleet:Chatt'}]):
+            self.assertEqual('mqtt:fleet:Burlington',
+                             self.web_admin.preferred_author_node_id('config.ini'))
+
+    def test_one_link_id_needs_no_choosing(self):
+        with mock.patch.object(self.web_admin, 'get_persisted_local_link_ids',
+                               return_value=['mqtt:aaa:only']):
+            self.assertEqual('mqtt:aaa:only',
+                             self.web_admin.preferred_author_node_id('config.ini'))
+
+    def test_no_link_id_yet_means_no_author(self):
+        with mock.patch.object(self.web_admin, 'get_persisted_local_link_ids',
+                               return_value=[]):
+            self.assertEqual('', self.web_admin.preferred_author_node_id('config.ini'))
+
+    def test_no_matching_network_falls_back_to_the_first(self):
+        with mock.patch.object(self.web_admin, 'get_persisted_local_link_ids',
+                               return_value=['mqtt:aaa:one', 'mqtt:bbb:two']), \
+                mock.patch.object(self.web_admin, 'load_sync_peers',
+                                  return_value=[{'node_id': 'mqtt:zzz:elsewhere'}]):
+            self.assertEqual('mqtt:aaa:one',
+                             self.web_admin.preferred_author_node_id('config.ini'))
+
+
 if __name__ == '__main__':
     unittest.main()

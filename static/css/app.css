@@ -1378,13 +1378,13 @@ kbd {
 
 .settings-nav-link {
   display: block;
-  padding: 7px 10px;
-  margin-bottom: 2px;
+  padding: 5px 10px;
+  margin-bottom: 1px;
   border-radius: var(--radius-md);
   border-left: 2px solid transparent;
   color: var(--text);
   text-decoration: none;
-  line-height: 1.25;
+  line-height: 1.2;
 }
 
 .settings-nav-link:hover { background: var(--surface-2); }
@@ -1405,7 +1405,18 @@ kbd {
   display: block;
   color: var(--text-muted);
   font-size: 0.75rem;
-  margin-top: 1px;
+}
+
+/* Sixteen two-line entries come to roughly 880px, against about 870px of
+   usable height on a laptop -- so the sidebar overflowed by a hair and grew
+   its own scrollbar next to the page's. Tighter metrics above buy back
+   about 100px, which covers the common case; below that the hints are the
+   part worth spending, since the titles alone still say where each panel
+   goes. Keyed to viewport HEIGHT, which is the thing that actually ran
+   out. */
+@media (max-height: 820px) {
+  .settings-nav-hint { display: none; }
+  .settings-nav-link { padding: 6px 10px; }
 }
 
 /* Destructive section stays visually apart even when it isn't selected. */
