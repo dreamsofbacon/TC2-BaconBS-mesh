@@ -526,6 +526,24 @@ def load_ai_model_status() -> dict:
   return status
 
 
+def node_display_name(node_id: str) -> str:
+  """A node id as something a person reads, without losing the id.
+
+  A feed row showed "mqtt:baconbbsvt:Chattanooga", which is three facts --
+  transport, topic, node -- where the reader wants one. The node is the
+  part that answers "who added this?"; the rest belongs in a tooltip, and
+  is kept there rather than dropped, because on a fleet spanning two
+  brokers the topic is exactly what distinguishes two nodes of the same
+  name.
+  """
+  text = str(node_id or "").strip()
+  if not text:
+    return "unknown"
+  if text.startswith("mqtt:") and text.count(":") >= 2:
+    return text.rsplit(":", 1)[-1] or text
+  return text
+
+
 def preferred_author_node_id(config_path: str) -> str:
   """The local link id to stamp on something this node publishes.
 
@@ -563,22 +581,25 @@ def load_feed_settings() -> dict:
   edit button. Rendering both as the same row with different controls is
   what keeps that rule legible rather than surprising.
   """
-  from db_operations import list_feeds
-  # Ownership is judged against EVERY id this node answers to, not just the
-  # one it publishes under -- a feed stamped before the preference changed
-  # is still this node's to edit.
-  mine = set(get_persisted_local_link_ids() or [])
+  from db_operations import list_feeds, owned_locally
+  # Ownership spans every id this node answers to AND every id it has
+  # published under, so a link being down does not make your own feeds
+  # someone else's -- see db_operations._ensure_feed_tables.
   feeds = []
   for feed in list_feeds(include_deleted=False):
     entry = dict(feed)
-    entry["owned"] = str(feed.get("author_node_id") or "") in mine
+    entry["owned"] = owned_locally(feed.get("author_node_id"))
+    entry["author_label"] = node_display_name(feed.get("author_node_id"))
     feeds.append(entry)
   categories = sorted({f["category"] for f in feeds if f["category"]},
                       key=str.casefold)
   return {
     "feeds": feeds,
     "categories": categories,
-    "local_ids": sorted(mine),
+    # Live links only: this is what gates the Add form, and a node that
+    # has never had a link up cannot own a feed no matter what it once
+    # published under.
+    "local_ids": sorted(get_persisted_local_link_ids() or []),
   }
 
 
@@ -6438,7 +6459,8 @@ def create_app(runtime_interface=None) -> Flask:
           return redirect(url_for("settings_page") + "#gateway")
 
         if section == "feeds":
-          from db_operations import (delete_feed, get_feed, save_feed,
+          from db_operations import (delete_feed, get_feed, owned_locally,
+                                     remember_authorship_id, save_feed,
                                      set_feed_blocked)
           action = request.form.get("feed_action", "").strip()
           feed_id = request.form.get("feed_id", "").strip()
@@ -6478,7 +6500,13 @@ def create_app(runtime_interface=None) -> Flask:
             return redirect(anchor)
 
           if action == "delete":
-            if delete_feed(feed_id, author):
+            # Retire it as whoever published it, once this node is known to
+            # be that publisher. Passing the CURRENT preferred id instead
+            # would refuse to retire a feed published under a link that is
+            # down, which is the node refusing its own feed.
+            existing = get_feed(feed_id)
+            if existing and owned_locally(existing["author_node_id"]) and \
+                    delete_feed(feed_id, existing["author_node_id"]):
               flash("Feed retired for the whole fleet.", "success")
             else:
               flash("That feed belongs to another node; you can hide it here, "
@@ -6506,12 +6534,15 @@ def create_app(runtime_interface=None) -> Flask:
             if not existing:
               flash("No such feed.", "error")
               return redirect(anchor)
-            if existing["author_node_id"] not in (get_persisted_local_link_ids() or []):
+            if not owned_locally(existing["author_node_id"]):
               flash("That feed belongs to another node; you can hide it here, "
                     "but only its own node can change it.", "error")
               return redirect(anchor)
             author = existing["author_node_id"]
           if save_feed(name, url, category, author, feed_id):
+            # Remembered at the moment of publishing, so the id outlives
+            # the link it came from.
+            remember_authorship_id(author)
             flash(f"Saved. First headline: {detail}", "success")
           else:
             flash("That feed belongs to another node and cannot be edited here.",

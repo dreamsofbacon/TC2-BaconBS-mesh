@@ -1797,6 +1797,24 @@ def _ensure_feed_tables(cursor) -> None:
                     feed_id TEXT PRIMARY KEY,
                     blocked_at TEXT NOT NULL
                 );''')
+    # Every id this node has ever published under, which is NOT the same
+    # question as which ids it answers to right now.
+    #
+    # local_node_identities is rebuilt from the links that are actually up
+    # and rewritten wholesale, so an MQTT broker that is down when the node
+    # starts takes its id out of that set -- and every feed published under
+    # it stops looking like this node's own. You lose Edit and Retire on
+    # your own feeds until the broker comes back, which on an intermittent
+    # broker means losing them intermittently.
+    #
+    # Deliberately a separate table rather than widening that one: the
+    # "is this me?" sync check needs a NARROW set, because a wrong answer
+    # there makes a node record sync state for itself and repair against a
+    # phantom peer forever. Ownership needs a wide one. Different questions.
+    cursor.execute('''CREATE TABLE IF NOT EXISTS local_authorship_ids (
+                    node_id TEXT PRIMARY KEY,
+                    first_used_at TEXT NOT NULL
+                );''')
 
 
 # A retired feed leaves a row behind rather than vanishing, because a delete
@@ -1817,6 +1835,47 @@ def _clean_feed_text(value, limit: int) -> str:
     text = " ".join(str(value or "").split())
     text = "".join(ch for ch in text if ch.isprintable())
     return text[:limit]
+
+
+def remember_authorship_id(node_id: str) -> None:
+    """Record that this node published something as *node_id*.
+
+    Called by the code that is publishing, not by save_feed: save_feed
+    takes whatever author it is given, and calling this from inside it
+    made every author passed in -- including a peer's, when seeding one --
+    an id this node claims as its own. "Whose id is this" is a question
+    only the caller can answer.
+    """
+    node_id = str(node_id or '').strip()
+    if not node_id:
+        return
+    conn = get_db_connection()
+    conn.execute(
+        "INSERT OR IGNORE INTO local_authorship_ids (node_id, first_used_at)"
+        " VALUES (?, ?)", (node_id, _feed_now()))
+    conn.commit()
+
+
+def get_authorship_ids() -> set:
+    """Every id this node has published under, whether or not that link is
+    up right now. Ownership is judged against this, not against the live
+    set -- see _ensure_feed_tables for why they are different questions."""
+    try:
+        conn = get_db_connection()
+        return {str(row[0]) for row in
+                conn.execute("SELECT node_id FROM local_authorship_ids") if row[0]}
+    except Exception:
+        logging.debug("could not read authorship ids", exc_info=True)
+        return set()
+
+
+def owned_locally(author_node_id: str) -> bool:
+    """Whether a thing authored by *author_node_id* belongs to this node."""
+    author = str(author_node_id or '').strip()
+    if not author:
+        return False
+    return (author in set(get_persisted_local_link_ids() or [])
+            or author in get_authorship_ids())
 
 
 def list_feeds(include_deleted: bool = False, include_blocked: bool = True) -> list:

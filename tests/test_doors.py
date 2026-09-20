@@ -852,11 +852,11 @@ class FeedAdminRouteTests(unittest.TestCase):
         self.db.initialize_database()
         self.addCleanup(self._drop_connection)
 
+        # Persisted for real rather than patched: owned_locally lives in
+        # db_operations and reads its own module's function, so patching the
+        # name web_admin imported proves nothing about the path in use.
         self.local_id = 'mqtt:net:me'
-        ids = mock.patch.object(web_admin, 'get_persisted_local_link_ids',
-                                return_value=[self.local_id])
-        ids.start()
-        self.addCleanup(ids.stop)
+        self.db.persist_local_identities({self.local_id}, set())
 
         self.app = web_admin.create_app()
         self.client = self.app.test_client()
@@ -961,6 +961,123 @@ class FeedAdminRouteTests(unittest.TestCase):
                                   return_value=[{'node_id': 'mqtt:zzz:elsewhere'}]):
             self.assertEqual('mqtt:aaa:one',
                              self.web_admin.preferred_author_node_id('config.ini'))
+
+
+class DurableAuthorshipTests(unittest.TestCase):
+    """Ownership has to outlive a link going down.
+
+    local_node_identities is rebuilt from the links that are actually up and
+    rewritten wholesale, so a broker down at startup takes its id out of the
+    set -- and every feed published under it stops looking like this node's
+    own. On an intermittent broker that means intermittently losing Edit and
+    Retire on your own feeds.
+    """
+
+    MAIN = 'mqtt:netone:bbs-main'
+    OTHER = 'mqtt:nettwo:Burlington'
+
+    def setUp(self):
+        import tempfile
+        folder = tempfile.mkdtemp()
+        patcher = mock.patch.dict(os.environ,
+                                  {'BBS_DB_PATH': os.path.join(folder, 'feeds.db')})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        import db_operations
+        import web_admin
+        self.db = db_operations
+        self.web_admin = web_admin
+        self.db.initialize_database()
+        self.addCleanup(self._drop_connection)
+        self.db.persist_local_identities({self.MAIN, self.OTHER}, set())
+
+    def _drop_connection(self):
+        try:
+            self.db.get_db_connection().close()
+        except Exception:
+            pass
+
+    def _owned(self):
+        return {f['name']: f['owned']
+                for f in self.web_admin.load_feed_settings()['feeds']}
+
+    def _publish(self, name, author):
+        """What the web admin does: save, then claim the id."""
+        feed_id = self.db.save_feed(name, 'https://a.example/f', 'World', author)
+        self.db.remember_authorship_id(author)
+        return feed_id
+
+    def test_publishing_records_the_id_it_published_under(self):
+        self._publish('Mine', self.OTHER)
+        self.assertIn(self.OTHER, self.db.get_authorship_ids())
+
+    def test_saving_a_feed_does_not_by_itself_claim_its_author(self):
+        """save_feed takes whatever author it is given -- including a
+        peer's, when one is seeded -- so claiming an id has to be the
+        caller's decision."""
+        self.db.save_feed('Theirs', 'https://a.example/f', 'World',
+                          'mqtt:nettwo:someone-else')
+        self.assertNotIn('mqtt:nettwo:someone-else', self.db.get_authorship_ids())
+
+    def test_a_feed_stays_yours_when_its_link_goes_down(self):
+        feed_id = self._publish('Mine', self.OTHER)
+        self.assertTrue(self._owned()['Mine'])
+
+        # That broker is down when the node next publishes its identities.
+        self.db.persist_local_identities({self.MAIN}, set())
+        self.assertNotIn(self.OTHER, self.db.get_persisted_local_link_ids())
+
+        self.assertTrue(self._owned()['Mine'], "a link outage disowned our own feed")
+        self.assertTrue(self.db.delete_feed(feed_id, self.OTHER),
+                        "could not retire our own feed while its link was down")
+
+    def test_another_nodes_feed_is_still_not_ours(self):
+        """The wide set must not become a set that owns everything."""
+        self.db.save_feed('Theirs', 'https://a.example/f', 'World',
+                          'mqtt:nettwo:someone-else')
+        self.assertFalse(self._owned()['Theirs'])
+        self.assertFalse(self.db.owned_locally('mqtt:nettwo:someone-else'))
+
+    def test_owned_locally_refuses_an_empty_author(self):
+        self.assertFalse(self.db.owned_locally(''))
+        self.assertFalse(self.db.owned_locally(None))
+
+    def test_a_live_link_id_is_owned_before_anything_is_published(self):
+        self.assertTrue(self.db.owned_locally(self.MAIN))
+
+    def test_the_add_form_still_gates_on_a_live_link(self):
+        """Ownership is wide; the Add form is not. A node with no link id at
+        all cannot own a feed whatever it once published under."""
+        self._publish('Mine', self.OTHER)
+        conn = self.db.get_db_connection()
+        conn.execute("DELETE FROM local_node_identities")
+        conn.commit()
+        self.assertEqual([], self.web_admin.load_feed_settings()['local_ids'])
+        # ...and the feed it already published is still its own.
+        self.assertTrue(self._owned()['Mine'])
+
+
+class NodeLabelTests(unittest.TestCase):
+    """A node id as something a person reads, without losing the id."""
+
+    def setUp(self):
+        import web_admin
+        self.web_admin = web_admin
+
+    def test_an_mqtt_id_reads_as_its_node_name(self):
+        self.assertEqual('Chattanooga',
+                         self.web_admin.node_display_name('mqtt:baconbbsvt:Chattanooga'))
+
+    def test_a_radio_id_is_left_alone(self):
+        self.assertEqual('!04058ac8', self.web_admin.node_display_name('!04058ac8'))
+
+    def test_nothing_at_all_still_says_something(self):
+        self.assertEqual('unknown', self.web_admin.node_display_name(''))
+        self.assertEqual('unknown', self.web_admin.node_display_name(None))
+
+    def test_an_unfamiliar_shape_is_shown_as_it_is(self):
+        """Better the raw id than a confident guess at the wrong part."""
+        self.assertEqual('ssh:abc', self.web_admin.node_display_name('ssh:abc'))
 
 
 if __name__ == '__main__':

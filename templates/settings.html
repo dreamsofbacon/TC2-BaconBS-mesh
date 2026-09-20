@@ -1027,7 +1027,8 @@
   <p class="text-muted">
     A feed belongs to the node that added it. You can edit or retire your own;
     a feed from another node can be <strong>hidden</strong> here, which affects
-    this BBS's menu only and is never sent anywhere.
+    this BBS's menu only and is never sent anywhere. Hover a name to see the
+    full node ID.
     {% if feeds.local_ids %}This node is
     <code>{{ feeds.local_ids|join('</code>, <code>')|safe }}</code>.{% endif %}
   </p>
@@ -1048,8 +1049,8 @@
         <td>{{ feed.category or '—' }}</td>
         <td style="word-break:break-all"><small>{{ feed.url }}</small></td>
         <td>
-          {% if feed.owned %}<span title="This node added it">this node</span>
-          {% else %}<small>{{ feed.author_node_id }}</small>{% endif %}
+          {% if feed.owned %}<span title="{{ feed.author_node_id }}">this node</span>
+          {% else %}<span title="{{ feed.author_node_id }}">{{ feed.author_label }}</span>{% endif %}
         </td>
         <td style="white-space:nowrap">
           <form method="post" action="{{ url_for('settings_page') }}#gateway"
