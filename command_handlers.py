@@ -1505,7 +1505,7 @@ APIGW_SLOW_ACK_SECONDS = 8.0
 APIGW_ACK_CLEAR_SECONDS = 15.0
 
 
-def _apigw_submit(sender_id, interface, kind, payload, label):
+def _apigw_submit(sender_id, interface, kind, payload, label, return_state=None):
     """Dispatch a composed request: fulfill locally if this node is a gateway,
     otherwise forward to a gateway peer. Response returns asynchronously.
 
@@ -1559,8 +1559,12 @@ def _apigw_submit(sender_id, interface, kind, payload, label):
             # AI replies carry the follow-up invitation in the SAME message
             # -- see deliver_ask_nomad_reply for why a second packet here
             # loses races against the first one's relay traffic.
-            ok = (deliver_ask_nomad_reply(text, sender_id, live) if kind == 'r'
-                  else send_message(text, sender_id, live))
+            if kind == 'r':
+                ok = deliver_ask_nomad_reply(text, sender_id, live)
+            elif kind == 'd':
+                ok = deliver_door_reply(text, sender_id, live, return_state)
+            else:
+                ok = send_message(text, sender_id, live)
             if not ok:
                 logging.warning(
                     f"apigw rid={rid}: {label} answered but the reply could not "
@@ -1576,7 +1580,8 @@ def _apigw_submit(sender_id, interface, kind, payload, label):
         send_message("No internet gateway is reachable on the mesh right now.", sender_id, interface)
         update_user_state(sender_id, None)
         return
-    register_api_request(rid, sender_id, gateway_node_id=peer, kind=kind)
+    register_api_request(rid, sender_id, gateway_node_id=peer, kind=kind,
+                         return_state=return_state)
     if not send_api_request(rid, node_id, kind, payload, peer, interface):
         from utils import pop_api_request
         pop_api_request(rid)
@@ -1656,7 +1661,8 @@ def handle_apigw_steps(sender_id, message, interface):
             update_user_state(sender_id, {'command': 'APIGW', 'step': 3,
                                           'group': state.get('group'), 'door': door_id})
             return
-        _apigw_submit(sender_id, interface, 'd', door_id, door['name'])
+        _apigw_submit(sender_id, interface, 'd', door_id, door['name'],
+                      return_state=dict(state, step=2))
         return
 
     # step 3 — the door's argument
@@ -1669,7 +1675,9 @@ def handle_apigw_steps(sender_id, message, interface):
         handle_help_command(sender_id, interface)
         return
     _apigw_submit(sender_id, interface, 'd',
-                  f"{state['door']}{_APIGW_UNIT_SEP}{choice}", door['name'])
+                  f"{state['door']}{_APIGW_UNIT_SEP}{choice}", door['name'],
+                  return_state={k: v for k, v in
+                                dict(state, step=2).items() if k != 'door'})
 
 
 # ── Ask Nomad: homescreen shortcut + post-reply follow-up ──────────────────
@@ -1708,6 +1716,45 @@ def handle_ask_nomad_command(sender_id, interface):
 
 
 ASK_NOMAD_FOLLOWUP = f"Reply with another question, or [0]/{CANCEL_HINT} for the main menu."
+
+
+# Not "[0] main menu": after a one-shot the user is AT the main menu, where
+# 0 disconnects. The invitation has to describe the screen they are actually
+# on, so a door answer puts them back on the list they picked it from.
+DOOR_FOLLOWUP = "Reply with a number for another, or [0] to go back."
+
+
+def deliver_door_reply(body, sender_id, interface, return_state=None) -> bool:
+    """Send a door's answer with a way out attached.
+
+    Without this the answer arrived and the screen went quiet: state was
+    cleared, so the user was at the main menu with nothing on screen saying
+    so, and on a radio that is a DM followed by silence. Ask Nomad has said
+    what to do next since it shipped; doors were the half that never got it.
+
+    One message, for the reason deliver_ask_nomad_reply documents: a second
+    DM two seconds later races the first one's relay traffic and loses.
+
+    The invitation is part of the reply budget, not an addition to it. A
+    door answer is already capped to max_response_bytes, and appending to a
+    reply that landed on the cap is how one packet quietly becomes two.
+    """
+    text = str(body or "").rstrip()
+    budget = get_max_text_bytes(interface)
+    tail = LINE_BREAK + DOOR_FOLLOWUP
+    if not text:
+        combined = DOOR_FOLLOWUP
+    else:
+        if len((text + tail).encode('utf-8')) > budget:
+            ellipsis = '…'
+            room = max(0, budget - len(tail.encode('utf-8'))
+                       - len(ellipsis.encode('utf-8')))
+            trimmed = text.encode('utf-8')[:room].decode('utf-8', errors='ignore')
+            text = (trimmed.rstrip() + ellipsis) if trimmed else text
+        combined = text + tail
+    delivered = send_message(combined, sender_id, interface)
+    update_user_state(sender_id, return_state)
+    return delivered
 
 
 def deliver_ask_nomad_reply(body, sender_id, interface) -> bool:

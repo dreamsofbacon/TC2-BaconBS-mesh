@@ -1726,16 +1726,21 @@ _apigw_lock = threading.Lock()
 _apigw_pending: dict = {}
 
 
-def register_api_request(rid: str, sender_id, gateway_node_id=None, kind=None) -> None:
+def register_api_request(rid: str, sender_id, gateway_node_id=None, kind=None,
+                         return_state=None) -> None:
     with _apigw_lock:
         _apigw_pending[rid] = {
             'sender_id': sender_id,
             'created_at': time.time(),
             'gateway': gateway_node_id,
             'last_gap_req': 0.0,
-            'kind': kind,  # 'r' (AI relay) | 'h' (HTTP GET) | None -- lets
-                           # _deliver_api_response show the Project Nomad
-                           # ask-another-question follow-up only for 'r'.
+            'kind': kind,  # 'r' (AI relay) | 'd' (door) | 'h' (HTTP GET) |
+                           # None -- lets _deliver_api_response attach the
+                           # right follow-up, and none at all for 'h'.
+            # The screen to put the user back on once the answer arrives,
+            # which may be minutes later and long after the menu they were
+            # looking at has been forgotten.
+            'return_state': return_state,
         }
 
 

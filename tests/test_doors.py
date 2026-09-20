@@ -743,5 +743,92 @@ class FeedWireTests(unittest.TestCase):
         self.assertIn('"FEED|"', source[start:start + 200])
 
 
+class DoorFollowUpTests(unittest.TestCase):
+    """What a user sees after a door answers.
+
+    It used to be nothing: the answer arrived, the state was cleared, and
+    the user was at the main menu with no sign of it. Over a radio that is
+    a DM followed by silence.
+    """
+
+    def setUp(self):
+        import command_handlers
+        self.ch = command_handlers
+        self.sent = []
+        self.iface = types.SimpleNamespace(bbs_nodes=[], nodes={},
+                                           protocol_name='meshtastic',
+                                           max_text_bytes=220)
+        patcher = mock.patch.object(
+            self.ch, 'send_message',
+            side_effect=lambda text, *a, **k: self.sent.append(text) or True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.ch.update_user_state, 77, None)
+
+    def _answer(self, body, return_state=None):
+        self.ch.deliver_door_reply(body, 77, self.iface, return_state)
+        return self.sent[-1]
+
+    def test_the_answer_says_what_to_do_next(self):
+        text = self._answer("37402: Sunny, +74F")
+        self.assertIn("37402: Sunny, +74F", text)
+        self.assertIn("[0]", text)
+
+    def test_it_is_one_message_not_two(self):
+        """Two DMs two seconds apart race each other's relay traffic on a
+        multi-hop mesh and the second one loses -- the reason Ask Nomad
+        bundles its invitation too."""
+        self._answer("an answer")
+        self.assertEqual(1, len(self.sent))
+
+    def test_the_invitation_comes_out_of_the_reply_budget(self):
+        """Appending to a reply that already landed on the cap is how one
+        packet quietly becomes two."""
+        text = self._answer("x" * 400)
+        self.assertLessEqual(len(text.encode('utf-8')), self.iface.max_text_bytes)
+        self.assertIn("[0]", text)
+        self.assertIn("\u2026", text)
+
+    def test_a_short_answer_is_not_trimmed(self):
+        text = self._answer("brief")
+        self.assertTrue(text.startswith("brief"))
+        self.assertNotIn("\u2026", text)
+
+    def test_an_empty_answer_still_leaves_a_way_out(self):
+        self.assertIn("[0]", self._answer(""))
+
+    def test_the_user_lands_back_on_the_list_they_picked_from(self):
+        """Not the main menu: "[0] main menu" would be a lie there, since 0
+        at the main menu disconnects."""
+        state = {'command': 'APIGW', 'step': 2, 'group': 'Weather & Safety'}
+        self._answer("sunny", state)
+        self.assertEqual(state, self.ch.get_user_state(77))
+
+    def test_a_number_then_picks_another_door_in_that_list(self):
+        sent = []
+        with mock.patch.object(self.ch, '_apigw_submit',
+                               side_effect=lambda *a, **k: sent.append(a)):
+            self.ch.update_user_state(77, {'command': 'APIGW', 'step': 2,
+                                           'group': 'Propagation & Sky'})
+            self.ch.handle_apigw_steps(77, '1', self.iface)
+        self.assertTrue(sent, "a number after an answer did nothing")
+        self.assertEqual('d', sent[-1][2])
+
+    def test_zero_goes_back_up_rather_than_disconnecting(self):
+        self.ch.update_user_state(77, {'command': 'APIGW', 'step': 2,
+                                       'group': 'Weather & Safety'})
+        with mock.patch.object(self.ch, '_apigw_authorized', return_value=True):
+            self.ch.handle_apigw_steps(77, '0', self.iface)
+        self.assertIn("Services", self.sent[-1])
+
+    def test_a_raw_http_reply_still_gets_no_follow_up(self):
+        """'h' is the old one-shot fetch, and nothing on the menu makes one."""
+        import message_processing as mp
+        source = io.open('message_processing.py', encoding='utf-8').read()
+        start = source.index("def _deliver_api_response")
+        body = source[start:start + 1400]
+        self.assertIn("kind in ('r', 'd')", body)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -28,7 +28,7 @@ from command_handlers import (
     handle_games_command, handle_games_steps,
     handle_scoreboard_command, handle_scoreboard_steps,
     handle_profile_command, handle_profile_steps,
-    handle_apigw_command, handle_apigw_steps,
+    handle_apigw_command, handle_apigw_steps, deliver_door_reply,
     handle_ask_nomad_command, handle_ask_nomad_steps,
     handle_account_steps,
     handle_settings_command, handle_settings_steps,
@@ -919,9 +919,10 @@ def _deliver_api_response(rid, status, body, interface):
     """Resolve a completed API response to the waiting user and DM it.
 
     Peeks the pending entry's 'kind' BEFORE popping it (pop_api_request
-    clears the entry) so an AI-relay (Project Nomad) response can offer the
-    same ask-another-question follow-up here as the local-gateway fast path
-    in command_handlers._apigw_submit -- an HTTP GET response gets none,
+    clears the entry) so a reply forwarded from a peer gateway offers the
+    same follow-up here as the local-gateway fast path in
+    command_handlers._apigw_submit: a question for Project Nomad ('r') and
+    a door ('d') both say what to do next. A raw HTTP GET ('h') gets none,
     matching the original one-shot flow."""
     pending = get_api_request(rid)
     sender_id = pop_api_request(rid)
@@ -929,11 +930,16 @@ def _deliver_api_response(rid, status, body, interface):
         return  # no waiter (already timed out / unknown rid)
     prefix = "" if str(status) in ("200", "OK") else f"[{status}] "
     text = f"{prefix}{body}"
-    if pending and pending.get('kind') == 'r':
+    kind = (pending or {}).get('kind')
+    if kind in ('r', 'd'):
         # Answer and invitation in ONE message: two DMs two seconds apart
         # race each other's relay traffic on a multi-hop mesh, and the
         # second one loses. See command_handlers.deliver_ask_nomad_reply.
-        deliver_ask_nomad_reply(text, sender_id, interface)
+        if kind == 'r':
+            deliver_ask_nomad_reply(text, sender_id, interface)
+        else:
+            deliver_door_reply(text, sender_id, interface,
+                               (pending or {}).get('return_state'))
     else:
         send_message(text, sender_id, interface)
 
