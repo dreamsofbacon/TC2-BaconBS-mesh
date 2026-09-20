@@ -514,6 +514,20 @@ class BBSSSHServer(asyncssh.SSHServer):
     def password_auth_supported(self):
         return True
 
+    def _auth_outcome(self, username: str, outcome: str) -> None:
+        """Say how an authentication ended, every time.
+
+        asyncssh swallows whatever these callbacks raise, and logs nothing of
+        its own once auth begins. On 2026-09-20 this service spent hours
+        refusing every login while systemd still reported it active: the
+        journal held "Beginning auth for user X" and then nothing at all, for
+        every account, and a crash, a wrong password and a wedged process
+        were indistinguishable from the outside. One line here is the
+        difference between reading the cause and bisecting an afternoon.
+        """
+        logging.info("SSH auth for %r from %s: %s",
+                     username, self.source_address, outcome)
+
     def validate_password(self, username, password):
         """The shared gate, and then -- always -- the user's own account.
 
@@ -530,36 +544,72 @@ class BBSSSHServer(asyncssh.SSHServer):
         """
         self.auth = None
         self.gate_passed = False
-        if self.config.username and self.config.password:
-            if (hmac.compare_digest(username, self.config.username)
-                    and hmac.compare_digest(password, self.config.password)):
-                self.gate_passed = True
-                return True
-        self.auth = authenticate(
-            username, password, self.source_address,
-            registration_enabled=self.config.registration_enabled,
-            registration_limit_per_hour=(
-                self.config.registration_limit_per_hour),
-            login_limit_per_hour=self.config.login_limit_per_hour,
-        )
+        try:
+            if self.config.username and self.config.password:
+                if (hmac.compare_digest(username, self.config.username)
+                        and hmac.compare_digest(password, self.config.password)):
+                    self.gate_passed = True
+                    self._auth_outcome(username, "accepted at the shared gate")
+                    return True
+            self.auth = authenticate(
+                username, password, self.source_address,
+                registration_enabled=self.config.registration_enabled,
+                registration_limit_per_hour=(
+                    self.config.registration_limit_per_hour),
+                login_limit_per_hour=self.config.login_limit_per_hour,
+            )
+        except Exception:
+            # Raising here would close the connection with no message and no
+            # trace -- the exact shape of the outage this logging exists for.
+            logging.exception(
+                "SSH auth for %r from %s raised; refusing the login",
+                username, self.source_address)
+            self.auth = None
+            self._auth_outcome(username, "refused: the check itself failed")
+            return False
+        self._auth_outcome(
+            username,
+            "accepted as %s" % self.auth.alias if self.auth else "refused")
         return self.auth is not None
 
     def session_requested(self):
         # Which door they came through decides the session, not which doors
         # exist: with the gate additive, "a gate is configured" no longer
         # means "this visitor used it".
-        if self.auth is None:
-            if not self.gate_passed:
-                return False
-            if not self.limiter.reserve_pending():
+        #
+        # Every refusal below closes the channel without a word, so each one
+        # is logged: "connected fine yesterday, nothing today" is otherwise
+        # unanswerable, and a leaked session reservation looks exactly like
+        # a broken service.
+        try:
+            if self.auth is None:
+                if not self.gate_passed:
+                    logging.info("SSH session refused from %s: not authenticated",
+                                 self.source_address)
+                    return False
+                if not self.limiter.reserve_pending():
+                    logging.warning(
+                        "SSH session refused from %s: the node is at its "
+                        "%s-session limit", self.source_address,
+                        self.config.max_sessions)
+                    return False
+                return BBSClientSession(
+                    None, self.config, self.limiter, self.source_address,
+                    pending=True)
+            if not self.limiter.reserve(self.auth.account_id):
+                logging.warning(
+                    "SSH session refused for %s from %s: at the per-account "
+                    "limit of %s, or the node limit of %s",
+                    self.auth.alias, self.source_address,
+                    self.config.max_sessions_per_account,
+                    self.config.max_sessions)
                 return False
             return BBSClientSession(
-                None, self.config, self.limiter, self.source_address,
-                pending=True)
-        if not self.limiter.reserve(self.auth.account_id):
+                self.auth, self.config, self.limiter, self.source_address)
+        except Exception:
+            logging.exception("SSH session request from %s raised",
+                              self.source_address)
             return False
-        return BBSClientSession(
-            self.auth, self.config, self.limiter, self.source_address)
 
 
 def ensure_host_key(path: str) -> str:

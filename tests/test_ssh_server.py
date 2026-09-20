@@ -2,6 +2,7 @@ import os
 import asyncio
 import sqlite3
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -210,6 +211,46 @@ class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await asyncssh.connect(
                 "127.0.0.1", port=self.port, username="TypoUser",
                 password="long-enough-password", known_hosts=None)
+
+    async def test_an_auth_that_raises_is_refused_and_logged(self):
+        """asyncssh swallows whatever these callbacks raise and logs nothing
+        of its own once auth begins. On 2026-09-20 this service spent hours
+        refusing every login while systemd reported it active, and the
+        journal held "Beginning auth for user X" and then nothing -- a crash,
+        a wrong password and a wedged process all looked identical."""
+        from ssh_server import BBSSSHServer, SessionLimiter
+        server = BBSSSHServer(self.config, SessionLimiter(3, 1))
+        server.source_address = "198.51.100.7"
+        with mock.patch("ssh_server.authenticate",
+                        side_effect=RuntimeError("the database went away")), \
+                self.assertLogs("root", level="ERROR") as logged:
+            self.assertFalse(server.validate_password("someone", "a-password"))
+        self.assertTrue(
+            any("raised" in line for line in logged.output),
+            "an auth crash was not logged")
+
+    async def test_every_auth_outcome_is_logged(self):
+        """So "it connected yesterday and not today" is answerable."""
+        from ssh_server import BBSSSHServer, SessionLimiter
+        server = BBSSSHServer(self.config, SessionLimiter(3, 1))
+        server.source_address = "198.51.100.7"
+        with mock.patch("ssh_server.authenticate", return_value=None), \
+                self.assertLogs("root", level="INFO") as logged:
+            self.assertFalse(server.validate_password("nobody", "a-password"))
+        self.assertTrue(any("refused" in line for line in logged.output))
+
+    async def test_a_session_refused_by_the_limiter_says_why(self):
+        """The channel closes without a word, so the only place it can be
+        explained is the log."""
+        from ssh_server import BBSSSHServer, SessionLimiter
+        limiter = SessionLimiter(1, 1)
+        server = BBSSSHServer(self.config, limiter)
+        server.source_address = "198.51.100.7"
+        server.auth = types.SimpleNamespace(account_id="acct", alias="someone")
+        self.assertTrue(limiter.reserve("someone-else"))
+        with self.assertLogs("root", level="WARNING") as logged:
+            self.assertFalse(server.session_requested())
+        self.assertTrue(any("limit" in line for line in logged.output))
 
     async def _start_gated(self, name):
         """Restart the listener with a shared gate configured."""

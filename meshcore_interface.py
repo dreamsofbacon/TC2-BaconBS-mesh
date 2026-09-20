@@ -29,6 +29,12 @@ MESHCORE_MAX_TEXT_BYTES = 160
 
 # How long a direct message waits for the recipient's ACK.
 MESHCORE_ACK_TIMEOUT_SECONDS = 12
+# send_msg has no timeout of its own and is awaited while holding _send_lock,
+# so a stalled radio keeps the lock and every later send queues behind it --
+# the radio goes quiet for good while still looking healthy. Bounded here as
+# well as at the caller, so the lock is released even when nobody is left
+# waiting on the future to cancel it.
+MESHCORE_SEND_TIMEOUT_SECONDS = 20.0
 
 # What _send returns when the message went out and no ACK came back.
 _NO_ACK = object()
@@ -520,7 +526,9 @@ class MeshCoreInterface:
                 # as None) is split in two. The relay needs to know which:
                 # a recipient who did not answer is retried over hours, a
                 # radio that could not transmit in minutes.
-                sent = await self._meshcore.commands.send_msg(destination, text)
+                sent = await asyncio.wait_for(
+                    self._meshcore.commands.send_msg(destination, text),
+                    timeout=MESHCORE_SEND_TIMEOUT_SECONDS)
                 if sent is None or sent.type == EventType.ERROR:
                     return sent
                 expected = (sent.payload or {}).get("expected_ack", b"")
@@ -530,7 +538,9 @@ class MeshCoreInterface:
                     EventType.ACK, attribute_filters={"code": code},
                     timeout=MESHCORE_ACK_TIMEOUT_SECONDS)
                 return sent if ack is not None else _NO_ACK
-            return await self._meshcore.commands.send_msg(destination, text)
+            return await asyncio.wait_for(
+                self._meshcore.commands.send_msg(destination, text),
+                timeout=MESHCORE_SEND_TIMEOUT_SECONDS)
 
     async def _send_channel(self, text: str, channel_index=None):
         if self._meshcore is None or self._send_lock is None:
@@ -565,7 +575,16 @@ class MeshCoreInterface:
             future = asyncio.run_coroutine_threadsafe(
                 self._send(destination, text, wantAck), self._loop
             )
-        result = future.result(timeout=self.send_timeout_seconds)
+        try:
+            result = future.result(timeout=self.send_timeout_seconds)
+        except TimeoutError:
+            # Cancel, or the abandoned coroutine keeps _send_lock forever.
+            # sync_device_time has always done this; sendText, the one that
+            # actually carries user mail, did not.
+            future.cancel()
+            raise IOError(
+                "MeshCore send timed out after "
+                f"{self.send_timeout_seconds:.0f}s")
         if result is _NO_ACK:
             raise RecipientNoAck("MeshCore recipient did not acknowledge")
         if result is None or result.type == EventType.ERROR:
