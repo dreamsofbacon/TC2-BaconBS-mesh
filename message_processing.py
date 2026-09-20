@@ -3120,6 +3120,18 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             _in_text_prompt(state)
             or (bool(state) and state.get('command') == 'MAIL'
                 and int(state.get('step', 1)) in _MAIL_TEXT_STEPS))
+        # Bare Enter answered with a completely blank screen at every
+        # prompt on the system -- no menu, no "please choose". On a screen
+        # that is all you get, silence is indistinguishable from a hang,
+        # and the field tester read it that way at eight different prompts.
+        # Inside a door an empty line is the game's to interpret, and at a
+        # text prompt it is an empty line of content.
+        if (not message.strip() and not _door_session
+                and not _collecting_text):
+            handle_help_command(sender_id, interface,
+                                notice="Nothing sent. Here is where you are:")
+            return
+
         if (message.strip() == '?' and not _door_session
                 and not _collecting_text):
             handle_help_command(sender_id, interface)

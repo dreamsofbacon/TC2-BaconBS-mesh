@@ -320,5 +320,39 @@ class PostCountTests(unittest.TestCase):
         self.assertEqual(0, self.db.count_posts_by([], []))
 
 
+class EmptyInputTests(unittest.TestCase):
+    """F13 -- bare Enter answered with a completely blank screen at every
+    prompt on the system. On a screen that is all you get, silence is
+    indistinguishable from a hang, and the tester read it that way at eight
+    different prompts."""
+
+    def setUp(self):
+        self.iface = _Interface()
+        self.addCleanup(ch.update_user_state, 4246, None)
+
+    def _send_blank(self, state):
+        ch.update_user_state(4246, state)
+        shown = []
+        with mock.patch.object(mp, '_auto_update_profile', lambda *a, **k: None),                 mock.patch.object(mp, 'handle_help_command',
+                                  lambda *a, **k: shown.append('menu')),                 mock.patch.object(mp, 'handle_mail_steps',
+                                  lambda *a, **k: shown.append('mail')),                 mock.patch.object(mp, 'handle_zork_steps',
+                                  lambda *a, **k: shown.append('zork')),                 mock.patch.object(ch, 'send_message', lambda *a, **k: True):
+            mp.process_message(4246, '', self.iface, is_sync_message=False,
+                               sender_node_id='!abcd1234')
+        return shown
+
+    def test_a_blank_line_gets_an_answer(self):
+        self.assertEqual(['menu'], self._send_blank(
+            {'command': 'MENU', 'menu': 'main', 'step': 1}))
+
+    def test_a_blank_line_in_a_game_belongs_to_the_game(self):
+        self.assertEqual(['zork'], self._send_blank(
+            {'command': 'ZORK', 'step': 1}))
+
+    def test_a_blank_line_at_a_text_prompt_is_content(self):
+        self.assertEqual(['mail'], self._send_blank(
+            {'command': 'MAIL', 'step': 7}))
+
+
 if __name__ == '__main__':
     unittest.main()
