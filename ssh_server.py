@@ -499,6 +499,7 @@ class BBSSSHServer(asyncssh.SSHServer):
         self.limiter = limiter
         self.connection = None
         self.auth = None
+        self.gate_passed = False
         self.source_address = "unknown"
 
     def connection_made(self, connection):
@@ -514,10 +515,26 @@ class BBSSSHServer(asyncssh.SSHServer):
         return True
 
     def validate_password(self, username, password):
+        """The shared gate, and then -- always -- the user's own account.
+
+        The gate used to be exclusive: configuring [ssh] username/password
+        returned from this method before per-account auth was ever reached,
+        so every account login and every new: registration was refused
+        while it was set. A node whose operator wanted the gate "available"
+        found it was the only way in, and nobody could use their own name.
+        It is additive now, which is what having the option means.
+
+        The gate is checked first and does not consume an account's rate
+        limit. A gate username that collides with a real alias wins, so an
+        operator setting one should not pick an alias in use.
+        """
+        self.auth = None
+        self.gate_passed = False
         if self.config.username and self.config.password:
-            self.auth = None
-            return hmac.compare_digest(username, self.config.username) and hmac.compare_digest(
-                password, self.config.password)
+            if (hmac.compare_digest(username, self.config.username)
+                    and hmac.compare_digest(password, self.config.password)):
+                self.gate_passed = True
+                return True
         self.auth = authenticate(
             username, password, self.source_address,
             registration_enabled=self.config.registration_enabled,
@@ -528,13 +545,18 @@ class BBSSSHServer(asyncssh.SSHServer):
         return self.auth is not None
 
     def session_requested(self):
-        if self.config.username and self.config.password:
+        # Which door they came through decides the session, not which doors
+        # exist: with the gate additive, "a gate is configured" no longer
+        # means "this visitor used it".
+        if self.auth is None:
+            if not self.gate_passed:
+                return False
             if not self.limiter.reserve_pending():
                 return False
             return BBSClientSession(
                 None, self.config, self.limiter, self.source_address,
                 pending=True)
-        if self.auth is None or not self.limiter.reserve(self.auth.account_id):
+        if not self.limiter.reserve(self.auth.account_id):
             return False
         return BBSClientSession(
             self.auth, self.config, self.limiter, self.source_address)

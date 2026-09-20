@@ -211,6 +211,78 @@ class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "127.0.0.1", port=self.port, username="TypoUser",
                 password="long-enough-password", known_hosts=None)
 
+    async def _start_gated(self, name):
+        """Restart the listener with a shared gate configured."""
+        self.listener.close()
+        await self.listener.wait_closed()
+        self.config = SSHConfig(
+            enabled=True,
+            host="127.0.0.1",
+            port=0,
+            host_key=os.path.join(self.temp_dir.name, name),
+            username="bbs",
+            password="shared-access-password",
+            max_sessions=3,
+            max_sessions_per_account=1,
+            idle_timeout_seconds=30,
+        )
+        self.listener = await start_server(self.config)
+        self.port = self.listener.get_port()
+
+    async def test_a_configured_gate_does_not_lock_out_account_logins(self):
+        """The live failure: setting [ssh] username/password returned from
+        validate_password before per-account auth was ever reached, so every
+        account login and every new: registration was refused while the gate
+        was set. The operator wanted the gate available; what they got was
+        the gate being the only way in, with nobody able to use their own
+        name."""
+        await self._start_gated("gate_plus_accounts_key")
+
+        # Registration, with the gate configured.
+        connection, process = await self._open(
+            "new:DirectCaller", "long-enough-password")
+        welcome = await process.stdout.readuntil("> ")
+        self.assertIn("Account DirectCaller created", welcome)
+        process.stdin.write_eof()
+        await process.wait_closed()
+        connection.close()
+        await connection.wait_closed()
+
+        # ...and logging straight back in as that account, no gate involved.
+        connection, process = await self._open(
+            "DirectCaller", "long-enough-password")
+        welcome = await process.stdout.readuntil("> ")
+        self.assertIn("Bacon BBS", welcome)
+        self.assertNotIn("BBS username: ", welcome,
+                         "an account login was sent through the gate's prompt")
+        process.stdin.write_eof()
+        await process.wait_closed()
+        connection.close()
+        await connection.wait_closed()
+
+    async def test_the_gate_still_works_alongside_accounts(self):
+        """Additive means both, so the option is really an option."""
+        await self._start_gated("gate_still_open_key")
+        connection, process = await self._open("bbs", "shared-access-password")
+        prompt = await process.stdout.readuntil("BBS username: ")
+        self.assertIn("Register or log in", prompt)
+        process.stdin.write_eof()
+        await process.wait_closed()
+        connection.close()
+        await connection.wait_closed()
+
+    async def test_a_wrong_password_is_still_refused_with_a_gate_set(self):
+        """Falling through to account auth must not fall through to letting
+        anyone in."""
+        await self._start_gated("gate_wrong_password_key")
+        for username, password in (("bbs", "wrong-access-password"),
+                                   ("NoSuchAccount", "long-enough-password")):
+            with self.subTest(username=username):
+                with self.assertRaises(asyncssh.PermissionDenied):
+                    await asyncssh.connect(
+                        "127.0.0.1", port=self.port, username=username,
+                        password=password, known_hosts=None)
+
     async def test_shared_access_requires_account_auth_after_connection(self):
         self.listener.close()
         await self.listener.wait_closed()
