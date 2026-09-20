@@ -184,8 +184,18 @@ def _menu_input(kind, message_lower):
     """
     items, title = menu_items_for(kind)
     layout = menu_layout(items, title)
-    letter = menu_number_alias(items, title, layout).get(message_lower, message_lower)
-    return letter, letter.upper() in layout
+    alias = menu_number_alias(items, title, layout)
+    if message_lower in alias:
+        return alias[message_lower], True
+
+    # X is the one entry build_menu renders as a digit -- "[0] Exit" -- so
+    # its letter never appears on screen. Treating it as on-screen meant a
+    # bare "x" at the main menu silently disconnected you, with no
+    # confirmation and no echo of what it matched, while "99" and "-1" were
+    # politely refused. The one destructive key was the unguessable one.
+    # "0" still reaches it, through the alias above, and so does "!x".
+    letter = message_lower
+    return letter, letter.upper() in layout and letter.upper() != 'X'
 
 
 main_menu_handlers = {
@@ -3080,16 +3090,54 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             except Exception as exc:
                 logging.warning(f"EVENT handler failed: {exc}")
     else:
-        if state and state.get('command') == 'PUBLIC_CHATTER':
+        # A door session owns its input outright, '!' and '?' included: those
+        # are keys inside Zork and Baconfall. Every OTHER state below is a
+        # menu or a picker, where a '!' command is navigation rather than
+        # content and belongs to the global router further down.
+        #
+        # It did not used to be. GAMES_MENU was swept in with the real door
+        # sessions and PUBLIC_CHATTER returned unconditionally, so !B !Q !X
+        # !V !H !P !N !A !S were all dead inside them -- answered with
+        # "Invalid choice. Enter 1-10, S, H, F, or 0.", which does not
+        # mention '!' at all. The main-menu tip and the menu map both promise
+        # those shortcuts reach any main-menu item from anywhere, so two of
+        # the eight top-level destinations were shortcut dead zones and the
+        # only way out was 0.
+        _door_session = bool(state and state.get('command') in
+                             ('ZORK', 'TRIVIA', 'BACONFALL'))
+        _navigating = (message_lower.startswith('!')
+                       and not (is_cancel(message_lower) and _in_text_prompt(state)))
+
+        # '?' is the first thing a new user tries -- the welcome tells every
+        # new account "Send ? any time for the menu" -- and nothing
+        # implemented it, so it answered "Invalid choice." the first time
+        # they tried it. It means the menu everywhere except inside a door
+        # and at a prompt that is collecting text.
+        # _in_text_prompt alone is not enough: Mail's own content steps live
+        # in _MAIL_TEXT_STEPS, not in _TEXT_PROMPTS, so a subject line of "?"
+        # would have jumped to the menu and dropped the half-written mail.
+        _collecting_text = (
+            _in_text_prompt(state)
+            or (bool(state) and state.get('command') == 'MAIL'
+                and int(state.get('step', 1)) in _MAIL_TEXT_STEPS))
+        if (message.strip() == '?' and not _door_session
+                and not _collecting_text):
+            handle_help_command(sender_id, interface)
+            return
+
+        if (state and state.get('command') == 'PUBLIC_CHATTER'
+                and not _navigating):
             handle_public_chatter_steps(sender_id, message, interface, state)
             return
-        if state and state.get('command') == 'NODE_VIEW':
+        if state and state.get('command') == 'NODE_VIEW' and not _navigating:
             handle_node_view_steps(sender_id, message, interface, state)
             return
-        if state and state.get('command') == 'BULLETIN_MODERATE':
+        if (state and state.get('command') == 'BULLETIN_MODERATE'
+                and not _navigating):
             handle_bulletin_moderate_steps(sender_id, message, interface, state, bbs_nodes)
             return
-        if state and state.get('command') == 'COMMENT_MODERATE':
+        if (state and state.get('command') == 'COMMENT_MODERATE'
+                and not _navigating):
             # Step 0 means the controls line is on screen, where D starts a
             # delete and everything else is ordinary post navigation.
             if int(state.get('step', 0)) == 0 and message_lower != 'd':
@@ -3105,7 +3153,12 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             else:
                 handle_comment_moderate_steps(sender_id, message, interface, state, bbs_nodes)
                 return
-        if state and state.get('command') in ('GAMES_MENU', 'ZORK', 'TRIVIA', 'BACONFALL'):
+        if state and state.get('command') == 'GAMES_MENU' and not _navigating:
+            # The MENU, not a game: it takes menu keys, so a '!' here is
+            # someone leaving rather than playing.
+            handle_games_steps(sender_id, message, interface)
+            return
+        if _door_session:
             # An active door session owns its input outright -- checked here,
             # before the bang-prefixed global-command router further down,
             # not just the later bare-letter one. ZORK already got this; a
@@ -3116,9 +3169,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             # it was intercepted as the global command instead of reaching
             # the game as input, exactly the "quick keys steal game input"
             # complaint this closes for both games rather than just one.
-            if state['command'] == 'GAMES_MENU':
-                handle_games_steps(sender_id, message, interface)
-            elif state['command'] == 'ZORK':
+            if state['command'] == 'ZORK':
                 handle_zork_steps(sender_id, message, interface)
             elif state['command'] == 'BACONFALL':
                 handle_baconfall_steps(sender_id, message, interface)

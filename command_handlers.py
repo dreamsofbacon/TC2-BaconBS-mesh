@@ -2707,7 +2707,8 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
             # the airtime actually goes.
             lens = scope_notice(sender_id, count_hidden_bulletins(board_name, scope))
             if bulletins:
-                header = f"Select a bulletin number to view from {board_name}:"
+                header = (f"Select a bulletin number to view from {board_name}, "
+                          "or [0] to go back:")
                 if lens:
                     header = f"{lens}{LINE_BREAK}{header}"
                 send_message(header, sender_id, interface)
@@ -2741,12 +2742,19 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
 
     elif step == 3:
         bulletins = state.get('bulletins', [])
+        # Every other list on the BBS offers [0]. This one reported it as a
+        # bad post number, so the one key the banner promises "always goes
+        # back" was the one key that did not.
+        if message.strip().lower() in ('0', 'x', 'exit'):
+            handle_bulletin_command(sender_id, interface)
+            return
         try:
             index = int(message) - 1
             if index < 0 or index >= len(bulletins):
                 raise ValueError
         except ValueError:
-            send_message("Invalid bulletin number. Please try again.", sender_id, interface)
+            send_message("Invalid bulletin number. Reply with a number from the "
+                         "list, or [0] to go back.", sender_id, interface)
             return
         bulletin = get_bulletin_content(bulletins[index][0])
         if bulletin is None:
@@ -2754,8 +2762,15 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
             return
         sender_short_name, date, subject, content, unique_id, content_complete, expected_length = bulletin
         notice = _incomplete_notice(content_complete, expected_length, content)
-        send_message(f"From: {sender_short_name}\nDate: {date}\nSubject: {subject}\n- - - - - - -\n{content}{notice}", sender_id, interface)
         board_name = state['board']
+        # Reading one post used to drop you at the BBS Menu, so the next post
+        # cost four steps -- board, Read, number -- every single time, with
+        # nothing offering "next" or "back to the list". Stay on the list
+        # instead. The invitation rides in the same message: a second one
+        # would be another packet for a line of text.
+        more = (LINE_BREAK + "Reply with another number, or [0] to go back."
+                if not _can_moderate(sender_id, interface) else "")
+        send_message(f"From: {sender_short_name}\nDate: {date}\nSubject: {subject}\n- - - - - - -\n{content}{notice}{more}", sender_id, interface)
         # Only a moderator is offered anything here, and only they are held
         # on the post afterwards. Everyone else bounces straight back to the
         # list exactly as before -- the option costs them no bytes and no
@@ -2767,7 +2782,10 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
                 'board': board_name, 'boards': state.get('boards', []),
                 'unique_id': unique_id, 'subject': subject})
             return
-        handle_bb_steps(sender_id, 'e', 1, state, interface, bbs_nodes)
+        update_user_state(sender_id, {'command': 'BULLETIN_READ', 'step': 3,
+                                      'board': board_name,
+                                      'boards': state.get('boards', []),
+                                      'bulletins': bulletins})
 
     elif step == 4:
         if is_cancel(message):
@@ -2985,7 +3003,10 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
         elif choice == 'a':
             handle_active_users_command(sender_id, interface)
         elif choice == 'x':
-            handle_help_command(sender_id, interface)
+            # The BBS Menu, which is where Mail was entered from. Landing on
+            # the main menu made "Back" mean two different things depending
+            # on which screen you pressed it from.
+            handle_help_command(sender_id, interface, 'bbs')
         else:
             # This chain had no else, so a wrong key here sent nothing at
             # all -- indistinguishable from a dead link.
