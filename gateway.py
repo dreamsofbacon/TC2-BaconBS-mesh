@@ -208,8 +208,8 @@ _AI_STATUS_HINTS = {
 }
 
 
-def _installed_ai_models(base: str, dialect: str, headers: dict, timeout=None):
-    """Model names the AI server has, or None if it cannot say.
+def _installed_ai_model_details(base: str, dialect: str, headers: dict, timeout=None):
+    """Models the AI server has as {'name', 'size'}, or None if it cannot say.
 
     Nomad lists them at /api/ollama/installed-models (a bare list); Ollama at
     /api/tags ({"models": [...]}). Entries carry 'name' or 'model'.
@@ -227,15 +227,26 @@ def _installed_ai_models(base: str, dialect: str, headers: dict, timeout=None):
     items = doc.get('models') if isinstance(doc, dict) else doc
     if not isinstance(items, list):
         return None
-    names = []
+    found = []
     for item in items:
         if isinstance(item, dict):
             name = item.get('name') or item.get('model')
+            size = item.get('size') or 0
         else:
-            name = item
+            name, size = item, 0
         if name:
-            names.append(str(name))
-    return names
+            try:
+                size = int(size)
+            except (TypeError, ValueError):
+                size = 0
+            found.append({'name': str(name), 'size': size})
+    return found
+
+
+def _installed_ai_models(base: str, dialect: str, headers: dict, timeout=None):
+    """Just the names, for callers that do not care how big anything is."""
+    found = _installed_ai_model_details(base, dialect, headers, timeout=timeout)
+    return None if found is None else [item['name'] for item in found]
 
 
 # The model answers for this BBS, so it has to use this BBS's words. Left to
@@ -268,6 +279,7 @@ _ai_availability: dict = {}
 def _reset_ai_availability() -> None:
     """Test hook, and what Settings calls after the model or URL changes."""
     _ai_availability.clear()
+    _ai_model_choice.clear()
 
 
 def ai_unavailable_reason() -> str:
@@ -282,29 +294,124 @@ def ai_unavailable_reason() -> str:
     if not base:
         return ''
     dialect = (_config_raw('gateway', 'ai_dialect') or 'ollama').lower()
-    model = _config_raw('gateway', 'ai_model') or 'llama3.2'
-    key = (base, dialect, model)
+    key = (base, dialect, _configured_ai_model())
     cached = _ai_availability.get(key)
     now = time.time()
     if cached is not None and cached[0] > now:
         return cached[1]
 
+    # Ask the resolver rather than the config: a configured model that is
+    # missing is no longer a dead end, so reporting it as one would turn
+    # people away from a feature that now works.
+    model, _note = resolve_ai_model()
+    reason = '' if model else "the AI server has no model installed"
+    _ai_availability[key] = (now + AI_AVAILABILITY_TTL_SECONDS, reason)
+    return reason
+
+
+# Which model to actually ask for, which is not always the one in the config.
+#
+# The AI server belongs to someone else. They install and remove models
+# without telling this node, and a name that was right last month answers
+# every question with "model not installed" today -- a dead feature on the
+# menu, and nothing on screen saying why. This asks the server what it has
+# and uses something that exists.
+#
+# Order of preference:
+#   1. the configured model, when the server actually has it;
+#   2. the first name in [gateway] ai_model_fallbacks that the server has,
+#      so an operator with an opinion gets their way;
+#   3. the largest model installed, on the reasoning that a bigger model
+#      gives a better answer and the wait is the same order of magnitude
+#      either way over a radio.
+#
+# Cached, because it costs a request, and sticky within that window so a
+# conversation does not switch models between one question and the next.
+AI_MODEL_TTL_SECONDS = 300.0
+_ai_model_choice: dict = {}
+
+
+def _reset_ai_model_choice() -> None:
+    """Test hook, and what Settings calls after the model or URL changes."""
+    _ai_model_choice.clear()
+
+
+def _configured_ai_model() -> str:
+    """The operator's chosen model.
+
+    Empty is NOT llama3.2. An empty value used to fall through to that
+    default, which meant a blank box in Settings quietly became a request
+    for a model nobody had installed -- and the error then named llama3.2,
+    a model the operator had never typed, which sent them looking in the
+    wrong place entirely.
+    """
+    return (_config_raw('gateway', 'ai_model') or '').strip()
+
+
+def _rank_installed(found: list, preferred: list) -> list:
+    """Installed models, best first: operator order, then largest."""
+    wanted = [p.strip() for p in preferred if p.strip()]
+    by_name = {item['name']: item for item in found}
+    ranked = [by_name[name] for name in wanted if name in by_name]
+    rest = sorted((item for item in found if item['name'] not in wanted),
+                  key=lambda item: item['size'], reverse=True)
+    return ranked + rest
+
+
+def resolve_ai_model() -> Tuple[str, str]:
+    """(model to ask for, why it is not the configured one).
+
+    The second value is empty when nothing surprising happened. It exists so
+    the reason can reach Settings and the log instead of being a silent
+    substitution -- an operator who never learns their configured model is
+    missing will keep reading that name back and believing it.
+    """
+    base = (_config_raw('gateway', 'ai_base_url') or '').rstrip('/')
+    configured = _configured_ai_model()
+    if not base:
+        return configured, ''
+    dialect = (_config_raw('gateway', 'ai_dialect') or 'ollama').lower()
+    preferred = _csv('gateway', 'ai_model_fallbacks', '')
+    key = (base, dialect, configured, tuple(preferred))
+    cached = _ai_model_choice.get(key)
+    now = time.time()
+    if cached is not None and cached[0] > now:
+        return cached[1], cached[2]
+
     headers = {}
     api_key = _config_raw('gateway', 'ai_api_key')
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    reason = ''
     try:
-        installed = _installed_ai_models(base, dialect, headers,
-                                         timeout=AI_AVAILABILITY_TIMEOUT_SECONDS)
+        found = _installed_ai_model_details(
+            base, dialect, headers, timeout=AI_AVAILABILITY_TIMEOUT_SECONDS)
     except Exception:
-        installed = None
-    if installed is not None and model not in installed:
-        reason = (f"the AI server has no model installed"
-                  if not installed else
-                  f"the AI server does not have '{model}' installed")
-    _ai_availability[key] = (now + AI_AVAILABILITY_TTL_SECONDS, reason)
-    return reason
+        found = None
+
+    if found is None:
+        # The server could not say. Fail open on the configured name: a
+        # check that cannot answer must not be what stops someone asking.
+        return configured, ''
+
+    chosen, note = configured, ''
+    names = [item['name'] for item in found]
+    if not configured or configured not in names:
+        ranked = _rank_installed(found, preferred)
+        if ranked:
+            chosen = ranked[0]['name']
+            note = (f"no model is set, so this node is using '{chosen}'"
+                    if not configured else
+                    f"'{configured}' is not installed, so this node is "
+                    f"using '{chosen}'")
+            logging.warning("AI model fallback: %s (installed: %s)",
+                            note, ", ".join(names[:6]) or "none")
+        else:
+            # No usable model at all. Returning the configured name here
+            # would read as "this will work" to every caller that checks.
+            chosen, note = '', "the AI server has no model installed"
+
+    _ai_model_choice[key] = (now + AI_MODEL_TTL_SECONDS, chosen, note)
+    return chosen, note
 
 
 def perform_ai_chat(prompt: str) -> Tuple[str, str]:
@@ -313,7 +420,10 @@ def perform_ai_chat(prompt: str) -> Tuple[str, str]:
     if not base:
         return "ERR", "AI relay not configured (ai_base_url)"
     dialect = (_config_raw('gateway', 'ai_dialect') or 'ollama').lower()
-    model = _config_raw('gateway', 'ai_model') or 'llama3.2'
+    model, _ = resolve_ai_model()
+    if not model:
+        return "ERR", ("no AI model is set for this node, and the AI server "
+                       "offered none to fall back on")
     system = _config_raw('gateway', 'ai_system_prompt') or DEFAULT_AI_SYSTEM_PROMPT
     messages = ([{"role": "system", "content": system}] if system else []) + \
                [{"role": "user", "content": prompt}]

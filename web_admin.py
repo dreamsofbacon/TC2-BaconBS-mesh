@@ -495,6 +495,37 @@ def _check_feed_url(url: str):
   return True, first[:120]
 
 
+def load_ai_model_status() -> dict:
+  """What the AI server actually has, and what this node will ask for.
+
+  The live failure this exists for: the configured model was blank, the
+  code fell back to a default nobody had typed, and the error named that
+  default -- so the operator went looking at a model they had never heard
+  of on a server that was working fine. None of it was visible from the
+  page where the setting lives.
+  """
+  status = {"installed": [], "effective": "", "note": "", "reachable": None}
+  try:
+    import gateway
+    if not gateway.is_gateway_enabled():
+      return status
+    base = (gateway._config_raw("gateway", "ai_base_url") or "").rstrip("/")
+    if not base:
+      return status
+    dialect = (gateway._config_raw("gateway", "ai_dialect") or "ollama").lower()
+    headers = {}
+    key = gateway._config_raw("gateway", "ai_api_key")
+    if key:
+      headers["Authorization"] = f"Bearer {key}"
+    found = gateway._installed_ai_model_details(base, dialect, headers, timeout=5)
+    status["reachable"] = found is not None
+    status["installed"] = [item["name"] for item in (found or [])]
+    status["effective"], status["note"] = gateway.resolve_ai_model()
+  except Exception:
+    logging.debug("could not read AI model status", exc_info=True)
+  return status
+
+
 def load_feed_settings() -> dict:
   """The fleet's news feeds, split by whether this node may edit them.
 
@@ -556,7 +587,8 @@ def load_gateway_settings(config_path: str) -> dict:
     "ai_base_url": g("ai_base_url"),
     "ai_dialect": g("ai_dialect", "ollama") or "ollama",
     "ai_api_key": g("ai_api_key"),
-    "ai_model": g("ai_model", "llama3.2"),
+    "ai_model": g("ai_model"),
+    "ai_model_fallbacks": g("ai_model_fallbacks"),
     "ai_system_prompt": g("ai_system_prompt"),
     "allowed_hosts": g("allowed_hosts"),
     "allowed_schemes": g("allowed_schemes", "https") or "https",
@@ -4243,7 +4275,8 @@ def create_app(runtime_interface=None) -> Flask:
       enabled = _parse_bool_setting(form.get("gateway_enabled", ""), False)
       config.set("gateway", "enabled", "true" if enabled else "false")
       # Free-text / list fields.
-      for key in ("ai_base_url", "ai_model", "ai_system_prompt", "ai_api_key",
+      for key in ("ai_base_url", "ai_model", "ai_model_fallbacks",
+                  "ai_system_prompt", "ai_api_key",
                   "allowed_hosts", "allowed_schemes", "allowed_nodes"):
         config.set("gateway", key, form.get(f"gateway_{key}", "").strip())
       dialect = form.get("gateway_ai_dialect", "ollama").strip().lower()
@@ -4261,6 +4294,11 @@ def create_app(runtime_interface=None) -> Flask:
           val = default
         config.set("gateway", key, str(val))
       write_config_file(config, app.config["CONFIG_PATH"])
+      try:
+        import gateway
+        gateway._reset_ai_availability()
+      except Exception:
+        logging.debug("could not clear the AI model cache", exc_info=True)
 
     def _write_device_fields(config, section: str, form, prefix: str) -> None:
       config.set(section, "port", form.get(f"{prefix}port", "").strip())
@@ -5422,6 +5460,7 @@ def create_app(runtime_interface=None) -> Flask:
       diagnostics = build_settings_diagnostics()
       gateway_settings = load_gateway_settings(app.config["CONFIG_PATH"])
       feed_settings = load_feed_settings()
+      ai_status = load_ai_model_status()
       storage_settings = load_storage_settings(app.config["CONFIG_PATH"])
       public_chatter_settings = load_public_chatter_settings(app.config["CONFIG_PATH"])
       ssh_settings = load_ssh_settings(app.config["CONFIG_PATH"])
@@ -5441,6 +5480,7 @@ def create_app(runtime_interface=None) -> Flask:
         show_nav=True,
         gateway=gateway_settings,
         feeds=feed_settings,
+        ai_status=ai_status,
         storage=storage_settings,
         public_chatter=public_chatter_settings,
         ssh=ssh_settings,

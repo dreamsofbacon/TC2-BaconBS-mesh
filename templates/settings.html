@@ -925,7 +925,43 @@
     <div class="form-group">
       <label for="gateway_ai_model">Model</label>
       <input type="text" id="gateway_ai_model" name="gateway_ai_model" class="form-control"
-             placeholder="llama3.2" value="{{ gateway.ai_model }}">
+             list="gateway_installed_models" placeholder="gemma4:e4b"
+             value="{{ gateway.ai_model }}">
+      {% if ai_status.installed %}
+      <datalist id="gateway_installed_models">
+        {% for name in ai_status.installed %}<option value="{{ name }}">{% endfor %}
+      </datalist>
+      <p class="text-muted">
+        Installed on the AI server right now:
+        {% for name in ai_status.installed %}<code>{{ name }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+      </p>
+      {% elif ai_status.reachable is not none and not ai_status.reachable %}
+      <p class="text-muted">The AI server could not be reached just now, so
+      this list is unavailable. The configured name is used as-is.</p>
+      {% elif ai_status.reachable %}
+      <p class="text-muted"><strong>The AI server has no models installed.</strong>
+      Ask whoever runs it to install one; nothing this node sets can help
+      until they do.</p>
+      {% endif %}
+      {% if ai_status.note %}
+      <p class="text-muted"><strong>Heads up:</strong> {{ ai_status.note }}.</p>
+      {% elif ai_status.effective %}
+      <p class="text-muted">Questions are being answered by
+      <code>{{ ai_status.effective }}</code>.</p>
+      {% endif %}
+    </div>
+    <div class="form-group">
+      <label for="gateway_ai_model_fallbacks">Fallback models (comma separated)</label>
+      <input type="text" id="gateway_ai_model_fallbacks" name="gateway_ai_model_fallbacks"
+             class="form-control" placeholder="gemma4:e4b, qwen2.5:0.5b"
+             value="{{ gateway.ai_model_fallbacks }}">
+      <p class="text-muted">
+        Used in order when the model above is not installed — the AI server is
+        somebody else\'s machine, and models come and go there without warning.
+        Leave blank and this node falls back to the largest model installed,
+        on the reasoning that a bigger model answers better and the wait is
+        the same order of magnitude either way over a radio.
+      </p>
     </div>
     <div class="form-group">
       <label for="gateway_ai_system_prompt">System prompt (optional)</label>

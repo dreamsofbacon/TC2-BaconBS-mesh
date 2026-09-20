@@ -88,6 +88,8 @@ class GatewayValidationTests(unittest.TestCase):
 
     def test_rate_limit(self):
         gateway._recent_requests.clear()
+        gateway._reset_ai_availability()
+        self.addCleanup(gateway._reset_ai_availability)
         with patch.object(gateway, "_rate_limit_per_node", lambda: 2):
             self.assertTrue(gateway._rate_ok("!n"))
             self.assertTrue(gateway._rate_ok("!n"))
@@ -119,6 +121,8 @@ class GatewayDispatchTests(unittest.TestCase):
         message_processing._apigw_response_buffers.clear()
         utils._apigw_pending.clear()
         gateway._recent_requests.clear()
+        gateway._reset_ai_availability()
+        self.addCleanup(gateway._reset_ai_availability)
 
     def tearDown(self):
         conn = getattr(db_operations.thread_local, "connection", None)
@@ -134,13 +138,20 @@ class GatewayDispatchTests(unittest.TestCase):
             ('gateway', 'ai_model'): 'llama3.2',
             ('gateway', 'ai_system_prompt'): '',
         }
-        resp = io.BytesIO(json.dumps({"message": {"content": "The sky is blue."}}).encode())
-        resp.__enter__ = lambda *_: resp
-        resp.__exit__ = lambda *_: False
+        def _urlopen(req, timeout=None):
+            # The model list first, then the chat itself -- the node asks
+            # what is installed before asking a question of it.
+            doc = ({"models": [{"name": "llama3.2"}]} if req.get_method() == "GET"
+                   else {"message": {"content": "The sky is blue."}})
+            resp = io.BytesIO(json.dumps(doc).encode())
+            resp.__enter__ = lambda *_: resp
+            resp.__exit__ = lambda *_: False
+            return resp
+
         with patch.object(gateway, "is_gateway_enabled", lambda: True), \
              patch.object(gateway, "_config_raw", lambda s, o: ai_cfg.get((s, o))), \
              patch.object(gateway, "_max_response_bytes", lambda: 800), \
-             patch("urllib.request.urlopen", return_value=resp):
+             patch("urllib.request.urlopen", _urlopen):
             message_processing.process_message(
                 sender_id=1, message="APIREQ|r1|!user|r|ai\x1fwhat color is the sky",
                 interface=iface, is_sync_message=True, sender_node_id="!user",
@@ -234,26 +245,72 @@ class GatewayDispatchTests(unittest.TestCase):
             status, body = gateway.perform_ai_chat("hi")
         return status, body, seen
 
-    def test_a_404_for_a_model_nomad_does_not_have_says_so(self):
+    def test_a_server_with_nothing_installed_is_caught_before_the_question(self):
         """The live failure: Nomad at the right path with no models installed
-        answered 404, and the BBS blamed the API dialect setting."""
+        answered 404, and the BBS blamed the API dialect setting.
+
+        Now the node asks what is installed first, so an empty server is
+        named as an empty server and the question is never sent.
+        """
         status, body, seen = self._ai_404_with_installed([])
         self.assertEqual(status, "ERR")
-        self.assertIn("qwen2.5:3b", body)
-        self.assertIn("not installed", body)
-        self.assertIn("installed: none", body)
+        self.assertIn("no AI model", body)
         self.assertNotIn("dialect", body)
+        self.assertFalse([m for m, _ in seen if m == "POST"],
+                         "asked a question of a server with no models")
+
+    def test_a_404_when_the_server_will_not_list_blames_the_path(self):
+        """With no list to work from there is nothing to fall back to, so
+        the old hint stands: at that point a 404 really can mean the
+        dialect is wrong."""
+        status, body, seen = self._ai_404_with_installed(None)
+        self.assertEqual(status, "ERR")
+        self.assertIn("dialect", body)
         self.assertIn(("GET", "https://ai.example.com/api/ollama/installed-models"), seen)
 
-    def test_it_lists_what_is_installed(self):
+    def test_a_missing_model_falls_back_to_one_that_is_installed(self):
+        """What used to be a dead end with a list of what you could have
+        had: the node now just uses one of them."""
+        cfg = dict(self._ai_cfg())
+        seen = []
+
+        def _urlopen(req, timeout=None):
+            seen.append((req.get_method(), req.full_url, req.data))
+            doc = ([{"name": "llama3.2:3b", "size": 3000},
+                    {"name": "mistral:7b", "size": 7000}]
+                   if req.get_method() == "GET"
+                   else {"message": {"content": "answered"}})
+            resp = io.BytesIO(json.dumps(doc).encode())
+            resp.__enter__ = lambda *_: resp
+            resp.__exit__ = lambda *_: False
+            return resp
+
+        with patch.object(gateway, "_config_raw", lambda s, o: cfg.get((s, o))), \
+                patch.object(gateway, "_max_response_bytes", lambda: 800), \
+                patch("urllib.request.urlopen", _urlopen):
+            status, body = gateway.perform_ai_chat("hi")
+        self.assertEqual("200", status)
+        self.assertEqual("answered", body)
+        asked = [json.loads(data.decode())["model"]
+                 for method, _, data in seen if method == "POST"]
+        self.assertEqual(["mistral:7b"], asked, "did not pick the largest installed")
+
+    def test_a_404_from_an_installed_model_is_not_blamed_on_the_model(self):
+        """Once the fallback has picked something the server listed, a 404
+        is no longer about the model, so naming the installed set would
+        send the operator hunting in the wrong place."""
         status, body, _ = self._ai_404_with_installed(
             [{"name": "llama3.2:3b"}, {"model": "mistral:7b"}])
-        self.assertIn("installed: llama3.2:3b, mistral:7b", body)
+        self.assertEqual(status, "ERR")
+        self.assertNotIn("is not installed", body)
+        self.assertIn("dialect", body)
 
     def test_ollama_is_asked_through_its_own_model_list(self):
         cfg = self._ai_cfg(ai_dialect="ollama")
         status, body, seen = self._ai_404_with_installed({"models": []}, cfg)
-        self.assertIn("not installed", body)
+        # The path differs per dialect, and asking the wrong one is how a
+        # working server looks empty.
+        self.assertIn("no AI model", body)
         self.assertIn(("GET", "https://ai.example.com/api/tags"), seen)
 
     def test_a_404_with_the_model_installed_still_blames_the_path(self):
@@ -575,6 +632,10 @@ class AiSystemPromptTests(unittest.TestCase):
     [gateway] ai_system_prompt was empty, so nothing had ever told it
     otherwise.
     """
+
+    def setUp(self):
+        gateway._reset_ai_availability()
+        self.addCleanup(gateway._reset_ai_availability)
 
     def _prompt_sent(self, configured):
         cfg = {

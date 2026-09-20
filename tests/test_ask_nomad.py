@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import threading
 import time
+import json
 import types
 import unittest
 from unittest import mock
@@ -625,9 +626,10 @@ class UserMessagePacingTests(unittest.TestCase):
 
 class AvailabilityCheckTests(unittest.TestCase):
     """Asking a question the AI server cannot answer costs a radio user two
-    waits and a wasted transmission to find out. The live AI server is
-    someone else's machine and currently has no model installed, so the BBS
-    says so at the door instead -- but only when it can establish it.
+    waits and a wasted transmission to find out, so the BBS says so at the
+    door -- but only when it can establish it, and only when there is
+    genuinely nothing to ask. A configured model the server does not have
+    is no longer a dead end: see ModelFallbackTests.
     """
 
     def setUp(self):
@@ -636,24 +638,18 @@ class AvailabilityCheckTests(unittest.TestCase):
         gateway._reset_ai_availability()
         self.addCleanup(gateway._reset_ai_availability)
 
-    def _reason(self, installed, enabled=True, base="https://ai.example.com", model="qwen2.5:3b"):
-        config = {
-            ('gateway', 'enabled'): 'true' if enabled else 'false',
-            ('gateway', 'ai_base_url'): base,
-            ('gateway', 'ai_dialect'): 'nomad',
-            ('gateway', 'ai_model'): model,
-        }
-        with mock.patch.object(self.gateway, "_config_raw", lambda s, o: config.get((s, o))), \
-             mock.patch.object(self.gateway, "is_gateway_enabled", lambda: enabled), \
-             mock.patch.object(self.gateway, "_installed_ai_models",
-                               lambda *a, **k: installed):
-            return self.gateway.ai_unavailable_reason()
+    def _reason(self, installed, enabled=True, base="https://ai.example.com",
+                model="qwen2.5:3b"):
+        return _with_ai(self.gateway, installed, enabled, base, model,
+                        self.gateway.ai_unavailable_reason)
 
     def test_no_models_at_all_is_named(self):
         self.assertIn("no model installed", self._reason([]))
 
-    def test_the_wrong_model_is_named(self):
-        self.assertIn("qwen2.5:3b", self._reason(["llama3.2"]))
+    def test_a_missing_model_is_no_longer_a_dead_end(self):
+        """There is something else installed, so the question can be asked
+        and the door stays open."""
+        self.assertEqual(self._reason(["llama3.2"]), "")
 
     def test_the_configured_model_being_there_is_fine(self):
         self.assertEqual(self._reason(["qwen2.5:3b", "llama3.2"]), "")
@@ -678,11 +674,143 @@ class AvailabilityCheckTests(unittest.TestCase):
                   ('gateway', 'ai_dialect'): 'nomad', ('gateway', 'ai_model'): 'm'}
         with mock.patch.object(self.gateway, "_config_raw", lambda s, o: config.get((s, o))), \
              mock.patch.object(self.gateway, "is_gateway_enabled", lambda: True), \
-             mock.patch.object(self.gateway, "_installed_ai_models", counting):
+             mock.patch.object(self.gateway, "_installed_ai_model_details", counting):
             first = self.gateway.ai_unavailable_reason()
             second = self.gateway.ai_unavailable_reason()
         self.assertEqual(first, second)
         self.assertEqual(len(calls), 1, "asked the AI server twice for one answer")
+
+
+def _with_ai(gateway, installed, enabled=True, base="https://ai.example.com",
+             model="qwen2.5:3b", call=None, fallbacks=""):
+    """Run *call* with the AI server reporting *installed*.
+
+    ``installed`` may be names or {'name','size'} dicts; names are given a
+    descending size so list order doubles as "largest first" in the tests
+    that do not care about sizes.
+    """
+    detailed = None
+    if installed is not None:
+        detailed = [item if isinstance(item, dict)
+                    else {'name': item, 'size': 1000 - index}
+                    for index, item in enumerate(installed)]
+    config = {
+        ('gateway', 'enabled'): 'true' if enabled else 'false',
+        ('gateway', 'ai_base_url'): base,
+        ('gateway', 'ai_dialect'): 'nomad',
+        ('gateway', 'ai_model'): model,
+        ('gateway', 'ai_model_fallbacks'): fallbacks,
+    }
+    with mock.patch.object(gateway, "_config_raw", lambda s, o: config.get((s, o))), \
+         mock.patch.object(gateway, "is_gateway_enabled", lambda: enabled), \
+         mock.patch.object(gateway, "_installed_ai_model_details",
+                           lambda *a, **k: detailed):
+        return call()
+
+
+class ModelFallbackTests(unittest.TestCase):
+    """The AI server belongs to someone else, and they install and remove
+    models without telling this node. A name that was right last month
+    answers every question with "model not installed" today -- a dead
+    feature on the menu with nothing on screen saying why."""
+
+    def setUp(self):
+        import gateway
+        self.gateway = gateway
+        gateway._reset_ai_availability()
+        self.addCleanup(gateway._reset_ai_availability)
+
+    def _resolve(self, installed, model="qwen2.5:3b", fallbacks=""):
+        return _with_ai(self.gateway, installed, model=model, fallbacks=fallbacks,
+                        call=self.gateway.resolve_ai_model)
+
+    def test_the_configured_model_is_used_when_it_is_there(self):
+        model, note = self._resolve(["qwen2.5:3b", "gemma4:e4b"])
+        self.assertEqual("qwen2.5:3b", model)
+        self.assertEqual("", note)
+
+    def test_a_missing_model_falls_back_to_the_largest_installed(self):
+        model, note = self._resolve([{'name': 'small', 'size': 400},
+                                     {'name': 'big', 'size': 7000}])
+        self.assertEqual("big", model)
+        self.assertIn("qwen2.5:3b", note)
+        self.assertIn("big", note)
+
+    def test_an_empty_model_setting_falls_back_too(self):
+        """The live failure: a blank box in Settings, and the error then
+        named llama3.2 -- a model the operator had never typed."""
+        model, note = self._resolve(["gemma4:e4b"], model="")
+        self.assertEqual("gemma4:e4b", model)
+        self.assertIn("no model is set", note)
+        self.assertNotIn("llama3.2", note)
+
+    def test_an_operators_preference_beats_the_largest(self):
+        model, _ = self._resolve([{'name': 'huge', 'size': 90000},
+                                  {'name': 'chosen', 'size': 10}],
+                                 fallbacks="missing-one, chosen")
+        self.assertEqual("chosen", model)
+
+    def test_a_preference_that_is_not_installed_is_skipped(self):
+        model, _ = self._resolve([{'name': 'only', 'size': 10}],
+                                 fallbacks="not-here")
+        self.assertEqual("only", model)
+
+    def test_a_server_with_nothing_installed_says_so(self):
+        model, note = self._resolve([])
+        self.assertIn("no model installed", note)
+
+    def test_a_server_that_will_not_say_keeps_the_configured_name(self):
+        """Fail open, and do not cache a non-answer as a decision."""
+        model, note = self._resolve(None)
+        self.assertEqual("qwen2.5:3b", model)
+        self.assertEqual("", note)
+        self.assertEqual({}, self.gateway._ai_model_choice)
+
+    def test_the_choice_is_cached(self):
+        calls = []
+
+        def counting(*a, **k):
+            calls.append(1)
+            return [{'name': 'only', 'size': 10}]
+
+        config = {('gateway', 'ai_base_url'): "https://ai.example.com",
+                  ('gateway', 'ai_dialect'): 'nomad',
+                  ('gateway', 'ai_model'): 'missing'}
+        with mock.patch.object(self.gateway, "_config_raw", lambda s, o: config.get((s, o))), \
+             mock.patch.object(self.gateway, "_installed_ai_model_details", counting):
+            first = self.gateway.resolve_ai_model()
+            second = self.gateway.resolve_ai_model()
+        self.assertEqual(first, second)
+        self.assertEqual(1, len(calls))
+
+    def test_the_chat_asks_for_the_resolved_model(self):
+        """The point of all of it: the request that goes out carries a name
+        the server actually has."""
+        sent = {}
+
+        def fake_urlopen(req, timeout=None):
+            sent['model'] = json.loads(req.data.decode())['model']
+            raise OSError("stop here, the payload is what is being checked")
+
+        config = {('gateway', 'ai_base_url'): "https://ai.example.com",
+                  ('gateway', 'ai_dialect'): 'nomad',
+                  ('gateway', 'ai_model'): 'not-installed'}
+        with mock.patch.object(self.gateway, "_config_raw", lambda s, o: config.get((s, o))), \
+             mock.patch.object(self.gateway, "_installed_ai_model_details",
+                               lambda *a, **k: [{'name': 'gemma4:e4b', 'size': 7000}]), \
+             mock.patch.object(self.gateway.urllib.request, "urlopen", fake_urlopen):
+            self.gateway.perform_ai_chat("hello")
+        self.assertEqual("gemma4:e4b", sent.get('model'))
+
+    def test_nothing_installed_leaves_a_sayable_error(self):
+        config = {('gateway', 'ai_base_url'): "https://ai.example.com",
+                  ('gateway', 'ai_dialect'): 'nomad', ('gateway', 'ai_model'): ''}
+        with mock.patch.object(self.gateway, "_config_raw", lambda s, o: config.get((s, o))), \
+             mock.patch.object(self.gateway, "_installed_ai_model_details",
+                               lambda *a, **k: []):
+            status, text = self.gateway.perform_ai_chat("hello")
+        self.assertEqual("ERR", status)
+        self.assertIn("no AI model", text)
 
     def test_the_menu_says_so_instead_of_taking_a_question(self):
         import command_handlers as ch
