@@ -362,8 +362,12 @@ HELP_TIPS = {
     # scores always sync; game SAVES only sync when zork save sync is on. It
     # used to say progress follows you to other nodes, directly beneath the
     # warning a no-save-sync node shows saying that it does not.
-    'GAMES_MENU': "Tip: high scores are shared with every node. X leaves a "
-                  "game without losing your place.",
+    # Eleven titles leave this menu at the edge of two MeshCore packets --
+    # DopeWars took it to 322 bytes against a 320 cap -- so the tip gave up
+    # the words that carried no information. The next title will need a
+    # denser layout rather than a shorter tip.
+    'GAMES_MENU': "Tip: scores are shared across nodes. X leaves a game and "
+                  "keeps your place.",
     'PUBLIC_CHATTER': "Tip: live radio traffic the nodes overheard, not BBS "
                       "posts. Pick a window, then filter it by channel.",
 }
