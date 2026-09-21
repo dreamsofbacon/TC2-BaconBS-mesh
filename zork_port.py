@@ -67,6 +67,10 @@ GAMES: dict[str, dict] = {
         'name': 'Baconfall: The Last Sizzle',
         'door': True,
     },
+    'dopewars': {
+        'name': 'DopeWars',
+        'door': True,
+    },
 }
 
 # Legacy constants kept for any external references
