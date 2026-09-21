@@ -157,6 +157,12 @@ class MenuTests(_Case):
                 self.assertLessEqual(len(self.sent[-1].encode('utf-8')), 320)
 
 
+def _open_services(case):
+    """Services checks the requester allow-list first; a test node passes."""
+    with mock.patch.object(ch, '_apigw_authorized', return_value=True):
+        ch.handle_apigw_command(1234, case.iface)
+
+
 class EveryDefinedTipIsActuallyShownTests(_Case):
     """A tip nobody displays is worse than no tip: it looks done.
 
@@ -177,6 +183,7 @@ class EveryDefinedTipIsActuallyShownTests(_Case):
         'CHANNEL_DIRECTORY': lambda self: ch.handle_channel_directory_command(1234, self.iface),
         'GAMES_MENU': lambda self: ch.handle_games_command(1234, self.iface),
         'PUBLIC_CHATTER': lambda self: ch.handle_public_chatter_command(1234, self.iface),
+        'APIGW': lambda self: _open_services(self),
     }
 
     def test_each_screen_shows_its_own_tip(self):

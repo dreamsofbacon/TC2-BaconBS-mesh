@@ -367,12 +367,18 @@ def _js8call_configured() -> bool:
 # ---------------------------------------------------------------------------
 
 HELP_TIPS = {
+    # Not "[0] always goes back": on this screen [0] disconnects, and the
+    # connect banner says so two lines above -- the two contradicted each
+    # other on the same screen.
     'main': "Tip: reply with a number, or jump straight there with a shortcut "
-            "like !B or !S. !Q lists them all, and [0] always goes back.",
+            "like !B or !S. !Q lists them all, and ? brings this menu back.",
     'bbs': "Tip: Mail is private, to one person. Bulletins are public notices "
            "on fixed boards. Channels are topics anyone can start, with replies.",
     'settings': "Tip: the lines above are who you are; the numbered ones are "
                 "what the BBS does for you. [5] switches these tips off.",
+    # The only top-level screen that had none.
+    'APIGW': "Tip: each service answers in a few lines, not a web page. "
+             "Some ask for a place, word or callsign first.",
     'BULLETIN_MENU': "Tip: the boards are set by this node's operator. A "
                      "bulletin is public and reaches every Bacon BBS node.",
     # The old tip read as though Send were the general case and the
@@ -389,8 +395,10 @@ HELP_TIPS = {
     # warning a no-save-sync node shows saying that it does not.
     # Eleven titles leave this menu at the edge of two MeshCore packets --
     # DopeWars took it to 322 bytes against a 320 cap -- so the tip gave up
-    # the words that carried no information. The next title will need a
-    # denser layout rather than a shorter tip.
+    # the words that carried no information. The cap is on bytes, not lines,
+    # so packing titles two to a line buys nothing; room for a twelfth
+    # title has to come from shorter labels, or from an operator hiding
+    # titles in Settings > Games.
     'GAMES_MENU': "Tip: scores are shared across nodes. X leaves a game and "
                   "keeps your place.",
     'PUBLIC_CHATTER': "Tip: live radio traffic the nodes overheard, not BBS "
@@ -581,7 +589,7 @@ def handle_quick_reply_command(sender_id, interface):
         mail = get_latest_mailbox_message(sender_node_id)
     if mail is None:
         send_message(
-            "No mail to reply to yet. Send !CM to check your mailbox.",
+            "No mail to reply to yet. !CM checks your mailbox.",
             sender_id, interface,
         )
         return
@@ -1221,7 +1229,7 @@ def _mail_recipient_refusal(query: str, sender_node_id, prefix: str = "") -> str
     # unrelated setting, and nothing here said which.
     return (f"{prefix}No match. Mail only reaches people who have switched "
             "on Settings > [3] Offline mail relay -- they turn it on "
-            "themselves, on their own device. Send !AU to see who has.")
+            "themselves, on their own device. !AU shows who has.")
 
 
 def _resolve_mail_relay_recipient(recipient: str, sender_node_id=None):
@@ -1535,7 +1543,7 @@ def handle_apigw_command(sender_id, interface):
     for index, group in enumerate(groups, start=1):
         menu += f"[{index}] {group}\n"
     menu += "[0] Back"
-    send_message(menu, sender_id, interface)
+    send_message(with_help_tip(menu, sender_id, 'APIGW'), sender_id, interface)
     update_user_state(sender_id, {'command': 'APIGW', 'step': 1})
 
 
@@ -2243,6 +2251,27 @@ def handle_account_command(sender_id, interface, return_to=None):
     update_user_state(sender_id, state)
 
 
+def _hardware_label(value) -> str:
+    """A hardware model as a name, whatever shape it arrived in.
+
+    Most nodes report the enum name ("HELTEC_V3"), but some arrive as the
+    bare protobuf number, and Stats listed "133: 1" and "254: 1" beside real
+    names -- a number meaning nothing to anyone reading it. Resolved through
+    Meshtastic's own enum where it can be; otherwise labelled for what it is.
+    """
+    if isinstance(value, str) and not value.strip().isdigit():
+        return value or 'Unknown'
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 'Unknown'
+    try:
+        from meshtastic.protobuf import mesh_pb2
+        return mesh_pb2.HardwareModel.Name(number)
+    except Exception:
+        return f"model {number}"
+
+
 def handle_account_steps(sender_id, message, interface, sender_node_id=None):
     if sender_node_id is None:
         # Should never happen for a real interactive DM -- on_receive()
@@ -2294,7 +2323,9 @@ def handle_account_steps(sender_id, message, interface, sender_node_id=None):
         if choice == '7':
             _handle_request_password_reset(sender_id, interface, sender_node_id)
             return
-        send_message(_ACCOUNT_MENU_TEXT, sender_id, interface)
+        # Every other menu names a wrong key; this one silently redrew
+        # itself, which reads as the keypress not having arrived.
+        send_message("Invalid choice.\n" + _ACCOUNT_MENU_TEXT, sender_id, interface)
         return
 
     if step == 2:
@@ -2692,9 +2723,12 @@ def handle_trivia_steps(sender_id, message, interface):
     send_message(response, sender_id, interface)
     if not trivia_port.active(sender_id):
         score, moves = trivia_port.finish_score(sender_id)
-        node_id = get_node_id_from_num(sender_id, interface)
-        short_name = get_node_short_name(node_id, interface) or str(sender_id)
-        upsert_game_score(sender_id, game_id, short_name, score, 0, moves)
+        # A run in which nothing was answered is not a result: saving it put
+        # a zero on the scoreboard for someone who opened the game and left.
+        if moves:
+            node_id = get_node_id_from_num(sender_id, interface)
+            short_name = get_node_short_name(node_id, interface) or str(sender_id)
+            upsert_game_score(sender_id, game_id, short_name, score, 0, moves)
         handle_games_command(sender_id, interface)
     else:
         update_user_state(sender_id, {'command': 'TRIVIA', 'step': 1, 'game_id': game_id})
@@ -2738,7 +2772,7 @@ def handle_stats_steps(sender_id, message, step, interface):
         elif choice == 'h':
             hw_models = {}
             for node in interface.nodes.values():
-                hw_model = node['user'].get('hwModel', 'Unknown')
+                hw_model = _hardware_label(node['user'].get('hwModel', 'Unknown'))
                 hw_models[hw_model] = hw_models.get(hw_model, 0) + 1
             response = "Hardware Models:\n" + "\n".join([f"{model}: {count}" for model, count in hw_models.items()])
             send_message(response, sender_id, interface)
@@ -2928,7 +2962,7 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
                 return
             unique_id = add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interface,
                                      author_node_id=node_id)
-            send_message(f"Your bulletin '{subject}' has been posted to {board}.\n(╯°□°)╯📄📌[{board}]", sender_id, interface)
+            send_message(f"Your bulletin '{subject}' has been posted to {board}. 📌", sender_id, interface)
             handle_bb_steps(sender_id, 'e', 1, state, interface, bbs_nodes)
         else:
             state['content'] += message + "\n"
@@ -3227,7 +3261,7 @@ def handle_mail_steps(sender_id, message, step, state, interface, bbs_nodes):
 
             sender_short_name = resolve_display_name(get_node_id_from_num(sender_id, interface), interface)
             unique_id = add_mail(get_node_id_from_num(sender_id, interface), sender_short_name, recipient_id, subject, content, bbs_nodes, interface)
-            send_message(f"Mail has been posted to the mailbox of {recipient_name}.\n(╯°□°)╯📨📬", sender_id, interface)
+            send_message(f"Mail has been posted to the mailbox of {recipient_name}. 📬", sender_id, interface)
 
             # Whether this was a reply or a fresh message, there is nothing
             # left to ask once it is sent -- land back on the mailbox
@@ -3542,8 +3576,7 @@ def handle_send_mail_command(sender_id, message, interface, bbs_nodes):
             send_message(
                 _mail_recipient_refusal(
                     recipient_query, sender_node_id,
-                    prefix=f"Relay user '{recipient_query}': ")
-                + " Send !AU to browse.",
+                    prefix=f"Relay user '{recipient_query}': "),
                 sender_id, interface,
             )
             return

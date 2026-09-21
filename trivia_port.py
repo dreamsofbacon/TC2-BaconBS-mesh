@@ -133,6 +133,10 @@ def command(user_id, text):
         score, moves = session["score"], session["moves"]
         _last_scores[user_id] = (score, moves)
         _sessions.pop(user_id, None)
+        if not moves:
+            # Said as it is: handle_trivia_steps saves nothing for an empty
+            # run, so "Your score was saved" would have been untrue.
+            return "Trivia King ended. No questions answered, so nothing was saved."
         return (f"Trivia King ended. Final score: {score} "
                 f"({moves} question{'' if moves == 1 else 's'}). "
                 "Your score was saved.")
