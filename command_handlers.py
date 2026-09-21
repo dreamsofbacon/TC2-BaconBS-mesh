@@ -69,6 +69,7 @@ from zork_port import (
 )
 import trivia_port
 import baconfall_port
+import dopewars_door
 
 # Ordered list of playable games (matches GAMES keys in zork_port)
 GAME_LIST = list(GAMES.items())  # [(game_id, {name, ...}), ...]
@@ -1307,6 +1308,9 @@ def handle_games_steps(sender_id, message, interface):
 
 
 def _launch_game(sender_id, interface, game_id, game_name):
+    if game_id == dopewars_door.game.GAME_ID:
+        handle_dopewars_steps(sender_id, None, interface)
+        return
     if game_id == baconfall_port.game.GAME_ID:
         handle_baconfall_steps(sender_id, None, interface)
         return
@@ -2617,6 +2621,29 @@ def handle_baconfall_steps(sender_id, message, interface):
     else:
         update_user_state(sender_id, {'command': 'BACONFALL', 'step': 1,
                                      'game_id': baconfall_port.game.GAME_ID})
+
+
+def handle_dopewars_steps(sender_id, message, interface):
+    """DopeWars owns its input and saves before acknowledging each turn."""
+    try:
+        node_id = get_node_id_from_num(sender_id, interface)
+        short_name = get_node_short_name(node_id, interface) or str(sender_id)
+        response, leave, _ = dopewars_door.play(sender_id, message, short_name)
+    except dopewars_door.SaveUnavailable as exc:
+        send_message(str(exc), sender_id, interface)
+        handle_games_command(sender_id, interface)
+        return
+    except sqlite3.Error:
+        logging.exception('DopeWars could not save a turn for %s', sender_id)
+        send_message('DopeWars could not save this turn. Your previous save is intact; please try again.',
+                     sender_id, interface)
+        return
+    send_message(response, sender_id, interface)
+    if leave:
+        handle_games_command(sender_id, interface)
+    else:
+        update_user_state(sender_id, {'command': 'DOPEWARS', 'step': 1,
+                                     'game_id': dopewars_door.game.GAME_ID})
 
 
 def handle_trivia_steps(sender_id, message, interface):
