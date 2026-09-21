@@ -262,7 +262,9 @@ def test_menu_and_dispatch_owns_global_commands(connection):
             index = next(i for i, (gid, _) in enumerate(ch.GAME_LIST, 1) if gid == 'dopewars')
             ch.handle_games_steps(42, str(index), iface)
             assert ch.get_user_state(42)['command'] == 'DOPEWARS'
-            mp.process_message(42, 'loan repay 100', iface)
+            # Played by menu since Candy Wars: 6 = the loan screen, 2 = pay
+            # back, 100 = the amount -- the same move as "loan repay 100".
+            mp.process_message(42, '6 2 100', iface)
             assert stored(connection)['debt'] == 1100
             for text in ('s weed 1', 'm', 'i', 'h', 'n', '!CM', '!BB', 'save', 'equipment', 'travel uptown'):
                 with mock.patch.object(mp, 'handle_dopewars_steps') as dispatch:

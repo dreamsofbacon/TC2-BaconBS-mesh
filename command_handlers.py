@@ -11,7 +11,7 @@ from meshtastic import BROADCAST_NUM
 
 from db_operations import (
     add_bulletin, add_mail, delete_mail, delete_bulletin,
-    count_posts_by, get_post_author,
+    count_posts_by, get_post_author, effective_pg13, set_pg13_for_node,
     delete_channel_comment,
     get_content_source_nodes,
     get_node_role, set_node_role, get_role_updated_at,
@@ -70,6 +70,8 @@ from zork_port import (
 import trivia_port
 import baconfall_port
 import dopewars_door
+import dopewars_menu
+import dopewars_theme
 
 # Ordered list of playable games (matches GAMES keys in zork_port)
 GAME_LIST = list(GAMES.items())  # [(game_id, {name, ...}), ...]
@@ -374,8 +376,9 @@ HELP_TIPS = {
             "like !B or !S. !Q lists them all, and ? brings this menu back.",
     'bbs': "Tip: Mail is private, to one person. Bulletins are public notices "
            "on fixed boards. Channels are topics anyone can start, with replies.",
-    'settings': "Tip: the lines above are who you are; the numbered ones are "
-                "what the BBS does for you. [5] switches these tips off.",
+    # Shortened when [8] PG-13 mode took the screen past its 320-byte cap.
+    'settings': "Tip: above is who you are; the numbers are what the BBS does "
+                "for you. [5] turns tips off.",
     # The only top-level screen that had none.
     'APIGW': "Tip: each service answers in a few lines, not a web page. "
              "Some ask for a place, word or callsign first.",
@@ -1300,7 +1303,7 @@ def handle_games_command(sender_id, interface):
         return
     menu = "🎮 Games 🎮\n"
     for i, (game_id, info) in enumerate(games, start=1):
-        menu += f"[{i}] {info['name']}\n"
+        menu += f"[{i}] {game_title(game_id, sender_id, interface)}\n"
     menu += "[S]cores [H]all of Fame [F]ortune [0]Back"
     sync_notice = get_zork_save_sync_notice()
     if sync_notice:
@@ -1349,7 +1352,8 @@ def handle_games_steps(sender_id, message, interface):
         )
         return
 
-    _launch_game(sender_id, interface, game_id, info['name'])
+    _launch_game(sender_id, interface, game_id,
+                 game_title(game_id, sender_id, interface))
 
 
 def _launch_game(sender_id, interface, game_id, game_name):
@@ -1458,9 +1462,9 @@ def handle_hall_of_fame_command(sender_id, interface):
             player = _score_player_label(
                 short_name, names.get(str(_score_row_user_id(row, 5))))
             ms = f"/{max_score}" if max_score else ""
-            lines.append(f"{info['name']}: {player} {score}{ms} {moves}mv")
+            lines.append(f"{game_title(game_id, sender_id, interface)}: {player} {score}{ms} {moves}mv")
         else:
-            lines.append(f"{info['name']}: —")
+            lines.append(f"{game_title(game_id, sender_id, interface)}: —")
     send_message("\n".join(lines), sender_id, interface)
     handle_games_command(sender_id, interface)
 
@@ -1871,7 +1875,7 @@ def handle_ask_nomad_steps(sender_id, message, interface):
 def handle_scoreboard_command(sender_id, interface):
     menu = "🏆 Scoreboard 🏆\n"
     for i, (game_id, info) in enumerate(visible_games(), start=1):
-        menu += f"[{i}] {info['name']}\n"
+        menu += f"[{i}] {game_title(game_id, sender_id, interface)}\n"
     menu += "[0] Back"
     send_message(menu, sender_id, interface)
     update_user_state(sender_id, {'command': 'SCOREBOARD', 'step': 1})
@@ -1893,10 +1897,10 @@ def handle_scoreboard_steps(sender_id, message, interface):
         return
     scores = get_game_scoreboard(game_id, limit=5)
     if not scores:
-        send_message(f"No scores yet for {info['name']}. Be first!\n[0] Back",
+        send_message(f"No scores yet for {game_title(game_id, sender_id, interface)}. Be first!\n[0] Back",
                      sender_id, interface)
     else:
-        lines = [f"🏆 {info['name']}"]
+        lines = [f"🏆 {game_title(game_id, sender_id, interface)}"]
         names = get_score_account_names(_score_row_user_id(r, 4) for r in scores)
         for rank, row in enumerate(scores, 1):
             short_name, score, max_score, moves = row[:4]
@@ -1997,8 +2001,22 @@ def _settings_menu_text(sender_id, interface, sender_node_id=None) -> str:
     lines.append(f"[5] Help tips: {tips}")
     lines.append("[6] About this node")
     lines.append("[7] View Stats")
+    lines.append(f"[8] PG-13 mode: {_pg13_label(node_id)}")
     lines.append("[0] Back")
     return LINE_BREAK.join(lines)
+
+
+def _pg13_label(node_id) -> str:
+    """On, Off, or who decided -- a lock has to be visible, or the setting
+    looks broken when pressing it changes nothing."""
+    mode = "On" if _viewer_pg13(node_id) else "Off"
+    try:
+        from db_operations import pg13_user_control
+        if not pg13_user_control():
+            return f"{mode} (set by this node)"
+    except Exception:
+        pass
+    return mode
 
 
 def _this_node_option_label() -> str:
@@ -2047,6 +2065,29 @@ def handle_settings_steps(sender_id, message, interface, sender_node_id=None):
     state = get_user_state(sender_id) or {}
     choice = message.strip()
     lowered = choice.lower()
+
+    if state.get('step') == 4:
+        # Confirming PG-13 mode: it changes what content this person sees on
+        # every node, so it asks first, like relay consent.
+        if lowered not in ('y', 'yes'):
+            send_message("PG-13 mode unchanged.", sender_id, interface)
+            handle_settings_command(sender_id, interface, sender_node_id)
+            return
+        if not sender_node_id:
+            send_message("Couldn't verify your device identity.", sender_id, interface)
+            handle_settings_command(sender_id, interface, sender_node_id)
+            return
+        records = set_pg13_for_node(sender_node_id, bool(state.get('pg13')),
+                                    home_network(sender_node_id))
+        from utils import send_pg13_preference_to_bbs_nodes
+        for node_id, enabled, updated_at in records:
+            send_pg13_preference_to_bbs_nodes(
+                node_id, enabled, updated_at, getattr(interface, 'bbs_nodes', []),
+                interface)
+        send_message("PG-13 mode on." if state.get('pg13') else "PG-13 mode off.",
+                     sender_id, interface)
+        handle_settings_command(sender_id, interface, sender_node_id)
+        return
 
     if state.get('step') == 2:
         # Confirming the relay toggle: it changes what the BBS does with
@@ -2140,6 +2181,27 @@ def handle_settings_steps(sender_id, message, interface, sender_node_id=None):
         return
     if choice == '7':
         handle_stats_command(sender_id, interface)
+        return
+    if choice == '8':
+        from db_operations import pg13_user_control
+        if not pg13_user_control():
+            send_message("This node's operator sets PG-13 mode for everyone here, "
+                         "so it can't be changed from your account.",
+                         sender_id, interface)
+            handle_settings_command(sender_id, interface, sender_node_id)
+            return
+        if not sender_node_id:
+            send_message("Couldn't verify your device identity.", sender_id, interface)
+            return
+        enabled = not _viewer_pg13(sender_node_id)
+        prompt = ("Turn on PG-13 mode? Games show their mature versions -- Candy "
+                  "Wars becomes Dope Wars. It follows your account to other "
+                  "nodes. [Y/N]" if enabled else
+                  "Turn off PG-13 mode? Games go back to their kid-friendly "
+                  "versions. [Y/N]")
+        send_message(prompt, sender_id, interface)
+        update_user_state(sender_id, {'command': 'SETTINGS', 'step': 4,
+                                      'pg13': enabled})
         return
     # Redrawing the identical screen with no notice looked like the BBS had
     # ignored the keypress rather than rejected it.
@@ -2693,26 +2755,68 @@ def handle_baconfall_steps(sender_id, message, interface):
 
 
 def handle_dopewars_steps(sender_id, message, interface):
-    """DopeWars owns its input and saves before acknowledging each turn."""
+    """Candy Wars, or Dope Wars in PG-13 mode: the trading door, by menu.
+
+    The door still owns its input and still saves before acknowledging each
+    turn; what changed is that it is played through numbered screens, and
+    that the words are the player's theme. The menu screen they are on lives
+    in the session state, never in the save.
+    """
+    node_id = get_node_id_from_num(sender_id, interface)
+    pg13 = _viewer_pg13(node_id)
+    title = dopewars_theme.title(pg13)
+    state = get_user_state(sender_id) or {}
+    nav = state.get('nav') if state.get('command') == 'DOPEWARS' else None
     try:
-        node_id = get_node_id_from_num(sender_id, interface)
         short_name = get_node_short_name(node_id, interface) or str(sender_id)
-        response, leave, _ = dopewars_door.play(sender_id, message, short_name)
-    except dopewars_door.SaveUnavailable as exc:
-        send_message(str(exc), sender_id, interface)
+        response, leave, nav = dopewars_menu.handle(
+            sender_id, message, short_name, pg13, nav)
+    except dopewars_door.SaveUnavailable:
+        # The door's own message names the game "DopeWars"; say it in the
+        # player's theme instead.
+        send_message(f"Your {title} save could not be read. It has been kept "
+                     "for the operator to look at.", sender_id, interface)
         handle_games_command(sender_id, interface)
         return
     except sqlite3.Error:
-        logging.exception('DopeWars could not save a turn for %s', sender_id)
-        send_message('DopeWars could not save this turn. Your previous save is intact; please try again.',
-                     sender_id, interface)
+        logging.exception('%s could not save a turn for %s', title, sender_id)
+        send_message(f"{title} could not save that turn. Your last save is "
+                     "safe; please try again.", sender_id, interface)
         return
     send_message(response, sender_id, interface)
     if leave:
         handle_games_command(sender_id, interface)
     else:
         update_user_state(sender_id, {'command': 'DOPEWARS', 'step': 1,
-                                     'game_id': dopewars_door.game.GAME_ID})
+                                      'game_id': dopewars_door.game.GAME_ID,
+                                      'nav': nav})
+
+
+def _viewer_pg13(node_id) -> bool:
+    """Whether this person sees PG-13 content. Never raises: when in doubt,
+    the kid-friendly version is the safe one to show."""
+    try:
+        return bool(effective_pg13(node_id)) if node_id else False
+    except Exception:
+        logging.debug("could not read PG-13 mode", exc_info=True)
+        return False
+
+
+def game_title(game_id, sender_id=None, interface=None) -> str:
+    """The name to show this viewer for a game.
+
+    Every screen that lists games asks here, so a Candy Wars player never
+    sees "Dope Wars" in the Games menu, the Scoreboard or the Hall of Fame.
+    """
+    if game_id == dopewars_door.game.GAME_ID:
+        node_id = None
+        if sender_id is not None:
+            try:
+                node_id = get_node_id_from_num(sender_id, interface)
+            except Exception:
+                node_id = None
+        return dopewars_theme.title(_viewer_pg13(node_id))
+    return GAMES.get(game_id, {}).get('name', game_id)
 
 
 def handle_trivia_steps(sender_id, message, interface):

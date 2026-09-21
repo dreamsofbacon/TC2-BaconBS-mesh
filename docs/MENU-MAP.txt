@@ -91,11 +91,22 @@ MAIN MENU   header: Bacon BBS  (mail:N shows unread count)
     [3] Zork II              [8] Planetfall
     [4] Zork III             [9] Starcross
     [5] Hitchhiker's Guide   [10] Baconfall: The Last Sizzle
+                             [11] Candy Wars  (Dope Wars in PG-13 mode)
     [S]cores [H]all of Fame [F]ortune [0]Back
       [S] a title -> that game's high scores
       [H] one line per title, "-" where nobody has played
       [F] a fortune, then back to the Games menu
     Inside a game, X leaves without losing your place.
+    An operator can hide titles (Settings > Games), and the list renumbers.
+
+    [11] Candy Wars -- buy low, sell high, 30 or 365 days. Played by menu:
+        [1]Buy [2]Sell [3]Go [4]Bag [5]Gear [6]Sibling [7]End [0]Exit
+        A reply is read a word at a time, so "1 2 5" is Buy -> item 2 ->
+        five of them, and "1 2 M" buys as many as you can.
+        The Hall Monitor sometimes stops you: [1]Talk your way out
+        [2]Run for it [3]Hand over your candy.
+        In PG-13 mode the same run reads as Dope Wars -- only the words
+        change, never the save.
 
 [4] Public Chatter
     Window picker: [1]1h [2]3h [3]6h [4]24h [5]3d [6]7d
@@ -143,6 +154,10 @@ MAIN MENU   header: Bacon BBS  (mail:N shows unread count)
     [5] Help tips            -- the "Tip:" lines under each menu
     [6] About this node
     [7] View Stats           [1]Nodes [2]Hardware [3]Roles
+    [8] PG-13 mode           off by default; on shows games' mature
+                             versions. Follows your account to other
+                             nodes. "(set by this node)" means the
+                             operator has locked it for everyone.
 
 [8] Node View
     Which nodes' content this session shows. Lenses and filters.

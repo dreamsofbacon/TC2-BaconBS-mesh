@@ -2732,6 +2732,16 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 return
             apply_synced_fleet_identity(parts[1].strip(), value,
                                         parts[3].strip(), sender_node_id)
+        elif message.startswith("CONTENTPREF|"):
+            parts = message.split("|", 3)
+            if len(parts) != 4:
+                logging.warning(f"Malformed CONTENTPREF ignored: {message}")
+                return
+            try:
+                from db_operations import apply_synced_pg13_preference
+                apply_synced_pg13_preference(parts[1], parts[2].strip() == '1', parts[3])
+            except Exception as exc:
+                logging.warning(f"CONTENTPREF from {sender_node_id} not applied: {exc}")
         elif message.startswith("RELAYPREF|"):
             parts = message.split("|", 3)
             if len(parts) != 4 or parts[2] not in ('0', '1') or not parts[1] or not parts[3]:
@@ -3432,7 +3442,7 @@ def on_receive(packet, interface):
                                    "CHANNEL|", "DELETE_CHANNEL|", "CHANNELCOMMENT|", "CHANNELCOMMENTCONT|", "CHANNELCOMMENTMETA|", "DELETE_CHANNELCOMMENT|",
                                    "BULLETINCONT|", "MAILCONT|", "BULLETINMETA|", "MAILMETA|", "SYNCSTATE|",
                                    "PROFILESYNC|", "RELAYPREF|", "SCORESYNC|", "ROLE|", "BBSID|",
-                                   "FEED|",
+                                   "FEED|", "CONTENTPREF|",
                                    "ACCT|", "ACCTMETA|", "ACCTLINK|", "ACCTUNLINK|", "MAILDLV|", "POSTAUTHOR|",
                                    "FLEETVER|", "FLEETVERCONT|", "NODEVER|", "FLEETSTATUS|", "ZORKSAVE|", "ZORKGAP|", "CANDREQ|", "CANDRSP|",
                                    "HASHREQ|", "HASHREC|", "HASHEND|", "HASHMISS|", "HASHZ|", "HASHZGAP|",

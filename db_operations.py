@@ -1610,6 +1610,12 @@ def _ensure_accounts_tables(cursor) -> None:
         cursor.execute("ALTER TABLE accounts ADD COLUMN mail_relay_enabled INTEGER NOT NULL DEFAULT 0")
     if 'mail_relay_updated_at' not in _account_cols:
         cursor.execute("ALTER TABLE accounts ADD COLUMN mail_relay_updated_at TEXT NOT NULL DEFAULT ''")
+    # PG-13 mode: off unless the account has asked for it. Travels with the
+    # account like relay consent, stamped so the newest choice wins.
+    if 'pg13_mode' not in _account_cols:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN pg13_mode INTEGER NOT NULL DEFAULT 0")
+    if 'pg13_updated_at' not in _account_cols:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN pg13_updated_at TEXT NOT NULL DEFAULT ''")
     if 'password_hash' not in _account_cols:
         cursor.execute("ALTER TABLE accounts ADD COLUMN password_hash TEXT")
     if 'password_salt' not in _account_cols:
@@ -7098,6 +7104,107 @@ def set_mail_relay_for_node(node_id: str, enabled: bool, network: str) -> list[t
     return [(linked_id, bool(enabled), timestamp) for linked_id in node_ids]
 
 
+def pg13_user_control() -> bool:
+    """Whether people on this node may choose PG-13 mode for themselves.
+
+    [content] pg13_user_control, default true. When an operator turns it off,
+    [content] pg13_mode decides for everyone here -- see effective_pg13.
+    """
+    from utils import _config_bool
+    return _config_bool('content', 'pg13_user_control', True)
+
+
+def pg13_node_mode() -> bool:
+    """The mode everyone on this node gets while user control is locked."""
+    from utils import _config_bool
+    return _config_bool('content', 'pg13_mode', False)
+
+
+def get_account_pg13(node_id: str) -> bool:
+    """This person's own choice, off unless they have made one."""
+    account_id = get_account_id_for_node(str(node_id or '').strip()) if node_id else None
+    if not account_id:
+        return False
+    try:
+        row = get_db_connection().execute(
+            "SELECT pg13_mode FROM accounts WHERE account_id = ?",
+            (str(account_id),)).fetchone()
+    except sqlite3.Error:
+        return False
+    return bool(row and row[0])
+
+
+def effective_pg13(node_id: str) -> bool:
+    """The one question the rest of the BBS asks: PG-13 for this person, here?
+
+    A lock on this node decides for everyone. It never overwrites anyone's
+    synced choice, so when the operator unlocks, each person gets back what
+    they picked. Unlocked, it is the account's own choice -- off by default,
+    so a newcomer sees the kid-friendly version of everything.
+    """
+    if not pg13_user_control():
+        return pg13_node_mode()
+    return get_account_pg13(node_id)
+
+
+def set_pg13_for_node(node_id: str, enabled: bool, network: str) -> list[tuple[str, bool, str]]:
+    """Record a person's PG-13 choice on their account, making one if needed.
+
+    Mirrors set_mail_relay_for_node: a bare radio gets an account here the
+    same way it does when it opts into relay, because the choice belongs to
+    the person and has to follow them to the other nodes.
+    """
+    normalized_id = str(node_id or '').strip()
+    if not normalized_id:
+        return []
+    account_id = get_account_id_for_node(normalized_id)
+    if account_id is None:
+        account_id = create_account()
+        link_node_to_account(normalized_id, account_id, network)
+    timestamp = datetime.now(timezone.utc).isoformat(timespec='microseconds')
+    conn = get_db_connection()
+    conn.execute("UPDATE accounts SET pg13_mode = ?, pg13_updated_at = ? WHERE account_id = ?",
+                 (1 if enabled else 0, timestamp, str(account_id)))
+    conn.commit()
+    return [(linked, bool(enabled), timestamp)
+            for linked in (get_linked_node_ids(account_id) or [normalized_id])]
+
+
+def apply_synced_pg13_preference(node_id: str, enabled: bool, updated_at: str) -> bool:
+    """Take a peer's word for someone's PG-13 choice, if it is newer.
+
+    A node that does not know the device yet ignores it: the account frame
+    brings the link, and the next re-advertisement brings the choice.
+    """
+    normalized_id = str(node_id or '').strip()
+    incoming = _parse_mail_relay_timestamp(updated_at)
+    if not normalized_id or incoming is None:
+        return False
+    account_id = get_account_id_for_node(normalized_id)
+    if not account_id:
+        return False
+    conn = get_db_connection()
+    row = conn.execute("SELECT pg13_updated_at FROM accounts WHERE account_id = ?",
+                       (str(account_id),)).fetchone()
+    current = _parse_mail_relay_timestamp(row[0]) if row and row[0] else None
+    if current and current >= incoming:
+        return False
+    conn.execute("UPDATE accounts SET pg13_mode = ?, pg13_updated_at = ? WHERE account_id = ?",
+                 (1 if enabled else 0, incoming.isoformat(timespec='microseconds'),
+                  str(account_id)))
+    conn.commit()
+    return True
+
+
+def get_pg13_preferences_for_sync() -> list[tuple[str, bool, str]]:
+    """Every linked device's account choice, for re-advertising to peers."""
+    rows = get_db_connection().execute(
+        "SELECT l.node_id, a.pg13_mode, a.pg13_updated_at FROM linked_nodes l"
+        " JOIN accounts a ON a.account_id = l.account_id"
+        " WHERE a.pg13_updated_at != ''").fetchall()
+    return [(str(node_id), bool(mode), str(stamp)) for node_id, mode, stamp in rows]
+
+
 def apply_synced_mail_relay_preference(node_id: str, enabled: bool, updated_at: str) -> bool:
     conn = get_db_connection()
     c = conn.cursor()
@@ -8460,6 +8567,41 @@ def sync_channels_to_nodes(bbs_nodes: list, interface, delay_ms: Optional[int] =
                               last_updated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                               last_result=f"Error: {e}")
         raise
+
+
+_advertised_pg13: dict = {}
+_pg13_last_full_sweep: dict = {}
+PG13_READVERTISE_SECONDS = 900.0
+
+
+def sync_pg13_preferences_to_nodes(bbs_nodes: list, interface, force: bool = False) -> int:
+    """Advertise PG-13 choices that changed since we last told each peer.
+
+    Change-driven like roles and feeds, so a fleet where nobody flips the
+    setting costs no airtime; a slow sweep re-sends everything in case a
+    frame was lost, since no hash scope covers this.
+    """
+    if not bbs_nodes or not interface:
+        return 0
+    from utils import send_pg13_preference_to_bbs_nodes
+    now = time.time()
+    sweeping = set()
+    for peer_id in bbs_nodes:
+        if now - _pg13_last_full_sweep.get(str(peer_id), 0.0) >= PG13_READVERTISE_SECONDS:
+            sweeping.add(str(peer_id))
+            _pg13_last_full_sweep[str(peer_id)] = now
+    sent = 0
+    for node_id, enabled, updated_at in get_pg13_preferences_for_sync():
+        for peer_id in bbs_nodes:
+            key = (str(peer_id), node_id)
+            if (not force and str(peer_id) not in sweeping
+                    and _advertised_pg13.get(key) == updated_at):
+                continue
+            if send_pg13_preference_to_bbs_nodes(node_id, enabled, updated_at,
+                                                 [peer_id], interface):
+                _advertised_pg13[key] = updated_at
+                sent += 1
+    return sent
 
 
 def sync_mail_relay_preferences_to_nodes(bbs_nodes: list, interface) -> int:

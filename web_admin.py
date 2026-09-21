@@ -579,10 +579,16 @@ def load_games_settings(config_path: str) -> dict:
   config = read_config_file(config_path)
   raw = config.get("games", "hidden", fallback="")
   hidden = {part.strip().lower() for part in raw.split(",") if part.strip()}
+  user_control = _parse_bool_setting(
+      config.get("content", "pg13_user_control", fallback="true"), True)
+  node_pg13 = _parse_bool_setting(config.get("content", "pg13_mode", fallback="false"), False)
+  titles = {"dopewars": "Candy Wars (Dope Wars in PG-13 mode)"}
   return {
-    "games": [{"id": game_id, "name": info.get("name", game_id),
+    "games": [{"id": game_id, "name": titles.get(game_id, info.get("name", game_id)),
                "shown": game_id.lower() not in hidden}
               for game_id, info in GAMES.items()],
+    "pg13_user_control": user_control,
+    "pg13_mode": node_pg13,
   }
 
 
@@ -6580,6 +6586,13 @@ def create_app(runtime_interface=None) -> Flask:
           if not config.has_section("games"):
             config.add_section("games")
           config.set("games", "hidden", ",".join(hidden))
+          # Content rating rides the same form: who decides PG-13 mode here.
+          if not config.has_section("content"):
+            config.add_section("content")
+          config.set("content", "pg13_user_control",
+                     "true" if request.form.get("pg13_user_control") else "false")
+          config.set("content", "pg13_mode",
+                     "true" if request.form.get("pg13_mode") == "on" else "false")
           write_config_file(config, app.config["CONFIG_PATH"])
           if len(hidden) == len(GAMES):
             flash("Every game is hidden, so the Games menu now says none are "

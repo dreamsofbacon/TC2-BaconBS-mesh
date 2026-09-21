@@ -41,6 +41,7 @@ from radio_admin import RadioAdminWorker, describe as describe_admin_radio
 from db_operations import (
     sync_node_roles_to_nodes,
     sync_feeds_to_nodes,
+    sync_pg13_preferences_to_nodes,
     sync_fleet_identity_to_nodes,
     sync_accounts_to_nodes,
     initialize_database,
@@ -2272,6 +2273,13 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
         sync_feeds_to_nodes(sorted(current_bbs_nodes), link.interface)
     except Exception:
         logging.debug(f"[{link.name}] feed advertisement failed", exc_info=True)
+
+    # PG-13 choices follow the person, so they ride the same tick; change-
+    # driven, so a fleet where nobody flips the setting sends nothing.
+    try:
+        sync_pg13_preferences_to_nodes(sorted(current_bbs_nodes), link.interface)
+    except Exception:
+        logging.debug(f"[{link.name}] PG-13 advertisement failed", exc_info=True)
 
     # Accounts ride the same tick, for the same two reasons, and with the
     # same change-driven cost: who exists on this BBS and which radios are

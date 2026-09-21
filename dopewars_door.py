@@ -5,6 +5,7 @@ processes. Saves are deliberately not broadcast with Z-machine save files.
 """
 import json
 import secrets
+from copy import deepcopy
 
 import dopewars as game
 from db_operations import get_db_connection, upsert_game_score
@@ -28,6 +29,18 @@ def play(user_id, text=None, short_name=None):
     This owns its transaction and must be called outside any existing write
     transaction, like the other top-level door handlers.
     """
+    _before, _after, reply, leave, result = play_state(user_id, text, short_name)
+    return reply, leave, result
+
+
+def play_state(user_id, text=None, short_name=None):
+    """play(), also handing back the saved state either side of the move.
+
+    (before, after, reply, leave, result). The menu layer renders every screen
+    from the state rather than from the engine's own reply text -- which is
+    how Candy Wars keeps the engine's words ("Police stop!", "Unknown item:
+    weed...") from ever reaching a player in that theme.
+    """
     # Same canonical identity as scores, including MeshCore's mc- prefix.
     run_key = player_key(user_id)
     conn = get_db_connection()
@@ -39,6 +52,7 @@ def play(user_id, text=None, short_name=None):
         row = conn.execute('SELECT state_json FROM dopewars_runs WHERE user_id = ?',
                            (run_key,)).fetchone()
         state = _load(row[0]) if row else game.new_game(secrets.randbits(63))
+        before = deepcopy(state)
         previous_phase = state['phase']
         if text is None:
             reply, leave = game.view(state), False
@@ -53,4 +67,4 @@ def play(user_id, text=None, short_name=None):
         conn.execute('''INSERT INTO dopewars_runs (user_id, state_json) VALUES (?, ?)
             ON CONFLICT(user_id) DO UPDATE SET state_json = excluded.state_json''',
                      (run_key, json.dumps(state, separators=(',', ':'))))
-    return reply, leave, result
+    return before, state, reply, leave, result

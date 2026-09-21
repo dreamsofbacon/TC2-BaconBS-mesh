@@ -1471,6 +1471,30 @@
       </label>
     </div>
     {% endfor %}
+
+    <h3 style="margin-top:1.5rem">Content rating</h3>
+    <p class="text-muted">
+      Games have a kid-friendly version and a PG-13 one: Candy Wars is Dope Wars
+      with candy, a school and a Hall Monitor instead of drugs and police. Everyone
+      starts on the kid-friendly version, and each person can turn PG-13 mode on in
+      <em>Settings &amp; Profile</em>; that choice follows their account to other
+      nodes. Untick the box below to decide for everyone on this node instead &mdash;
+      nobody's own choice is erased, so it comes back if you tick it again.
+    </p>
+    <div class="form-group">
+      <label>
+        <input type="checkbox" name="pg13_user_control" value="1"
+               {% if games.pg13_user_control %}checked{% endif %}>
+        Let people choose PG-13 mode for themselves
+      </label>
+    </div>
+    <div class="form-group">
+      <label for="pg13_mode">When they can't choose, everyone here sees</label>
+      <select id="pg13_mode" name="pg13_mode" class="form-control" style="width:auto">
+        <option value="off" {% if not games.pg13_mode %}selected{% endif %}>The kid-friendly versions</option>
+        <option value="on" {% if games.pg13_mode %}selected{% endif %}>PG-13 versions</option>
+      </select>
+    </div>
     <button class="btn btn-primary" type="submit">Save Games</button>
   </form>
 </section>
