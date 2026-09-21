@@ -573,6 +573,19 @@ def preferred_author_node_id(config_path: str) -> str:
   return local_ids[0]
 
 
+def load_games_settings(config_path: str) -> dict:
+  """Every game the BBS knows, and whether this node shows it."""
+  from zork_port import GAMES
+  config = read_config_file(config_path)
+  raw = config.get("games", "hidden", fallback="")
+  hidden = {part.strip().lower() for part in raw.split(",") if part.strip()}
+  return {
+    "games": [{"id": game_id, "name": info.get("name", game_id),
+               "shown": game_id.lower() not in hidden}
+              for game_id, info in GAMES.items()],
+  }
+
+
 def load_feed_settings() -> dict:
   """The fleet's news feeds, split by whether this node may edit them.
 
@@ -5515,6 +5528,7 @@ def create_app(runtime_interface=None) -> Flask:
       feed_settings = load_feed_settings()
       ai_status = load_ai_model_status()
       storage_settings = load_storage_settings(app.config["CONFIG_PATH"])
+      games_settings = load_games_settings(app.config["CONFIG_PATH"])
       public_chatter_settings = load_public_chatter_settings(app.config["CONFIG_PATH"])
       ssh_settings = load_ssh_settings(app.config["CONFIG_PATH"])
       subscriber_settings = load_subscriber_settings(app.config["CONFIG_PATH"])
@@ -5535,6 +5549,7 @@ def create_app(runtime_interface=None) -> Flask:
         feeds=feed_settings,
         ai_status=ai_status,
         storage=storage_settings,
+        games=games_settings,
         public_chatter=public_chatter_settings,
         ssh=ssh_settings,
         subscribers=subscriber_settings,
@@ -6553,6 +6568,26 @@ def create_app(runtime_interface=None) -> Flask:
           save_subscriber_settings(request.form)
           flash("Subscriber nodes saved. These nodes can pull (WANT/HASHMISS) but are not push-synced to.", "success")
           return redirect(url_for("settings_page") + "#sync")
+
+        if section == "games":
+          from zork_port import GAMES
+          # A checkbox that is unticked is simply absent from the form, so
+          # what gets stored is the complement: every known game that did
+          # not come back ticked. Unknown ids posted by hand are ignored.
+          shown = {value.strip().lower() for value in request.form.getlist("game_shown")}
+          hidden = [game_id for game_id in GAMES if game_id.lower() not in shown]
+          config = read_config_file(app.config["CONFIG_PATH"])
+          if not config.has_section("games"):
+            config.add_section("games")
+          config.set("games", "hidden", ",".join(hidden))
+          write_config_file(config, app.config["CONFIG_PATH"])
+          if len(hidden) == len(GAMES):
+            flash("Every game is hidden, so the Games menu now says none are "
+                  "available.", "success")
+          else:
+            flash("Games saved. The menu changes the next time someone opens it.",
+                  "success")
+          return redirect(url_for("settings_page") + "#games")
 
         if section == "storage":
           save_storage_settings(request.form)

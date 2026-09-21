@@ -46,7 +46,7 @@ from utils import (
     get_node_short_name, resolve_display_name, get_user_state, get_zork_save_sync_notice, send_message,
     update_user_state,
     select_gateway_peer, send_api_request, register_api_request,
-    home_network, _config_int, _get_config_path, send_mail_relay_preference_to_bbs_nodes,
+    home_network, _config_int, _config_raw, _get_config_path, send_mail_relay_preference_to_bbs_nodes,
     clear_user_state, request_session_end,
     get_view_scope, set_view_scope, clear_view_scope,
     node_display_name, scope_notice, local_identities_for_display,
@@ -73,6 +73,31 @@ import dopewars_door
 
 # Ordered list of playable games (matches GAMES keys in zork_port)
 GAME_LIST = list(GAMES.items())  # [(game_id, {name, ...}), ...]
+
+
+def hidden_game_ids() -> set:
+    """Titles this node's operator has taken off the Games menu.
+
+    [games] hidden in config.ini, read on every call so a change in the web
+    admin applies to the next menu drawn, with no restart.
+    """
+    raw = _config_raw('games', 'hidden') or ''
+    return {part.strip().lower() for part in raw.split(',') if part.strip()}
+
+
+def visible_games() -> list:
+    """The games a player on this node is offered, in menu order.
+
+    Every list a player sees goes through this -- the menu, the scoreboard
+    and the Hall of Fame -- so the number beside a title is the same number
+    on every screen, and a hidden title never turns up in one of them.
+    Hiding is per node and never synced: it is this operator's call about
+    this BBS, the way the board list is. Scores for a hidden game are kept,
+    and come back with the title if it is shown again.
+    """
+    hidden = hidden_game_ids()
+    return [(game_id, info) for game_id, info in GAME_LIST
+            if game_id.lower() not in hidden]
 
 # Read the configuration for menu options
 config = configparser.ConfigParser()
@@ -1258,8 +1283,15 @@ def handle_fortune_command(sender_id, interface):
 
 
 def handle_games_command(sender_id, interface):
+    games = visible_games()
+    if not games:
+        # Every title hidden: say so, rather than draw a menu of nothing but
+        # a scoreboard for games nobody can play.
+        send_message("No games are available on this node.", sender_id, interface)
+        handle_help_command(sender_id, interface)
+        return
     menu = "🎮 Games 🎮\n"
-    for i, (game_id, info) in enumerate(GAME_LIST, start=1):
+    for i, (game_id, info) in enumerate(games, start=1):
         menu += f"[{i}] {info['name']}\n"
     menu += "[S]cores [H]all of Fame [F]ortune [0]Back"
     sync_notice = get_zork_save_sync_notice()
@@ -1296,14 +1328,15 @@ def handle_games_steps(sender_id, message, interface):
         handle_fortune_command(sender_id, interface)
         return
 
+    games = visible_games()
     try:
         idx = int(choice) - 1
         if idx < 0:
             raise ValueError
-        game_id, info = GAME_LIST[idx]
+        game_id, info = games[idx]
     except (ValueError, IndexError):
         send_message(
-            f"Invalid choice. Enter 1-{len(GAME_LIST)}, S, H, F, or 0.",
+            f"Invalid choice. Enter 1-{len(games)}, S, H, F, or 0.",
             sender_id, interface
         )
         return
@@ -1410,7 +1443,7 @@ def handle_hall_of_fame_command(sender_id, interface):
     by_game = {r[0]: r for r in rows}
     names = get_score_account_names(_score_row_user_id(r, 5) for r in rows)
     lines = ["🏛 Hall of Fame 🏛"]
-    for game_id, info in GAME_LIST:
+    for game_id, info in visible_games():
         if game_id in by_game:
             row = by_game[game_id]
             _, short_name, score, max_score, moves = row[:5]
@@ -1829,7 +1862,7 @@ def handle_ask_nomad_steps(sender_id, message, interface):
 
 def handle_scoreboard_command(sender_id, interface):
     menu = "🏆 Scoreboard 🏆\n"
-    for i, (game_id, info) in enumerate(GAME_LIST, start=1):
+    for i, (game_id, info) in enumerate(visible_games(), start=1):
         menu += f"[{i}] {info['name']}\n"
     menu += "[0] Back"
     send_message(menu, sender_id, interface)
@@ -1841,13 +1874,14 @@ def handle_scoreboard_steps(sender_id, message, interface):
     if choice in ('0', 'x', 'back'):
         handle_games_command(sender_id, interface)
         return
+    games = visible_games()
     try:
         idx = int(choice) - 1
         if idx < 0:
             raise ValueError
-        game_id, info = GAME_LIST[idx]
+        game_id, info = games[idx]
     except (ValueError, IndexError):
-        send_message(f"Enter 1-{len(GAME_LIST)} or 0 to go back.", sender_id, interface)
+        send_message(f"Enter 1-{len(games)} or 0 to go back.", sender_id, interface)
         return
     scores = get_game_scoreboard(game_id, limit=5)
     if not scores:
