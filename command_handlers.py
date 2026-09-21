@@ -1257,7 +1257,7 @@ def handle_games_command(sender_id, interface):
     menu = "🎮 Games 🎮\n"
     for i, (game_id, info) in enumerate(GAME_LIST, start=1):
         menu += f"[{i}] {info['name']}\n"
-    menu += "[S]cores [H]all of Fame [F]ortune [0]Back"
+    menu += "[S]cores [H]all [F]ortune [0]Back"
     sync_notice = get_zork_save_sync_notice()
     if sync_notice:
         # On a node that does not sync saves the notice IS this screen's tip:
