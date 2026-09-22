@@ -35,6 +35,11 @@ class SSHConfig:
     host_key: str = "data/ssh_host_key"
     username: str = ""
     password: str = ""
+    # No SSH-level authentication at all: `ssh anything@host` lands straight
+    # on the BBS's own username prompt, like dialling a BBS. It is the same
+    # pending session the shared gate opens, so every account still has its
+    # own password and the login and registration limits still apply.
+    public_access: bool = False
     registration_enabled: bool = True
     registration_limit_per_hour: int = 5
     login_limit_per_hour: int = 20
@@ -75,6 +80,7 @@ def load_config(path: Optional[str] = None) -> SSHConfig:
         or "data/ssh_host_key",
         username=str(section.get("username", "")).strip(),
         password=str(section.get("password", "")),
+        public_access=boolean("public_access", False),
         registration_enabled=boolean("registration_enabled", True),
         registration_limit_per_hour=integer(
             "registration_limit_per_hour", 5, minimum=0),
@@ -514,6 +520,15 @@ class BBSSSHServer(asyncssh.SSHServer):
             self.source_address = str(peer[0])
 
     def begin_auth(self, username):
+        if self.config.public_access:
+            # False tells asyncssh no authentication is required. The visitor
+            # is treated as having passed the gate, so they get the pending
+            # session and log in or register at the BBS prompt -- never a
+            # session with an account attached.
+            self.auth = None
+            self.gate_passed = True
+            self._auth_outcome(username, "public access, no SSH password")
+            return False
         return True
 
     def password_auth_supported(self):

@@ -93,15 +93,27 @@ node actually has, and can install the missing pieces itself:
 
 ## Installation
 
-### Linux / Raspberry Pi
+### Linux / Raspberry Pi / VPS
 
 ```sh
 sudo apt update && sudo apt install git
 git clone https://github.com/dreamsofbacon/TC2-BaconBS-mesh.git
 cd TC2-BaconBS-mesh
-bash setup.sh
-cp example_config.ini config.ini
+bash install.sh
 ```
+
+`install.sh` does the whole install. It installs the system packages,
+sets up Python, then asks how the node connects (a USB or WiFi radio, or
+no radio for a server that syncs over the internet). It also asks for a
+web admin password, who may open the web admin, and whether to offer the
+BBS over SSH. It starts the services and checks that they came up. Run it
+as the user the BBS will run as, not root. Running it again keeps your
+`config.ini`, and `--reconfigure` asks the questions again.
+`bash install.sh --help` lists flags for a scripted install. For a public
+node on a VPS, read [docs/VPS-NODE.md](docs/VPS-NODE.md) first.
+
+To do it by hand instead, run `bash setup.sh`, edit `config.ini`, then
+`bash install_services.sh`.
 
 ### Windows
 

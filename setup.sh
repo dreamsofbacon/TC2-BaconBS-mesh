@@ -30,7 +30,15 @@ echo ""
 # Create virtual environment if it doesn't exist
 if [ ! -d "venv" ]; then
     echo "Creating virtual environment..."
-    python3 -m venv venv
+    # Debian and Ubuntu ship venv as a separate package, and minimal images
+    # (most VPSes) leave it out. Without this check the failure is a
+    # traceback about ensurepip that does not name the package to install.
+    if ! python3 -m venv venv; then
+        rm -rf venv
+        echo "ERROR: Could not create the virtual environment."
+        echo "  Debian/Ubuntu: sudo apt install python3-venv"
+        exit 1
+    fi
     echo "✓ Virtual environment created"
 else
     echo "✓ Virtual environment already exists"
@@ -72,19 +80,25 @@ echo ""
 
 # Install dfrotz (required for Zork / Infocom games)
 echo "Checking for dfrotz (Z-machine interpreter for games)..."
-if command -v dfrotz &> /dev/null || command -v frotz &> /dev/null; then
+if command -v dfrotz &> /dev/null || command -v frotz &> /dev/null \
+    || [ -x /usr/games/dfrotz ]; then
     echo "✓ frotz/dfrotz already installed"
+elif [ "${BBS_SETUP_SKIP_GAMES:-}" = "1" ]; then
+    echo "  Skipping frotz (install later with: sudo apt install frotz)"
 else
     if command -v apt-get &> /dev/null; then
         echo "dfrotz not found. It is required to play Zork and other Infocom games."
-        read -r -p "Install dfrotz via apt? (requires sudo) [Y/n]: " REPLY
+        read -r -p "Install frotz via apt? (requires sudo) [Y/n]: " REPLY
         REPLY=${REPLY:-Y}
         if [[ "$REPLY" =~ ^[Yy]$ ]]; then
-            sudo apt-get install -y dfrotz
-            echo "✓ dfrotz installed"
+            # The package is frotz; dfrotz is the binary inside it, in
+            # /usr/games. There is no package called dfrotz, and asking for
+            # one stopped this script here, before config.ini existed.
+            sudo apt-get install -y frotz
+            echo "✓ frotz installed"
         else
-            echo "  Skipping dfrotz install. Games will not work until dfrotz is installed."
-            echo "  Install later with: sudo apt install dfrotz"
+            echo "  Skipping frotz install. Games will not work until it is installed."
+            echo "  Install later with: sudo apt install frotz"
         fi
     elif command -v brew &> /dev/null; then
         echo "dfrotz not found. It is required to play Zork and other Infocom games."
@@ -120,7 +134,9 @@ echo "========================================"
 echo ""
 echo "Next steps:"
 echo "1. Review and update config.ini with your settings"
-echo "2. Start using venv Python: ./venv/bin/python server.py"
+echo "2. Run it as a service: bash install_services.sh"
+echo "   (or all of this in one go, with questions: bash install.sh)"
+echo "   Or run it by hand: ./venv/bin/python server.py"
 echo ""
 echo "Optional interactive shell activation: source venv/bin/activate"
 echo "Then you can run: python server.py"

@@ -10,6 +10,10 @@ Its port is independent of the host's administrative SSH service; 2222 is the
 default specifically to avoid port 22. Public-key authentication and
 moderation controls remain future work.
 
+For a node that anyone can reach with no SSH password
+(`[ssh] public_access`), and how to host one on a VPS, see
+[VPS-NODE.md](VPS-NODE.md).
+
 ---
 
 ## The problem you have to solve first

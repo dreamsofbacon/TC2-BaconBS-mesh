@@ -62,3 +62,4 @@ radio_admin.db*
 /mesh_bbs.db
 /mesh_node.db
 /trivia.db
+web-admin.env

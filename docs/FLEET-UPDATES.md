@@ -194,8 +194,14 @@ python scripts/fleet_sign.py verify <blob>
    syntax error taking a node off the air.
 4. **Switch** — `git checkout`, `pip install -r requirements.txt`.
 5. **Restart.** The process exits; systemd (`Restart=always`) starts it on
-   the new code. No sudo is involved anywhere: the repo and the venv are
-   owned by the service user.
+   the new code. That needs no privilege: the repo and the venv are owned
+   by the service user. The web admin and SSH services do not exit with
+   it, so they are restarted with `sudo -n systemctl restart <unit>`.
+   `install_services.sh` installs `/etc/sudoers.d/baconbbs-fleet`, which
+   allows exactly those two restarts. On a node installed before that
+   file existed, add it by running `install_services.sh` again. Without
+   it, both keep running the old code, and the update reports that the
+   companion restart failed.
 6. **Probation.** For the next few minutes the node is on trial. If it fails
    to start three times, it reverts to the previous commit and comes back on
    that. Once it has been serving for five minutes, the rollback disarms.

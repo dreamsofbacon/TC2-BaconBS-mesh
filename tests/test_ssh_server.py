@@ -40,6 +40,14 @@ class SSHConfigTests(unittest.TestCase):
         self.assertEqual(config.password, "access-pass")
         self.assertEqual(config.max_sessions, 8)
         self.assertEqual(config.max_sessions_per_account, 1)
+        self.assertFalse(config.public_access)
+
+    def test_public_access_is_read_from_the_section(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = os.path.join(temp_dir, "config.ini")
+            with open(config_path, "w", encoding="utf-8") as config_file:
+                config_file.write("[ssh]\nenabled = true\npublic_access = yes\n")
+            self.assertTrue(load_config(config_path).public_access)
 
 
 class SessionLimiterTests(unittest.TestCase):
@@ -323,6 +331,92 @@ class SSHServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     await asyncssh.connect(
                         "127.0.0.1", port=self.port, username=username,
                         password=password, known_hosts=None)
+
+    async def _start_public(self, name, **overrides):
+        """Restart the listener with no SSH-level authentication."""
+        self.listener.close()
+        await self.listener.wait_closed()
+        settings = dict(enabled=True, host="127.0.0.1", port=0,
+                        host_key=os.path.join(self.temp_dir.name, name),
+                        public_access=True, max_sessions=3,
+                        max_sessions_per_account=1, idle_timeout_seconds=30)
+        settings.update(overrides)
+        self.config = SSHConfig(**settings)
+        self.listener = await start_server(self.config)
+        self.port = self.listener.get_port()
+
+    async def _connect_public(self):
+        connection = await asyncssh.connect(
+            "127.0.0.1", port=self.port, username="anyone",
+            known_hosts=None, client_keys=None, agent_path=None,
+            password=None)
+        self.connections.append(connection)
+        return connection
+
+    async def test_public_access_needs_no_ssh_password(self):
+        """A public node: ssh in with no password at all and land on the
+        BBS's own prompt, where the account password is still required."""
+        await self._start_public("public_key")
+        connection = await self._connect_public()
+        process = await connection.create_process(term_type="xterm")
+        prompt = await process.stdout.readuntil("BBS username: ")
+        self.assertIn("Register or log in", prompt)
+        process.stdin.write("PublicCaller\n")
+        await process.stdout.readuntil("Create password: ")
+        process.stdin.write("account-password\n")
+        await process.stdout.readuntil("Confirm password: ")
+        process.stdin.write("account-password\n")
+        welcome = await process.stdout.readuntil("> ")
+        self.assertIn("Account PublicCaller created", welcome)
+        process.stdin.write_eof()
+        await process.wait_closed()
+
+    async def test_public_access_opens_the_bbs_and_nothing_else(self):
+        """With no password at the door, the door has to lead only to the
+        BBS: no remote command, no port forwarding, no SFTP."""
+        await self._start_public("public_nothing_else_key")
+        connection = await self._connect_public()
+
+        with self.subTest("remote command"):
+            with self.assertRaises(asyncssh.ChannelOpenError):
+                await connection.run("cat /etc/passwd", check=False)
+
+        with self.subTest("local port forward"):
+            with self.assertRaises(asyncssh.ChannelOpenError):
+                await connection.open_connection("127.0.0.1", 22)
+
+        with self.subTest("remote port forward"):
+            with self.assertRaises(asyncssh.ChannelListenError):
+                await connection.start_server(
+                    lambda *a: None, "127.0.0.1", 0)
+
+        with self.subTest("sftp"):
+            with self.assertRaises((asyncssh.ChannelOpenError,
+                                    asyncssh.SFTPError, asyncssh.Error)):
+                await connection.start_sftp_client()
+
+        with self.subTest("a refused request does not leak a session slot"):
+            # Three refused channels above; with max_sessions=3 a leak would
+            # leave no room for the BBS itself.
+            process = await connection.create_process(term_type="xterm")
+            await process.stdout.readuntil("BBS username: ")
+            process.stdin.write_eof()
+            await process.wait_closed()
+
+    async def test_public_access_still_respects_the_session_limit(self):
+        await self._start_public("public_limit_key", max_sessions=1)
+        first = await self._connect_public()
+        held = await first.create_process(term_type="xterm")
+        await held.stdout.readuntil("BBS username: ")
+        second = await self._connect_public()
+        with self.assertRaises(asyncssh.ChannelOpenError):
+            await second.create_process(term_type="xterm")
+        held.stdin.write_eof()
+        await held.wait_closed()
+
+    async def test_public_access_is_off_unless_configured(self):
+        with self.assertRaises(asyncssh.PermissionDenied):
+            await self._connect_public()
 
     async def test_shared_access_requires_account_auth_after_connection(self):
         self.listener.close()
