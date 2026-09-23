@@ -66,6 +66,15 @@ MAIN MENU   header: Bacon BBS  (mail:N shows unread count)
     [2] Bulletins
         Board picker: General / Info / News / Urgent, per [boards] config.
         Accepts the number, the board name, or its first letter.
+        A board marked * does not sync everywhere: its posts stay on this
+        node, or reach only the nodes the operator chose. The legend says
+        so on the picker, because that is where people decide what to
+        write.
+        [S]ync setup appears for ADMINS only -> pick a board -> [1]
+        Everywhere [2] This node only [3] Chosen nodes (toggle peers by
+        number, [D]one). It applies to posts written from then on; posts
+        already sent stay where they are. Same setting as the web admin's
+        Settings > Board Sync panel.
           -> [1]Read [2]Post [0]Back
              [1] Read  -> "Select a bulletin number to view from <board>,
                            or [0] to go back:"

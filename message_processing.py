@@ -16,6 +16,7 @@ from meshtastic import BROADCAST_NUM
 from command_handlers import (
     handle_mail_command, handle_bulletin_command, handle_help_command, handle_stats_command,
     handle_bb_steps, handle_mail_steps, handle_stats_steps,
+    handle_board_sync_steps,
     handle_channel_directory_command, handle_channel_directory_steps, handle_send_mail_command,
     handle_read_mail_command, handle_check_mail_command, handle_quick_reply_command,
     handle_delete_mail_confirmation, handle_post_bulletin_command,
@@ -1276,7 +1277,9 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
         return
     with _hash_buffer_lock:
         remote = dict(_peer_hash_manifest_buffers.pop((sender_node_id, scope), {}))
-    local = get_record_hash_manifest(scope)
+    # As this peer sees us: a record its board keeps from it must not appear
+    # here, or every cycle would find a difference it is never allowed to fix.
+    local = get_record_hash_manifest(scope, peer_id=sender_node_id)
     remote_keys = set(remote.keys())
     local_keys = set(local.keys())
 
@@ -1366,7 +1369,7 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
 
 
 def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface) -> None:
-    manifest = get_record_hash_manifest(scope)
+    manifest = get_record_hash_manifest(scope, peer_id=destination_node_id)
     logging.info(f"Sending hash manifest to {destination_node_id} scope={scope} count={len(manifest)} compressed={_hash_manifest_compression_enabled()}")
     # Manifest frames travel back-to-back; a chunk-pause floor (independent of
     # turbo) keeps trailing chunks from being dropped on the LoRa receive path.
@@ -1416,8 +1419,14 @@ def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface)
 
 
 def _send_requested_record(scope: str, key: str, destination_node_id: str, interface) -> None:
+    """Answer one peer's HASHMISS.
+
+    Every lookup here is made AS the requesting peer: a board can be set to
+    stay on this node or to reach only named peers, and this is the one path
+    where a peer names a record itself rather than being offered it.
+    """
     if scope == 'bulletins':
-        row = get_bulletin_by_unique_id(key)
+        row = get_bulletin_by_unique_id(key, peer_id=destination_node_id)
         if row:
             # row: (board, sender_short_name, date, subject, content, unique_id, source_node_id, source_timestamp)
             logging.info(f"Sending requested bulletin to {destination_node_id} key={key}")
@@ -3153,6 +3162,9 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             return
         if state and state.get('command') == 'NODE_VIEW' and not _navigating:
             handle_node_view_steps(sender_id, message, interface, state)
+            return
+        if state and state.get('command') == 'BOARD_SYNC' and not _navigating:
+            handle_board_sync_steps(sender_id, message, interface, state)
             return
         if (state and state.get('command') == 'BULLETIN_OWN_DELETE'
                 and not _navigating):

@@ -3259,20 +3259,135 @@ def peer_opts_out_of_zork_saves(peer_zork_hash) -> bool:
     return bool(peer_zork_hash) and str(peer_zork_hash) == zork_saves_disabled_hash()
 
 
-def get_local_record_counts() -> dict:
-    """Return local record counts and compact hashes used by SYNCSTATE comparisons."""
+BOARD_AUDIENCE_ALL = 'all'
+BOARD_AUDIENCE_LOCAL = 'local'
+BOARD_AUDIENCE_PEERS = 'peers'
+
+
+def _normalize_board(board: str) -> str:
+    return str(board or '').strip().casefold()
+
+
+def _peer_list(peers) -> list:
+    if isinstance(peers, str):
+        peers = peers.split(',')
+    return list(dict.fromkeys(
+        str(peer).strip() for peer in (peers or []) if str(peer).strip()))
+
+
+def get_board_audience(board: str) -> tuple:
+    """(audience, peers) for a board. An unset board reaches everyone."""
+    row = get_db_connection().execute(
+        "SELECT audience, peers FROM board_sync WHERE board = ?",
+        (_normalize_board(board),)).fetchone()
+    if not row:
+        return (BOARD_AUDIENCE_ALL, [])
+    audience = str(row[0] or BOARD_AUDIENCE_ALL)
+    peers = _peer_list(row[1])
+    if audience == BOARD_AUDIENCE_PEERS and not peers:
+        # "These peers" with none chosen is this node only. Reading it as
+        # "everywhere" would be the opposite of what the operator asked for.
+        return (BOARD_AUDIENCE_LOCAL, [])
+    if audience not in (BOARD_AUDIENCE_LOCAL, BOARD_AUDIENCE_PEERS):
+        return (BOARD_AUDIENCE_ALL, [])
+    return (audience, peers)
+
+
+def set_board_audience(board: str, audience: str, peers=None) -> bool:
+    """Record where a board's future posts may go."""
+    name = _normalize_board(board)
+    if not name:
+        return False
+    audience = str(audience or BOARD_AUDIENCE_ALL).strip().casefold()
+    peer_ids = _peer_list(peers)
+    conn = get_db_connection()
+    if audience == BOARD_AUDIENCE_ALL:
+        conn.execute("DELETE FROM board_sync WHERE board = ?", (name,))
+        conn.commit()
+        return True
+    if audience not in (BOARD_AUDIENCE_LOCAL, BOARD_AUDIENCE_PEERS):
+        return False
+    conn.execute(
+        "INSERT INTO board_sync (board, audience, peers, updated_at) VALUES (?, ?, ?, ?)"
+        " ON CONFLICT(board) DO UPDATE SET audience = excluded.audience,"
+        " peers = excluded.peers, updated_at = excluded.updated_at",
+        (name, audience, ','.join(peer_ids),
+         datetime.now(timezone.utc).isoformat(timespec='microseconds')))
+    conn.commit()
+    return True
+
+
+def get_all_board_audiences() -> dict:
+    """{normalized board: (audience, peers)} for every board that has one."""
+    rows = get_db_connection().execute(
+        "SELECT board, audience, peers FROM board_sync").fetchall()
+    return {str(board): get_board_audience(str(board)) for board, _a, _p in rows}
+
+
+def board_post_audience(board: str) -> tuple:
+    """(local_only, sync_peers) to stamp on a post written to this board."""
+    audience, peers = get_board_audience(board)
+    if audience == BOARD_AUDIENCE_LOCAL:
+        return (True, '')
+    if audience == BOARD_AUDIENCE_PEERS:
+        return (False, ','.join(peers))
+    return (False, '')
+
+
+def _peer_audience_sql(peer_id: str, alias: str = '') -> tuple:
+    """SQL that keeps only the rows `peer_id` is allowed to receive.
+
+    Empty peer_id means the local view: local_only rows are still excluded,
+    because that is what every existing query does, but nothing else is.
+
+    The allow-list is a comma-separated string, so membership is a substring
+    test against the value wrapped in commas -- ',!abc,' inside ',!abc,!def,'
+    -- which cannot half-match a longer id the way a bare LIKE would.
+    """
+    prefix = f"{alias}." if alias else ""
+    clause = f" AND {prefix}local_only = 0"
+    if not str(peer_id or '').strip():
+        return (clause, ())
+    clause += (f" AND ({prefix}sync_peers = '' OR instr(',' || {prefix}sync_peers || ',', ?) > 0)")
+    return (clause, (f",{str(peer_id).strip()},",))
+
+
+def record_is_for_peer(peer_id: str, local_only, sync_peers: str) -> bool:
+    """The same rule as _peer_audience_sql, for rows already in hand."""
+    if int(local_only or 0):
+        return False
+    allowed = _peer_list(sync_peers)
+    if not allowed:
+        return True
+    return str(peer_id or '').strip() in allowed
+
+
+def get_local_record_counts(peer_id: str = '') -> dict:
+    """Local record counts and compact hashes for SYNCSTATE comparisons.
+
+    With peer_id, the summary covers exactly the records that peer is
+    allowed to receive. That equality is the whole point: a count or hash
+    that includes a record the peer can never be given makes the scope
+    mismatch on every cycle, and the repair that follows finds nothing to
+    fix -- the loop the hashing comments in this module keep warning about.
+    """
     conn = get_db_connection()
     c = conn.cursor()
     zork_save_sync_enabled = is_zork_save_sync_enabled()
-    c.execute("SELECT COUNT(*) FROM bulletins WHERE local_only = 0")
+    audience_clause, audience_params = _peer_audience_sql(peer_id)
+    channel_clause, channel_params = _peer_audience_sql(peer_id, 'ch')
+    c.execute(f"SELECT COUNT(*) FROM bulletins WHERE 1=1{audience_clause}",
+              audience_params)
     bulletins = int(c.fetchone()[0])
     c.execute("SELECT COUNT(*) FROM mail")
     mail = int(c.fetchone()[0])
-    c.execute("SELECT COUNT(*) FROM channels WHERE local_only = 0")
+    ch_self_clause, ch_self_params = _peer_audience_sql(peer_id)
+    c.execute(f"SELECT COUNT(*) FROM channels WHERE 1=1{ch_self_clause}",
+              ch_self_params)
     channels = int(c.fetchone()[0])
     c.execute(
-        "SELECT COUNT(*) FROM channel_comments cc JOIN channels ch ON ch.id = cc.channel_id WHERE ch.local_only = 0"
-    )
+        "SELECT COUNT(*) FROM channel_comments cc JOIN channels ch"
+        f" ON ch.id = cc.channel_id WHERE 1=1{channel_clause}", channel_params)
     channels += int(c.fetchone()[0])
     _ensure_zork_saves_table()
     if zork_save_sync_enabled:
@@ -3313,14 +3428,17 @@ def get_local_record_counts() -> dict:
         return base64.urlsafe_b64encode(digest.digest()).decode('ascii').rstrip('=')
 
     bulletins_hash = _hash_rows(
-        "SELECT board, sender_short_name, subject, content, unique_id FROM bulletins WHERE local_only = 0 ORDER BY unique_id"
+        "SELECT board, sender_short_name, subject, content, unique_id FROM bulletins"
+        f" WHERE 1=1{audience_clause} ORDER BY unique_id", audience_params
     )
     mail_hash = _hash_rows(
         "SELECT sender, sender_short_name, recipient, subject, content, unique_id FROM mail ORDER BY unique_id"
     )
     channels_digest = hashlib.blake2b(digest_size=8)
     channels_row_count = 0
-    for row in c.execute("SELECT 'channel', name, url FROM channels WHERE local_only = 0 ORDER BY name, url"):
+    for row in c.execute(
+            "SELECT 'channel', name, url FROM channels"
+            f" WHERE 1=1{ch_self_clause} ORDER BY name, url", ch_self_params):
         channels_row_count += 1
         for value in row:
             blob = b'' if value is None else str(value).encode('utf-8')
@@ -3330,7 +3448,8 @@ def get_local_record_counts() -> dict:
     for row in c.execute(
         "SELECT 'comment', ch.name, ch.url, cc.sender_short_name, cc.content, cc.unique_id, "
         "COALESCE(cc.expected_content_length, LENGTH(cc.content)), COALESCE(cc.content_complete, 1) "
-        "FROM channel_comments cc JOIN channels ch ON ch.id = cc.channel_id WHERE ch.local_only = 0 ORDER BY cc.unique_id"
+        "FROM channel_comments cc JOIN channels ch ON ch.id = cc.channel_id"
+        f" WHERE 1=1{channel_clause} ORDER BY cc.unique_id", channel_params
     ):
         channels_row_count += 1
         for value in row:
@@ -4094,11 +4213,30 @@ def _ensure_local_only_columns(cursor) -> None:
     bulletin_cols = {row[1] for row in cursor.fetchall()}
     if 'local_only' not in bulletin_cols:
         cursor.execute("ALTER TABLE bulletins ADD COLUMN local_only INTEGER NOT NULL DEFAULT 0")
+    # The peers this record may reach, empty meaning every peer. A copy of
+    # the board's audience taken when the post was written, not a lookup:
+    # widening a board later must not hand over what was written while it
+    # was narrow, and narrowing it cannot un-send what peers already hold.
+    if 'sync_peers' not in bulletin_cols:
+        cursor.execute("ALTER TABLE bulletins ADD COLUMN sync_peers TEXT NOT NULL DEFAULT ''")
 
     cursor.execute("PRAGMA table_info(channels)")
     channel_cols = {row[1] for row in cursor.fetchall()}
     if 'local_only' not in channel_cols:
         cursor.execute("ALTER TABLE channels ADD COLUMN local_only INTEGER NOT NULL DEFAULT 0")
+    if 'sync_peers' not in channel_cols:
+        cursor.execute("ALTER TABLE channels ADD COLUMN sync_peers TEXT NOT NULL DEFAULT ''")
+
+    # Which peers a board's posts may reach. Local policy: never advertised,
+    # never synced -- a peer deciding our boards' audiences would defeat the
+    # point. Boards themselves stay config-driven; a board with no row here
+    # reaches everyone, which is what every board did before this existed.
+    cursor.execute('''CREATE TABLE IF NOT EXISTS board_sync (
+                        board TEXT PRIMARY KEY,
+                        audience TEXT NOT NULL DEFAULT 'all',
+                        peers TEXT NOT NULL DEFAULT '',
+                        updated_at TEXT NOT NULL DEFAULT ''
+                    );''')
 
     cursor.execute("PRAGMA table_info(peer_sync_state)")
     peer_cols = {row[1] for row in cursor.fetchall()}
@@ -4757,8 +4895,16 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
             _flush_pending_expected_content_length('bulletins', unique_id, _pending_bulletin_expected_lengths, 'bulletin')
             clear_sync_tombstone('bulletins', str(unique_id))
             return unique_id
+    # A post takes a copy of its board's audience as it is written. Only a
+    # post written HERE: one arriving from a peer already carries whatever
+    # that node decided, and re-deciding it here would apply this node's
+    # policy to somebody else's board.
+    sync_peers = ''
+    if source_node_id is not None and source_node_id == get_local_node_id():
+        board_local_only, sync_peers = board_post_audience(board)
+        local_only = bool(local_only) or board_local_only
     c.execute(
-        "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only, expected_content_length, content_complete, source_node_id, source_timestamp, received_at, author_node_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only, sync_peers, expected_content_length, content_complete, source_node_id, source_timestamp, received_at, author_node_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             board,
             sender_short_name,
@@ -4767,6 +4913,7 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
             content,
             unique_id,
             1 if local_only else 0,
+            sync_peers,
             len(str(content or '')),
             1,
             source_node_id,
@@ -4777,20 +4924,29 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
     )
     conn.commit()
     _local_nid = get_local_node_id()
-    if _local_nid and source_node_id == _local_nid:
+    # A local-only post is not written to op_log at all. It used to be, and
+    # the EVENT frame that followed told every peer the id existed; the peer
+    # then asked for it by id, which get_bulletin_by_unique_id answered
+    # without checking local_only. "Never leaves this node" leaked on
+    # request. Records with a peer allow-list DO go in the log -- op_sync
+    # filters those per peer, which the log cannot do, since one event is
+    # read by everyone.
+    if _local_nid and source_node_id == _local_nid and not local_only:
         try_dual_write(
             c, origin_node_id=_local_nid,
             event_type='upsert', scope='bulletins', target_uid=unique_id,
             payload={'board': board, 'sender_short_name': sender_short_name,
                      'subject': subject, 'date': original_date,
-                     'local_only': 1 if local_only else 0},
+                     'local_only': 0},
             created_at=now_iso,
         )
         conn.commit()
     _flush_pending_expected_content_length('bulletins', unique_id, _pending_bulletin_expected_lengths, 'bulletin')
     clear_sync_tombstone('bulletins', str(unique_id))
-    if (not local_only) and bbs_nodes and interface:
-        send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, bbs_nodes, interface, date=original_date, source_node_id=source_node_id, source_timestamp=source_timestamp,
+    targets = [node for node in (bbs_nodes or [])
+               if record_is_for_peer(node, local_only, sync_peers)]
+    if targets and interface:
+        send_bulletin_to_bbs_nodes(board, sender_short_name, subject, content, unique_id, targets, interface, date=original_date, source_node_id=source_node_id, source_timestamp=source_timestamp,
                                    author_node_id=author_node_id)
 
     # New logic to send group chat notification for urgent bulletins
@@ -8244,18 +8400,27 @@ def _compact_record_hash(row, timestamp_columns=()) -> str:
         for index, value in enumerate(row)))
 
 
-def get_record_hash_manifest(scope: str) -> dict:
+def get_record_hash_manifest(scope: str, peer_id: str = '') -> dict:
     """Return a per-record hash map for selective mismatch repair.
 
     Supported scopes: bulletins, mail, channels, public_chatter, profiles, game_scores, zork_saves, tombstones.
+
+    peer_id narrows it to what that peer may receive, and must match
+    get_local_record_counts for the same peer: the counts say a scope is
+    mismatched, this says which records to move, and a record in one but not
+    the other is a repair cycle that never converges.
     """
     conn = get_db_connection()
     c = conn.cursor()
     manifest = {}
+    audience_clause, audience_params = _peer_audience_sql(peer_id)
+    channel_clause, channel_params = _peer_audience_sql(peer_id, 'ch')
 
     if scope == 'bulletins':
         for row in c.execute(
-            "SELECT board, sender_short_name, subject, content, unique_id, source_node_id, source_timestamp FROM bulletins WHERE local_only = 0"
+            "SELECT board, sender_short_name, subject, content, unique_id,"
+            " source_node_id, source_timestamp FROM bulletins"
+            f" WHERE 1=1{audience_clause}", audience_params
         ):
             key = str(row[4])
             manifest[key] = _compact_record_hash(row, timestamp_columns=(6,))
@@ -8268,7 +8433,8 @@ def get_record_hash_manifest(scope: str) -> dict:
     elif scope == 'channels':
         # Channel records only — comments are a separate sub-scope.
         for row in c.execute(
-            "SELECT name, url FROM channels WHERE local_only = 0"
+            f"SELECT name, url FROM channels WHERE 1=1{audience_clause}",
+            audience_params
         ):
             key = make_channel_manifest_key(row[0], row[1])
             manifest[key] = _compact_row_hash(row)
@@ -8293,7 +8459,8 @@ def get_record_hash_manifest(scope: str) -> dict:
             "SELECT ch.name, ch.url, cc.sender_short_name, cc.content, cc.unique_id, "
             "COALESCE(cc.expected_content_length, LENGTH(cc.content)), COALESCE(cc.content_complete, 1), "
             "cc.source_node_id, cc.source_timestamp "
-            "FROM channel_comments cc JOIN channels ch ON ch.id = cc.channel_id WHERE ch.local_only = 0"
+            "FROM channel_comments cc JOIN channels ch ON ch.id = cc.channel_id"
+            f" WHERE 1=1{channel_clause}", channel_params
         ):
             manifest[str(row[4])] = _compact_record_hash(
                 row, timestamp_columns=(8,))
@@ -8343,12 +8510,25 @@ def get_record_hash_manifest(scope: str) -> dict:
     return manifest
 
 
-def get_bulletin_by_unique_id(unique_id: str):
+def get_bulletin_by_unique_id(unique_id: str, peer_id: str = ''):
+    """One bulletin, optionally as a given peer is allowed to see it.
+
+    peer_id is what answers a HASHMISS. Without it this returned any row,
+    local_only included, so a post marked "never leaves this node" was
+    handed over to whoever asked for it by id -- and op_log told peers those
+    ids existed. Callers serving a peer MUST pass one.
+    """
     conn = get_db_connection()
     c = conn.cursor()
+    # No peer means this node reading its own board, where a local-only post
+    # is exactly what the reader asked for. The filter applies only when the
+    # row is about to leave the node.
+    clause, params = _peer_audience_sql(peer_id) if str(peer_id or '').strip() else ('', ())
     c.execute(
-        "SELECT board, sender_short_name, date, subject, content, unique_id, source_node_id, source_timestamp, author_node_id FROM bulletins WHERE unique_id = ? ORDER BY LENGTH(content) DESC, id ASC",
-        (unique_id,),
+        "SELECT board, sender_short_name, date, subject, content, unique_id, "
+        "source_node_id, source_timestamp, author_node_id FROM bulletins "
+        f"WHERE unique_id = ?{clause} ORDER BY LENGTH(content) DESC, id ASC",
+        (unique_id, *params),
     )
     return c.fetchone()
 

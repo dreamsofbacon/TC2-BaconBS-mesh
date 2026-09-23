@@ -40,6 +40,10 @@
         <span class="settings-nav-title">Account Linking</span>
         <span class="settings-nav-hint">Multi-device accounts</span>
       </a>
+      <a class="settings-nav-link" href="#board_sync" data-panel-link="board_sync">
+        <span class="settings-nav-title">Board Sync</span>
+        <span class="settings-nav-hint">Which nodes each board reaches</span>
+      </a>
       <a class="settings-nav-link" href="#games" data-panel-link="games">
         <span class="settings-nav-title">Games</span>
         <span class="settings-nav-hint">Which games this BBS offers</span>
@@ -1443,6 +1447,52 @@
       <p class="text-muted">Used by <em>Linked Devices &gt; [6] Request code, delayed</em>. A dual-boot device can't receive anything while it reboots into its other protocol, so the code is held this long, then sent to every device already linked to the account. The code's lifetime is extended by the same amount, so the time available to redeem it is unchanged.</p>
     </div>
     <button class="btn btn-primary" type="submit">Save Account Settings</button>
+  </form>
+</section>
+
+<section class="card settings-panel" id="board_sync" data-settings-panel="board_sync" style="max-width:600px">
+  <h2>Board Sync</h2>
+  <p class="text-muted">
+    Where each board's posts are allowed to travel. <strong>Everywhere</strong>
+    is the default and what every board did before this setting existed.
+    <strong>This node only</strong> keeps them here: they are never sent, never
+    offered, and never handed over when a peer asks for them by name.
+  </p>
+  <p class="text-muted">
+    A post takes a copy of its board's setting as it is written, so changing a
+    board here affects future posts only &mdash; widening a board does not push
+    out what was written while it was narrow, and narrowing one cannot recall
+    what peers already hold. Admins can set this from a radio too, under the
+    Bulletin Menu.
+  </p>
+  <form method="post" action="{{ url_for('settings_page') }}#board_sync">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="board_sync">
+    {% for row in board_sync.boards %}
+    <div style="margin-bottom:14px">
+      <label><strong>{{ row.board }}</strong></label><br>
+      <select name="audience_{{ row.board }}">
+        <option value="all" {% if row.audience == 'all' %}selected{% endif %}>Everywhere</option>
+        <option value="local" {% if row.audience == 'local' %}selected{% endif %}>This node only</option>
+        <option value="peers" {% if row.audience == 'peers' %}selected{% endif %}>Chosen nodes</option>
+      </select>
+      {% if board_sync.peers %}
+      <div class="text-muted" style="margin-top:4px">
+        {% for peer in board_sync.peers %}
+        <label style="margin-right:10px">
+          <input type="checkbox" name="peers_{{ row.board }}" value="{{ peer.id }}"
+                 {% if peer.id in row.peers %}checked{% endif %}>
+          {{ peer.label }}
+        </label>
+        {% endfor %}
+        <span>&mdash; used only with &ldquo;Chosen nodes&rdquo;</span>
+      </div>
+      {% else %}
+      <div class="text-muted" style="margin-top:4px">No sync peers configured yet.</div>
+      {% endif %}
+    </div>
+    {% endfor %}
+    <button class="btn btn-primary" type="submit">Save Board Sync</button>
   </form>
 </section>
 

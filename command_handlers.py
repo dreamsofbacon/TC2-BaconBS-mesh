@@ -16,7 +16,9 @@ from db_operations import (
     get_content_source_nodes,
     get_node_role, set_node_role, get_role_updated_at,
     role_at_least, role_rank, normalize_role,
-    ASSIGNABLE_ROLES, ROLE_MOD, ROLE_VIP, ROLE_UNREGISTERED,
+    ASSIGNABLE_ROLES, ROLE_MOD, ROLE_ADMIN, ROLE_VIP, ROLE_UNREGISTERED,
+    get_board_audience, set_board_audience,
+    BOARD_AUDIENCE_ALL, BOARD_AUDIENCE_LOCAL, BOARD_AUDIENCE_PEERS,
     get_account_id_for_node,
     count_hidden_bulletins, count_hidden_mail, count_hidden_channel_comments,
     get_bulletin_content, get_bulletins,
@@ -1301,16 +1303,208 @@ def _resolve_mail_relay_recipient(recipient: str, sender_node_id=None):
 
 
 
+def _board_is_restricted(board: str) -> bool:
+    try:
+        return get_board_audience(board)[0] != BOARD_AUDIENCE_ALL
+    except Exception:
+        logging.exception("could not read the audience for board %r", board)
+        return False
+
+
+def _can_administer(sender_id, interface) -> bool:
+    """Whether this session may change where a board's posts travel.
+
+    Stricter than moderation on purpose: a moderator takes a post down,
+    an admin decides which nodes a whole board is allowed to reach.
+    """
+    node_id = get_node_id_from_num(sender_id, interface)
+    return bool(node_id) and role_at_least(get_node_role(node_id), ROLE_ADMIN)
+
+
 def handle_bulletin_command(sender_id, interface):
     boards = get_bulletin_boards()
-    board_options = "\n".join([f"[{index}] {board}" for index, board in enumerate(boards, start=1)])
+    restricted = {board for board in boards if _board_is_restricted(board)}
+    board_options = "\n".join([
+        f"[{index}] {board}" + ("*" if board in restricted else "")
+        for index, board in enumerate(boards, start=1)])
+    # People decide what to write from this screen, so a board whose posts
+    # do not leave has to say so before they post rather than after.
+    legend = "\n*stays on chosen nodes" if restricted else ""
+    setup = "\n[S]ync setup" if _can_administer(sender_id, interface) else ""
     response = (
-        f"📰Bulletin Menu📰\nWhich board would you like to enter?\n{board_options}"
-        "\nReply with board number, name, or first letter.\n[0] Back"
+        f"📰Bulletin Menu📰\nWhich board would you like to enter?\n{board_options}{legend}"
+        f"\nReply with board number, name, or first letter.{setup}\n[0] Back"
     )
     send_message(with_help_tip(response, sender_id, 'BULLETIN_MENU'),
                  sender_id, interface)
     update_user_state(sender_id, {'command': 'BULLETIN_MENU', 'step': 1, 'boards': boards})
+
+
+# ── Where a board's posts are allowed to travel ─────────────────────────────
+#
+# Admin-only, reached with [S] from the Bulletin Menu. Three screens, each
+# built to fit one packet: pick a board, pick an audience, and -- only for
+# "chosen nodes" -- toggle peers by number the way the chatter filter does.
+#
+# What is set here applies to posts written AFTER it: every post takes a copy
+# of its board's audience as it is written (see add_bulletin), so widening a
+# board later cannot hand over what was written while it was narrow.
+
+def _peer_options(interface) -> list:
+    """The peers this node syncs with, newest label rules, stable order."""
+    nicknames = get_node_nicknames()
+    local_ids = local_identities_for_display()
+    options = []
+    for node_id in getattr(interface, 'bbs_nodes', []) or []:
+        node_id = str(node_id).strip()
+        if not node_id or node_id in local_ids:
+            continue
+        label = node_display_name(node_id, local_ids=local_ids, nicknames=nicknames)
+        options.append({'id': node_id, 'label': str(label or node_id)[:18]})
+    return options
+
+
+def send_board_sync_menu(sender_id, interface, boards) -> None:
+    lines = ["Board sync", "Which board?"]
+    for index, board in enumerate(boards, start=1):
+        audience, peers = get_board_audience(board)
+        if audience == BOARD_AUDIENCE_LOCAL:
+            mark = "here only"
+        elif audience == BOARD_AUDIENCE_PEERS:
+            mark = f"{len(peers)} node(s)"
+        else:
+            mark = "everywhere"
+        lines.append(f"[{index}]{board} - {mark}")
+    lines.append("[0] Back")
+    send_message(LINE_BREAK.join(lines), sender_id, interface)
+    update_user_state(sender_id, {'command': 'BOARD_SYNC', 'step': 1,
+                                  'boards': list(boards)})
+
+
+def _send_board_audience_screen(sender_id, interface, state) -> None:
+    board = state.get('board', '')
+    audience, _peers = get_board_audience(board)
+    current = {BOARD_AUDIENCE_ALL: 'everywhere',
+               BOARD_AUDIENCE_LOCAL: 'here only',
+               BOARD_AUDIENCE_PEERS: 'chosen nodes'}.get(audience, 'everywhere')
+    send_message(LINE_BREAK.join([
+        f"{board}: {current}",
+        "Posts written from now on go:",
+        "[1]Everywhere [2]This node only",
+        "[3]Chosen nodes [0]Back",
+    ]), sender_id, interface)
+    state['step'] = 2
+    update_user_state(sender_id, state)
+
+
+def _send_board_peer_screen(sender_id, interface, state) -> None:
+    options = state.get('peer_options') or []
+    chosen = set(state.get('peers') or [])
+    if not options:
+        send_message(LINE_BREAK.join([
+            "No peers configured to choose from.",
+            "Add sync peers first. [0]Back",
+        ]), sender_id, interface)
+        state['step'] = 2
+        update_user_state(sender_id, state)
+        return
+    lines = [f"{state.get('board', '')} goes to (* = yes)"]
+    for number, option in enumerate(options, start=1):
+        mark = '*' if option['id'] in chosen else ' '
+        lines.append(f"[{number}]{mark}{option['label']}")
+    lines.append("Pick numbers to toggle. [D]one")
+    send_message(LINE_BREAK.join(lines), sender_id, interface)
+    state['step'] = 3
+    update_user_state(sender_id, state)
+
+
+def handle_board_sync_steps(sender_id, message, interface, state) -> None:
+    """The [S] flow. Re-checks the role on every reply, because a session
+    outlives the role that opened it."""
+    if not _can_administer(sender_id, interface):
+        send_message("That is an admin setting.", sender_id, interface)
+        handle_bulletin_command(sender_id, interface)
+        return
+
+    choice = str(message or '').strip().lower()
+    step = int(state.get('step', 1))
+    boards = state.get('boards') or get_bulletin_boards()
+
+    if choice in ('0', 'x', 'exit'):
+        if step == 1:
+            handle_bulletin_command(sender_id, interface)
+        elif step == 2:
+            send_board_sync_menu(sender_id, interface, boards)
+        else:
+            _send_board_audience_screen(sender_id, interface, state)
+        return
+
+    if step == 1:
+        if not choice.isdigit() or not 1 <= int(choice) <= len(boards):
+            send_message(f"Reply 1-{len(boards)} to pick a board, or 0 to go back.",
+                         sender_id, interface)
+            return
+        board = boards[int(choice) - 1]
+        audience, peers = get_board_audience(board)
+        _send_board_audience_screen(sender_id, interface, {
+            'command': 'BOARD_SYNC', 'step': 2, 'boards': boards,
+            'board': board, 'peers': list(peers),
+            'peer_options': _peer_options(interface)})
+        return
+
+    if step == 2:
+        if choice == '1':
+            set_board_audience(state.get('board', ''), BOARD_AUDIENCE_ALL, [])
+            send_message(f"{state.get('board', '')}: posts go everywhere.",
+                         sender_id, interface)
+            send_board_sync_menu(sender_id, interface, boards)
+            return
+        if choice == '2':
+            set_board_audience(state.get('board', ''), BOARD_AUDIENCE_LOCAL, [])
+            send_message(f"{state.get('board', '')}: posts stay on this node.",
+                         sender_id, interface)
+            send_board_sync_menu(sender_id, interface, boards)
+            return
+        if choice == '3':
+            state['peer_options'] = _peer_options(interface)
+            _send_board_peer_screen(sender_id, interface, state)
+            return
+        send_message("Reply 1, 2 or 3, or 0 to go back.", sender_id, interface)
+        return
+
+    if step == 3:
+        options = state.get('peer_options') or []
+        if choice in ('d', 'done'):
+            board = state.get('board', '')
+            peers = list(state.get('peers') or [])
+            set_board_audience(board, BOARD_AUDIENCE_PEERS, peers)
+            audience, saved = get_board_audience(board)
+            if audience == BOARD_AUDIENCE_LOCAL:
+                # No peers chosen. get_board_audience already reads that as
+                # this node only; say so rather than letting them think they
+                # picked something.
+                send_message(f"{board}: no nodes chosen, so posts stay here.",
+                             sender_id, interface)
+            else:
+                send_message(f"{board}: posts go to {len(saved)} node(s).",
+                             sender_id, interface)
+            send_board_sync_menu(sender_id, interface, boards)
+            return
+        numbers = [part for part in re.split(r'[\s,]+', choice) if part.isdigit()]
+        if numbers and all(1 <= int(n) <= len(options) for n in numbers):
+            chosen = list(state.get('peers') or [])
+            for number in numbers:
+                node_id = options[int(number) - 1]['id']
+                if node_id in chosen:
+                    chosen.remove(node_id)
+                else:
+                    chosen.append(node_id)
+            state['peers'] = chosen
+            _send_board_peer_screen(sender_id, interface, state)
+            return
+        send_message("Reply with node numbers to toggle, or D when done.",
+                     sender_id, interface)
+        return
 
 
 def handle_stats_command(sender_id, interface):
@@ -2937,6 +3131,9 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
     if step == 1:
         if message.lower() in ('e', 'x'):
             handle_help_command(sender_id, interface, 'bbs')
+            return
+        if message.strip().lower() == 's' and _can_administer(sender_id, interface):
+            send_board_sync_menu(sender_id, interface, boards)
             return
 
         board_index = None

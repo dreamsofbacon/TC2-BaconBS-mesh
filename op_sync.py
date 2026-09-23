@@ -41,6 +41,26 @@ _SCOPE_TO_TABLE = {
     'public_chatter': 'public_chatter',
 }
 
+def _event_is_for_peer(cursor, scope: str, event: dict, peer_id: str) -> bool:
+    """Whether this peer is allowed to hear that a record exists.
+
+    Only bulletins carry an audience today. Anything else, and any event
+    whose record has since been deleted (a delete event, for instance),
+    passes: withholding those would hide ordinary sync traffic.
+    """
+    if scope != 'bulletins':
+        return True
+    try:
+        row = cursor.execute(
+            'SELECT local_only, sync_peers FROM bulletins WHERE unique_id = ?',
+            (str(event.get('target_uid') or ''),)).fetchone()
+    except Exception:
+        return True
+    if not row:
+        return True
+    return db_operations.record_is_for_peer(peer_id, row[0], row[1])
+
+
 # ── HAVE ──────────────────────────────────────────────────────────────────────
 
 def build_have_frame(local_node_id: str, peer_id: Optional[str] = None, interface=None) -> Optional[str]:
@@ -173,6 +193,13 @@ def handle_want(parts: list[str], sender_node_id: str, local_node_id: str, inter
             sender_node_id, scope, from_seq, len(events),
         )
         for ev in events:
+            if not _event_is_for_peer(c, scope, ev, sender_node_id):
+                # A board can be set to reach only certain peers. The op log
+                # holds one event read by everyone, so the audience is
+                # applied here, on the way out, rather than at write time.
+                # Skipping a seq is safe: the peer tracks the highest seq it
+                # has seen, and gaps are not refetched.
+                continue
             frame = (
                 f"EVENT|{encode_scope(scope, use_codes)}|{local_node_id}|{ev['origin_seq']}"
                 f"|{ev['event_type']}|{ev['target_uid']}"

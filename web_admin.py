@@ -573,6 +573,38 @@ def preferred_author_node_id(config_path: str) -> str:
   return local_ids[0]
 
 
+def load_board_sync_settings(config_path: str) -> dict:
+  """Each board, where its posts may go, and the peers to choose from.
+
+  The audience lives in the database rather than the config file because a
+  radio admin can set it too, and the two have to agree without one of them
+  rewriting the operator's config under the other.
+  """
+  import db_operations
+  boards = load_bulletin_boards(config_path)
+  peers = []
+  seen = set()
+  try:
+    from utils import get_node_nicknames
+    nicknames = get_node_nicknames()
+  except Exception:
+    nicknames = {}
+  for node_id in load_sync_peers(config_path) or []:
+    node_id = str(node_id.get("node_id") if isinstance(node_id, dict) else node_id).strip()
+    if not node_id or node_id in seen:
+      continue
+    seen.add(node_id)
+    peers.append({"id": node_id, "label": str(nicknames.get(node_id) or node_id)})
+  rows = []
+  for board in boards:
+    try:
+      audience, chosen = db_operations.get_board_audience(board)
+    except Exception:
+      audience, chosen = ("all", [])
+    rows.append({"board": board, "audience": audience, "peers": list(chosen)})
+  return {"boards": rows, "peers": peers}
+
+
 def load_games_settings(config_path: str) -> dict:
   """Every game the BBS knows, and whether this node shows it."""
   from zork_port import GAMES
@@ -5535,6 +5567,7 @@ def create_app(runtime_interface=None) -> Flask:
       ai_status = load_ai_model_status()
       storage_settings = load_storage_settings(app.config["CONFIG_PATH"])
       games_settings = load_games_settings(app.config["CONFIG_PATH"])
+      board_sync_settings = load_board_sync_settings(app.config["CONFIG_PATH"])
       public_chatter_settings = load_public_chatter_settings(app.config["CONFIG_PATH"])
       ssh_settings = load_ssh_settings(app.config["CONFIG_PATH"])
       subscriber_settings = load_subscriber_settings(app.config["CONFIG_PATH"])
@@ -5556,6 +5589,7 @@ def create_app(runtime_interface=None) -> Flask:
         ai_status=ai_status,
         storage=storage_settings,
         games=games_settings,
+        board_sync=board_sync_settings,
         public_chatter=public_chatter_settings,
         ssh=ssh_settings,
         subscribers=subscriber_settings,
@@ -6574,6 +6608,19 @@ def create_app(runtime_interface=None) -> Flask:
           save_subscriber_settings(request.form)
           flash("Subscriber nodes saved. These nodes can pull (WANT/HASHMISS) but are not push-synced to.", "success")
           return redirect(url_for("settings_page") + "#sync")
+
+        if section == "board_sync":
+          import db_operations
+          saved = 0
+          for board in load_bulletin_boards(app.config["CONFIG_PATH"]):
+            audience = request.form.get(f"audience_{board}", "all").strip().lower()
+            chosen = request.form.getlist(f"peers_{board}")
+            if db_operations.set_board_audience(board, audience, chosen):
+              saved += 1
+          flash(f"Board sync saved for {saved} board(s). It applies to posts "
+                "written from now on; posts already sent stay where they are.",
+                "success")
+          return redirect(url_for("settings_page") + "#board_sync")
 
         if section == "games":
           from zork_port import GAMES

@@ -1650,7 +1650,32 @@ def send_delete_channel_comment_to_bbs_nodes(unique_id, bbs_nodes, interface):
 
 
 def send_sync_state_to_bbs_nodes(counts, bbs_nodes, interface):
-    """Send compact local record counts and hashes to peers for mismatch detection."""
+    """Send compact local record counts and hashes to peers for mismatch detection.
+
+    When a board is restricted to some peers, what this node advertises has
+    to differ per peer: the counts and hashes are what tells a peer a scope
+    is out of step, and a record that peer will never be given must not be
+    in them, or it repairs forever and converges never. Recomputed per peer
+    only when a restricted board exists, so the ordinary fleet pays nothing.
+    """
+    try:
+        import db_operations
+        per_peer = bool(db_operations.get_all_board_audiences())
+    except Exception:
+        per_peer = False
+    if per_peer:
+        for node_id in bbs_nodes:
+            try:
+                peer_counts = db_operations.get_local_record_counts(peer_id=node_id)
+            except Exception:
+                logging.debug("per-peer SYNCSTATE failed for %s", node_id, exc_info=True)
+                peer_counts = counts
+            _send_one_sync(_sync_state_frame(peer_counts), node_id, interface)
+        return
+    _send_one_sync_to_all(_sync_state_frame(counts), bbs_nodes, interface)
+
+
+def _sync_state_frame(counts) -> str:
     message = (
         f"SYNCSTATE|{int(counts.get('bulletins', 0))}|{int(counts.get('mail', 0))}|"
         f"{int(counts.get('channels', 0))}|{int(counts.get('zork_saves', 0))}|"
@@ -1662,6 +1687,10 @@ def send_sync_state_to_bbs_nodes(counts, bbs_nodes, interface):
         f"{local_capabilities_token()}|"
         f"{int(counts.get('public_chatter', 0))}|{str(counts.get('public_chatter_hash', ''))}"
     )
+    return message
+
+
+def _send_one_sync_to_all(message, bbs_nodes, interface) -> None:
     for node_id in bbs_nodes:
         _send_one_sync(message, node_id, interface)
 
