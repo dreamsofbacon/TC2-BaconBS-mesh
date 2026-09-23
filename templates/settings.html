@@ -1499,10 +1499,11 @@
       comments go exactly as far as the channel does.
     </p>
     {% for channel in board_sync.channels %}
+    {% set channel_index = loop.index0 %}
     <div style="margin-bottom:14px">
       <label><strong>{{ channel.name }}</strong>
         <span class="text-muted">{{ channel.url }}</span></label><br>
-      <select name="channel_audience_{{ loop.index0 }}">
+      <select name="channel_audience_{{ channel_index }}">
         <option value="all" {% if channel.audience == 'all' %}selected{% endif %}>Everywhere</option>
         <option value="local" {% if channel.audience == 'local' %}selected{% endif %}>This node only</option>
         <option value="peers" {% if channel.audience == 'peers' %}selected{% endif %}>Chosen nodes</option>
@@ -1511,7 +1512,7 @@
       <div class="text-muted" style="margin-top:4px">
         {% for peer in board_sync.peers %}
         <label style="margin-right:10px">
-          <input type="checkbox" name="channel_peers_{{ loop.parent.loop.index0 }}" value="{{ peer.id }}"
+          <input type="checkbox" name="channel_peers_{{ channel_index }}" value="{{ peer.id }}"
                  {% if peer.id in channel.peers %}checked{% endif %}>
           {{ peer.label }}
         </label>
