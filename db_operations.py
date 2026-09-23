@@ -1616,6 +1616,11 @@ def _ensure_accounts_tables(cursor) -> None:
         cursor.execute("ALTER TABLE accounts ADD COLUMN pg13_mode INTEGER NOT NULL DEFAULT 0")
     if 'pg13_updated_at' not in _account_cols:
         cursor.execute("ALTER TABLE accounts ADD COLUMN pg13_updated_at TEXT NOT NULL DEFAULT ''")
+    # Public Chatter channel filter, remembered between visits. Local to this
+    # node, unlike PG-13: the channels are what THIS node's radios overheard,
+    # so the same choice on a peer would name traffic it never captured.
+    if 'chatter_channels' not in _account_cols:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN chatter_channels TEXT NOT NULL DEFAULT ''")
     if 'password_hash' not in _account_cols:
         cursor.execute("ALTER TABLE accounts ADD COLUMN password_hash TEXT")
     if 'password_salt' not in _account_cols:
@@ -7203,6 +7208,52 @@ def get_pg13_preferences_for_sync() -> list[tuple[str, bool, str]]:
         " JOIN accounts a ON a.account_id = l.account_id"
         " WHERE a.pg13_updated_at != ''").fetchall()
     return [(str(node_id), bool(mode), str(stamp)) for node_id, mode, stamp in rows]
+
+
+def get_chatter_channels_for_node(node_id: str) -> list[str]:
+    """The Public Chatter channel filter this person last chose here.
+
+    An empty list means no filter, which is what a device with no account
+    gets: the filter is a convenience, so never having visited Settings, or
+    reading from a brand new radio, must not cost anyone a screen.
+    """
+    normalized_id = str(node_id or '').strip()
+    if not normalized_id:
+        return []
+    account_id = get_account_id_for_node(normalized_id)
+    if account_id is None:
+        return []
+    row = get_db_connection().execute(
+        "SELECT chatter_channels FROM accounts WHERE account_id = ?",
+        (str(account_id),)).fetchone()
+    stored = str(row[0] or '') if row else ''
+    return [key for key in stored.split(',') if key]
+
+
+def set_chatter_channels_for_node(node_id: str, channel_keys) -> bool:
+    """Remember the filter on the person's account, making one if needed.
+
+    Like relay consent and PG-13, the choice belongs to the person rather
+    than to the radio they happened to send from, so a bare device gets an
+    account here. Unlike those two it is not advertised to peers: see the
+    column's note in initialize_database.
+    """
+    normalized_id = str(node_id or '').strip()
+    if not normalized_id:
+        return False
+    keys = [str(key).strip() for key in (channel_keys or []) if str(key).strip()]
+    account_id = get_account_id_for_node(normalized_id)
+    if account_id is None:
+        if not keys:
+            # Nothing to remember, so do not create an account to say so.
+            return False
+        account_id = create_account()
+        link_node_to_account(normalized_id, account_id, '')
+    conn = get_db_connection()
+    conn.execute("UPDATE accounts SET chatter_channels = ? WHERE account_id = ?",
+                 (','.join(dict.fromkeys(keys)), str(account_id)))
+    conn.commit()
+    return True
 
 
 def apply_synced_mail_relay_preference(node_id: str, enabled: bool, updated_at: str) -> bool:

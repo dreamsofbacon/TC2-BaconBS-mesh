@@ -53,9 +53,12 @@ class AccountsSchemaTests(unittest.TestCase):
         # than derived on the fly so it survives a change of derivation.
         # pg13_* hold the account's PG-13 content choice, stamped the same
         # way so the newest choice wins when it syncs.
+        # chatter_channels is the Public Chatter filter, remembered between
+        # visits. It has no timestamp because it never syncs: the channels
+        # are what THIS node's radios overheard.
         self.assertEqual(cols, {"account_id", "alias", "alias_normalized", "created_at",
                     "mail_relay_enabled", "mail_relay_updated_at",
-                    "pg13_mode", "pg13_updated_at",
+                    "pg13_mode", "pg13_updated_at", "chatter_channels",
                     "password_hash", "password_salt", "password_created_at",
                     "sender_num",
                     # The account is the authority for every device someone

@@ -40,6 +40,7 @@ from db_operations import (
     get_mail_relay_directory, get_mail_relay_preference, set_mail_relay_for_node,
     get_public_chatter_filters,
     get_public_chatter_history,
+    get_chatter_channels_for_node, set_chatter_channels_for_node,
 )
 from utils import (
     get_node_id_from_num, get_node_info,
@@ -754,8 +755,41 @@ def handle_public_chatter_command(sender_id, interface):
                  sender_id, interface)
     update_user_state(sender_id, {
         'command': 'PUBLIC_CHATTER', 'step': 1,
-        'channels': [],
+        # The filter survives the session: picking two channels out of nine
+        # is several replies over LoRa, and paying that again on every visit
+        # is what made people stop using it.
+        'channels': _remembered_chatter_channels(sender_id, interface),
     })
+
+
+def _chatter_node_id(sender_id, interface):
+    """The device id a chatter filter is remembered against.
+
+    The same id the rest of the account features use, so a filter set from a
+    radio is still there when that radio's owner signs in over SSH on the
+    same account.
+    """
+    try:
+        resolved = get_node_id_from_num(sender_id, interface)
+    except Exception:
+        resolved = None
+    return resolved or str(sender_id or '')
+
+
+def _remembered_chatter_channels(sender_id, interface) -> list:
+    try:
+        return get_chatter_channels_for_node(_chatter_node_id(sender_id, interface))
+    except Exception:
+        # A filter is a convenience. It never keeps anyone out of the screen.
+        logging.exception("Could not read the saved chatter filter")
+        return []
+
+
+def _remember_chatter_channels(sender_id, interface, channels) -> None:
+    try:
+        set_chatter_channels_for_node(_chatter_node_id(sender_id, interface), channels)
+    except Exception:
+        logging.exception("Could not save the chatter filter")
 
 
 # "meshcore" and "meshtastic" both truncate to "me", which would make the
@@ -889,6 +923,11 @@ def _send_chatter_batch(sender_id, interface, state: dict, *, older: bool) -> No
         lens = scope_notice(sender_id)
         if lens:
             lines.append(lens)
+        # Same reason the lens owns up here: a filter kept from a previous
+        # visit can empty the screen on its own, and a silent empty screen
+        # reads as a quiet mesh rather than as a choice the reader made.
+        if state.get('channels'):
+            lines.append(f"Channel filter on ({len(state['channels'])}). [F] to change.")
         lines.append("[T]ime [0] Back")
         send_message(LINE_BREAK.join(lines), sender_id, interface)
         update_user_state(sender_id, state)
@@ -981,6 +1020,7 @@ def handle_public_chatter_steps(sender_id, message, interface, state):
             # widening the whole session from a channel screen would be a
             # different promise than the one the key makes.
             state['channels'] = []
+            _remember_chatter_channels(sender_id, interface, [])
             send_message(_chatter_filter_text(state), sender_id, interface)
             update_user_state(sender_id, state)
             return
@@ -989,6 +1029,7 @@ def handle_public_chatter_steps(sender_id, message, interface, state):
         # between a filter and a chore.
         numbers = [part for part in re.split(r'[\s,]+', choice) if part.isdigit()]
         if numbers and all(_toggle_chatter_filter(state, int(n)) for n in numbers):
+            _remember_chatter_channels(sender_id, interface, state.get('channels') or [])
             send_message(_chatter_filter_text(state), sender_id, interface)
             update_user_state(sender_id, state)
             return
