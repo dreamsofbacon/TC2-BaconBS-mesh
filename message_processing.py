@@ -1421,6 +1421,23 @@ def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface)
                        pause_seconds=chunk_pause + jitter)
 
 
+def _is_broadcast_destination(to_id) -> bool:
+    """Whether a destination means "everyone" rather than this node."""
+    # 0xffffffff is Meshtastic's broadcast address, spelled out rather than
+    # only imported: a stubbed or older module can define BROADCAST_NUM as
+    # something else, and mistaking a broadcast for an answer would make a
+    # one-way link look healthy -- the exact failure this guards.
+    broadcast = {None, '', 0, 0xffffffff, '^all'}
+    try:
+        from meshtastic import BROADCAST_NUM
+        broadcast.add(BROADCAST_NUM)
+    except Exception:
+        pass
+    if to_id in broadcast:
+        return True
+    return str(to_id).strip().lower() in ('none', 'broadcast', '^all')
+
+
 def _send_requested_record(scope: str, key: str, destination_node_id: str, interface) -> None:
     """Answer one peer's HASHMISS.
 
@@ -3484,6 +3501,18 @@ def on_receive(packet, interface):
 
             if sender_node_id in bbs_nodes:
                 if is_sync_message:
+                    # Addressed to us, not overheard: the peer has this node
+                    # in its own list and acts on what we send. A broadcast
+                    # proves nothing -- a peer that ignores us still sends
+                    # those, which is exactly what made one-way peering look
+                    # healthy from the side that could not tell.
+                    if to_id is not None and not _is_broadcast_destination(to_id):
+                        try:
+                            from db_operations import record_peer_reply
+                            record_peer_reply(sender_node_id)
+                        except Exception:
+                            logging.debug("could not record a reply from %s",
+                                          sender_node_id, exc_info=True)
                     try:
                         log_sync_transmission(
                             message_string,

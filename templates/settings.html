@@ -1823,6 +1823,10 @@
   <p class="text-muted"><strong>Notice:</strong> Outbound sync is running. Some historical posts may not be available on peers yet.</p>
   {% endif %}
   <p><strong>Peer consistency:</strong> {{ diagnostics.peer_sync_status }}</p>
+  {% if diagnostics.one_way_peers %}
+  <p class="text-danger"><strong>One-way peering:</strong>
+    {{ diagnostics.one_way_peers }}</p>
+  {% endif %}
   <p><strong>Mismatch re-sync attempts:</strong> {{ diagnostics.mismatch_retry_summary }}</p>
   <p><strong>Peer-advertised record counts:</strong></p>
   <pre style="white-space:pre-wrap;margin-top:4px">{{ diagnostics.peer_sync_counts }}</pre>

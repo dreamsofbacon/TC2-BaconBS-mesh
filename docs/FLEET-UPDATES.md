@@ -312,3 +312,33 @@ python scripts/fleet_sign.py --group <group> status --strict
   `/etc/sudoers.d/baconbbs-fleet`. Without it the mesh server updates itself
   and the web admin and SSH services keep running the old code. Re-run
   `install_services.sh` on any node installed before that file existed.
+
+## Adding a node: peering is per node, on both sides
+
+A node acts only on sync frames whose sender is in **its own**
+`[sync*] bbs_nodes` list. Everything else is dropped unread. So a peering
+written on one side only is not half a link, it is no link -- and from the
+side that did the writing it looks healthy: the other node's broadcasts
+arrive, its record counts are recorded, the mismatch is noticed, and repair
+is requested every cycle, for ever, into silence.
+
+**When you add a node, add its id to every existing node, and add every
+existing node to it.** The node's id is `mqtt:<topic_prefix>:<local_id>` for
+an MQTT link. Peer lists are re-read without a restart.
+
+A node now reports this itself. After three unanswered requests over fifteen
+minutes it logs:
+
+```
+Peer <id> has not answered this node for N minutes: 3 requests sent, nothing
+addressed to us in reply. This node is almost certainly missing from that
+peer's [sync*] bbs_nodes list -- add <our id> there.
+```
+
+and the web admin's **Settings > Diagnostics** shows *One-way peering* naming
+the peers. A reply from that peer clears it.
+
+**Check a new node an hour after enrolling it:** open Diagnostics, or
+`journalctl -u mesh-bbs | grep "has not answered"`. A node whose record
+counts sit at zero while its peers report content is this fault until proven
+otherwise.

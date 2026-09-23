@@ -3362,6 +3362,150 @@ def record_is_for_peer(peer_id: str, local_only, sync_peers: str) -> bool:
     return str(peer_id or '').strip() in allowed
 
 
+# ── One-way peering: we ask, they never answer ──────────────────────────────
+#
+# A node only acts on sync frames whose sender is in its OWN bbs_nodes list.
+# So a peering that is configured on one side only looks, from the side that
+# did the configuring, exactly like a healthy link: the peer's broadcasts
+# arrive, its counts are recorded, the mismatch is noticed, and repair is
+# requested every cycle -- into silence, for ever.
+#
+# That is what the new VPS node did for a day: 0 bulletins, 0 mail, 0
+# channels, while asking three peers for them several times a minute and
+# logging nothing but "mismatch; requesting targeted repair".
+#
+# So: count what we ask each peer for, and what arrives FROM that peer
+# addressed to us. A peer we keep asking that never replies is reported.
+
+PEER_SILENCE_REQUESTS = 3
+PEER_SILENCE_SECONDS = 900.0
+
+
+def _ensure_peer_link_health(cursor) -> None:
+    cursor.execute("""CREATE TABLE IF NOT EXISTS peer_link_health (
+                        peer_node_id TEXT PRIMARY KEY,
+                        requests INTEGER NOT NULL DEFAULT 0,
+                        first_request_at TEXT NOT NULL DEFAULT '',
+                        last_request_at TEXT NOT NULL DEFAULT '',
+                        last_reply_at TEXT NOT NULL DEFAULT '',
+                        warned_at TEXT NOT NULL DEFAULT ''
+                    );""")
+    columns = {row[1] for row in cursor.execute("PRAGMA table_info(peer_link_health)")}
+    if 'first_request_at' not in columns:
+        cursor.execute("ALTER TABLE peer_link_health ADD COLUMN"
+                       " first_request_at TEXT NOT NULL DEFAULT ''")
+
+
+def record_peer_request(peer_node_id: str) -> None:
+    """We have asked this peer for something addressed to it."""
+    peer = str(peer_node_id or '').strip()
+    if not peer:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        _ensure_peer_link_health(c)
+        # first_request_at is when the current stretch of silence began, so a
+        # burst of three questions in three seconds is not mistaken for a
+        # peer that has ignored us all afternoon.
+        c.execute(
+            "INSERT INTO peer_link_health (peer_node_id, requests,"
+            " first_request_at, last_request_at) VALUES (?, 1, ?, ?)"
+            " ON CONFLICT(peer_node_id) DO UPDATE SET"
+            " requests = requests + 1, last_request_at = excluded.last_request_at,"
+            " first_request_at = CASE WHEN peer_link_health.first_request_at = ''"
+            " THEN excluded.first_request_at ELSE peer_link_health.first_request_at END",
+            (peer, now, now))
+        conn.commit()
+    except Exception:
+        logging.debug("could not record a request to %s", peer, exc_info=True)
+
+
+def record_peer_reply(peer_node_id: str) -> None:
+    """Something arrived from this peer, addressed to us. The link is two-way."""
+    peer = str(peer_node_id or '').strip()
+    if not peer:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        _ensure_peer_link_health(c)
+        c.execute(
+            "INSERT INTO peer_link_health (peer_node_id, requests,"
+            " first_request_at, last_request_at, last_reply_at)"
+            " VALUES (?, 0, '', '', ?) ON CONFLICT(peer_node_id)"
+            " DO UPDATE SET last_reply_at = excluded.last_reply_at, requests = 0,"
+            " first_request_at = '', warned_at = ''",
+            (peer, now))
+        conn.commit()
+    except Exception:
+        logging.debug("could not record a reply from %s", peer, exc_info=True)
+
+
+def peer_link_health(now=None) -> list:
+    """Every peer we have asked, and whether it has ever answered us.
+
+    A row is 'one_way' once we have asked several times over a long enough
+    stretch with nothing back. The thresholds are deliberately dull: a peer
+    that is merely offline for ten minutes is not a misconfiguration, and
+    saying so would train people to ignore the warning.
+    """
+    now = now or datetime.now(timezone.utc)
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        _ensure_peer_link_health(c)
+        rows = c.execute(
+            "SELECT peer_node_id, requests, last_request_at, last_reply_at,"
+            " warned_at, first_request_at FROM peer_link_health").fetchall()
+    except Exception:
+        logging.debug("could not read peer link health", exc_info=True)
+        return []
+    def _elapsed(stamp: str) -> float:
+        if not stamp:
+            return 0.0
+        try:
+            parsed = datetime.fromisoformat(str(stamp))
+        except ValueError:
+            return 0.0
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0.0, (now - parsed).total_seconds())
+
+    result = []
+    for peer, requests, last_request, last_reply, warned, first_request in rows:
+        # The silence starts at the last thing they said to us, or at our
+        # first unanswered question if they have never said anything. A reply
+        # resets the count, so `requests` is always "unanswered since then".
+        silent_for = _elapsed(str(last_reply or '') or str(first_request or ''))
+        result.append({
+            'peer_node_id': str(peer),
+            'requests': int(requests or 0),
+            'first_request_at': str(first_request or ''),
+            'last_request_at': str(last_request or ''),
+            'last_reply_at': str(last_reply or ''),
+            'warned_at': str(warned or ''),
+            'silent_for': silent_for,
+            'one_way': (int(requests or 0) >= PEER_SILENCE_REQUESTS
+                        and silent_for >= PEER_SILENCE_SECONDS),
+        })
+    return result
+
+
+def mark_peer_link_warned(peer_node_id: str) -> None:
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        _ensure_peer_link_health(c)
+        c.execute("UPDATE peer_link_health SET warned_at = ? WHERE peer_node_id = ?",
+                  (datetime.now(timezone.utc).isoformat(), str(peer_node_id)))
+        conn.commit()
+    except Exception:
+        logging.debug("could not mark %s as warned", peer_node_id, exc_info=True)
+
+
 def get_local_record_counts(peer_id: str = '') -> dict:
     """Local record counts and compact hashes for SYNCSTATE comparisons.
 

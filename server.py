@@ -1533,6 +1533,47 @@ def _reset_fleet_hold_state() -> None:
     _fleet_hold_reported.clear()
 
 
+def report_one_way_peers(local_node_id: str = '', now=None) -> list:
+    """Say which peers never answer us, once per peer until they do.
+
+    The failure this exists for: peering is per node, so a link configured
+    on one side only still looks alive from that side -- the peer's
+    broadcasts arrive and its counts are recorded -- while every request
+    this node makes is dropped unread. The node sat at zero records for a
+    day, asking several times a minute, and said nothing an operator would
+    read as a fault.
+
+    Returns the peers reported, so the caller (and the tests) can see it.
+    """
+    try:
+        from db_operations import peer_link_health, mark_peer_link_warned
+    except Exception:
+        return []
+    reported = []
+    try:
+        rows = peer_link_health(now=now)
+    except Exception:
+        logging.debug("Peer link health unavailable", exc_info=True)
+        return []
+    for row in rows:
+        if not row.get('one_way') or row.get('warned_at'):
+            continue
+        peer = row.get('peer_node_id', '?')
+        logging.warning(
+            "Peer %s has not answered this node for %d minutes: %s requests "
+            "sent, nothing addressed to us in reply. This node is almost "
+            "certainly missing from that peer's [sync*] bbs_nodes list -- add "
+            "%s there. Until then nothing it holds can reach us.",
+            peer, int(row.get('silent_for', 0) // 60), row.get('requests', 0),
+            local_node_id or "this node's id")
+        try:
+            mark_peer_link_warned(peer)
+        except Exception:
+            logging.debug("could not mark %s as warned", peer, exc_info=True)
+        reported.append(peer)
+    return reported
+
+
 def _apply_fleet_target_if_due(system_config: dict) -> bool:
     """Move this node onto the stored fleet target, if it should.
 
@@ -2833,6 +2874,11 @@ def main():
             # and the main loop observing/removing its trigger file.
             if now >= next_fleet_apply_check:
                 next_fleet_apply_check = now + _FLEET_APPLY_POLL_INTERVAL
+                try:
+                    report_one_way_peers(get_local_node_id() or '')
+                except Exception:
+                    logging.debug("Could not check peer link health",
+                                  exc_info=True)
                 try:
                     # The apply check itself is local and cheap; only the
                     # advertisement that goes with it is rate-limited.

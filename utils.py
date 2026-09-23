@@ -1998,6 +1998,15 @@ def send_hash_request_to_bbs_nodes(bbs_nodes, interface, scope='all'):
 
     pause = max(get_sync_pause_seconds(interface), get_hash_chunk_pause_seconds(interface))
     for node_id in bbs_nodes:
+        # Counted so a peer that never answers can be reported. A peering
+        # configured on one side only is invisible otherwise: the questions
+        # go out for ever and nothing says they are unanswered.
+        try:
+            from db_operations import record_peer_request
+            record_peer_request(node_id)
+        except Exception:
+            logging.debug("could not record the request to %s", node_id,
+                          exc_info=True)
         for _scope in scopes_to_request:
             if _scope != 'all' and peers_all_support([node_id], 'scc'):
                 per_peer_msg = f"HASHREQ|{encode_scope(_scope, True)}"

@@ -5231,6 +5231,10 @@ def create_app(runtime_interface=None) -> Flask:
         "sync_last_result": "Not yet run",
         "sync_next_run_epoch": "0",
         "peer_sync_status": "Unknown",
+        # Peers this node asks and that never answer. A link configured on
+        # one side only cannot be seen any other way from here: their
+        # broadcasts arrive, so everything else looks healthy.
+        "one_way_peers": "",
         "peer_sync_counts": "No peer status received yet",
         "peer_scope_mismatches": "No peer status received yet",
         "zork_save_peer_mismatches": "No zork save peer mismatches reported",
@@ -5570,6 +5574,20 @@ def create_app(runtime_interface=None) -> Flask:
           )
         if candidate_lines:
           diagnostics["zork_save_candidate_resolution"] = "\n".join(candidate_lines)
+
+      try:
+        from db_operations import peer_link_health
+        silent = [row for row in peer_link_health() if row.get("one_way")]
+        if silent:
+          names = ", ".join(
+            f'{row["peer_node_id"]} ({int(row.get("silent_for", 0) // 60)} min, '
+            f'{row.get("requests", 0)} requests)' for row in silent)
+          diagnostics["one_way_peers"] = (
+            f"{len(silent)} peer(s) never answer this node: {names}. "
+            "This node is probably missing from their [sync*] bbs_nodes lists, "
+            "so nothing they hold can reach it.")
+      except Exception:
+        logging.debug("peer link health unavailable", exc_info=True)
 
       return diagnostics
 

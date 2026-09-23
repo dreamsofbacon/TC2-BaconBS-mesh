@@ -100,6 +100,28 @@ class SettingsPageTests(_Page):
         self.assertEqual(200, self._get("/settings").status_code)
 
 
+class OneWayPeerWarningTests(_Page):
+    """The operator has to be able to see it without reading a journal."""
+
+    def test_a_silent_peer_is_named_on_the_page(self):
+        from datetime import datetime, timedelta, timezone
+        for _ in range(3):
+            db_operations.record_peer_request(PEER_A)
+        # Back-date the silence so it is a misconfiguration, not a burst.
+        old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        conn = db_operations.get_db_connection()
+        conn.execute("UPDATE peer_link_health SET first_request_at = ?", (old,))
+        conn.commit()
+        body = self._get("/settings").get_data(as_text=True)
+        self.assertIn("One-way peering", body)
+        self.assertIn(PEER_A, body)
+        self.assertIn("bbs_nodes", body)
+
+    def test_a_healthy_node_shows_no_warning(self):
+        body = self._get("/settings").get_data(as_text=True)
+        self.assertNotIn("One-way peering", body)
+
+
 class BulletinEditPageTests(_Page):
     def _post_bulletin(self):
         with mock.patch.object(db_operations, "send_bulletin_to_bbs_nodes"):
