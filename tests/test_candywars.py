@@ -146,6 +146,21 @@ class KidSafeTests(_DbCase):
             self.script(9, words)
         self.assert_kid_safe()
 
+    def test_market_events_and_loot_stay_in_theme(self):
+        for index, event in enumerate(('deal:mushrooms', 'bust:oxy'), start=40):
+            self.seed(index, event=event)
+            self.script(index, [])
+        candy = dopewars_theme.theme(False)
+        state = game.new_game(99)
+        self.outputs.extend([
+            menu.render(state, {'menu': 'main'}, candy,
+                        candy['loot_cash'].format(amount=125)),
+            menu.render(state, {'menu': 'main'}, candy,
+                        candy['loot_goods'].format(qty=2, item=candy['goods']['oxy'])),
+            menu.render(state, {'menu': 'main'}, candy, candy['loot_full']),
+        ])
+        self.assert_kid_safe()
+
     def test_the_title_everywhere_a_game_is_listed(self):
         import command_handlers as ch
         sent = []

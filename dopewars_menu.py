@@ -78,23 +78,24 @@ def render(state, nav, t, note='') -> str:
     if menu in ('buy', 'sell'):
         verb = 'Buy' if menu == 'buy' else 'Sell'
         room = state['capacity'] - sum(state['inventory'].values())
-        lines.append(f"{verb} at {place} (${state['cash']}, room {room}):")
+        lines.append(f"{verb} {place} ${state['cash']} room {room}:")
         for index, item in enumerate(game.GOODS, start=1):
             offer = state['market'][item]
             name = t['goods'][item]
             if menu == 'buy':
-                tail = f"max {_max_buy(state, item)}" if offer['stock'] else "sold out"
+                tail = f"/{_max_buy(state, item)}" if offer['stock'] else "/out"
             else:
-                tail = f"have {state['inventory'][item]}"
-            lines.append(f"[{index}]{name} ${offer['price']} {tail}")
-        lines.append("Pick one, or 2 5 / 2 M(ax). [0]Back")
+                tail = f"/{state['inventory'][item]}"
+            lines.append(f"[{index}]{name} ${offer['price']}{tail}")
+        lines.append("Pick item; / is max/have. [0]Back")
     elif menu in ('buy_qty', 'sell_qty'):
         item = nav['item']
         most = (_max_buy(state, item) if menu == 'buy_qty'
                 else state['inventory'][item])
         lines.append(f"How many {t['goods'][item]}? 1-{most}, M for max. [0]Back")
     elif menu == 'move':
-        lines.append(f"Go from {place} (a day passes, {t['owed']} +5%):")
+        cost = f"{t['owed']} +5%" if state['debt'] else "no interest"
+        lines.append(f"Go from {place} (a day passes, {cost}):")
         lines.append(" ".join(f"[{i}]{t['places'][p]}"
                               for i, p in enumerate(_others(state), start=1))
                      + " [0]Back")
@@ -131,6 +132,9 @@ def render(state, nav, t, note='') -> str:
         if not note:
             lines.append(t['title'])
         lines.append(_status(state, t))
+        if state.get('event'):
+            kind, item = state['event'].split(':', 1)
+            lines.append(t[kind].format(item=t['goods'][item]))
         lines.append(f"[1]Buy [2]Sell [3]Go [4]Bag [5]Gear [6]{t['loan']} "
                      "[7]End [0]Exit")
         if state['moves'] == 0 and state['days'] == 30:
@@ -147,12 +151,14 @@ class _Turn:
         self.user_id, self.short_name, self.t = user_id, short_name, t
         self.state = state
         self.notes = []
+        self.last_reply = ''
 
     def act(self, engine_text):
         """Send one command to the engine and return (before, after)."""
-        before, after, _reply, _leave, _result = door.play_state(
+        before, after, reply, _leave, _result = door.play_state(
             self.user_id, engine_text, self.short_name)
         self.state = after
+        self.last_reply = reply
         return before, after
 
     def note(self, text):
@@ -253,6 +259,20 @@ def _step(turn, word, nav) -> dict:
             turn.note(f"Day {after['day']}: {t['places'][place]}. That was the last day.")
         else:
             turn.note(f"Day {after['day']}: {t['places'][place]}.")
+        if after['phase'] != 'ended':
+            cash_found = after['cash'] - before['cash']
+            if cash_found > 0:
+                turn.note(t['loot_cash'].format(amount=cash_found))
+            else:
+                for item in game.GOODS:
+                    qty = after['inventory'][item] - before['inventory'][item]
+                    if qty > 0:
+                        turn.note(t['loot_goods'].format(
+                            qty=qty, item=t['goods'][item]))
+                        break
+                else:
+                    if 'Loot full.' in turn.last_reply:
+                        turn.note(t['loot_full'])
         return {'menu': 'main'}
 
     if menu == 'gear':

@@ -18,7 +18,7 @@ class SaveUnavailable(ValueError):
 
 def _load(raw):
     try:
-        return game.validate(json.loads(raw))
+        return game.validate(game.migrate(json.loads(raw)))
     except (ValueError, TypeError, KeyError, IndexError) as exc:
         raise SaveUnavailable('DopeWars save could not be read. Ask the operator to inspect it; it has been preserved.') from exc
 
