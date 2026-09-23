@@ -35,7 +35,7 @@ from version_info import get_display_version, get_version_resolution_note
 TABLE_CONFIG = {
     "bulletins": {
         "title": "Bulletins",
-    "columns": ["id", "board", "sender_short_name", "date", "subject", "content", "local_only", "unique_id", "source_node_id", "source_timestamp", "received_at"],
+    "columns": ["id", "board", "sender_short_name", "date", "subject", "content", "local_only", "sync_peers", "unique_id", "source_node_id", "source_timestamp", "received_at"],
     "editable": ["board", "sender_short_name", "date", "subject", "content", "local_only"],
     "searchable": ["board", "sender_short_name", "subject", "content", "unique_id", "local_only", "source_node_id"],
     },
@@ -573,6 +573,18 @@ def preferred_author_node_id(config_path: str) -> str:
   return local_ids[0]
 
 
+def _bulletin_row_audience(row, columns) -> dict:
+  """A stored bulletin row as the three words the editor offers."""
+  values = dict(zip(columns, row))
+  peers = [part.strip() for part in str(values.get("sync_peers") or "").split(",")
+           if part.strip()]
+  if int(values.get("local_only") or 0):
+    return {"mode": "local", "peers": []}
+  if peers:
+    return {"mode": "peers", "peers": peers}
+  return {"mode": "all", "peers": []}
+
+
 def load_board_sync_settings(config_path: str) -> dict:
   """Each board, where its posts may go, and the peers to choose from.
 
@@ -602,7 +614,11 @@ def load_board_sync_settings(config_path: str) -> dict:
     except Exception:
       audience, chosen = ("all", [])
     rows.append({"board": board, "audience": audience, "peers": list(chosen)})
-  return {"boards": rows, "peers": peers}
+  try:
+    channels = db_operations.get_channels_with_audience()
+  except Exception:
+    channels = []
+  return {"boards": rows, "channels": channels, "peers": peers}
 
 
 def load_games_settings(config_path: str) -> dict:
@@ -6617,6 +6633,16 @@ def create_app(runtime_interface=None) -> Flask:
             chosen = request.form.getlist(f"peers_{board}")
             if db_operations.set_board_audience(board, audience, chosen):
               saved += 1
+          # Channels carry their audience on the row itself, and their
+          # comments inherit it, so one form covers both.
+          for index, channel in enumerate(db_operations.get_channels_with_audience()):
+            audience = request.form.get(f"channel_audience_{index}", "").strip().lower()
+            if not audience:
+              continue
+            chosen = request.form.getlist(f"channel_peers_{index}")
+            if db_operations.set_channel_audience(
+                channel["name"], channel["url"], audience, chosen):
+              saved += 1
           flash(f"Board sync saved for {saved} board(s). It applies to posts "
                 "written from now on; posts already sent stay where they are.",
                 "success")
@@ -8180,12 +8206,58 @@ def create_app(runtime_interface=None) -> Flask:
                 flash("Row not found.", "error")
                 return redirect(url_for("table_list", table=table))
 
-            if request.method == "POST":
+            if request.method == "POST" and table == "bulletins":
+                # A bulletin is not edited in place. Sync reconciles records by
+                # unique_id, and a peer holding the original treats our changed
+                # copy as a mismatch and pushes its own version back -- the old
+                # UPDATE here quietly lost the edit on the next repair pass.
+                # edit_bulletin retracts the post and republishes it instead.
+                import db_operations as _db
+                unique_id = str(row[cfg["columns"].index("unique_id")])
+                board_value = request.form.get("board", "").strip()
+                subject_value = request.form.get("subject", "").strip()
+                content_value = request.form.get("content", "").strip()
+                sender_value = request.form.get("sender_short_name", "").strip()
+                date_value = request.form.get("date", "").strip()
+                audience = request.form.get("audience", "all").strip().lower()
+                chosen_peers = request.form.getlist("peers")
+                if not all((board_value, subject_value, content_value, sender_value, date_value)):
+                    flash("All fields are required.", "error")
+                elif board_value not in app.config["BULLETIN_BOARDS"]:
+                    flash("Invalid board selected.", "error")
+                else:
+                    if audience == "local":
+                        local_only, peers_value = 1, ""
+                    elif audience == "peers" and chosen_peers:
+                        local_only, peers_value = 0, ",".join(chosen_peers)
+                    elif audience == "peers":
+                        local_only, peers_value = 1, ""
+                    else:
+                        local_only, peers_value = 0, ""
+                    cursor.execute(
+                        "UPDATE bulletins SET local_only = ?, sync_peers = ? WHERE id = ?",
+                        (local_only, peers_value, row_id))
+                    conn.commit()
+                    current_interface = get_runtime_interface()
+                    peer_nodes = list(getattr(current_interface, "bbs_nodes", []) or []) \
+                        if current_interface else []
+                    new_id, error = _db.edit_bulletin(
+                        unique_id, board_value, subject_value, content_value,
+                        peer_nodes, current_interface,
+                        is_operator=True, sender_short_name=sender_value,
+                        date=date_value)
+                    if error:
+                        flash(error, "error")
+                    else:
+                        nudge_sync_after_content_change()
+                        flash("Post updated. Every node it reaches gets the new "
+                              "version; nodes it does not reach keep nothing.",
+                              "success")
+                        return redirect(url_for("table_list", table=table))
+            elif request.method == "POST":
                 values = [request.form.get(field, "").strip() for field in cfg["editable"]]
                 if any(v == "" for v in values):
                     flash("All fields are required.", "error")
-                elif table == "bulletins" and values[0] not in app.config["BULLETIN_BOARDS"]:
-                  flash("Invalid board selected.", "error")
                 else:
                     set_clause = ", ".join([f"{field} = ?" for field in cfg["editable"]])
                     cursor.execute(
@@ -8209,6 +8281,8 @@ def create_app(runtime_interface=None) -> Flask:
             table_name=table,
             row=row,
             bulletin_boards=app.config["BULLETIN_BOARDS"],
+            audience=_bulletin_row_audience(row, cfg["columns"]),
+            sync_peers=load_board_sync_settings(app.config["CONFIG_PATH"])["peers"],
           )
         else:
           return render_template(

@@ -16,7 +16,7 @@ from meshtastic import BROADCAST_NUM
 from command_handlers import (
     handle_mail_command, handle_bulletin_command, handle_help_command, handle_stats_command,
     handle_bb_steps, handle_mail_steps, handle_stats_steps,
-    handle_board_sync_steps,
+    handle_board_sync_steps, handle_bulletin_own_edit_steps,
     handle_channel_directory_command, handle_channel_directory_steps, handle_send_mail_command,
     handle_read_mail_command, handle_check_mail_command, handle_quick_reply_command,
     handle_delete_mail_confirmation, handle_post_bulletin_command,
@@ -140,6 +140,9 @@ _TEXT_PROMPTS = {
     'ACCOUNT': (2, 4, 5, 6),
     'BULLETIN_POST': (4,),
     'BULLETIN_POST_CONTENT': (5,),
+    # Rewriting a post you wrote: step 1 collects the replacement text, so
+    # '?' and a bare Enter are content here, not navigation.
+    'BULLETIN_OWN_EDIT': (1,),
     # 7 is channel-comment composing. Same gap: its prompt is not printed
     # from a step in this table, so "!cancel" while writing a comment
     # skipped past the comment flow entirely.
@@ -1450,7 +1453,7 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
         if str(key).startswith('comment:'):
             # Legacy: old peers still use 'comment:{uuid}' keys in the channels scope.
             unique_id = str(key).split(':', 1)[1]
-            row = get_channel_comment_by_unique_id(unique_id)
+            row = get_channel_comment_by_unique_id(unique_id, peer_id=destination_node_id)
             if row:
                 logging.info(f"Sending requested channel comment to {destination_node_id} key={key}")
                 send_channel_comment_to_bbs_nodes(
@@ -1463,7 +1466,7 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
             else:
                 logging.warning(f"Requested channel comment missing locally for resend key={key}")
         else:
-            row = get_channel_by_manifest_key(key)
+            row = get_channel_by_manifest_key(key, peer_id=destination_node_id)
             if row:
                 logging.info(f"Sending requested channel to {destination_node_id} key={key}")
                 send_channel_to_bbs_nodes(row[0], row[1], [destination_node_id], interface)
@@ -1471,7 +1474,7 @@ def _send_requested_record(scope: str, key: str, destination_node_id: str, inter
                 logging.warning(f"Requested channel missing locally for resend key={key}")
     elif scope == 'channel_comments':
         # New sub-scope: keys are plain UUIDs (no 'comment:' prefix).
-        row = get_channel_comment_by_unique_id(str(key))
+        row = get_channel_comment_by_unique_id(str(key), peer_id=destination_node_id)
         if row:
             logging.info(f"Sending requested channel comment to {destination_node_id} key={key}")
             send_channel_comment_to_bbs_nodes(
@@ -3165,6 +3168,12 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             return
         if state and state.get('command') == 'BOARD_SYNC' and not _navigating:
             handle_board_sync_steps(sender_id, message, interface, state)
+            return
+        if state and state.get('command') == 'BULLETIN_OWN_EDIT':
+            # No _navigating guard: this screen is collecting the post's new
+            # text, where "2" is text the author typed, not a menu key.
+            handle_bulletin_own_edit_steps(sender_id, message, interface, state,
+                                           bbs_nodes)
             return
         if (state and state.get('command') == 'BULLETIN_OWN_DELETE'
                 and not _navigating):

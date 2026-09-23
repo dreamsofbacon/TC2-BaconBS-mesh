@@ -29,8 +29,30 @@
       <textarea id="content" name="content" class="form-control" required>{{ row['content'] }}</textarea>
     </div>
     <div class="form-group">
-      <label for="local_only">local_only</label>
-      <input type="text" id="local_only" name="local_only" value="{{ row['local_only'] }}" class="form-control" required>
+      <label for="audience">Who this post reaches</label>
+      <select id="audience" name="audience" class="form-control">
+        <option value="all" {% if audience.mode == 'all' %}selected{% endif %}>Everywhere</option>
+        <option value="local" {% if audience.mode == 'local' %}selected{% endif %}>This node only</option>
+        <option value="peers" {% if audience.mode == 'peers' %}selected{% endif %}>Chosen nodes</option>
+      </select>
+      {% if sync_peers %}
+      <div class="text-muted" style="margin-top:6px">
+        {% for peer in sync_peers %}
+        <label style="margin-right:10px">
+          <input type="checkbox" name="peers" value="{{ peer.id }}"
+                 {% if peer.id in audience.peers %}checked{% endif %}>
+          {{ peer.label }}
+        </label>
+        {% endfor %}
+        <span>&mdash; used only with &ldquo;Chosen nodes&rdquo;</span>
+      </div>
+      {% endif %}
+      <p class="text-muted" style="margin-top:6px">
+        Saving retracts this post from the nodes that hold it and sends the new
+        version, because peers reconcile posts by id and would otherwise push
+        their old copy back. Narrowing the audience cannot recall what a node
+        has already received.
+      </p>
     </div>
     <div class="row-actions">
       <button class="btn btn-primary" type="submit">Save Changes</button>

@@ -1492,6 +1492,35 @@
       {% endif %}
     </div>
     {% endfor %}
+    {% if board_sync.channels %}
+    <h3>Channels</h3>
+    <p class="text-muted">
+      A channel carries its own setting rather than a board's, and its
+      comments go exactly as far as the channel does.
+    </p>
+    {% for channel in board_sync.channels %}
+    <div style="margin-bottom:14px">
+      <label><strong>{{ channel.name }}</strong>
+        <span class="text-muted">{{ channel.url }}</span></label><br>
+      <select name="channel_audience_{{ loop.index0 }}">
+        <option value="all" {% if channel.audience == 'all' %}selected{% endif %}>Everywhere</option>
+        <option value="local" {% if channel.audience == 'local' %}selected{% endif %}>This node only</option>
+        <option value="peers" {% if channel.audience == 'peers' %}selected{% endif %}>Chosen nodes</option>
+      </select>
+      {% if board_sync.peers %}
+      <div class="text-muted" style="margin-top:4px">
+        {% for peer in board_sync.peers %}
+        <label style="margin-right:10px">
+          <input type="checkbox" name="channel_peers_{{ loop.parent.loop.index0 }}" value="{{ peer.id }}"
+                 {% if peer.id in channel.peers %}checked{% endif %}>
+          {{ peer.label }}
+        </label>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% endif %}
     <button class="btn btn-primary" type="submit">Save Board Sync</button>
   </form>
 </section>

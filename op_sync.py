@@ -44,16 +44,22 @@ _SCOPE_TO_TABLE = {
 def _event_is_for_peer(cursor, scope: str, event: dict, peer_id: str) -> bool:
     """Whether this peer is allowed to hear that a record exists.
 
-    Only bulletins carry an audience today. Anything else, and any event
-    whose record has since been deleted (a delete event, for instance),
-    passes: withholding those would hide ordinary sync traffic.
+    Bulletins carry their own audience; a channel comment inherits its
+    channel's. Any other scope, and any event whose record is already gone
+    (a delete event, for instance), passes: withholding those would hide
+    ordinary sync traffic.
     """
-    if scope != 'bulletins':
+    queries = {
+        'bulletins': 'SELECT local_only, sync_peers FROM bulletins WHERE unique_id = ?',
+        'channel_comments': (
+            'SELECT ch.local_only, ch.sync_peers FROM channel_comments cc'
+            ' JOIN channels ch ON ch.id = cc.channel_id WHERE cc.unique_id = ?'),
+    }
+    if scope not in queries:
         return True
     try:
-        row = cursor.execute(
-            'SELECT local_only, sync_peers FROM bulletins WHERE unique_id = ?',
-            (str(event.get('target_uid') or ''),)).fetchone()
+        row = cursor.execute(queries[scope],
+                             (str(event.get('target_uid') or ''),)).fetchone()
     except Exception:
         return True
     if not row:

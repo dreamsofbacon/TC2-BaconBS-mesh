@@ -4362,14 +4362,16 @@ def _dedupe_messages_and_create_unique_indexes(cursor) -> None:
     )
 
 
-def add_channel(name, url, bbs_nodes=None, interface=None, local_only: bool = False):
+def add_channel(name, url, bbs_nodes=None, interface=None, local_only: bool = False,
+                sync_peers: str = ''):
     conn = get_db_connection()
     c = conn.cursor()
     # Adding a channel that was previously deleted here is a deliberate
     # decision to bring it back, so the tombstone has to go -- otherwise the
     # next sync pass would honour it and delete the entry again.
     clear_sync_tombstone('channels', make_channel_manifest_key(name, url))
-    c.execute("INSERT OR IGNORE INTO channels (name, url, local_only) VALUES (?, ?, ?)", (name, url, 1 if local_only else 0))
+    c.execute("INSERT OR IGNORE INTO channels (name, url, local_only, sync_peers) VALUES (?, ?, ?, ?)",
+              (name, url, 1 if local_only else 0, str(sync_peers or '')))
     conn.commit()
 
     if c.rowcount == 0:
@@ -4384,12 +4386,73 @@ def add_channel(name, url, bbs_nodes=None, interface=None, local_only: bool = Fa
         row = c.fetchone()
         channel_id = int(row[0]) if row else 0
 
-    if local_only:
-        return channel_id
-
-    if bbs_nodes and interface:
-        send_channel_to_bbs_nodes(name, url, bbs_nodes, interface)
+    targets = [node for node in (bbs_nodes or [])
+               if record_is_for_peer(node, local_only, sync_peers)]
+    if targets and interface:
+        send_channel_to_bbs_nodes(name, url, targets, interface)
     return channel_id
+
+
+def get_channel_audience(name: str, url: str) -> tuple:
+    """(audience, peers) for one channel, in the same words boards use."""
+    row = get_db_connection().execute(
+        "SELECT local_only, sync_peers FROM channels WHERE name = ? AND url = ?",
+        (name, url)).fetchone()
+    if not row:
+        return (BOARD_AUDIENCE_ALL, [])
+    if int(row[0] or 0):
+        return (BOARD_AUDIENCE_LOCAL, [])
+    peers = _peer_list(row[1])
+    return (BOARD_AUDIENCE_PEERS, peers) if peers else (BOARD_AUDIENCE_ALL, [])
+
+
+def set_channel_audience(name: str, url: str, audience: str, peers=None) -> bool:
+    """Where a channel and its comments may travel.
+
+    Unlike a board, this is stored on the channel row itself, because a
+    channel IS the record -- there is no separate list of channels to hang a
+    policy on. Comments follow their channel everywhere in sync, which they
+    already did for local_only.
+    """
+    audience = str(audience or BOARD_AUDIENCE_ALL).strip().casefold()
+    peer_ids = _peer_list(peers)
+    if audience == BOARD_AUDIENCE_PEERS and not peer_ids:
+        # Same rule as a board: "these peers" with none chosen means here only.
+        audience = BOARD_AUDIENCE_LOCAL
+    if audience == BOARD_AUDIENCE_LOCAL:
+        local_only, stored = 1, ''
+    elif audience == BOARD_AUDIENCE_PEERS:
+        local_only, stored = 0, ','.join(peer_ids)
+    elif audience == BOARD_AUDIENCE_ALL:
+        local_only, stored = 0, ''
+    else:
+        return False
+    conn = get_db_connection()
+    cursor = conn.execute(
+        "UPDATE channels SET local_only = ?, sync_peers = ? WHERE name = ? AND url = ?",
+        (local_only, stored, name, url))
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def get_channels_with_audience() -> list:
+    """Every channel with where it is allowed to go, for the web admin."""
+    rows = get_db_connection().execute(
+        "SELECT name, url, local_only, sync_peers FROM channels ORDER BY name, url"
+    ).fetchall()
+    result = []
+    for name, url, local_only, sync_peers in rows:
+        peers = _peer_list(sync_peers)
+        if int(local_only or 0):
+            audience = BOARD_AUDIENCE_LOCAL
+            peers = []
+        elif peers:
+            audience = BOARD_AUDIENCE_PEERS
+        else:
+            audience = BOARD_AUDIENCE_ALL
+        result.append({'name': name, 'url': url, 'audience': audience,
+                       'peers': peers})
+    return result
 
 
 def get_channels():
@@ -4435,10 +4498,16 @@ def add_channel_comment(channel_id, sender_short_name, content, bbs_nodes=None, 
         author_node_id = None
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id, name, url FROM channels WHERE id = ?", (channel_id,))
+    c.execute("SELECT id, name, url, local_only, sync_peers FROM channels WHERE id = ?",
+              (channel_id,))
     channel = c.fetchone()
     if channel is None:
         raise ValueError("channel_id not found")
+    # A comment goes exactly as far as the channel it is on. This used to be
+    # unconditional: a comment on a local-only channel was broadcast to every
+    # peer even though the channel itself never left the node.
+    channel_local_only = int(channel[3] or 0)
+    channel_peers = str(channel[4] or '')
 
     date = str(comment_date or datetime.now().strftime('%Y-%m-%d %H:%M'))
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -4493,7 +4562,7 @@ def add_channel_comment(channel_id, sender_short_name, content, bbs_nodes=None, 
     )
     conn.commit()
     _local_nid = get_local_node_id()
-    if _local_nid and source_node_id == _local_nid:
+    if _local_nid and source_node_id == _local_nid and not channel_local_only:
         try_dual_write(
             c, origin_node_id=_local_nid,
             event_type='upsert', scope='channel_comments', target_uid=unique_id,
@@ -4503,14 +4572,16 @@ def add_channel_comment(channel_id, sender_short_name, content, bbs_nodes=None, 
         conn.commit()
     _flush_pending_expected_content_length('channel_comments', unique_id, _pending_channel_comment_expected_lengths, 'channel comment')
     clear_sync_tombstone('channels', f"comment:{unique_id}")
-    if bbs_nodes and interface:
+    comment_targets = [node for node in (bbs_nodes or [])
+                       if record_is_for_peer(node, channel_local_only, channel_peers)]
+    if comment_targets and interface:
         send_channel_comment_to_bbs_nodes(
             make_channel_manifest_key(channel[1], channel[2]),
             sender_short_name,
             date,
             content,
             unique_id,
-            bbs_nodes,
+            comment_targets,
             interface,
             source_node_id=source_node_id,
             source_timestamp=source_timestamp,
@@ -4578,13 +4649,16 @@ def count_hidden_channel_comments(channel_id, source_node_ids) -> int:
     return int(c.fetchone()[0])
 
 
-def get_channel_comment_by_unique_id(unique_id: str):
+def get_channel_comment_by_unique_id(unique_id: str, peer_id: str = ''):
+    """One comment, as `peer_id` may see it -- a comment inherits its channel."""
     conn = get_db_connection()
     c = conn.cursor()
+    clause, params = _peer_audience_sql(peer_id, 'ch') if str(peer_id or '').strip() else ('', ())
     c.execute(
         "SELECT ch.name, ch.url, cc.sender_short_name, cc.date, cc.content, cc.unique_id, COALESCE(cc.expected_content_length, LENGTH(cc.content)), COALESCE(cc.content_complete, 1), cc.source_node_id, cc.source_timestamp, cc.author_node_id "
-        "FROM channel_comments cc JOIN channels ch ON ch.id = cc.channel_id WHERE cc.unique_id = ?",
-        (str(unique_id),),
+        "FROM channel_comments cc JOIN channels ch ON ch.id = cc.channel_id "
+        f"WHERE cc.unique_id = ?{clause}",
+        (str(unique_id), *params),
     )
     return c.fetchone()
 
@@ -4840,7 +4914,7 @@ def count_posts_by(node_ids, aliases=None) -> int:
     return total
 
 
-def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interface, unique_id=None, local_only: bool = False, date=None, source_node_id=None, source_timestamp=None, author_node_id=None):
+def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interface, unique_id=None, local_only: bool = False, date=None, source_node_id=None, source_timestamp=None, author_node_id=None, sync_peers=None):
     if not _valid_author_node_id(author_node_id):
         author_node_id = None
     conn = get_db_connection()
@@ -4899,10 +4973,15 @@ def add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interfac
     # post written HERE: one arriving from a peer already carries whatever
     # that node decided, and re-deciding it here would apply this node's
     # policy to somebody else's board.
-    sync_peers = ''
-    if source_node_id is not None and source_node_id == get_local_node_id():
-        board_local_only, sync_peers = board_post_audience(board)
-        local_only = bool(local_only) or board_local_only
+    # An explicit sync_peers is an edit carrying the post's own audience
+    # across; editing must never widen where a post is allowed to go.
+    if sync_peers is None:
+        sync_peers = ''
+        if source_node_id is not None and source_node_id == get_local_node_id():
+            board_local_only, sync_peers = board_post_audience(board)
+            local_only = bool(local_only) or board_local_only
+    else:
+        sync_peers = str(sync_peers or '')
     c.execute(
         "INSERT INTO bulletins (board, sender_short_name, date, subject, content, unique_id, local_only, sync_peers, expected_content_length, content_complete, source_node_id, source_timestamp, received_at, author_node_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
@@ -5198,6 +5277,91 @@ def delete_bulletin(unique_id, bbs_nodes, interface, sync_received: bool = False
         conn.commit()
     record_sync_tombstone('bulletins', str(unique_id))
     send_delete_bulletin_to_bbs_nodes(unique_id, bbs_nodes, interface)
+
+
+def bulletin_edit_permission(unique_id: str, editor_node_id: str = '',
+                             is_operator: bool = False) -> tuple:
+    """(allowed, reason) for editing one post.
+
+    Two rules, and the second is a property of the sync protocol rather than
+    a policy choice.
+
+    A post can only be edited on the node that wrote it. Sync reconciles a
+    record by unique_id: a peer holding the original would see our changed
+    copy as a mismatch and push its own back, and the two nodes would argue
+    forever. The node that originated a record is the only one whose version
+    can win without a fight.
+
+    And an editor must be the author, or the operator of this node.
+    """
+    row = get_db_connection().execute(
+        "SELECT source_node_id, author_node_id FROM bulletins WHERE unique_id = ?",
+        (str(unique_id),)).fetchone()
+    if not row:
+        return (False, "That post no longer exists.")
+    source_node_id = str(row[0] or '')
+    author_node_id = str(row[1] or '')
+    local_id = str(get_local_node_id() or '')
+    if source_node_id and local_id and source_node_id != local_id:
+        return (False, "That post was written on another node, so it can only "
+                       "be edited there.")
+    if is_operator:
+        return (True, '')
+    editor = str(editor_node_id or '').strip()
+    if not editor:
+        return (False, "Could not verify who you are.")
+    if author_node_id and editor == author_node_id:
+        return (True, '')
+    if author_node_id and get_account_id_for_node(editor) and \
+            get_account_id_for_node(editor) == get_account_id_for_node(author_node_id):
+        # Same person, different radio: accounts link devices, and the post
+        # belongs to the person rather than to the device they used.
+        return (True, '')
+    return (False, "You can only edit posts you wrote.")
+
+
+def edit_bulletin(unique_id: str, board: str, subject: str, content: str,
+                  bbs_nodes=None, interface=None, editor_node_id: str = '',
+                  is_operator: bool = False, sender_short_name: str = '',
+                  date: str = '') -> tuple:
+    """Rewrite a post, and make peers agree. Returns (new_unique_id, error).
+
+    The edit is published as a delete of the old record plus a fresh one,
+    rather than as a changed copy of the same record. A peer receiving the
+    same unique_id again does not replace its copy: add_bulletin merges the
+    two, so a shortened edit would leave the tail of the old text behind and
+    an edit down to a prefix would be discarded as a duplicate. The original
+    date and author are carried across, so the post keeps its place and its
+    name; its id changes, which is what tells every node this is the record
+    to keep.
+    """
+    allowed, reason = bulletin_edit_permission(unique_id, editor_node_id, is_operator)
+    if not allowed:
+        return (None, reason)
+    row = get_db_connection().execute(
+        "SELECT board, sender_short_name, date, subject, content, author_node_id,"
+        " local_only, sync_peers FROM bulletins WHERE unique_id = ?",
+        (str(unique_id),)).fetchone()
+    if not row:
+        return (None, "That post no longer exists.")
+    (old_board, old_sender, old_date, old_subject, old_content, author_node_id,
+     old_local_only, old_sync_peers) = row
+    board = str(board or old_board)
+    subject = str(subject if subject is not None else old_subject)
+    content = str(content if content is not None else old_content)
+    sender_short_name = str(sender_short_name or old_sender)
+    original_date = str(date or old_date)
+    if ((board, subject, content, sender_short_name, original_date)
+            == (old_board, old_subject, old_content, old_sender, old_date)):
+        return (unique_id, '')
+
+    delete_bulletin(unique_id, bbs_nodes or [], interface)
+    new_unique_id = add_bulletin(
+        board, sender_short_name, subject, content, bbs_nodes or [], interface,
+        date=original_date, author_node_id=author_node_id,
+        local_only=bool(old_local_only), sync_peers=old_sync_peers)
+    logging.info("Bulletin %s edited here; republished as %s", unique_id, new_unique_id)
+    return (new_unique_id, '')
 
 
 def append_bulletin_content(unique_id: str, char_offset: Optional[int], additional_content: str) -> None:
@@ -8543,13 +8707,17 @@ def get_mail_by_unique_id(unique_id: str):
     return c.fetchone()
 
 
-def get_channel_by_manifest_key(manifest_key: str):
+def get_channel_by_manifest_key(manifest_key: str, peer_id: str = ''):
+    """One channel, as `peer_id` is allowed to see it (see get_bulletin_by_unique_id)."""
+    audience_clause, audience_params = _peer_audience_sql(peer_id)
     # Compact keys (~XXXXXXXX) are produced when the full base64(name+url) key
     # would overflow a HASHMISS request frame.  Resolve by scanning channels.
     if str(manifest_key).startswith('~'):
         conn = get_db_connection()
         c = conn.cursor()
-        for row in c.execute("SELECT name, url FROM channels WHERE local_only = 0"):
+        for row in c.execute(
+                f"SELECT name, url FROM channels WHERE 1=1{audience_clause}",
+                audience_params):
             full_key = make_channel_manifest_key(row[0], row[1])
             if compact_channel_manifest_key(full_key) == manifest_key:
                 return (row[0], row[1])
@@ -8561,8 +8729,8 @@ def get_channel_by_manifest_key(manifest_key: str):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT name, url FROM channels WHERE name = ? AND url = ? AND local_only = 0",
-        (name, url),
+        f"SELECT name, url FROM channels WHERE name = ? AND url = ?{audience_clause}",
+        (name, url, *audience_params),
     )
     return c.fetchone()
 

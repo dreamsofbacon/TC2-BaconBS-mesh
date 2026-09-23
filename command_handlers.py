@@ -18,6 +18,7 @@ from db_operations import (
     role_at_least, role_rank, normalize_role,
     ASSIGNABLE_ROLES, ROLE_MOD, ROLE_ADMIN, ROLE_VIP, ROLE_UNREGISTERED,
     get_board_audience, set_board_audience,
+    edit_bulletin, bulletin_edit_permission,
     BOARD_AUDIENCE_ALL, BOARD_AUDIENCE_LOCAL, BOARD_AUDIENCE_PEERS,
     get_account_id_for_node,
     count_hidden_bulletins, count_hidden_mail, count_hidden_channel_comments,
@@ -1505,6 +1506,40 @@ def handle_board_sync_steps(sender_id, message, interface, state) -> None:
         send_message("Reply with node numbers to toggle, or D when done.",
                      sender_id, interface)
         return
+
+
+def handle_bulletin_own_edit_steps(sender_id, message, interface, state, bbs_nodes) -> None:
+    """Rewriting a post you wrote, from a radio or over SSH.
+
+    The permission is checked again when END arrives, not only when the
+    screen opened: a session outlives the state it started in, and this one
+    republishes the post to every node.
+    """
+    if is_cancel(message):
+        send_message("Edit cancelled. The post is unchanged.", sender_id, interface)
+        handle_bulletin_command(sender_id, interface)
+        return
+    if message.strip().lower() != 'end':
+        state['content'] = str(state.get('content') or '') + message + "\n"
+        update_user_state(sender_id, state)
+        return
+
+    content = str(state.get('content') or '').strip()
+    if not content:
+        send_message("Nothing was sent, so the post is unchanged.", sender_id, interface)
+        handle_bulletin_command(sender_id, interface)
+        return
+    node_id = get_node_id_from_num(sender_id, interface) or ''
+    new_id, error = edit_bulletin(
+        state.get('unique_id'), state.get('board'), state.get('subject'), content,
+        bbs_nodes, interface, editor_node_id=node_id,
+        is_operator=_can_administer(sender_id, interface))
+    if error:
+        send_message(error, sender_id, interface)
+    else:
+        send_message(f"Updated \"{state.get('subject')}\". Every node gets the "
+                     "new version.", sender_id, interface)
+    handle_bulletin_command(sender_id, interface)
 
 
 def handle_stats_command(sender_id, interface):
@@ -3213,6 +3248,29 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
         if message.strip().lower() in ('0', 'x', 'exit'):
             handle_bulletin_command(sender_id, interface)
             return
+        if message.strip().lower() == 'e' and state.get('unique_id'):
+            allowed, reason = bulletin_edit_permission(
+                state.get('unique_id'),
+                get_node_id_from_num(sender_id, interface) or '',
+                is_operator=_can_administer(sender_id, interface))
+            if not allowed:
+                send_message(reason, sender_id, interface)
+                return
+            # Body only from a radio. Subject and board are one more round
+            # trip each on a link where a round trip is the expensive part,
+            # and the web admin edits those.
+            send_message(
+                f"Rewrite \"{state.get('subject')}\". Send the new text, then "
+                f"END. {CANCEL_HINT} to stop.", sender_id, interface)
+            update_user_state(sender_id, {'command': 'BULLETIN_OWN_EDIT',
+                                          'step': 1,
+                                          'board': state.get('board'),
+                                          'boards': state.get('boards', []),
+                                          'bulletins': state.get('bulletins', []),
+                                          'unique_id': state.get('unique_id'),
+                                          'subject': state.get('subject'),
+                                          'content': ''})
+            return
         if message.strip().lower() == 'd' and state.get('unique_id'):
             # Only offered on a post this reader wrote; confirmed for the
             # same reason a moderator's delete is -- it travels to every
@@ -3256,7 +3314,7 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
         if _can_moderate(sender_id, interface):
             more = ""
         elif mine:
-            more = LINE_BREAK + "[D]elete this post, another number, or [0] to go back."
+            more = LINE_BREAK + "[E]dit [D]elete, another number, or [0] to go back."
         else:
             more = LINE_BREAK + "Reply with another number, or [0] to go back."
         send_message(f"From: {sender_short_name}\nDate: {date}\nSubject: {subject}\n- - - - - - -\n{content}{notice}{more}", sender_id, interface)

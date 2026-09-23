@@ -80,10 +80,18 @@ MAIN MENU   header: Bacon BBS  (mail:N shows unread count)
                            or [0] to go back:"
                           -> the post, and you stay on the list: reply
                              with another number to read the next one.
-                          -> [D]elete appears on a post YOU wrote, and
-                             confirms before deleting. A moderator gets
-                             the same option on any post. Deletes travel
-                             to every node as tombstones.
+                          -> [E]dit and [D]elete appear on a post YOU
+                             wrote. A moderator gets delete on any post.
+                             Deletes travel to every node as tombstones.
+                          -> [E]dit collects the replacement text (END to
+                             finish) and rewrites the body; the subject,
+                             board, date and author stay as they were, and
+                             the web admin edits those. The post is
+                             retracted and republished under a new id,
+                             because peers reconcile by id and would push
+                             their copy of the original back otherwise.
+                             Only on the node that wrote the post, and
+                             editing never widens where it may travel.
              [2] Post  -> subject -> body (END to post)
                           The Urgent board is radio-only on most nodes:
                           an SSH poster is refused and told why.

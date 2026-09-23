@@ -76,6 +76,23 @@ class BoardSyncPanelTests(unittest.TestCase):
         self.assertEqual('peers', rows['Ops']['audience'])
         self.assertEqual([PEER_A], rows['Ops']['peers'])
 
+    def test_channels_are_listed_with_their_own_audience(self):
+        with mock.patch.object(db_operations, 'send_channel_to_bbs_nodes'):
+            db_operations.add_channel("News", "https://example.invalid/feed", [], None)
+        db_operations.set_channel_audience(
+            "News", "https://example.invalid/feed", "local", [])
+        channels = self.web_admin.load_board_sync_settings(self.config_path)["channels"]
+        self.assertEqual(1, len(channels))
+        self.assertEqual("local", channels[0]["audience"])
+
+    def test_saving_a_channel_audience(self):
+        with mock.patch.object(db_operations, 'send_channel_to_bbs_nodes'):
+            db_operations.add_channel("News", "https://example.invalid/feed", [], None)
+        self._post({'audience_General': 'all', 'audience_Ops': 'all',
+                    'channel_audience_0': 'peers', 'channel_peers_0': [PEER_A]})
+        self.assertEqual(('peers', [PEER_A]), db_operations.get_channel_audience(
+            "News", "https://example.invalid/feed"))
+
     def test_chosen_nodes_with_nothing_ticked_is_stored_as_this_node_only(self):
         self._post({'audience_General': 'all', 'audience_Ops': 'peers'})
         self.assertEqual(('local', []), db_operations.get_board_audience('Ops'))
