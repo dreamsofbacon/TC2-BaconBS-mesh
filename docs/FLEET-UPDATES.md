@@ -268,3 +268,47 @@ reasonable middle ground: they see the target and apply it themselves.
 - **The web admin password is plaintext** in `config.ini` and defaults to
   `change-me`. Signing stays offline precisely so that password is not an
   RCE credential — but change it anyway.
+
+## A deploy is not finished when the seed accepts it
+
+The seed storing a signed target says the instruction was genuine. It says
+nothing about the other nodes. **A node that accepted a target and did not
+move is a failed deploy**, and it used to be invisible: the checks that
+refuse an update returned without writing anything, so the node looked
+exactly like one that had never heard the instruction.
+
+Two things make that impossible now.
+
+- **A node that holds a target says so.** When `[fleet] updates` is not
+  `auto`, or the node is pinned, it records `state: held` (or `pinned`) in
+  `update_state.json` with the reason, and logs it once. That state is what
+  it advertises to every peer, so the stall is visible from any other node.
+- **`fleet_sign.py status` names the nodes that are not on the target**, and
+  `--strict` exits non-zero when any node is behind, so a deploy script can
+  fail on it:
+
+  ```sh
+  python scripts/fleet_sign.py --group <group> status --strict
+  ```
+
+  A node reading `held` or `pinned` will never converge on its own. Its
+  config forbids the update, and only a change there (and, for `held` after
+  a config edit, a restart of `mesh-bbs`) will move it.
+
+**Check after every deploy**, once the nodes have had a minute:
+
+```sh
+python scripts/fleet_sign.py --group <group> status --strict
+```
+
+### Two config traps this came from
+
+- **`[fleet]` added while the node was running.** MQTT links reload from
+  config on the fly, so a node can join the fleet, verify a target and store
+  it without ever having read a `[fleet]` section at startup. The applier now
+  re-reads `[fleet]` from disk on every check, the way the receive path
+  already did.
+- **The sudo rule for companion restarts.** `install_services.sh` installs
+  `/etc/sudoers.d/baconbbs-fleet`. Without it the mesh server updates itself
+  and the web admin and SSH services keep running the old code. Re-run
+  `install_services.sh` on any node installed before that file existed.

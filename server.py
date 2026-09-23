@@ -1455,6 +1455,84 @@ def deliver_due_mail_dms(links, active_window_seconds: int = 900, retry_base_sec
     return delivered
 
 
+def _current_fleet_settings(system_config: dict) -> dict:
+    """[fleet] as it is on disk now, not as it was at startup.
+
+    The receive path already reads it fresh (message_processing._fleet_settings),
+    so a node that gains a [fleet] section later verifies and stores targets
+    -- and this half, reading the startup snapshot, then refused to apply
+    them. The live node it happened on sat on a stored, verified target for a
+    day with nothing in the log to say why, because "updates are off" returns
+    before anything is written.
+
+    Falls back to the snapshot if the file cannot be read, so a half-written
+    config during an edit cannot stop an update that was already allowed.
+    """
+    try:
+        import configparser
+        import config_init
+        parser = configparser.ConfigParser()
+        parser.read(resolve_app_path(os.getenv("BBS_CONFIG_PATH"), "config.ini"))
+        fresh = config_init._read_fleet_settings(parser)
+        # Only when the file actually configures a fleet. An absent or
+        # [fleet]-less config must not overrule the caller's settings, or
+        # reading the file would itself become a way to switch updates off.
+        if fresh and str(fresh.get('group', '')).strip():
+            return fresh
+    except Exception:
+        logging.debug("Fleet: could not re-read [fleet]; using startup config",
+                      exc_info=True)
+    return (system_config or {}).get('fleet') or {}
+
+
+# What has already been reported as held, so the warning is said once per
+# reason rather than on every poll for ever.
+_fleet_hold_reported: dict = {}
+
+
+def _hold_fleet_target(group: str, target, fleet_update, reason: str) -> None:
+    """Record that this node has a target it is deliberately not applying.
+
+    Written to update_state.json, which is what the node advertises as
+    FLEETSTATUS, so "accepted but standing still" is visible from any other
+    node and from the deploy that sent it -- instead of looking identical to
+    a node that never heard the instruction.
+    """
+    if not target:
+        return
+    commit = str(target.get('commit', ''))
+    if not commit:
+        return
+    try:
+        current = fleet_update.current_commit()
+    except Exception:
+        current = ''
+    if current and current == commit:
+        return
+    key = (group, commit, reason)
+    if _fleet_hold_reported.get(group) != key:
+        _fleet_hold_reported[group] = key
+        logging.warning(
+            "Fleet: target %s (%s) accepted but NOT applied: %s. This node "
+            "stays on %s until that changes.", commit[:12],
+            target.get('version', '?'), reason, (current or '?')[:12])
+    try:
+        fleet_update.write_update_state({
+            'state': 'held',
+            'target_commit': commit,
+            'target_version': target.get('version', ''),
+            'detail': reason,
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception:
+        logging.debug("Fleet: could not record the held target", exc_info=True)
+
+
+def _reset_fleet_hold_state() -> None:
+    """Test hook: forget what has been reported as held."""
+    _fleet_hold_reported.clear()
+
+
 def _apply_fleet_target_if_due(system_config: dict) -> bool:
     """Move this node onto the stored fleet target, if it should.
 
@@ -1462,19 +1540,34 @@ def _apply_fleet_target_if_due(system_config: dict) -> bool:
     to act on it and then does the git work. Returns True when the working
     tree changed and the caller should exit so systemd restarts us.
     """
-    fleet = (system_config or {}).get('fleet') or {}
+    fleet = _current_fleet_settings(system_config)
     mode = str(fleet.get('updates', 'off')).lower()
     group = str(fleet.get('group', ''))
-    if mode != 'auto' or not group:
-        return False
 
-    pinned = str(fleet.get('pin_commit', '')).strip()
     try:
         from db_operations import get_fleet_target, mark_fleet_target_applied
         import fleet_update
     except Exception:
         logging.warning("Fleet: update support unavailable; not applying.")
         return False
+
+    if mode != 'auto' or not group:
+        # A node that has accepted a target and is not acting on it has to
+        # say so. This returned silently, and a node sat on a verified
+        # target for a day with nothing in the log and nothing in its status
+        # -- a deploy that reported success while one node never moved.
+        if group:
+            try:
+                _hold_fleet_target(group, get_fleet_target(group), fleet_update,
+                                   f"[fleet] updates = {mode or 'off'}")
+            except Exception:
+                # Reporting a held target must never be the thing that breaks
+                # the loop that would otherwise apply the next one.
+                logging.debug("Fleet: could not check for a held target",
+                              exc_info=True)
+        return False
+
+    pinned = str(fleet.get('pin_commit', '')).strip()
 
     target = get_fleet_target(group)
     if not target:

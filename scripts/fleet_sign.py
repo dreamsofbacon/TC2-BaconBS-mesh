@@ -338,12 +338,32 @@ def cmd_status(args) -> int:
     local_state = (local.get("update_state") or {}).get("state") or (
         "healthy" if local.get("on_target") else "pending")
     print(f"local   {str(local.get('commit') or 'unknown'):<12} {local_state}")
+    behind = []
+    if target_commit and not local.get("on_target"):
+        behind.append(f"local ({local_state})")
     for node in status.get("nodes") or []:
         commit = str(node.get("commit_hash") or "")
         state = str(node.get("fleet_state") or "") or (
             "healthy" if _commit_matches(commit, target_commit) else "pending")
         print(f"{str(node.get('node_id') or '?'):<8} {commit or 'unknown':<12} "
               f"{state}  {node.get('reported_at') or 'never'}")
+        if target_commit and not _commit_matches(commit, target_commit):
+            behind.append(f"{node.get('node_id') or '?'} ({state})")
+
+    # A deploy is not finished because the seed took it. Say plainly which
+    # nodes are not on the target, so "deployed" cannot mean "one node is
+    # still on last week's code and nothing said so".
+    print()
+    if not target_commit:
+        print("No target set, so there is nothing to converge on.")
+    elif behind:
+        print(f"NOT on the target ({len(behind)}): " + ", ".join(behind))
+        print("A node reading 'held' or 'pinned' will never converge on its "
+              "own: its config forbids the update.")
+    else:
+        print("Every node reporting in is on the target.")
+    if getattr(args, "strict", False) and behind:
+        return 1
     return 0
 
 
@@ -601,6 +621,9 @@ def main() -> int:
     status.add_argument("--token", default=os.getenv("BBS_FLEET_API_TOKEN", ""),
                         help="seed API token (or BBS_FLEET_API_TOKEN)")
     status.add_argument("--timeout", type=int, default=30)
+    status.add_argument("--strict", action="store_true",
+                        help="exit non-zero unless every node is on the target, "
+                             "so a deploy check can fail the build")
     status.set_defaults(func=cmd_status)
 
     rollback = sub.add_parser(

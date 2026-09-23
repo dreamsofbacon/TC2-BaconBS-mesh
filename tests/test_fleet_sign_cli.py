@@ -261,6 +261,55 @@ class StatusTests(unittest.TestCase):
         self.assertIn("healthy", rendered)
         self.assertIn("pending", rendered)
 
+    def test_status_names_the_nodes_that_are_not_on_the_target(self):
+        """A deploy is not done because the seed took it. The node that did
+        not move has to be named, or "deployed" hides it."""
+        args = types.SimpleNamespace(
+            seed="http://seed:8081", token="secret", timeout=30, strict=False)
+        response = {
+            "ok": True, "group": "fleet",
+            "target": {"commit": "a" * 40},
+            "local": {"commit": "aaaaaaa", "on_target": True},
+            "nodes": [
+                {"node_id": "!peer1", "commit_hash": "aaaaaaa"},
+                {"node_id": "!vps", "commit_hash": "bbbbbbb",
+                 "fleet_state": "held"},
+            ],
+        }
+        output = []
+        with mock.patch.object(fleet_sign, "_fetch_status", return_value=response),                 mock.patch("builtins.print", side_effect=lambda text="": output.append(str(text))):
+            code = fleet_sign.cmd_status(args)
+        rendered = "\n".join(output)
+        self.assertEqual(code, 0)
+        self.assertIn("NOT on the target (1)", rendered)
+        self.assertIn("!vps (held)", rendered)
+        self.assertNotIn("!peer1 (", rendered)
+
+    def test_strict_fails_when_a_node_is_behind(self):
+        args = types.SimpleNamespace(
+            seed="http://seed:8081", token="secret", timeout=30, strict=True)
+        response = {
+            "ok": True, "group": "fleet", "target": {"commit": "a" * 40},
+            "local": {"commit": "aaaaaaa", "on_target": True},
+            "nodes": [{"node_id": "!vps", "commit_hash": "bbbbbbb",
+                       "fleet_state": "held"}],
+        }
+        with mock.patch.object(fleet_sign, "_fetch_status", return_value=response),                 mock.patch("builtins.print"):
+            self.assertEqual(1, fleet_sign.cmd_status(args))
+
+    def test_strict_passes_when_everything_converged(self):
+        args = types.SimpleNamespace(
+            seed="http://seed:8081", token="secret", timeout=30, strict=True)
+        response = {
+            "ok": True, "group": "fleet", "target": {"commit": "a" * 40},
+            "local": {"commit": "a" * 40, "on_target": True},
+            "nodes": [{"node_id": "!peer1", "commit_hash": "a" * 40}],
+        }
+        output = []
+        with mock.patch.object(fleet_sign, "_fetch_status", return_value=response),                 mock.patch("builtins.print", side_effect=lambda text="": output.append(str(text))):
+            self.assertEqual(0, fleet_sign.cmd_status(args))
+        self.assertIn("Every node reporting in is on the target.", "\n".join(output))
+
     def test_status_requires_seed_credentials(self):
         with mock.patch("builtins.print"):
             code = fleet_sign.cmd_status(types.SimpleNamespace(
