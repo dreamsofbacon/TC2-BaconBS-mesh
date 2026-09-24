@@ -115,6 +115,27 @@ class OptingOutOfChatterTests(unittest.TestCase):
         self.assertFalse(db_operations.peer_opts_out_of_public_chatter(""))
         self.assertFalse(db_operations.peer_opts_out_of_public_chatter("AfVd4NyJxE4"))
 
+    def test_an_incoming_manifest_is_ignored_too(self):
+        """Declining to ASK is not enough: a manifest already in flight, or
+        one a peer sends unprompted, was still reconciled record by record.
+        That is what kept the node pulling chatter after it was told to
+        stop."""
+        with self._off():
+            self.assertFalse(mp._scope_is_wanted("public_chatter"))
+            with mock.patch.object(mp, "_do_striped_reconcile") as reconcile:
+                mp._queue_striped_reconcile(
+                    "public_chatter", "mqtt:baconbbsvt:VT2", {"a": "b"}, None)
+            reconcile.assert_not_called()
+
+    def test_other_scopes_are_always_reconciled(self):
+        with self._off():
+            for scope in ("bulletins", "mail", "channels"):
+                with self.subTest(scope=scope):
+                    self.assertTrue(mp._scope_is_wanted(scope))
+
+    def test_a_participating_node_reconciles_chatter(self):
+        self.assertTrue(mp._scope_is_wanted("public_chatter"))
+
     def test_a_participating_node_still_hashes_its_chatter(self):
         counts = db_operations.get_local_record_counts()
         self.assertNotEqual(db_operations.public_chatter_disabled_hash(),

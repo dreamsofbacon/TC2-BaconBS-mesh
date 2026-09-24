@@ -1167,6 +1167,25 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
         _mark_hashreq_pending(sender_node_id, scope)
 
 
+def _scope_is_wanted(scope: str) -> bool:
+    """Whether this node takes part in a scope at all.
+
+    Checked on the way IN as well as out. Declining to ask for a scope is
+    not enough: a manifest already in flight, or one a peer sends of its own
+    accord, would still be reconciled record by record -- which is exactly
+    what kept a node pulling thousands of chatter records after it had been
+    told to stop asking for them.
+    """
+    if scope != "public_chatter":
+        return True
+    try:
+        from db_operations import is_public_chatter_sync_enabled
+        return is_public_chatter_sync_enabled()
+    except Exception:
+        logging.debug("could not read the chatter sync setting", exc_info=True)
+        return True
+
+
 def _queue_striped_reconcile(scope: str, sender_node_id: str, manifest: dict, interface) -> None:
     """Store an incoming manifest and (re)start the collection timer for this scope.
 
@@ -1175,6 +1194,10 @@ def _queue_striped_reconcile(scope: str, sender_node_id: str, manifest: dict, in
     peer responded before the window closed, behaviour is identical to the original
     single-peer reconcile.
     """
+    if not _scope_is_wanted(scope):
+        logging.info("Ignoring a %s manifest from %s: this node does not sync "
+                     "that scope", scope, sender_node_id)
+        return
     # Zero collection window → reconcile synchronously (no batching). Keeps the
     # single-peer path deterministic for tests and lets operators opt out of the
     # collect-and-stripe delay.
