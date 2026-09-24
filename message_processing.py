@@ -269,6 +269,60 @@ _stripe_lock = threading.Lock()
 _outgoing_hash_manifest_cache = {}
 _hash_buffer_lock = threading.RLock()
 _SUPPORTED_HASH_SCOPES = ["bulletins", "mail", "channels", "channel_comments", "public_chatter", "profiles", "game_scores", "zork_saves", "tombstones"]
+
+# What to repair first when several scopes are behind at once. Repair asks
+# for one record at a time, so the order is the order a new node fills up in.
+#
+# A node joining a fleet with a long chatter history used to spend hours on
+# public_chatter -- overheard radio traffic that expires after seven days --
+# before a single bulletin arrived, because the scopes were repaired in the
+# order they happened to be listed. From the outside that is
+# indistinguishable from not syncing at all, and it was read that way.
+#
+# So: the things people came for first, then the bulk that expires anyway.
+_SCOPE_REPAIR_ORDER = ("bulletins", "mail", "channels", "channel_comments",
+                       "profiles", "game_scores", "tombstones",
+                       "public_chatter", "zork_saves")
+
+# The scopes whose absence a person would actually notice. While any of
+# these is behind, public_chatter waits: it is a constantly-refreshing
+# observation log that is almost never fully converged on a live mesh, so
+#"wait until it is done" would mean "never" for everything behind it.
+_SCOPES_BEFORE_CHATTER = ("bulletins", "mail", "channels", "channel_comments",
+                          "profiles", "game_scores")
+
+
+def _order_repair_scopes(scopes) -> list:
+    """Sort by _SCOPE_REPAIR_ORDER, keeping anything unknown at the end."""
+    order = {name: index for index, name in enumerate(_SCOPE_REPAIR_ORDER)}
+    return sorted(scopes, key=lambda scope: order.get(scope, len(order)))
+
+
+def _defer_chatter_if_content_is_behind(scopes) -> list:
+    """Drop public_chatter from this pass while real content is missing.
+
+    It comes back on the next cycle, once the scopes above it converge --
+    unless this node has opted out of chatter entirely, in which case it
+    never comes back.
+    """
+    if "public_chatter" not in scopes:
+        return list(scopes)
+    try:
+        from db_operations import is_public_chatter_sync_enabled
+        if not is_public_chatter_sync_enabled():
+            logging.info("Not repairing public_chatter: [public_chatter] "
+                         "sync is off on this node")
+            return [scope for scope in scopes if scope != "public_chatter"]
+    except Exception:
+        logging.debug("could not read the chatter sync setting", exc_info=True)
+    waiting = [scope for scope in scopes if scope in _SCOPES_BEFORE_CHATTER]
+    if not waiting:
+        return list(scopes)
+    logging.info(
+        "Deferring public_chatter repair until %s converge: chatter is bulk "
+        "that expires in seven days, and it would otherwise arrive first",
+        ", ".join(waiting))
+    return [scope for scope in scopes if scope != "public_chatter"]
 _pending_public_chatter = {}
 _pending_public_chatter_lock = threading.Lock()
 _PUBLIC_CHATTER_BUFFER_TTL_SECONDS = 120.0
@@ -1105,6 +1159,8 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
             requested_scopes = non_zork
     else:
         _clear_zork_deferrals(sender_node_id)
+    requested_scopes = _order_repair_scopes(
+        _defer_chatter_if_content_is_behind(requested_scopes))
     logging.info(f"SYNCSTATE mismatch from {sender_node_id}; requesting targeted repair for scopes: {', '.join(requested_scopes)}")
     for scope in requested_scopes:
         send_hash_request_to_bbs_nodes([sender_node_id], interface, scope=scope)

@@ -3236,6 +3236,35 @@ def get_recent_sync_tombstones(scope_prefix: str = '', limit: int = 20) -> list:
     return c.fetchall()
 
 
+def is_public_chatter_sync_enabled() -> bool:
+    """Whether this node carries other nodes' overheard radio traffic.
+
+    On by default, because a node with radios has always kept its
+    neighbours' chatter. A node with no radio of its own -- a server that
+    joined over MQTT -- overhears nothing, and pulling thousands of
+    seven-day-expiring observations is the first thing it does with a new
+    link: bulletins and mail queue up behind them. `[public_chatter]
+    sync = false` says no thank you.
+    """
+    from utils import _config_bool
+    return _config_bool('public_chatter', 'sync', True)
+
+
+def public_chatter_disabled_hash() -> str:
+    """The public_chatter hash a node advertises when it opts out.
+
+    The same sentinel trick as zork_saves: "I do not take part in this
+    scope" reads differently from "I have none of it". Without it, every
+    peer would see a node stuck at zero chatter and try to repair a gap
+    that the node refuses to fill, for ever.
+    """
+    return _compact_row_hash(("public_chatter_disabled",))
+
+
+def peer_opts_out_of_public_chatter(peer_hash) -> bool:
+    return bool(peer_hash) and str(peer_hash) == public_chatter_disabled_hash()
+
+
 def zork_saves_disabled_hash() -> str:
     """The zork_saves hash a node advertises when it does not sync saves.
 
@@ -3637,8 +3666,12 @@ def get_local_record_counts(peer_id: str = '') -> dict:
     c.execute("SELECT COUNT(*) FROM game_scores")
     game_scores = int(c.fetchone()[0])
     now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-    c.execute("SELECT COUNT(*) FROM public_chatter WHERE expires_at > ?", (now,))
-    public_chatter = int(c.fetchone()[0])
+    chatter_sync_enabled = is_public_chatter_sync_enabled()
+    if chatter_sync_enabled:
+        c.execute("SELECT COUNT(*) FROM public_chatter WHERE expires_at > ?", (now,))
+        public_chatter = int(c.fetchone()[0])
+    else:
+        public_chatter = 0
 
     def _hash_rows(query: str, params: tuple = (),
                    timestamp_columns: tuple = ()) -> str:
@@ -3724,12 +3757,15 @@ def get_local_record_counts(peer_id: str = '') -> dict:
         "SELECT user_id, game_id, short_name, score, max_score, moves, achieved_at FROM game_scores ORDER BY user_id, game_id",
         timestamp_columns=(6,),
     )
-    public_chatter_hash = _hash_rows(
-        "SELECT unique_id, network, channel_index, sender_node_id, content, "
-        "message_timestamp, expires_at FROM public_chatter "
-        "WHERE expires_at > ? ORDER BY unique_id",
-        (now,),
-    )
+    if chatter_sync_enabled:
+        public_chatter_hash = _hash_rows(
+            "SELECT unique_id, network, channel_index, sender_node_id, content, "
+            "message_timestamp, expires_at FROM public_chatter "
+            "WHERE expires_at > ? ORDER BY unique_id",
+            (now,),
+        )
+    else:
+        public_chatter_hash = public_chatter_disabled_hash()
     c.execute("SELECT COUNT(*) FROM deleted_sync_tombstones")
     tombstones = int(c.fetchone()[0])
 

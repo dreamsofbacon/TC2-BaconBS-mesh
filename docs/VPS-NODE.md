@@ -28,6 +28,9 @@ the BBS's own directory.
 [interface]
 type = none            # no radio; syncs over MQTT only
 
+[public_chatter]
+sync = false           # do not carry other nodes' overheard traffic
+
 [ssh]
 enabled = true
 host = 0.0.0.0, ::
