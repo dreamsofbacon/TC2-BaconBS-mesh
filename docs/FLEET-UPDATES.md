@@ -342,3 +342,36 @@ the peers. A reply from that peer clears it.
 `journalctl -u mesh-bbs | grep "has not answered"`. A node whose record
 counts sit at zero while its peers report content is this fault until proven
 otherwise.
+
+## The two commands worth remembering
+
+**On a node, after installing or enrolling it:**
+
+```sh
+venv/bin/python3 scripts/node_doctor.py
+```
+
+It reads that node's own config, database and services, and reports what has
+actually gone wrong on this fleet before: no trusted key, updates not on
+auto, a target accepted but held, the sudo rule missing so updates leave the
+web admin on old code, a peer that never answers, a node being ignored, and
+a node holding nothing while its peers hold plenty. Exit status 1 if
+anything failed, so a script can gate on it.
+
+**On the admin machine, when deploying:**
+
+```sh
+python scripts/fleet_sign.py deploy HEAD --wait 300
+```
+
+It waits for every node to reach the target and exits non-zero naming the
+ones that did not, instead of reporting success the moment the seed takes
+the instruction. Without `--wait` it says so explicitly and points at
+`status --strict`.
+
+**The group is never guessed.** An instruction for the wrong group is
+ignored by every node in silence, so signing with a default that does not
+match your fleet produces a valid instruction nothing will act on -- which
+is what a `baconbbs` default did to a `baconbbsvt` fleet. The tool takes the
+group from `BBS_FLEET_GROUP`, then `config.ini`, then whatever you last used
+with this key, and refuses to sign if it still cannot tell.

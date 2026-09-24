@@ -26,6 +26,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -232,7 +233,7 @@ def _build_signed_instruction(args):
         format=serialization.PublicFormat.Raw)
 
     payload = fleet_update.build_payload(
-        args.group, commit, version, fleet_update.key_id(public_raw))
+        require_group(args), commit, version, fleet_update.key_id(public_raw))
     blob = fleet_update.encode_instruction(
         payload, fleet_update.sign_payload(payload, private_key))
 
@@ -284,6 +285,79 @@ def _fetch_status(seed: str, token: str, timeout: int = 30) -> dict:
         raise ValueError(f"Could not read {_fleet_status_url(seed)}: {exc}") from exc
 
 
+def group_path() -> Path:
+    """Where the last group used with this key is remembered."""
+    return key_path().with_name("fleet-group")
+
+
+def remember_group(group: str) -> None:
+    """Write down the group, so the next command need not be told again."""
+    group = str(group or "").strip()
+    if not group:
+        return
+    try:
+        path = group_path()
+        if path.exists() and path.read_text(encoding="utf-8").strip() == group:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(group + "\n", encoding="utf-8")
+    except OSError:
+        # A convenience, never a requirement: --group still works.
+        pass
+
+
+def default_group() -> str:
+    """The fleet this machine signs for, or '' if it cannot be sure.
+
+    A signed instruction for the wrong group is ignored by every node, in
+    silence -- on a shared broker, other fleets' instructions are ordinary
+    traffic, so there is nothing for a node to log. A default that does not
+    match the fleet you are standing in is therefore a deploy that reports
+    success and changes nothing. That happened: signed for 'baconbbs' while
+    every node was in 'baconbbsvt', and the only clue was that nothing moved.
+
+    So: the environment, then this repo's own config, then the group last
+    used with this key. Guessing is what the empty string is for -- the
+    caller refuses rather than signing something no node will act on.
+    """
+    from_env = str(os.getenv("BBS_FLEET_GROUP", "")).strip()
+    if from_env:
+        return from_env
+    for name in (os.getenv("BBS_CONFIG_PATH"), "config.ini",
+                 str(Path(__file__).resolve().parent.parent / "config.ini")):
+        if not name:
+            continue
+        try:
+            parser = configparser.ConfigParser()
+            if not parser.read(name):
+                continue
+            group = parser.get("fleet", "group", fallback="").strip()
+            if group:
+                return group
+        except (configparser.Error, OSError):
+            continue
+    try:
+        remembered = group_path().read_text(encoding="utf-8").strip()
+        if remembered:
+            return remembered
+    except OSError:
+        pass
+    return ""
+
+
+def require_group(args) -> str:
+    """The group for this command, or a refusal explaining how to give one."""
+    group = str(getattr(args, "group", "") or "").strip()
+    if not group:
+        raise ValueError(
+            "No fleet group. This machine cannot tell which fleet to sign for, "
+            "and an instruction for the wrong group is ignored by every node "
+            "without a word. Pass --group <name>, or set BBS_FLEET_GROUP, or "
+            "put it in config.ini under [fleet].")
+    remember_group(group)
+    return group
+
+
 def cmd_deploy(args) -> int:
     seed = str(args.seed or "").strip()
     token = str(args.token or "").strip()
@@ -303,7 +377,57 @@ def cmd_deploy(args) -> int:
     print(f"version {payload['v']}")
     print(f"subject {subject}")
     print(f"status  {response.get('code', 'accepted')}")
-    return 0
+
+    if not getattr(args, "wait", 0):
+        print()
+        print("The seed accepted it. That is not the same as the fleet running "
+              "it -- check with: status --strict")
+        return 0
+
+    deadline = time.time() + int(args.wait)
+    target = str(payload["c"])
+    print()
+    print(f"Waiting up to {int(args.wait)}s for every node to reach "
+          f"{target[:12]}...")
+    behind = []
+    while True:
+        time.sleep(min(15, max(1, int(args.wait) // 10)))
+        try:
+            status = _fetch_status(seed, token, timeout=args.timeout)
+        except ValueError as exc:
+            print(f"  status unavailable: {exc}")
+            status = {}
+        behind = _nodes_behind(status, target)
+        if status and not behind:
+            print("Every node reporting in is on the target.")
+            return 0
+        if time.time() >= deadline:
+            break
+        if behind:
+            print("  still behind: " + ", ".join(behind))
+    print()
+    print(f"NOT converged after {int(args.wait)}s ({len(behind)}): "
+          + ", ".join(behind))
+    print("A node reading 'held' or 'pinned' will never converge on its own: "
+          "its config forbids the update.")
+    return 1
+
+
+def _nodes_behind(status: dict, target_commit: str) -> list:
+    """Every node whose reported commit is not the target, with its state."""
+    if not target_commit:
+        return []
+    behind = []
+    local = status.get("local") or {}
+    if local and not local.get("on_target"):
+        state = (local.get("update_state") or {}).get("state") or "pending"
+        behind.append(f"local ({state})")
+    for node in status.get("nodes") or []:
+        commit = str(node.get("commit_hash") or "")
+        if not _commit_matches(commit, target_commit):
+            state = str(node.get("fleet_state") or "") or "pending"
+            behind.append(f"{node.get('node_id') or '?'} ({state})")
+    return behind
 
 
 def _require_seed_credentials(args):
@@ -581,8 +705,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--group", default="baconbbs",
-                        help="fleet group name (default: baconbbs)")
+    parser.add_argument("--group", default=default_group(),
+                        help="fleet group name (default: the group in "
+                             "config.ini, else baconbbs)")
     sub = parser.add_subparsers(dest="command")
 
     init = sub.add_parser("--init", aliases=["init"],
@@ -613,6 +738,9 @@ def main() -> int:
     deploy.add_argument("--token", default=os.getenv("BBS_FLEET_API_TOKEN", ""),
                         help="seed API token (or BBS_FLEET_API_TOKEN)")
     deploy.add_argument("--timeout", type=int, default=30)
+    deploy.add_argument("--wait", type=int, default=0, metavar="SECONDS",
+                        help="wait for every node to reach the target and exit "
+                             "non-zero if any does not")
     deploy.set_defaults(func=cmd_deploy)
 
     status = sub.add_parser("status", help="show seed and peer convergence")
