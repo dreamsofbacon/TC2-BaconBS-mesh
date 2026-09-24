@@ -135,17 +135,23 @@ sudo systemctl restart mesh-bbs.service bacon-web-admin.service
 SUDOERS_FILE=/etc/sudoers.d/baconbbs-fleet
 SUDOERS_TMP="$TMP_DIR/baconbbs-fleet"
 {
-    echo "# Installed by install_services.sh: lets fleet updates restart the"
-    echo "# BBS web admin and SSH services onto new code. Nothing else."
+    echo "# Installed by install_services.sh. Each line is one exact command:"
+    echo "#  - restarting a BBS service, so a fleet update reaches the web"
+    echo "#    admin and the SSH front end, and so the web admin's Restart"
+    echo "#    button works;"
+    echo "#  - rebooting, for the web admin's Reboot button."
+    echo "# Nothing else, and no wildcards: these are not 'run systemctl'."
     for SYSTEMCTL in /usr/bin/systemctl /bin/systemctl; do
-        for UNIT in bacon-web-admin.service bacon-ssh.service; do
+        for UNIT in bacon-web-admin.service bacon-ssh.service mesh-bbs.service; do
             echo "$SERVICE_USER ALL=(root) NOPASSWD: $SYSTEMCTL restart $UNIT"
         done
+        echo "$SERVICE_USER ALL=(root) NOPASSWD: $SYSTEMCTL reboot"
     done
 } > "$SUDOERS_TMP"
 if command -v visudo >/dev/null 2>&1 && sudo visudo -cf "$SUDOERS_TMP" >/dev/null; then
     sudo install -m 0440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_FILE"
-    echo "Fleet updates can restart the web admin and SSH services ($SUDOERS_FILE)."
+    echo "Fleet updates can restart the BBS services, and the web admin's"
+    echo "Restart and Reboot buttons will work ($SUDOERS_FILE)."
 else
     echo "WARNING: Could not install $SUDOERS_FILE. Fleet updates will still"
     echo "  update the BBS, but the web admin and SSH services will keep running"

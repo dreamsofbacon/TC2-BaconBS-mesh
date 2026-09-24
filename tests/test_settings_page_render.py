@@ -100,6 +100,19 @@ class SettingsPageTests(_Page):
         self.assertEqual(200, self._get("/settings").status_code)
 
 
+class MaintenancePanelRendersTests(_Page):
+    def test_the_three_actions_are_on_the_page(self):
+        body = self._get("/settings").get_data(as_text=True)
+        self.assertIn("Maintenance", body)
+        for section in ("apply_update", "restart_services", "reboot_node"):
+            with self.subTest(section=section):
+                self.assertIn(f'value="{section}"', body)
+
+    def test_reboot_asks_for_the_typed_word(self):
+        body = self._get("/settings").get_data(as_text=True)
+        self.assertIn('name="confirm"', body)
+
+
 class OneWayPeerWarningTests(_Page):
     """The operator has to be able to see it without reading a journal."""
 

@@ -40,6 +40,10 @@
         <span class="settings-nav-title">Account Linking</span>
         <span class="settings-nav-hint">Multi-device accounts</span>
       </a>
+      <a class="settings-nav-link" href="#maintenance" data-panel-link="maintenance">
+        <span class="settings-nav-title">Maintenance</span>
+        <span class="settings-nav-hint">Apply updates, restart, reboot</span>
+      </a>
       <a class="settings-nav-link" href="#board_sync" data-panel-link="board_sync">
         <span class="settings-nav-title">Board Sync</span>
         <span class="settings-nav-hint">Which nodes each board reaches</span>
@@ -1461,6 +1465,56 @@
     </div>
     <button class="btn btn-primary" type="submit">Save Account Settings</button>
   </form>
+</section>
+
+<section class="card settings-panel" id="maintenance" data-settings-panel="maintenance" style="max-width:600px">
+  <h2>Maintenance</h2>
+
+  <h3>Apply the stored update</h3>
+  <p class="text-muted">
+    A signed target is applied within a minute of arriving. This asks for it
+    now instead of waiting. Nothing new is trusted: the instruction was
+    verified when it arrived, and a node already on the target does nothing.
+  </p>
+  <form method="post" action="{{ url_for('settings_page') }}#maintenance">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="apply_update">
+    <button class="btn" type="submit">Apply update now</button>
+  </form>
+
+  <h3>Restart the BBS services</h3>
+  <p class="text-muted">
+    Restarts the mesh server, the SSH front end and then this web admin, so
+    all three are running the code on disk. Sessions on the radio and over
+    SSH are dropped; the database is untouched. This page's own service
+    restarts last, so it may take a few seconds to answer again.
+  </p>
+  <form method="post" action="{{ url_for('settings_page') }}#maintenance">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="restart_services">
+    <button class="btn" type="submit">Restart services</button>
+  </form>
+
+  <h3>Reboot this node</h3>
+  <p class="text-muted">
+    The whole machine. Everything it carries is on disk and comes back with
+    it, but the node is off the air for as long as the boot takes &mdash; and
+    if it does not come back, it needs someone in the same room as it.
+  </p>
+  <form method="post" action="{{ url_for('settings_page') }}#maintenance">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="settings_section" value="reboot_node">
+    <label for="reboot_confirm">Type REBOOT to confirm</label>
+    <input type="text" id="reboot_confirm" name="confirm" class="form-control"
+           style="max-width:200px" autocomplete="off" placeholder="REBOOT">
+    <button class="btn btn-danger" type="submit">Reboot node</button>
+  </form>
+  <p class="text-muted" style="margin-top:10px">
+    Restart and reboot need one passwordless sudo rule, which
+    <code>install_services.sh</code> writes. If it is missing, the button
+    says so and gives you the command to run by hand rather than failing
+    quietly.
+  </p>
 </section>
 
 <section class="card settings-panel" id="board_sync" data-settings-panel="board_sync" style="max-width:600px">

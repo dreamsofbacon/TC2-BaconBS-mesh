@@ -991,6 +991,70 @@ def install_interpreter() -> tuple:
   return True, "frotz installed."
 
 
+# ── Maintenance actions: restart the services, reboot the machine ───────────
+#
+# Every command here is complete and hardcoded where it is used, exactly
+# like _INTERPRETER_INSTALL_COMMANDS above: never assembled from a form
+# field, so this stays a short list of fixed actions rather than a "run a
+# command" endpoint in a maintenance page's clothes.
+#
+# All of them need passwordless sudo for that one command, which
+# install_services.sh grants in /etc/sudoers.d/baconbbs-fleet. Where it is
+# missing they fail immediately with the command to run by hand -- never a
+# web request hanging on a password prompt nothing can answer.
+
+_SERVICE_UNITS = ("mesh-bbs.service", "bacon-web-admin.service",
+                  "bacon-ssh.service")
+
+
+def _sudo_systemctl(*arguments) -> tuple:
+  """Run one fixed systemctl command under sudo -n. Returns (ok, detail)."""
+  import subprocess as _subprocess
+  command = ["sudo", "-n", "systemctl", *arguments]
+  try:
+    result = _subprocess.run(command, capture_output=True, text=True, timeout=60)
+  except FileNotFoundError:
+    return False, "systemctl is not on this node's PATH."
+  except _subprocess.TimeoutExpired:
+    return False, "The command timed out."
+  if result.returncode != 0:
+    stderr = (result.stderr or result.stdout or "").strip()
+    if "password is required" in stderr.lower() or "sudo:" in stderr.lower():
+      return False, ("This node's service user may not run "
+                     f"`systemctl {' '.join(arguments)}` without a password. "
+                     "Run install_services.sh again to add the rule, or do it "
+                     f"by hand: sudo systemctl {' '.join(arguments)}")
+    return False, (stderr[:400] or "The command failed.")
+  return True, "done"
+
+
+def restart_bbs_services() -> tuple:
+  """Restart every installed BBS service. Returns (ok, detail).
+
+  The web admin is restarted LAST and on purpose: restarting it kills the
+  request that asked for it, so anything after that line would not run.
+  """
+  import subprocess as _subprocess
+  done, failed = [], []
+  ordered = [u for u in _SERVICE_UNITS if u != "bacon-web-admin.service"]
+  for unit in ordered:
+    installed = _subprocess.run(["systemctl", "list-unit-files", unit],
+                                capture_output=True, text=True)
+    if unit not in (installed.stdout or ""):
+      continue
+    ok, detail = _sudo_systemctl("restart", unit)
+    (done if ok else failed).append(unit if ok else f"{unit}: {detail}")
+  if failed:
+    return False, "; ".join(failed)
+  return True, ", ".join(done) or "nothing to restart"
+
+
+def reboot_node() -> tuple:
+  """Reboot the machine. Returns (ok, detail); on success it does not
+  return for long."""
+  return _sudo_systemctl("reboot")
+
+
 # A decrypted invite waiting for its review screen. Held in memory rather
 # than in the session cookie because it contains a broker password and, for
 # a mutual-TLS broker, a private key -- neither belongs in something the
@@ -6714,6 +6778,43 @@ def create_app(runtime_interface=None) -> Flask:
           save_subscriber_settings(request.form)
           flash("Subscriber nodes saved. These nodes can pull (WANT/HASHMISS) but are not push-synced to.", "success")
           return redirect(url_for("settings_page") + "#sync")
+
+        if section == "apply_update":
+          # Nothing new is trusted here: the target was verified when it
+          # arrived, and this only asks the mesh server to stop waiting for
+          # its next poll.
+          request_fleet_apply_trigger()
+          flash("Asked this node to apply its stored update now. Watch the "
+                "Fleet panel; if it is already on the target, nothing "
+                "happens.", "success")
+          return redirect(url_for("settings_page") + "#maintenance")
+
+        if section == "restart_services":
+          ok, detail = restart_bbs_services()
+          if ok:
+            flash(f"Restarted: {detail}. This page's own service restarts "
+                  "last, so it may be a moment before it answers again.",
+                  "success")
+            # Last, and after the flash is stored: restarting the web admin
+            # ends this request.
+            _sudo_systemctl("restart", "bacon-web-admin.service")
+          else:
+            flash(detail, "error")
+          return redirect(url_for("settings_page") + "#maintenance")
+
+        if section == "reboot_node":
+          # Typed, not ticked. A stray click should not take a node off the
+          # air for the length of a boot.
+          if request.form.get("confirm", "").strip().lower() != "reboot":
+            flash("Type REBOOT in the box to reboot this node.", "error")
+            return redirect(url_for("settings_page") + "#maintenance")
+          ok, detail = reboot_node()
+          if ok:
+            flash("Rebooting. This node will be back in a minute or two.",
+                  "success")
+          else:
+            flash(detail, "error")
+          return redirect(url_for("settings_page") + "#maintenance")
 
         if section == "board_sync":
           import db_operations
