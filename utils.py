@@ -422,11 +422,25 @@ def get_syncstate_heartbeat_seconds() -> int:
     return _config_int("sync", "syncstate_heartbeat_seconds", 1800)
 
 
-def is_zork_save_sync_enabled() -> bool:
+# One default, in one place. The web admin used to keep its own -- true,
+# where this said false -- so a node that had never been told either way
+# showed the box ticked and synced no saves. Both sides read this now.
+ZORK_SAVE_SYNC_DEFAULT = False
+
+
+def zork_save_sync_env_override():
+    """BBS_SYNC_ZORK_SAVES as a bool, or None when it is not set."""
     env_value = os.getenv("BBS_SYNC_ZORK_SAVES")
-    if env_value is not None:
-        return str(env_value).strip().lower() in ("1", "true", "yes", "on")
-    return _config_bool("sync", "sync_zork_saves", False)
+    if env_value is None:
+        return None
+    return str(env_value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def is_zork_save_sync_enabled() -> bool:
+    override = zork_save_sync_env_override()
+    if override is not None:
+        return override
+    return _config_bool("sync", "sync_zork_saves", ZORK_SAVE_SYNC_DEFAULT)
 
 
 def is_role_sync_enabled() -> bool:

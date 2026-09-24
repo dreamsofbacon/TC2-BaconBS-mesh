@@ -197,7 +197,21 @@ def load_sync_settings(config_path: str) -> tuple[list[str], list[str], int, boo
   except ValueError:
     sync_interval_minutes = 5
   sync_interval_minutes = max(1, sync_interval_minutes)
-  sync_zork_saves = _parse_bool_setting(config.get("sync", "sync_zork_saves", fallback="true"), True)
+  # The page must not hold its own opinion about the default. It kept
+  # fallback="true" while the node treats an absent key as false, so a node
+  # that had never been told either way showed "Sync game saves across
+  # nodes" ticked and synced no saves at all -- for a day, on the VPS.
+  #
+  # The shared default answers that, and the env override is read here
+  # rather than by calling is_zork_save_sync_enabled(): that function reads
+  # BBS_CONFIG_PATH, which is not necessarily the file this page is editing.
+  from utils import ZORK_SAVE_SYNC_DEFAULT, zork_save_sync_env_override
+  raw_zork = str(config.get("sync", "sync_zork_saves", fallback="") or "").strip()
+  if raw_zork:
+    sync_zork_saves = _parse_bool_setting(raw_zork, ZORK_SAVE_SYNC_DEFAULT)
+  else:
+    override = zork_save_sync_env_override()
+    sync_zork_saves = ZORK_SAVE_SYNC_DEFAULT if override is None else override
   return bbs_nodes, allowed_nodes, sync_interval_minutes, sync_zork_saves
 
 

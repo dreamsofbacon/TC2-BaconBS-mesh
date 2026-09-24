@@ -16,6 +16,7 @@ Exit status is 1 if anything failed, so it can gate a deploy script.
 """
 import configparser
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -144,6 +145,25 @@ def check_peers(report: Report, config) -> None:
         return
     report.add(OK, f"{len(peers)} sync peer(s) configured")
 
+    # A node that lists itself talks to itself: wasted frames, and a peer
+    # row for a node with no records that reads like a broken link. Found
+    # on the live VPS, where "4 peers" was really three and a mirror.
+    own = []
+    for section in config.sections():
+        match = re.match(r"^mqtt(\d+)$", section)
+        if not match:
+            continue
+        topic = config.get(section, "topic_prefix", fallback="").strip()
+        name = config.get(section, "local_id", fallback="").strip()
+        if topic and name:
+            own.append(f"mqtt:{topic}:{name}")
+    for identity in own:
+        if identity in peers:
+            report.add(WARN, f"This node lists itself as a peer ({identity})",
+                       "Remove it from [sync*] bbs_nodes: a node cannot sync "
+                       "with itself, and it shows up in diagnostics as a peer "
+                       "holding nothing.")
+
     try:
         import db_operations
         db_operations.initialize_database()
@@ -168,6 +188,35 @@ def check_peers(report: Report, config) -> None:
             "peer list. Add it under Sync > Add a peer if it belongs here.")
     if not silent and not strangers:
         report.add(OK, "Peering looks two-way")
+
+
+def check_game_saves(report: Report) -> None:
+    """Saves sync is off by default, and silence looks like a fault.
+
+    A node with it off refuses game saves and says so to its peers, which
+    is correct -- but from the operator's chair it is indistinguishable
+    from sync being broken, especially while every peer is carrying
+    dozens of saves.
+    """
+    try:
+        import db_operations
+        import utils
+        db_operations.initialize_database()
+        enabled = utils.is_zork_save_sync_enabled()
+        rows = db_operations.get_db_connection().execute(
+            "SELECT MAX(zork_saves) FROM peer_sync_state").fetchone()
+        peer_saves = int((rows or [0])[0] or 0)
+        local = db_operations.get_db_connection().execute(
+            "SELECT COUNT(*) FROM zork_saves").fetchone()[0]
+    except Exception:
+        return
+    if enabled:
+        report.add(OK, f"Game saves sync on ({local} here)")
+    elif peer_saves:
+        report.add(WARN,
+                   f"Game saves sync is OFF here; peers carry {peer_saves}",
+                   "Nothing is broken -- this node opted out. Set "
+                   "[sync] sync_zork_saves = true to take part.")
 
 
 def check_companion_restarts(report: Report) -> None:
@@ -252,6 +301,7 @@ def main() -> int:
     check_update_state(report)
     check_companion_restarts(report)
     check_peers(report, config)
+    check_game_saves(report)
     check_content(report)
     report.print()
     return 1 if report.failed() else 0
