@@ -23,7 +23,21 @@ def test_initialization():
     assert s != g.new_game(20)
     assert (s['day'], s['cash'], s['debt'], s['hp']) == (1, 2400, 1200, 100)
     assert sum(s['inventory'].values()) == 0
+    assert set(g.GOODS) == {'weed', 'hash', 'mushrooms', 'acid', 'oxy', 'cocaine'}
+    assert g.PLACES == ('bronx', 'brooklyn', 'manhattan', 'queens', 'staten-island')
     assert g.validate(json.loads(json.dumps(s))) == s
+
+
+def test_market_availability_events_and_prices_are_bounded():
+    events = set()
+    for seed in range(500):
+        s = g.new_game(seed)
+        stocked = sum(offer['stock'] > 0 for offer in s['market'].values())
+        assert 3 <= stocked <= 5
+        assert all(1 <= offer['price'] <= 10000 for offer in s['market'].values())
+        if s['event']:
+            events.add(s['event'].split(':', 1)[0])
+    assert events == {'deal', 'bust'}
 
 
 def test_buy_sell_stock_cash_and_pure_api():
@@ -44,7 +58,7 @@ def test_buy_sell_stock_cash_and_pure_api():
 
 @pytest.mark.parametrize('text', ['buy weed 0', 'buy weed -1', 'buy weed 1.5',
     'buy weed 99999999999999999', 'sell weed 1', 'buy unknown 1', 'buy weed 1000',
-    'travel docks', 'travel nowhere', 'loan borrow 10001', 'loan repay 1201',
+    'travel bronx', 'travel nowhere', 'loan borrow 10001', 'loan repay 1201',
     'loan forgive 10', 'equipment spaceship', 'fight', 'new', '!CM', 'x extra',
     'finish now', 'buy weed １２', 'buy weed ²', 'garbage', 'buy', 'travel'])
 def test_invalid_commands_do_not_change_state(text):
@@ -74,9 +88,9 @@ def test_loans_interest_and_equipment():
     assert (borrowed['cash'], borrowed['debt']) == (2500, 1300)
     repaid = act(borrowed, 'loan repay 101')
     assert (repaid['cash'], repaid['debt']) == (2399, 1199)
-    arrived = act(repaid, 'travel uptown')
+    arrived = act(repaid, 'travel manhattan')
     assert arrived['debt'] == 1259  # round interest up
-    assert arrived['day'] == 2 and arrived['place'] == 'uptown'
+    assert arrived['day'] == 2 and arrived['place'] == 'manhattan'
     assert arrived['market'] != repaid['market']
     bag = act(s, 'equipment bag')
     assert (bag['capacity'], bag['cash']) == (70, 1500)
@@ -87,6 +101,31 @@ def test_loans_interest_and_equipment():
     assert act(s, 'equipment medkit')['hp'] == 100
 
 
+def test_paid_debt_has_no_interest_message():
+    s = act(g.new_game(19), 'loan repay 1200')
+    with mock.patch.object(g, 'market'), mock.patch.object(g, 'draw', return_value=99):
+        arrived, reply, _ = g.command(s, 'travel manhattan')
+    assert arrived['debt'] == 0
+    assert '5%' not in reply
+    assert 'Debt-free' in reply
+
+
+def test_random_loot_can_award_cash_or_goods_without_overfilling_bag():
+    s = g.new_game(19)
+    with mock.patch.object(g, 'market'), \
+            mock.patch.object(g, 'draw', side_effect=[99, 1, 1, 125]):
+        cash_loot, reply, _ = g.command(s, 'travel manhattan')
+    assert cash_loot['cash'] == s['cash'] + 125
+    assert 'cash:125' in reply
+
+    s['inventory']['weed'] = s['capacity'] - 1
+    with mock.patch.object(g, 'market'), \
+            mock.patch.object(g, 'draw', side_effect=[99, 1, 2, 2, 3]):
+        goods_loot, reply, _ = g.command(s, 'travel manhattan')
+    assert sum(goods_loot['inventory'].values()) == goods_loot['capacity']
+    assert 'goods:' in reply
+
+
 def police():
     s = g.new_game(19)
     s.update(phase='police', enemy_hp=45)
@@ -95,7 +134,7 @@ def police():
 
 def test_police_combat_run_surrender_and_death():
     s = police()
-    assert act(s, 'travel uptown') == s
+    assert act(s, 'travel manhattan') == s
     assert act(s, 'buy weed 1') == s
     assert act(s, 'equipment medkit') == s
     hit = act(s, 'fight')
@@ -122,7 +161,7 @@ def test_police_combat_run_surrender_and_death():
 
 def test_police_spawn_on_travel():
     with mock.patch.object(g, 'draw', return_value=1):
-        s = act(g.new_game(19), 'travel uptown')
+        s = act(g.new_game(19), 'travel manhattan')
     assert s['phase'] == 'police' and s['enemy_hp'] == 45
 
 
@@ -151,7 +190,7 @@ def test_full_runs_stay_valid_and_end_on_day_30():
             g.validate(s)
             if s['phase'] == 'ended':
                 break
-            text = 'surrender' if s['phase'] == 'police' else 'travel ' + ('uptown' if s['place'] == 'docks' else 'docks')
+            text = 'surrender' if s['phase'] == 'police' else 'travel ' + ('manhattan' if s['place'] == 'brooklyn' else 'brooklyn')
             s = act(s, text)
             assert len(g.view(s)) < 600
         assert s['phase'] == 'ended' and s['day'] == 30
@@ -204,7 +243,7 @@ def test_restart_preserves_random_sequence_and_encounter(tmp_path):
     try:
         with mock.patch.object(db.thread_local, 'connection', con, create=True):
             assert door.play(42)[0] == g.view(expected)
-            for text in ('surrender', 'travel uptown', 'surrender', 'travel docks'):
+            for text in ('surrender', 'travel manhattan', 'surrender', 'travel brooklyn'):
                 expected = act(expected, text)
                 door.play(42, text)
                 assert stored(con) == expected
@@ -266,7 +305,7 @@ def test_menu_and_dispatch_owns_global_commands(connection):
             # back, 100 = the amount -- the same move as "loan repay 100".
             mp.process_message(42, '6 2 100', iface)
             assert stored(connection)['debt'] == 1100
-            for text in ('s weed 1', 'm', 'i', 'h', 'n', '!CM', '!BB', 'save', 'equipment', 'travel uptown'):
+            for text in ('s weed 1', 'm', 'i', 'h', 'n', '!CM', '!BB', 'save', 'equipment', 'travel manhattan'):
                 with mock.patch.object(mp, 'handle_dopewars_steps') as dispatch:
                     mp.process_message(42, text, iface)
                     dispatch.assert_called_once_with(42, text, iface)
@@ -296,13 +335,13 @@ def test_day_30_deadline_can_be_paid_but_not_extended():
     assert more['loan_due'] == 30
     partial = act(more, 'loan repay 1')
     assert partial['loan_due'] == 30
-    failed, reply, _ = g.command(partial, 'travel uptown')
+    failed, reply, _ = g.command(partial, 'travel manhattan')
     assert failed['phase'] == 'ended' and failed['outcome'] == 'Bankrupt'
     assert g.score(failed) == 0 and 'deadline' in reply
     assert failed['draw'] == partial['draw']
     paid = act(s, 'loan repay 1200')
     assert paid['debt'] == 0 and paid['loan_due'] == 0
-    arrived = act(paid, 'travel uptown')
+    arrived = act(paid, 'travel manhattan')
     assert arrived['day'] == 31 and arrived['phase'] != 'ended'
     borrowed = act(paid, 'loan borrow 100')
     assert borrowed['loan_due'] == 59
@@ -315,7 +354,7 @@ def test_365_full_run_and_police_on_deadline():
         if s['phase'] == 'ended':
             break
         s = act(s, 'surrender' if s['phase'] == 'police' else
-                'travel ' + ('uptown' if s['place'] == 'docks' else 'docks'))
+                'travel ' + ('manhattan' if s['place'] == 'brooklyn' else 'brooklyn'))
     assert s['day'] == 365 and s['outcome'] == 'Completed'
     s = g.new_game(19, 365)
     s.update(day=30, phase='police', enemy_hp=1)
@@ -333,6 +372,24 @@ def test_365_deadline_and_choice_persist(connection):
     s = stored(connection)
     s['day'] = 30
     put(connection, s)
-    _, _, result = door.play(42, 'travel uptown', 'Trader')
+    _, _, result = door.play(42, 'travel manhattan', 'Trader')
     assert result[0] == 0
     assert stored(connection)['outcome'] == 'Bankrupt'
+
+
+def test_v1_save_migrates_without_losing_progress(connection):
+    old = g.new_game(19)
+    old['version'] = 1
+    old.pop('event')
+    old['place'] = 'uptown'
+    for item in ('mushrooms', 'oxy'):
+        old['inventory'].pop(item)
+        old['market'].pop(item)
+    old['cash'] = 1777
+    migrated = door._load(json.dumps(old))
+    assert migrated['version'] == g.VERSION
+    assert migrated['place'] == 'manhattan'
+    assert migrated['cash'] == 1777
+    assert migrated['inventory']['mushrooms'] == migrated['inventory']['oxy'] == 0
+    assert migrated['market']['mushrooms']['stock'] == 0
+    assert migrated['market']['oxy']['stock'] == 0

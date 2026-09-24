@@ -8,17 +8,20 @@ from copy import deepcopy
 from hashlib import sha256
 
 GAME_ID = 'dopewars'
-VERSION = 1
+VERSION = 2
 DAYS = 30
 MAX_CASH = 1_000_000_000
 LOAN_LIMIT = 10_000
-GOODS = {'weed': 90, 'hash': 230, 'acid': 540, 'cocaine': 1800}
-PLACES = ('docks', 'uptown', 'suburbs', 'station')
+GOODS = {'weed': 90, 'hash': 230, 'mushrooms': 320, 'acid': 540,
+         'oxy': 900, 'cocaine': 1800}
+PLACES = ('bronx', 'brooklyn', 'manhattan', 'queens', 'staten-island')
+PLACE_LABELS = {place: place.replace('-', ' ').title() for place in PLACES}
 # Display only: commands and saved item identifiers remain plain text.
-GOOD_ICONS = {'weed': '🌿', 'hash': '🟫', 'acid': '🌀', 'cocaine': '❄️'}
+GOOD_ICONS = {'weed': '🌿', 'hash': '🟫', 'mushrooms': '🍄', 'acid': '🌀',
+              'oxy': '💊', 'cocaine': '❄️'}
 HELP = ('TRADE\nB ITEM QTY - buy\nS ITEM QTY - sell\nM - market\nI - inventory\n'
-        'Items: weed, hash, acid, cocaine\nExample: B weed 2\n\n'
-        'TRAVEL\nT docks\nT uptown\nT suburbs\nT station\n'
+        'Items: weed, hash, mushrooms, acid, oxy, cocaine\nExample: B weed 2\n\n'
+        'TRAVEL\nT bronx / brooklyn / manhattan\nT queens / staten-island\n'
         'Each trip: +1 day, +5% debt\n\n'
         'MONEY & GEAR\nloan borrow AMOUNT\nloan repay AMOUNT\nE - equipment menu\n\n'
         'ENCOUNTERS\nfight - attack\nrun - try to escape\n'
@@ -34,7 +37,7 @@ def good_label(item):
 
 def status(s):
     due = f" (due D{s['loan_due']})" if s['debt'] else ''
-    return (f"DopeWars D{s['day']}/{s['days']} | {s['place']}\n"
+    return (f"DopeWars D{s['day']}/{s['days']} | {PLACE_LABELS[s['place']]}\n"
             f"Cash ${s['cash']} | Debt ${s['debt']}{due}\n"
             f"HP {s['hp']} | Bag {sum(s['inventory'].values())}/{s['capacity']}")
 
@@ -53,8 +56,33 @@ def draw(s, low, high):
 
 
 def market(s):
-    s['market'] = {item: {'price': base * draw(s, 45, 190) // 100,
-                          'stock': draw(s, 0, 35)} for item, base in GOODS.items()}
+    """Generate three to five stocked goods and an occasional price event."""
+    s['market'] = {
+        item: {'price': max(1, base * draw(s, 60, 170) // 100), 'stock': 0}
+        for item, base in GOODS.items()
+    }
+    choices = list(GOODS)
+    stocked = []
+    count = min(5, max(3, draw(s, 3, 5)))
+    for _ in range(count):
+        item = choices.pop(draw(s, 0, len(choices) - 1) % len(choices))
+        stocked.append(item)
+        s['market'][item]['stock'] = draw(s, 5, 30)
+
+    s['event'] = ''
+    if draw(s, 1, 100) <= 20:
+        item = stocked[draw(s, 0, len(stocked) - 1) % len(stocked)]
+        if draw(s, 1, 2) == 1:
+            s['market'][item]['price'] = max(
+                1, GOODS[item] * draw(s, 30, 55) // 100)
+            s['market'][item]['stock'] = max(
+                s['market'][item]['stock'], draw(s, 25, 40))
+            s['event'] = f'deal:{item}'
+        else:
+            s['market'][item]['price'] = GOODS[item] * draw(s, 220, 350) // 100
+            s['market'][item]['stock'] = min(
+                s['market'][item]['stock'], draw(s, 1, 5))
+            s['event'] = f'bust:{item}'
 
 
 def new_game(seed, days=DAYS):
@@ -63,7 +91,7 @@ def new_game(seed, days=DAYS):
     s = dict(version=VERSION, seed=seed, draw=0, day=1, days=days, loan_due=30, place=PLACES[0],
              cash=2400, debt=1200, hp=100, capacity=40, weapon=0, armor=0,
              inventory={item: 0 for item in GOODS}, market={}, phase='market',
-             enemy_hp=0, moves=0, outcome='')
+             enemy_hp=0, moves=0, outcome='', event='')
     market(s)
     return s
 
@@ -84,7 +112,12 @@ def view(s):
     listing = '\n'.join(f"{good_label(k)} ${v['price']} | stock {v['stock']}"
                         for k, v in s['market'].items())
     options = '\nNEW 30 / NEW 365 - game length' if s['moves'] == 0 else ''
-    return (f"{header}\n\nMARKET\n{listing}\n\n"
+    event = ''
+    if s['event']:
+        kind, item = s['event'].split(':', 1)
+        event = (f"\n{'📦 Deal' if kind == 'deal' else '🚨 Bust'}: "
+                 f"{good_label(item)} {'is cheap' if kind == 'deal' else 'is scarce'}")
+    return (f"{header}\n\nMARKET{event}\n{listing}\n\n"
             "B item qty - buy\nS item qty - sell\nT place - travel\n"
             "I - bag\nE - gear\nH - all commands & places\nX - save & exit" + options)
 
@@ -105,6 +138,23 @@ def _arrival(s):
     s['phase'] = 'market'
     if s['day'] == s['days']:
         _settle(s)
+
+
+def _loot(s):
+    """Occasionally award modest loot after an uneventful trip."""
+    if draw(s, 1, 100) > 15:
+        return ''
+    if draw(s, 1, 2) == 1:
+        amount = draw(s, 50, 250)
+        s['cash'] = min(MAX_CASH, s['cash'] + amount)
+        return f'cash:{amount}'
+    room = s['capacity'] - sum(s['inventory'].values())
+    if room <= 0:
+        return 'full'
+    item = tuple(GOODS)[draw(s, 0, len(GOODS) - 1)]
+    qty = min(room, draw(s, 1, 3))
+    s['inventory'][item] += qty
+    return f'goods:{item}:{qty}'
 
 
 def command(state, text):
@@ -193,14 +243,20 @@ def command(state, text):
                 return s, 'Loan deadline missed.\n' + view(s), False
             s['place'] = args[0]
             s['day'] += 1
-            s['debt'] += (s['debt'] * 5 + 99) // 100
+            interest = (s['debt'] * 5 + 99) // 100 if s['debt'] else 0
+            s['debt'] += interest
             market(s)
-            reply = 'Arrived. Debt accrued 5% interest.'
+            reply = (f'Arrived. Debt increased 5% (+${interest}).' if interest
+                     else 'Arrived. Debt-free: no interest charged.')
             if draw(s, 1, 100) <= 25:
                 s['phase'], s['enemy_hp'] = 'police', 45
                 reply += ' Police stop!'
             else:
                 _arrival(s)
+                if s['phase'] != 'ended':
+                    loot = _loot(s)
+                    if loot:
+                        reply += ' Loot ' + loot + '.'
         elif verb == 'loan' and len(args) == 2 and args[0] in ('borrow', 'repay'):
             amount = _amount(args[1])
             if args[0] == 'borrow':
@@ -270,6 +326,11 @@ def validate(s):
         raise ValueError('Invalid duration/deadline')
     if s['phase'] not in ('market', 'police', 'ended') or s['place'] not in PLACES:
         raise ValueError('Invalid location/phase')
+    if (not isinstance(s['event'], str) or len(s['event']) > 32
+            or (s['event'] and not any(
+                s['event'] == f'{kind}:{item}'
+                for kind in ('deal', 'bust') for item in GOODS))):
+        raise ValueError('Invalid market event')
     if s['outcome'] not in ('', 'Completed', 'Bankrupt', 'Defeated') or bool(s['outcome']) != (s['phase'] == 'ended'):
         raise ValueError('Invalid outcome')
     if (s['phase'] == 'police') != (s['enemy_hp'] > 0) or (s['hp'] == 0 and s['phase'] != 'ended'):
@@ -286,4 +347,32 @@ def validate(s):
         if any(type(offer[k]) is not int or not lo <= offer[k] <= hi for k, lo, hi in
                (('price', 1, 10000), ('stock', 0, 105))):
             raise ValueError('Invalid offer values')
+    return s
+
+
+_V1_GOODS = ('weed', 'hash', 'acid', 'cocaine')
+_V1_PLACES = {'docks': 'brooklyn', 'uptown': 'manhattan',
+              'suburbs': 'queens', 'station': 'bronx'}
+_V1_KEYS = {'version', 'seed', 'draw', 'day', 'days', 'loan_due', 'place',
+            'cash', 'debt', 'hp', 'capacity', 'weapon', 'armor', 'inventory',
+            'market', 'phase', 'enemy_hp', 'moves', 'outcome'}
+
+
+def migrate(state):
+    """Upgrade schema-v1 saves without rerolling their future RNG."""
+    if not isinstance(state, dict) or state.get('version') != 1:
+        return state
+    if set(state) != _V1_KEYS:
+        raise ValueError('Unknown save schema')
+    s = deepcopy(state)
+    if not isinstance(s.get('inventory'), dict) or set(s['inventory']) != set(_V1_GOODS):
+        raise ValueError('Invalid inventory')
+    if not isinstance(s.get('market'), dict) or set(s['market']) != set(_V1_GOODS):
+        raise ValueError('Invalid market')
+    s['version'] = VERSION
+    s['place'] = _V1_PLACES.get(s['place'], s['place'])
+    s['event'] = ''
+    for item in GOODS:
+        s['inventory'].setdefault(item, 0)
+        s['market'].setdefault(item, {'price': GOODS[item], 'stock': 0})
     return s

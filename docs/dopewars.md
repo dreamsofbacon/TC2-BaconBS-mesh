@@ -21,7 +21,7 @@ Commands are case-insensitive. Amounts must be positive whole numbers.
 | `inventory` / `i` | Cash, debt, health, goods and equipment |
 | `buy weed 2` / `b weed 2` | Buy two units, subject to stock, cash and bag space |
 | `sell weed 2` / `s weed 2` | Sell two owned units at the current price |
-| `travel uptown` / `t uptown` | Advance one day, accrue interest, generate a market and possible police encounter |
+| `travel manhattan` / `t manhattan` | Advance one day, accrue interest when debt remains, generate a market and possible encounter |
 | `loan borrow 100` | Borrow, up to $10,000 outstanding debt |
 | `loan repay 100` | Repay debt using available cash |
 | `equipment` / `e` | Show equipment and prices |
@@ -40,17 +40,22 @@ Commands are case-insensitive. Amounts must be positive whole numbers.
 | `new 30` / `new 365` | Choose duration before the first action, or start again after ending |
 | `new` | Start again with the same duration after ending |
 
-Goods: `weed`, `hash`, `acid`, `cocaine`.
-Locations: `docks`, `uptown`, `suburbs`, `station`.
+Goods: `weed`, `hash`, `mushrooms`, `acid`, `oxy`, `cocaine`.
+Locations: `bronx`, `brooklyn`, `manhattan`, `queens`, `staten-island`.
 
 ## Rules
 
 Start on day 1 with $2,400, $1,200 debt, 100 health and a 40-unit bag.
 Buy low, travel and sell high. Only travel advances the calendar and regenerates
 the market. Staying put, viewing screens, reconnecting and invalid commands
-never reroll prices. Each trip adds 5% interest, rounded up, and has a 25% chance
-of a police encounter. No trading, borrowing or equipment purchases during
-an encounter; save/quit and information commands remain available.
+never reroll prices. Each market stocks three to five goods. Twenty percent of
+markets feature either a discounted shipment or a scarce-good price spike.
+
+Each trip adds 5% interest, rounded up, while debt remains and has a 25% chance
+of a police encounter. After an uneventful trip there is a 15% chance to find
+$50–$250 or one to three units of a random good, limited by remaining bag space.
+No trading, borrowing or equipment purchases are allowed during an encounter;
+save/quit and information commands remain available.
 
 Combat deals 10–22 damage plus the weapon bonus. Police deal 12–26 damage minus
 the vest reduction (at least 1). Defeating police causes no reward or cash gain.
@@ -101,6 +106,11 @@ packet-ID deduplication: deliberately resending a valid action can perform it
 again. The persisted SHA-256 seed/counter stream gives repeatable future draws
 across interpreter/service restarts; it is for gameplay, not security.
 
+Save schema v2 adds the expanded goods and boroughs plus the current market
+event. Existing schema-v1 saves are upgraded on load without rerolling their
+future random sequence: cash, debt, inventory, market and progress are retained,
+old locations map to boroughs, and the two new goods begin empty until travel.
+
 ## Source and licensing findings
 
 Reference inspected: [ajhwb/druxlord](https://github.com/ajhwb/druxlord), commit
@@ -136,17 +146,10 @@ Name/trademark clearance has not been established for public distribution.
 
 ## Local mesh presentation
 
-Market goods, inventory, equipment and actions are shown on individual lines,
-with blank lines separating status, market and command sections. Drug display
-labels are 🌿 weed, 🟫 hash, 🌀 acid and ❄️ cocaine. The DEA Emoji Decoded
-reference informed the choices; hash and acid use distinct fallback symbols
-because they are not covered. Names stay visible and command/save identifiers
-remain unchanged. No game rules or save schema changed.
-
-The existing UTF-8-aware transport splitter handles radio packet limits. At a
-200-byte budget, the seed-19 opening market is two packets, inventory and
-equipment one each, and help three. Actual packet counts vary with state and
-transport limits. This presentation applies to the local installation only.
+Candy Wars remains the default presentation, with Dope Wars available through
+the existing PG-13 preference. Both themes cover all six goods and five places.
+The numbered buy, sell, travel, gear and loan screens remain within the tested
+200-byte radio budget; typed commands still use the saved engine identifiers.
 
 Pure rules and rendering: `dopewars.py`; database adapter: `dopewars_door.py`.
 The game registry, launch handler and both dispatch guards follow existing
