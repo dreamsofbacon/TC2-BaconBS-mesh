@@ -5,7 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-Restart=on-failure
+# always, not on-failure: the service exits by itself when a fleet
+# update changes the code under it, and on-failure would leave it
+# stopped after a clean exit.
+Restart=always
 RestartSec=10
 User=__SERVICE_USER__
 WorkingDirectory=__PROJECT_DIR__

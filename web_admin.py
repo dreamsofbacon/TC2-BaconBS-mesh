@@ -8480,6 +8480,13 @@ if __name__ == "__main__":
     app = create_app()
     port = int(os.getenv("BBS_WEBGUI_PORT", "8081"))
     host = os.getenv("BBS_WEBGUI_HOST", "127.0.0.1")
+    # Exit when a fleet update changes the code under us, so systemd starts
+    # us on it; see restart_on_update for why waiting to be restarted failed.
+    try:
+        import restart_on_update
+        restart_on_update.watch("bacon-web-admin")
+    except Exception:
+        logging.debug("update watcher unavailable", exc_info=True)
     # threaded=True: Werkzeug's dev server otherwise handles one request at
     # a time. This process is never designed to hold a live external
     # connection itself (it reads/writes local config and the database;

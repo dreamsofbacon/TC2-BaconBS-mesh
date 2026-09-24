@@ -695,6 +695,15 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+    # Same reason as the web admin: a fleet update cannot always restart
+    # this service, and an SSH front end running code from before the update
+    # once served a fixed BBS as though the fix had never landed, for seven
+    # hours across eight deploys.
+    try:
+        import restart_on_update
+        restart_on_update.watch("bacon-ssh")
+    except Exception:
+        logging.debug("could not start the update watcher", exc_info=True)
     try:
         asyncio.run(run(arguments.config))
     except (OSError, RuntimeError, asyncssh.Error) as exc:
