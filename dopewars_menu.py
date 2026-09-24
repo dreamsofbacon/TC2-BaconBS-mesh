@@ -26,9 +26,13 @@ EXIT_WORDS = {'x', '!x', 'q', 'quit', 'exit'}
 # packet of airtime on every turn that shows it.
 MAX_SCREEN_BYTES = 200
 
-# Named because the fit rule in render() drops it first when a screen
-# would otherwise spill into a second packet.
-_PICK_ONE = "Pick one. [0]Back"
+# The number after the slash belongs to the screen you are on: what
+# the market has when buying, what you are carrying when selling.
+# Unlabelled it was read as the bag on both -- "it says it is full,
+# but says 0" -- and it is the one thing on the row that cannot be
+# worked out from anywhere else. Both are shorter than the "Pick
+# one." they replaced, so the label is paid for.
+_LEGENDS = {'buy': "$/stock [0]Back", 'sell': "$/bag [0]Back"}
 
 # Mirrors the engine's own gear table (dopewars.command, 'equipment'). The
 # menu checks these before asking, so a refusal is said in theme rather than
@@ -94,15 +98,16 @@ def render(state, nav, t, note='') -> str:
         # and a note line above ('Your bag is full.') the place pushed
         # this screen past one packet.
         #
-        # "room 0" was read as a shrug rather than as the reason nothing
-        # can be bought, so each screen names its own dead end: a full bag
-        # on the buy screen, an empty one on the sell screen. Six zeroes in
-        # a column explain neither.
+        # Each screen says the half of the bag it is about -- room to buy
+        # into, goods to sell out of -- and names its own dead end rather
+        # than leaving "room 0" to imply it. Six zeroes in a column explain
+        # neither.
         carried = sum(state['inventory'].values())
         if menu == 'buy':
             state_of_bag = f"room {room}" if room else "bag full"
         else:
-            state_of_bag = f"room {room}" if carried else "bag empty"
+            state_of_bag = (f"bag {carried}/{state['capacity']}" if carried
+                            else "bag empty")
         lines.append(f"{verb}: ${state['cash']} {state_of_bag}")
         for index, item in enumerate(game.GOODS, start=1):
             offer = state['market'][item]
@@ -119,11 +124,7 @@ def render(state, nav, t, note='') -> str:
                 tail = f"/{state['inventory'][item]}"
             icon = t.get('icons', {}).get(item, '')
             lines.append(f"[{index}]{icon}{name} ${offer['price']}{tail}")
-        # Six goods, an icon each and the longest place name leave no
-        # room to explain the slash here; the quantity screen says
-        # "1-N, M for max" in full, one keypress away. Spelling it out
-        # on this screen put Candy Wars over one packet.
-        lines.append(_PICK_ONE)
+        lines.append(_LEGENDS[menu])
     elif menu in ('buy_qty', 'sell_qty'):
         item = nav['item']
         most = (_max_buy(state, item) if menu == 'buy_qty'
@@ -177,15 +178,14 @@ def render(state, nav, t, note='') -> str:
         if state['moves'] == 0 and state['days'] == 30:
             lines.append("[8]Make it a 365-day run")
 
-    # One packet beats a few polite words. Each screen gives up its least
-    # useful text before it spends a second packet of airtime: the trade
-    # screens the "Pick one." prompt, which the numbered rows already say,
-    # and the main screen its title. Both only bite at the extremes -- a
-    # refusal above a full market, or a long place name with a five-figure
-    # debt and a market event.
+    # One packet beats a few words, but only just: each screen gives up
+    # its least useful text rather than spend a second packet of airtime.
+    # On the trade screens that is the slash legend, on the main screen
+    # the title. Neither fires on a screen reachable today; they are here
+    # so a line that grows later costs a word, not an extra packet.
     screen = "\n".join(lines)
     if len(screen.encode('utf-8')) > MAX_SCREEN_BYTES:
-        if lines[-1] == _PICK_ONE:
+        if lines[-1] in _LEGENDS.values():
             lines = lines[:-1] + ["[0]Back"]
         elif not note and lines and lines[0] == t['title']:
             lines = lines[1:]
@@ -220,7 +220,7 @@ def _number(word, low, high) -> int:
     if not word.isdigit() or not low <= int(word) <= high:
         # Terse on purpose: this sits above a screen that is already at
         # the edge of one packet, and it matches the voice of the rows
-        # it is explaining ("Pick one.", "1-N, M for max").
+        # it is explaining ("$/stock", "1-N, M for max").
         raise _Stop(f"Pick {low}-{high}." if high >= low
                     else "There is nothing to pick.")
     return int(word)

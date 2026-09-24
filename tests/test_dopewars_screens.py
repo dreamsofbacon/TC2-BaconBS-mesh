@@ -369,10 +369,29 @@ class TradeScreenTellsTheTruthTests(unittest.TestCase):
         self.assertLessEqual(worst, menu.MAX_SCREEN_BYTES,
                              f"{worst} bytes:\n{worst_screen}")
 
-    def test_the_prompt_is_what_a_crowded_screen_gives_up(self):
-        """When a note plus a full market would spill, "Pick one." goes --
-        the numbered rows already say it -- and never [0]Back, which is the
-        only way off the screen."""
+    def test_the_slash_is_labelled_for_the_screen_it_is_on(self):
+        """The whole report: "it says it is full, but says 0. some say out."
+        The number after the slash was the market's on one screen and the
+        bag's on the other, with nothing saying which."""
+        import dopewars_menu as menu
+        buy, sell = self._screens(self._stocked_run()[0])
+        self.assertTrue(buy.endswith(menu._LEGENDS["buy"]), buy)
+        self.assertTrue(sell.endswith(menu._LEGENDS["sell"]), sell)
+        self.assertIn("stock", menu._LEGENDS["buy"])
+        self.assertIn("bag", menu._LEGENDS["sell"])
+
+    def test_the_sell_header_counts_what_you_carry(self):
+        """"Room" is the buy screen's concern; on the sell screen the
+        player wants to see the bag they are emptying."""
+        state, _stocked = self._stocked_run()
+        state["inventory"]["hash"] = 7
+        _buy, sell = self._screens(state)
+        self.assertIn(f"bag 7/{state['capacity']}", sell)
+
+    def test_the_legend_is_what_a_crowded_screen_gives_up(self):
+        """When a refusal note plus a full market would spill, the legend
+        goes -- the note is the more urgent line -- and never [0]Back,
+        which is the only way off the screen."""
         import dopewars as game
         import dopewars_menu as menu
         import dopewars_theme as theme
@@ -383,11 +402,11 @@ class TradeScreenTellsTheTruthTests(unittest.TestCase):
             state["market"][item].update(price=6246, stock=40)
         screen = menu.render(state, {"menu": "buy"}, t,
                              note="Rock candy is sold out.")
-        self.assertNotIn("Pick one.", screen)
+        self.assertNotIn(menu._LEGENDS["buy"], screen)
         self.assertIn("[0]Back", screen)
         self.assertLessEqual(len(screen.encode("utf-8")), menu.MAX_SCREEN_BYTES)
-        # And an uncrowded screen keeps it.
-        self.assertIn("Pick one.", menu.render(state, {"menu": "buy"}, t))
+        # An uncrowded screen keeps it, which is nearly every screen.
+        self.assertIn(menu._LEGENDS["buy"], menu.render(state, {"menu": "buy"}, t))
 
 
 if __name__ == "__main__":
