@@ -1539,6 +1539,27 @@ def _note_unlisted_sync_sender(sender_node_id, message_string: str) -> None:
             peer, frames)
 
 
+def _is_addressed_to_us(to_id, interface) -> bool:
+    """Whether this frame names this node as its destination.
+
+    Without our own node number there is nothing to compare against, and
+    guessing either way is worse than not counting the frame: an unproven
+    reply must not mark a one-way link as healthy.
+    """
+    if to_id is None or _is_broadcast_destination(to_id):
+        return False
+    try:
+        mine = interface.myInfo.my_node_num
+    except Exception:
+        return False
+    if mine is None:
+        return False
+    try:
+        return int(to_id) == int(mine)
+    except (TypeError, ValueError):
+        return str(to_id) == str(mine)
+
+
 def _is_broadcast_destination(to_id) -> bool:
     """Whether a destination means "everyone" rather than this node."""
     # 0xffffffff is Meshtastic's broadcast address, spelled out rather than
@@ -3619,12 +3640,15 @@ def on_receive(packet, interface):
 
             if sender_node_id in bbs_nodes:
                 if is_sync_message:
-                    # Addressed to us, not overheard: the peer has this node
-                    # in its own list and acts on what we send. A broadcast
-                    # proves nothing -- a peer that ignores us still sends
-                    # those, which is exactly what made one-way peering look
-                    # healthy from the side that could not tell.
-                    if to_id is not None and not _is_broadcast_destination(to_id):
+                    # Addressed to US, not merely directed at somebody.
+                    # The first version of this check accepted any non-
+                    # broadcast frame from a listed peer -- including the
+                    # traffic those peers send each other, which a node on a
+                    # shared MQTT topic sees all of. A node that nobody
+                    # listed therefore looked perfectly peered while it
+                    # received nothing at all, which is the exact fault this
+                    # check exists to expose, papered over by the check.
+                    if _is_addressed_to_us(to_id, interface):
                         try:
                             from db_operations import record_peer_reply
                             record_peer_reply(sender_node_id)
