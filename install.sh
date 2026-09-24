@@ -33,6 +33,9 @@ WEB_ACCESS=""
 SSH_MODE=""
 GAMES="yes"
 SERVICES="yes"
+JOIN_INVITE=""
+JOIN_NAME=""
+ARM_UPDATES="false"
 
 usage() {
     cat <<EOF
@@ -53,6 +56,12 @@ ahead of time, for a scripted install:
   --ssh MODE             off | accounts | public   (default: off)
   --no-games             skip installing frotz (Zork and other text games)
   --no-services          set up only; do not install systemd services
+  --join FILE            join a fleet from an invite file: broker, TLS,
+                         credentials, topic and peers, in one step
+  --join-name NAME       this node's name on that link (default: the name
+                         the invite gives it)
+  --arm-updates          also trust the signing key the invite carries, so
+                         that fleet can update this node's code
   --reconfigure          ask the questions again even if config.ini exists
   -y, --yes              take the default for anything not given
   -h, --help             show this help
@@ -70,6 +79,9 @@ while [[ $# -gt 0 ]]; do
         --ssh) SSH_MODE="${2:?--ssh needs a value}"; shift 2 ;;
         --no-games) GAMES="no"; shift ;;
         --no-services) SERVICES="no"; shift ;;
+        --join) JOIN_INVITE="${2:?--join needs a file}"; shift 2 ;;
+        --join-name) JOIN_NAME="${2:?--join-name needs a value}"; shift 2 ;;
+        --arm-updates) ARM_UPDATES="true"; shift ;;
         --reconfigure) RECONFIGURE="true"; shift ;;
         -y|--yes) ASSUME_YES="true"; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -301,6 +313,22 @@ else
     ok "SSH access: $SSH_MODE"
 fi
 
+# ── 3b. Join a fleet, if an invite was given ────────────────────────────────
+
+if [[ -n "$JOIN_INVITE" ]]; then
+    say "Joining a fleet from $JOIN_INVITE"
+    if [[ ! -f "$JOIN_INVITE" ]]; then
+        die "No such invite file: $JOIN_INVITE"
+    fi
+    JOIN_FLAGS=(--config "$REPO_DIR/config.ini")
+    [[ -n "$JOIN_NAME" ]] && JOIN_FLAGS+=(--name "$JOIN_NAME")
+    [[ "$ARM_UPDATES" == "true" ]] && JOIN_FLAGS+=(--arm-updates)
+    # The passphrase is prompted for by the script itself unless
+    # BBS_INVITE_PASSPHRASE is set: it must not sit in a shell history.
+    venv/bin/python scripts/join_fleet.py "$JOIN_INVITE" "${JOIN_FLAGS[@]}" \
+        || die "Could not join from that invite."
+fi
+
 # Passwords live in these two files.
 chmod 600 config.ini
 [[ -f web-admin.env ]] && chmod 600 web-admin.env
@@ -385,7 +413,13 @@ if [[ "${SSH_ENABLED:-false}" == "true" ]]; then
     echo "  BBS by SSH: ssh -p 2222 ${LAN_IP:-this-machine}"
 fi
 echo
-echo "  Next: to join your fleet, download an invite from one of your nodes"
-echo "  (Settings > Invite & Join) and open it here in the same place."
+if [[ -n "$JOIN_INVITE" ]]; then
+    echo "  Joined the fleet from the invite. Check it with:"
+    echo "      venv/bin/python scripts/node_doctor.py"
+else
+    echo "  Next: to join your fleet, download an invite from one of your nodes"
+    echo "  (Settings > Invite & Join) and either open it there, or copy it here"
+    echo "  and run: bash install.sh --join <file>"
+fi
 echo "  Logs:  sudo journalctl -u mesh-bbs -f"
 [[ "$HEALTHY" == "true" ]] || exit 1

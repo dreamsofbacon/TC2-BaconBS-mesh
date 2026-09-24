@@ -362,7 +362,13 @@ def apply_invite(config, payload: dict, *, local_id: str, index: int,
         value = link.get(field, "")
         if isinstance(value, bool):
             value = "true" if value else "false"
-        config.set(section, field, str(value or ""))
+        # A field the bundle does not carry is left out, not written empty.
+        # `tls_insecure =` is not "false", it is a value the reader has to
+        # make sense of -- and it used to crash the BBS at startup.
+        if str(value or "").strip():
+            config.set(section, field, str(value).strip())
+        elif config.has_option(section, field):
+            config.remove_option(section, field)
     config.set(section, "local_id", clean_local_id)
 
     for role, text in (payload.get("certs") or {}).items():

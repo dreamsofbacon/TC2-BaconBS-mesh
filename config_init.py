@@ -1,5 +1,6 @@
 import configparser
 import gc
+import logging
 import os
 import re
 import time
@@ -299,31 +300,62 @@ def _read_mqtt_settings(section) -> dict[str, Any]:
     absent means 'tls = true' uses the system CA store, matching the
     behavior from before these existed.
     """
+    def _flag(name: str, default: bool) -> bool:
+        """A blank value means "not set", not a parse error.
+
+        configparser's fallback applies to a MISSING option; an option
+        written with an empty value raises instead. An invite writes every
+        link field, blank included, so one empty `tls_insecure =` took the
+        whole BBS down at startup with a ValueError and a stack trace --
+        on a node that had just been joined to a fleet and had nobody
+        watching it.
+        """
+        raw = str(section.get(name, fallback='') or '').strip()
+        if not raw:
+            return default
+        try:
+            return section.getboolean(name, fallback=default)
+        except ValueError:
+            logging.warning("[%s] %s is %r, which is not yes/no; using %s",
+                            getattr(section, 'name', 'mqtt'), name, raw, default)
+            return default
+
+    def _number(name: str, default: int) -> int:
+        raw = str(section.get(name, fallback='') or '').strip()
+        if not raw:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            logging.warning("[%s] %s is %r, which is not a number; using %s",
+                            getattr(section, 'name', 'mqtt'), name, raw, default)
+            return default
+
     return {
         'host': section.get('host', fallback=None),
-        'port': section.getint('port', fallback=1883),
+        'port': _number('port', 1883),
         'username': section.get('username', fallback=None),
         'password': section.get('password', fallback=None),
-        'tls': section.getboolean('tls', fallback=False),
+        'tls': _flag('tls', False),
         'tls_ca_certs': section.get('tls_ca_certs', fallback=None),
         'tls_certfile': section.get('tls_certfile', fallback=None),
         'tls_keyfile': section.get('tls_keyfile', fallback=None),
         'tls_keyfile_password': section.get('tls_keyfile_password', fallback=None),
-        'tls_insecure': section.getboolean('tls_insecure', fallback=False),
+        'tls_insecure': _flag('tls_insecure', False),
         'topic_prefix': section.get('topic_prefix', fallback=None),
         'local_id': section.get('local_id', fallback=None),
         'client_id': section.get('client_id', fallback=None),
-        'keepalive': section.getint('keepalive', fallback=60),
+        'keepalive': _number('keepalive', 60),
         # What this broker receives, beyond the sync traffic the bridge
         # exists for. Each is independent so one node can send full
         # telemetry to a home broker while a remote bridge gets sync only.
         # publish_status defaults true (the pre-existing behavior); the
         # rest default false so an existing config's traffic is unchanged.
-        'publish_status': section.getboolean('publish_status', fallback=True),
-        'publish_clients': section.getboolean('publish_clients', fallback=False),
-        'publish_telemetry': section.getboolean('publish_telemetry', fallback=False),
-        'publish_activity': section.getboolean('publish_activity', fallback=False),
-        'publish_sync_stats': section.getboolean('publish_sync_stats', fallback=False),
+        'publish_status': _flag('publish_status', True),
+        'publish_clients': _flag('publish_clients', False),
+        'publish_telemetry': _flag('publish_telemetry', False),
+        'publish_activity': _flag('publish_activity', False),
+        'publish_sync_stats': _flag('publish_sync_stats', False),
         # Root for PUBLISHED DATA only. Blank = use topic_prefix. Lets
         # telemetry slot into an existing hierarchy (e.g. a Home Assistant
         # tree) without touching topic_prefix, which identifies the bridge
