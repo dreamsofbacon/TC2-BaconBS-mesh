@@ -63,6 +63,20 @@ class SubscriberRoutingTests(unittest.TestCase):
         mp.on_receive(_packet("BULLETIN|G|S|x|body|uid", "!pico"), _Iface())
         self.assertEqual(self.calls, [(False, "!pico", "BULLETIN|G|S|x|body|uid")])
 
+    def test_a_subscriber_pull_is_not_filed_as_an_unlisted_peer(self):
+        """The stranger-detector watches messages that are already dropped.
+        Put it earlier in the chain and it swallows the pull-only nodes'
+        requests instead -- which it did, and these tests caught it."""
+        noted = []
+        original = mp._note_unlisted_sync_sender
+        mp._note_unlisted_sync_sender = lambda node, msg: noted.append(node)
+        try:
+            mp.on_receive(_packet("WANT|bulletins|!gw|1", "!pico"), _Iface())
+        finally:
+            mp._note_unlisted_sync_sender = original
+        self.assertEqual([], noted)
+        self.assertEqual(self.calls, [(True, "!pico", "WANT|bulletins|!gw|1")])
+
     def test_non_subscriber_want_not_synced(self):
         # A stranger DMing a WANT is treated as a plain user message, not sync.
         mp.on_receive(_packet("WANT|bulletins|!gw|1", "!stranger"), _Iface())

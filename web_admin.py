@@ -4792,25 +4792,34 @@ def create_app(runtime_interface=None) -> Flask:
       flash("Board list saved.", "success")
       return True
 
-    def add_sync_peer(section: str, node_id: str) -> None:
-      """Append one peer to one link's list, from the Sync page."""
+    def add_sync_peer(section: str, node_id: str, announce: bool = True) -> bool:
+      """Append one peer to one link's list. True when the file changed.
+
+      announce=False is for callers that report in their own words -- the
+      invite export, which adds the guest it just named and says so in that
+      context.
+      """
+      def _refuse(message: str) -> bool:
+        if announce:
+          flash(message, "error")
+        return False
+
       section = str(section or "").strip()
       node_id = str(node_id or "").strip()
       if not node_id:
-        flash("Enter a peer node ID.", "error")
-        return
+        return _refuse("Enter a peer node ID.")
       valid = {t["section"] for t in load_peer_link_targets(app.config["CONFIG_PATH"])}
       if section not in valid:
-        flash("Pick which link this peer is reachable on.", "error")
-        return
+        return _refuse("Pick which link this peer is reachable on.")
 
       config = read_config_file(app.config["CONFIG_PATH"])
       if not config.has_section(section):
         config.add_section(section)
       existing = parse_list_input(config.get(section, "bbs_nodes", fallback=""))
       if node_id in existing:
-        flash(f"{node_id} is already a peer on that link.", "error")
-        return
+        if announce:
+          flash(f"{node_id} is already a peer on that link.", "error")
+        return False
 
       # An MQTT peer's address embeds the topic it lives on; one that does
       # not match the link's own prefix can never be reached, and saying so
@@ -4819,19 +4828,31 @@ def create_app(runtime_interface=None) -> Flask:
       if mqtt_match:
         link_prefix = config.get(f"mqtt{mqtt_match.group(1)}", "topic_prefix", fallback="").strip()
         if not node_id.startswith("mqtt:") or node_id.count(":") < 2:
-          flash(f"{node_id} is not an MQTT address — expected mqtt:<topic>:<name>.", "error")
-          return
+          return _refuse(
+            f"{node_id} is not an MQTT address — expected mqtt:<topic>:<name>.")
         peer_prefix = node_id.split(":", 2)[1]
         if link_prefix and peer_prefix != link_prefix:
-          flash(
-            f"{node_id} is on topic '{peer_prefix}' but that link uses '{link_prefix}', "
-            "so they would never reach each other.", "error")
-          return
+          return _refuse(
+            f"{node_id} is on topic '{peer_prefix}' but that link uses "
+            f"'{link_prefix}', so they would never reach each other.")
 
       existing.append(node_id)
       config.set(section, "bbs_nodes", ",".join(existing))
       write_config_file(config, app.config["CONFIG_PATH"])
-      flash(f"Added {node_id}. Restart the mesh-bbs service to start syncing with it.", "success")
+      try:
+        from db_operations import forget_unlisted_sync_sender
+        forget_unlisted_sync_sender(node_id)
+      except Exception:
+        logging.debug("could not clear the unlisted-sender note for %s", node_id,
+                      exc_info=True)
+      if announce:
+        # No restart: peer lists are re-read on every sync tick, which is
+        # what refresh_peer_lists_from_config exists for. The old wording
+        # sent people to restart a service for a change that was already
+        # live.
+        flash(f"Added {node_id}. Syncing with it starts within a sync tick — "
+              "no restart needed.", "success")
+      return True
 
     def remove_sync_peers(selected: list) -> None:
       """Drop chosen peers from config and forget their sync state.
@@ -5235,6 +5256,9 @@ def create_app(runtime_interface=None) -> Flask:
         # one side only cannot be seen any other way from here: their
         # broadcasts arrive, so everything else looks healthy.
         "one_way_peers": "",
+        # The same fault seen from the other end: a node asking US for
+        # records that we ignore because it is not in our list.
+        "unlisted_senders": "",
         "peer_sync_counts": "No peer status received yet",
         "peer_scope_mismatches": "No peer status received yet",
         "zork_save_peer_mismatches": "No zork save peer mismatches reported",
@@ -5574,6 +5598,19 @@ def create_app(runtime_interface=None) -> Flask:
           )
         if candidate_lines:
           diagnostics["zork_save_candidate_resolution"] = "\n".join(candidate_lines)
+
+      try:
+        from db_operations import unlisted_sync_senders
+        strangers = unlisted_sync_senders()
+        if strangers:
+          names = ", ".join(
+            f'{row["node_id"]} ({row["frames"]} requests)' for row in strangers)
+          diagnostics["unlisted_senders"] = (
+            f"{len(strangers)} node(s) are trying to sync with this one and are "
+            f"being ignored because they are not in any peer list: {names}. "
+            "Add them under Sync > Add a peer if they belong to this fleet.")
+      except Exception:
+        logging.debug("unlisted senders unavailable", exc_info=True)
 
       try:
         from db_operations import peer_link_health
@@ -6292,10 +6329,23 @@ def create_app(runtime_interface=None) -> Flask:
                  "updates": settings.get("updates", "auto"),
                  "trusted_keys": keys}
 
+      guest_local_id = request.form.get("guest_local_id", "").strip()
+      try:
+        if guest_local_id:
+          guest_local_id = invite_mod.validate_local_id(guest_local_id)
+          if guest_local_id == str(link.get("local_id", "")).strip():
+            raise invite_mod.InviteError(
+              "That is this node's own name on the link. Two nodes sharing one "
+              "name collide on the broker.")
+      except invite_mod.InviteError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("settings_page") + "#invite")
+
       try:
         payload = invite_mod.build_payload(
           link,
           inviter_local_id=link.get("local_id", ""),
+          guest_local_id=guest_local_id,
           created_by=_live_fleet_value("name") or "a Bacon BBS node",
           bbs_name=_live_fleet_value("name"),
           certs=read_link_certs(link) if include_certs else None,
@@ -6306,6 +6356,23 @@ def create_app(runtime_interface=None) -> Flask:
       except invite_mod.InviteError as exc:
         flash(str(exc), "error")
         return redirect(url_for("settings_page") + "#invite")
+
+      # Add the guest here, now, while its id is known. An invite that only
+      # configures the joiner leaves a one-way link: it asks us for records
+      # and we drop every request unread, because it is not in our list.
+      guest_id = invite_mod.guest_node_id(payload)
+      if guest_id:
+        try:
+          added = add_sync_peer(f"sync_mqtt{int(link['index'])}", guest_id,
+                                announce=False)
+          if added:
+            flash(f"Added {guest_id} to this node's peers, so it can sync with "
+                  "us as soon as it joins.", "success")
+        except Exception:
+          logging.exception("could not add the invited node as a peer")
+          flash(f"Could not add {guest_id} to this node's peers automatically. "
+                "Add it under Sync > Add a peer, or the new node will not be "
+                "able to sync with this one.", "error")
 
       topic = str(link.get("topic_prefix", "") or "link").strip() or "link"
       safe = "".join(ch for ch in topic if ch.isalnum() or ch in "-_") or "link"
@@ -6358,7 +6425,12 @@ def create_app(runtime_interface=None) -> Flask:
       return render_template(
         "invite_review.html", title="Review invite", show_nav=True,
         token=token, summary=summary, suggested_topic=suggested,
-        default_local_id=suggested_local_id(),
+        # The name the inviter already added to its own peer list. Using
+        # anything else here puts the new node back where the last one was:
+        # talking to peers that have never heard of it.
+        default_local_id=(str(payload.get("guest_local_id", "")).strip()
+                          or suggested_local_id()),
+        assigned_local_id=str(payload.get("guest_local_id", "")).strip(),
         next_index=invite_mod.next_free_index([l["index"] for l in links]))
 
     @app.route("/invite/apply/<token>", methods=["POST"])

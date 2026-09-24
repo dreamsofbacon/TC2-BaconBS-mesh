@@ -1287,6 +1287,19 @@
         and cannot create them. The importer still has to tick a box before
         anything is armed.</p>
     </div>
+    <div class="form-group">
+      <label for="guest_local_id">Name for the node you are inviting</label>
+      <input type="text" id="guest_local_id" name="guest_local_id"
+             class="form-control" style="max-width:320px"
+             placeholder="e.g. VPS-Public">
+      <p class="text-muted">
+        Naming it here adds it to <strong>this</strong> node's peers straight
+        away, so it can sync the moment it joins. Leave blank and the joining
+        node picks its own name &mdash; and you will have to add that name to
+        every existing node by hand, or it will ask for records that nobody
+        answers.
+      </p>
+    </div>
     <button class="btn btn-primary" type="submit">Download invite</button>
   </form>
   {% else %}
@@ -1826,6 +1839,10 @@
   {% if diagnostics.one_way_peers %}
   <p class="text-danger"><strong>One-way peering:</strong>
     {{ diagnostics.one_way_peers }}</p>
+  {% endif %}
+  {% if diagnostics.unlisted_senders %}
+  <p class="text-danger"><strong>Ignored peers:</strong>
+    {{ diagnostics.unlisted_senders }}</p>
   {% endif %}
   <p><strong>Mismatch re-sync attempts:</strong> {{ diagnostics.mismatch_retry_summary }}</p>
   <p><strong>Peer-advertised record counts:</strong></p>

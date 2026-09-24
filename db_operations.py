@@ -3494,6 +3494,99 @@ def peer_link_health(now=None) -> list:
     return result
 
 
+def record_unlisted_sync_sender(peer_node_id: str, frame: str = '',
+                                frames: int = 0) -> int:
+    """A node is sending us sync traffic that we drop because we do not
+    list it. Count it, and return the running total.
+
+    Not a security hole and not a fix: a node that is not in our peer list
+    is ignored, which is the point. But a node that keeps asking, cycle
+    after cycle, is nearly always the other half of a peering somebody set
+    up on one side only -- the exact fault that left a new node at zero
+    records for a day while it asked three peers several times a minute.
+
+    Recording it lets this node say "someone is trying to sync with us and
+    we are ignoring them", which is the one clue the other side cannot give.
+    """
+    peer = str(peer_node_id or '').strip()
+    if not peer:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("""CREATE TABLE IF NOT EXISTS unlisted_sync_senders (
+                        node_id TEXT PRIMARY KEY,
+                        frames INTEGER NOT NULL DEFAULT 0,
+                        first_seen_at TEXT NOT NULL DEFAULT '',
+                        last_seen_at TEXT NOT NULL DEFAULT '',
+                        last_frame TEXT NOT NULL DEFAULT '',
+                        warned_at TEXT NOT NULL DEFAULT ''
+                    );""")
+        # `frames` is the caller's running count, which is kept in memory on
+        # the receive path; 0 means "one more than whatever is stored".
+        if int(frames or 0) > 0:
+            c.execute(
+                "INSERT INTO unlisted_sync_senders (node_id, frames,"
+                " first_seen_at, last_seen_at, last_frame) VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(node_id) DO UPDATE SET frames = excluded.frames,"
+                " last_seen_at = excluded.last_seen_at,"
+                " last_frame = excluded.last_frame",
+                (peer, int(frames), now, now, str(frame or '')[:24]))
+        else:
+            c.execute(
+                "INSERT INTO unlisted_sync_senders (node_id, frames,"
+                " first_seen_at, last_seen_at, last_frame) VALUES (?, 1, ?, ?, ?)"
+                " ON CONFLICT(node_id) DO UPDATE SET frames = frames + 1,"
+                " last_seen_at = excluded.last_seen_at,"
+                " last_frame = excluded.last_frame",
+                (peer, now, now, str(frame or '')[:24]))
+        conn.commit()
+        row = c.execute("SELECT frames FROM unlisted_sync_senders WHERE node_id = ?",
+                        (peer,)).fetchone()
+        return int(row[0]) if row else 0
+    except Exception:
+        logging.debug("could not record an unlisted sender", exc_info=True)
+        return 0
+
+
+def unlisted_sync_senders(minimum_frames: int = 20) -> list:
+    """Nodes that keep trying to sync with us and are not in our lists."""
+    try:
+        conn = get_db_connection()
+        rows = conn.execute(
+            "SELECT node_id, frames, first_seen_at, last_seen_at, last_frame,"
+            " warned_at FROM unlisted_sync_senders WHERE frames >= ?"
+            " ORDER BY frames DESC", (int(minimum_frames),)).fetchall()
+    except Exception:
+        return []
+    return [{'node_id': str(r[0]), 'frames': int(r[1] or 0),
+             'first_seen_at': str(r[2] or ''), 'last_seen_at': str(r[3] or ''),
+             'last_frame': str(r[4] or ''), 'warned_at': str(r[5] or '')}
+            for r in rows]
+
+
+def mark_unlisted_sender_warned(node_id: str) -> None:
+    try:
+        conn = get_db_connection()
+        conn.execute("UPDATE unlisted_sync_senders SET warned_at = ? WHERE node_id = ?",
+                     (datetime.now(timezone.utc).isoformat(), str(node_id)))
+        conn.commit()
+    except Exception:
+        logging.debug("could not mark %s as warned", node_id, exc_info=True)
+
+
+def forget_unlisted_sync_sender(node_id: str) -> None:
+    """Called when a node becomes a peer: it is no longer a stranger."""
+    try:
+        conn = get_db_connection()
+        conn.execute("DELETE FROM unlisted_sync_senders WHERE node_id = ?",
+                     (str(node_id),))
+        conn.commit()
+    except Exception:
+        logging.debug("could not forget %s", node_id, exc_info=True)
+
+
 def mark_peer_link_warned(peer_node_id: str) -> None:
     try:
         conn = get_db_connection()

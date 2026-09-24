@@ -1421,6 +1421,45 @@ def _send_hash_manifest_to_peer(scope: str, destination_node_id: str, interface)
                        pause_seconds=chunk_pause + jitter)
 
 
+# Counted in memory, written down every so often. This runs on the receive
+# path for every dropped frame, and a database write per ignored packet is a
+# cost paid by every node on a shared broker -- where other people's fleets
+# are ordinary traffic -- to notice something that only matters once.
+_UNLISTED_PERSIST_EVERY = 25
+_UNLISTED_WARN_EVERY = 100
+_unlisted_counts: dict = {}
+
+
+def _reset_unlisted_counts() -> None:
+    """Test hook: forget who has been ignored."""
+    _unlisted_counts.clear()
+
+
+def _note_unlisted_sync_sender(sender_node_id, message_string: str) -> None:
+    peer = str(sender_node_id or '').strip()
+    if not peer:
+        return
+    frames = _unlisted_counts.get(peer, 0) + 1
+    _unlisted_counts[peer] = frames
+    if frames % _UNLISTED_PERSIST_EVERY:
+        return
+    try:
+        from db_operations import record_unlisted_sync_sender
+        record_unlisted_sync_sender(
+            peer, str(message_string or '').split('|', 1)[0], frames=frames)
+    except Exception:
+        logging.debug("could not record an unlisted sender", exc_info=True)
+    # Said rarely: this is a nudge about configuration, and on a shared
+    # broker some of these are simply other people's fleets, which are not
+    # our business and must not fill the log.
+    if frames % _UNLISTED_WARN_EVERY == 0:
+        logging.warning(
+            "%s has sent this node %d sync requests and is not in any [sync*] "
+            "bbs_nodes list, so every one was ignored. If that node is meant "
+            "to be part of this fleet, add it under Sync > Add a peer.",
+            peer, frames)
+
+
 def _is_broadcast_destination(to_id) -> bool:
     """Whether a destination means "everyone" rather than this node."""
     # 0xffffffff is Meshtastic's broadcast address, spelled out rather than
@@ -3554,6 +3593,15 @@ def on_receive(packet, interface):
             else:
                 log_connection_event(sender_id, sender_node_id, sender_short_name, to_id, "drop", "Ignored group/unknown message")
                 logging.info("Ignoring message sent to group chat or from unknown node")
+                # Sync traffic aimed at us from a node we do not list. Ignoring
+                # it is correct -- that is what the peer list is for -- but a
+                # node that keeps asking is almost always a peering set up on
+                # one side only, and this is the only place that is visible.
+                # Recorded here, in the branch that already drops the message,
+                # so nothing that would otherwise be answered is intercepted.
+                if (is_sync_message and to_id is not None
+                        and not _is_broadcast_destination(to_id)):
+                    _note_unlisted_sync_sender(sender_node_id, message_string)
     except KeyError as e:
         rollback_db_connection()
         logging.error(f"Error processing packet: {e}")

@@ -51,6 +51,17 @@
       <label for="local_id">Name</label>
       <input type="text" id="local_id" name="local_id" class="form-control"
              value="{{ default_local_id }}" required>
+      {% if assigned_local_id %}
+      <p class="text-muted">
+        <strong>The invite names this node
+        <code>{{ assigned_local_id }}</code></strong>, and the node that sent
+        it has already added <code>mqtt:{{ suggested_topic }}:{{ assigned_local_id }}</code>
+        to its own peers. Change it and that entry no longer matches: this
+        node would ask for records and never be answered, because a node only
+        acts on traffic from a peer it lists. If you do change it, tell them
+        the new name.
+      </p>
+      {% else %}
       <p class="text-muted">
         Becomes <code>mqtt:{{ suggested_topic }}:&lt;name&gt;</code>, which is how
         the other nodes will address yours. It must be different from every
@@ -58,6 +69,13 @@
         other's traffic as their own. Letters, numbers, dot, dash and
         underscore.
       </p>
+      <p class="text-muted">
+        This invite does not name your node, so the nodes that sent it do not
+        know it yet. Once you have imported, ask them to add
+        <code>mqtt:{{ suggested_topic }}:&lt;name&gt;</code> under Sync &gt; Add a
+        peer, or nothing they hold can reach you.
+      </p>
+      {% endif %}
     </div>
 
     <h3>Software updates</h3>

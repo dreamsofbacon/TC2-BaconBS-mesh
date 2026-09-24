@@ -92,12 +92,25 @@ def build_payload(link: dict, *, inviter_local_id: str = "",
                   created_by: str = "", bbs_name: str = "",
                   certs: Optional[dict] = None,
                   sync_nodes=(), allowed_nodes=(),
-                  fleet: Optional[dict] = None) -> dict:
+                  fleet: Optional[dict] = None,
+                  guest_local_id: str = "") -> dict:
     """Assemble what an invite carries, from one configured link.
 
     inviter_local_id is the exporting node's OWN name on this link. It is
     not copied into the importer's config -- it is what lets the importer
     work out the inviter's node id and sync with it.
+
+    guest_local_id is the name the invited node will answer to. The inviter
+    chooses it, because the inviter is the one who can act on it: knowing
+    the guest's id in advance is what lets every existing node add it before
+    the guest ever connects.
+
+    Without that, an invite fixes one side only. The guest learns every
+    peer; no peer learns the guest, because the guest used to pick its own
+    name at import time and nobody was told. A node only acts on sync frames
+    whose sender is in its own list, so the result is a node that asks for
+    records several times a minute, for ever, and is never answered. That
+    happened, and it cost a day.
     """
     payload = {
         "format": FORMAT,
@@ -105,6 +118,7 @@ def build_payload(link: dict, *, inviter_local_id: str = "",
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "created_by": str(created_by or ""),
         "inviter_local_id": str(inviter_local_id or ""),
+        "guest_local_id": str(guest_local_id or ""),
         "bbs_name": str(bbs_name or ""),
         "link": {field: link.get(field, "") for field in LINK_FIELDS},
         "certs": {role: text for role, text in (certs or {}).items()
@@ -234,6 +248,17 @@ def peer_ids_for_importer(payload: dict) -> list:
         if node not in peers:
             peers.append(node)
     return peers
+
+
+def guest_node_id(payload: dict) -> str:
+    """The node id the invited node will answer to, or '' if unnamed.
+
+    An older bundle carries no guest name; the import then falls back to
+    asking, exactly as it always did.
+    """
+    topic = str((payload.get("link") or {}).get("topic_prefix", "")).strip()
+    guest = str(payload.get("guest_local_id", "")).strip()
+    return f"mqtt:{topic}:{guest}" if topic and guest else ""
 
 
 def next_free_index(existing_indexes) -> int:
