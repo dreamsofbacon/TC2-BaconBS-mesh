@@ -36,7 +36,10 @@ class _Stop(Exception):
 
 def _status(state, t) -> str:
     place = t['places'][state['place']]
-    owed = (f", {t['owed']} ${state['debt']} by day {state['loan_due']}"
+    # "d30" rather than "by day 30": this line is on the most-seen screen,
+    # and with six goods, an event line and a five-figure debt the long form
+    # pushed it past one packet.
+    owed = (f", {t['owed']} ${state['debt']} d{state['loan_due']}"
             if state['debt'] else "")
     carried = sum(state['inventory'].values())
     return (f"Day {state['day']}/{state['days']} {place}: ${state['cash']}{owed}, "
@@ -68,7 +71,7 @@ def render(state, nav, t, note='') -> str:
         return "\n".join(lines)
 
     if phase == 'police':
-        lines += [f"{t['encounter']} {t['hp']} {state['hp']}.",
+        lines += [f"{t.get('encounter_icon', '')}{t['encounter']} {t['hp']} {state['hp']}.",
                   f"[1]{t['fight']} [2]{t['run']} [3]{t['surrender']} [0]Exit"]
         return "\n".join(lines)
 
@@ -78,7 +81,11 @@ def render(state, nav, t, note='') -> str:
     if menu in ('buy', 'sell'):
         verb = 'Buy' if menu == 'buy' else 'Sell'
         room = state['capacity'] - sum(state['inventory'].values())
-        lines.append(f"{verb} {place} ${state['cash']} room {room}:")
+        # No place name here: the main screen this was reached from
+        # already says where you are, and with six goods, an icon each
+        # and a note line above ('Your bag is full.') the place pushed
+        # this screen past one packet.
+        lines.append(f"{verb}: ${state['cash']} room {room}")
         for index, item in enumerate(game.GOODS, start=1):
             offer = state['market'][item]
             name = t['goods'][item]
@@ -86,8 +93,13 @@ def render(state, nav, t, note='') -> str:
                 tail = f"/{_max_buy(state, item)}" if offer['stock'] else "/out"
             else:
                 tail = f"/{state['inventory'][item]}"
-            lines.append(f"[{index}]{name} ${offer['price']}{tail}")
-        lines.append("Pick item; / is max/have. [0]Back")
+            icon = t.get('icons', {}).get(item, '')
+            lines.append(f"[{index}]{icon}{name} ${offer['price']}{tail}")
+        # Six goods, an icon each and the longest place name leave no
+        # room to explain the slash here; the quantity screen says
+        # "1-N, M for max" in full, one keypress away. Spelling it out
+        # on this screen put Candy Wars over one packet.
+        lines.append("Pick one. [0]Back")
     elif menu in ('buy_qty', 'sell_qty'):
         item = nav['item']
         most = (_max_buy(state, item) if menu == 'buy_qty'
@@ -134,7 +146,8 @@ def render(state, nav, t, note='') -> str:
         lines.append(_status(state, t))
         if state.get('event'):
             kind, item = state['event'].split(':', 1)
-            lines.append(t[kind].format(item=t['goods'][item]))
+            icon = t.get(f'{kind}_icon', '')
+            lines.append(icon + t[kind].format(item=t['goods'][item]))
         lines.append(f"[1]Buy [2]Sell [3]Go [4]Bag [5]Gear [6]{t['loan']} "
                      "[7]End [0]Exit")
         if state['moves'] == 0 and state['days'] == 30:

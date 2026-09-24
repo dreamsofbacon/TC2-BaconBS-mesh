@@ -11,8 +11,18 @@ weapons or drugs anywhere in its text. tests/test_candywars.py drives every
 screen in this theme against a list of words that must never appear.
 """
 
+import dopewars as game
+
 CANDY = 'candy'
 MATURE = 'mature'
+
+# Icons are per theme, like every other word here.
+#
+# The engine has its own GOOD_ICONS and its own emoji in the text it returns
+# ("POLICE", "Deal", "Bust"), and those are right for Dope Wars. They cannot
+# be shown as they are: the menu never prints engine text, which is what
+# stops a police siren turning up in a game about a hall monitor. So the
+# icons come through here, and Candy Wars gets its own set.
 
 THEMES = {
     CANDY: {
@@ -20,6 +30,12 @@ THEMES = {
         'goods': {'weed': 'Gum', 'hash': 'Jelly beans',
                   'mushrooms': 'Cookies', 'acid': 'Chocolate',
                   'oxy': 'Mints', 'cocaine': 'Rock candy'},
+        'icons': {'weed': '\N{BUBBLE TEA}', 'hash': '\N{CANDY}',
+                  'mushrooms': '\N{COOKIE}', 'acid': '\N{CHOCOLATE BAR}',
+                  'oxy': '\N{LOLLIPOP}', 'cocaine': '\N{SHORTCAKE}'},
+        'encounter_icon': '\N{RAISED HAND}',
+        'deal_icon': '\N{PARTY POPPER}',
+        'bust_icon': '\N{HOURGLASS WITH FLOWING SAND}',
         'places': {'bronx': 'Playground', 'brooklyn': 'Cafeteria',
                    'manhattan': 'Gym', 'queens': 'Library',
                    'staten-island': 'Art room'},
@@ -41,8 +57,12 @@ THEMES = {
         'surrendered': 'You handed over your candy and ${fine} of your allowance.',
         'defeated': 'Out of energy. Sent to the office -- the run is over.',
         'deadline': "You didn't pay your big sibling back in time. The run is over.",
-        'deal': 'A big delivery made {item} cheap!',
-        'bust': '{item} is hard to find today.',
+        # Kept short: this rides on the main screen, under a status line
+        # that can carry a five-figure debt, and the pair has to fit one
+        # packet together. The Dope Wars wording below is Materva's and
+        # fits as it is.
+        'deal': '{item} is cheap today!',
+        'bust': '{item} is scarce today.',
         'loot_cash': 'You found ${amount}.',
         'loot_goods': 'You found {qty} {item}.',
         'loot_full': 'You found a treat, but your backpack was full.',
@@ -54,6 +74,11 @@ THEMES = {
         'goods': {'weed': 'Weed', 'hash': 'Hash',
                   'mushrooms': 'Mushrooms', 'acid': 'Acid',
                   'oxy': 'Oxy', 'cocaine': 'Cocaine'},
+        # The engine's own GOOD_ICONS, which is where these came from.
+        'icons': dict(game.GOOD_ICONS),
+        'encounter_icon': '\N{POLICE CARS REVOLVING LIGHT}',
+        'deal_icon': '\N{PACKAGE}',
+        'bust_icon': '\N{POLICE CARS REVOLVING LIGHT}',
         'places': {'bronx': 'Bronx', 'brooklyn': 'Brooklyn',
                    'manhattan': 'Manhattan', 'queens': 'Queens',
                    'staten-island': 'Staten Island'},
