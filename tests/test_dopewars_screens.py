@@ -147,5 +147,112 @@ class IconsReachThePlayerTests(unittest.TestCase):
                     self.assertNotIn(icon, screen)
 
 
+class TravelKeyTests(unittest.TestCase):
+    """[3] says Travel, and T travels. The label promising a shortcut that
+    did nothing is the reason this exists."""
+
+    def setUp(self):
+        db_operations.thread_local.connection = sqlite3.connect(":memory:")
+        db_operations.initialize_database()
+        self.addCleanup(self._close)
+
+    def _close(self):
+        conn = getattr(db_operations.thread_local, "connection", None)
+        if conn is not None:
+            conn.close()
+            del db_operations.thread_local.connection
+
+    def _main(self, pg13=False):
+        import dopewars as game
+        import dopewars_menu as menu
+        import dopewars_theme as theme
+        return menu.render(game.new_game(1), {"menu": "main"}, theme.theme(pg13))
+
+    def test_the_button_says_travel(self):
+        for pg13 in (False, True):
+            with self.subTest(pg13=pg13):
+                self.assertIn("[3]Travel", self._main(pg13))
+                self.assertNotIn("[3]Go", self._main(pg13))
+
+    def test_t_opens_the_travel_screen(self):
+        import dopewars as game
+        import dopewars_menu as menu
+        import dopewars_theme as theme
+        state = game.new_game(1)
+        turn = menu._Turn(1, "caller", theme.theme(False), state)
+        for word in ("t", "travel", "T"):
+            with self.subTest(word=word):
+                nav = menu._step(turn, word.lower(), {"menu": "main"})
+                self.assertEqual("move", nav["menu"])
+
+    def test_three_still_works(self):
+        import dopewars as game
+        import dopewars_menu as menu
+        import dopewars_theme as theme
+        state = game.new_game(1)
+        turn = menu._Turn(1, "caller", theme.theme(False), state)
+        self.assertEqual("move", menu._step(turn, "3", {"menu": "main"})["menu"])
+
+
+
+class MainScreenFitsOnePacketTests(unittest.TestCase):
+    """The main screen is the one a player stares at all run, so it is the
+    one that must not cost two packets of airtime. "Travel" is four bytes
+    more than "Go", which is close enough to the ceiling to pin down."""
+
+    def _worst_screens(self):
+        import dopewars as game
+        import dopewars_menu as menu
+        import dopewars_theme as theme
+        for pg13 in (False, True):
+            t = theme.theme(pg13)
+            for day_one in (True, False):
+                state = game.new_game(1)
+                if not day_one:
+                    # Past the opening screen the [8] line is gone, but the
+                    # numbers are at their longest.
+                    state.update(moves=5, days=365, loan_due=365,
+                                 cash=999999, debt=99999)
+                for place in game.PLACES:
+                    state["place"] = place
+                    for kind in ("deal", "bust"):
+                        for item in t["goods"]:
+                            state["event"] = f"{kind}:{item}"
+                            yield (pg13, day_one, place, state["event"],
+                                   menu.render(state, {"menu": "main"}, t))
+
+    def test_every_main_screen_fits(self):
+        import dopewars_menu as menu
+        for pg13, day_one, place, event, screen in self._worst_screens():
+            size = len(screen.encode("utf-8"))
+            with self.subTest(pg13=pg13, day_one=day_one, place=place,
+                              event=event, size=size):
+                self.assertLessEqual(size, menu.MAX_SCREEN_BYTES)
+
+    def test_the_title_survives(self):
+        """The fit rule is a safety net, not a routine cost: no screen a
+        player can actually reach should be paying for it today."""
+        import dopewars_theme as theme
+        for pg13, day_one, place, event, screen in self._worst_screens():
+            with self.subTest(pg13=pg13, day_one=day_one, place=place,
+                              event=event):
+                self.assertTrue(screen.startswith(theme.theme(pg13)["title"]))
+
+    def test_a_screen_that_would_spill_drops_the_title_first(self):
+        """And when something later does push it over, the game's name is
+        what goes -- not a line the player needs."""
+        import dopewars as game
+        import dopewars_menu as menu
+        import dopewars_theme as theme
+        t = dict(theme.theme(False))
+        t["places"] = dict(t["places"])
+        t["places"]["bronx"] = "X" * 120
+        state = game.new_game(1)
+        state["place"] = "bronx"
+        screen = menu.render(state, {"menu": "main"}, t)
+        self.assertNotIn(t["title"], screen)
+        self.assertIn("[3]Travel", screen)
+
+
 if __name__ == "__main__":
     unittest.main()

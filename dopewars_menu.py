@@ -22,6 +22,10 @@ from dopewars_theme import theme
 
 EXIT_WORDS = {'x', '!x', 'q', 'quit', 'exit'}
 
+# One Meshtastic packet of text. A screen over this spends a second
+# packet of airtime on every turn that shows it.
+MAX_SCREEN_BYTES = 200
+
 # Mirrors the engine's own gear table (dopewars.command, 'equipment'). The
 # menu checks these before asking, so a refusal is said in theme rather than
 # in the engine's words; a test pins them to what the engine charges.
@@ -148,11 +152,19 @@ def render(state, nav, t, note='') -> str:
             kind, item = state['event'].split(':', 1)
             icon = t.get(f'{kind}_icon', '')
             lines.append(icon + t[kind].format(item=t['goods'][item]))
-        lines.append(f"[1]Buy [2]Sell [3]Go [4]Bag [5]Gear [6]{t['loan']} "
+        lines.append(f"[1]Buy [2]Sell [3]Travel [4]Bag [5]Gear [6]{t['loan']} "
                      "[7]End [0]Exit")
         if state['moves'] == 0 and state['days'] == 30:
             lines.append("[8]Make it a 365-day run")
-    return "\n".join(lines)
+
+    screen = "\n".join(lines)
+    if (not note and lines and lines[0] == t['title']
+            and len(screen.encode('utf-8')) > MAX_SCREEN_BYTES):
+        # One packet beats the letterhead. A long place name, a five-figure
+        # debt and a market event together can push this over; every other
+        # turn keeps the title.
+        screen = "\n".join(lines[1:])
+    return screen
 
 
 # ── One word at a time ──────────────────────────────────────────────────────
@@ -222,6 +234,10 @@ def _step(turn, word, nav) -> dict:
 
     if menu == 'main':
         top = 8 if state['moves'] == 0 and state['days'] == 30 else 7
+        # A letter for the one people reach for mid-run. Unambiguous: with
+        # "Travel" on the button, G is Gear and nothing else.
+        if word in ('t', 'travel'):
+            return {'menu': 'move'}
         choice = _number(word, 1, top)
         if choice == 8:
             turn.act("new 365")
