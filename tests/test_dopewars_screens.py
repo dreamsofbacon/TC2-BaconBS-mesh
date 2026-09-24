@@ -254,5 +254,141 @@ class MainScreenFitsOnePacketTests(unittest.TestCase):
         self.assertIn("[3]Travel", screen)
 
 
+
+class TradeScreenTellsTheTruthTests(unittest.TestCase):
+    """Reported from the field: "I seem to have a full bag, and it shows 0s
+    next to all my items. Around day 10 the market seems to dry up."
+
+    Nothing was wrong with the market. The buy screen printed how many of
+    each good *this player* could take -- min(stock, what the cash buys,
+    what fits) -- so a full bag or an empty wallet printed /0 against all
+    six goods at once, which reads as a market with nothing in it. The
+    screen now prints what the market holds, and names the player's own
+    dead end in the header instead of leaving six zeroes to imply it.
+    """
+
+    def _screens(self, state, pg13=False):
+        import dopewars_menu as menu
+        import dopewars_theme as theme
+        t = theme.theme(pg13)
+        return (menu.render(state, {"menu": "buy"}, t),
+                menu.render(state, {"menu": "sell"}, t))
+
+    def _stocked_run(self):
+        import dopewars as game
+        state = game.new_game(12345)
+        stocked = [i for i in game.GOODS if state["market"][i]["stock"]]
+        self.assertTrue(stocked, "seed 12345 is expected to stock something")
+        return state, stocked
+
+    def test_a_full_bag_still_shows_what_the_market_has(self):
+        import dopewars as game
+        state, stocked = self._stocked_run()
+        state["inventory"] = {k: 0 for k in game.GOODS}
+        state["inventory"]["weed"] = state["capacity"]
+        buy, _sell = self._screens(state)
+        for item in stocked:
+            with self.subTest(item=item):
+                self.assertIn(f"/{state['market'][item]['stock']}", buy)
+        self.assertNotIn("/0", buy)
+
+    def test_an_empty_wallet_still_shows_what_the_market_has(self):
+        state, stocked = self._stocked_run()
+        state["cash"] = 0
+        buy, _sell = self._screens(state)
+        for item in stocked:
+            with self.subTest(item=item):
+                self.assertIn(f"/{state['market'][item]['stock']}", buy)
+
+    def test_a_full_bag_says_so(self):
+        import dopewars as game
+        state, _stocked = self._stocked_run()
+        state["inventory"] = {k: 0 for k in game.GOODS}
+        state["inventory"]["weed"] = state["capacity"]
+        buy, _sell = self._screens(state)
+        self.assertIn("bag full", buy)
+        self.assertNotIn("room 0", buy)
+
+    def test_an_empty_bag_says_so_on_the_sell_screen(self):
+        _buy, sell = self._screens(self._stocked_run()[0])
+        self.assertIn("bag empty", sell)
+
+    def test_an_empty_shelf_still_reads_as_empty(self):
+        import dopewars as game
+        state, _stocked = self._stocked_run()
+        for item in game.GOODS:
+            state["market"][item]["stock"] = 0
+        buy, _sell = self._screens(state)
+        self.assertEqual(len(game.GOODS), buy.count("/out"))
+
+    def test_the_sell_screen_lists_what_you_carry(self):
+        state, _stocked = self._stocked_run()
+        state["inventory"]["hash"] = 7
+        _buy, sell = self._screens(state)
+        self.assertIn("/7", sell)
+
+    def _reachable_notes(self, t):
+        """Every refusal that leaves the player on a trade screen, so the
+        note is still above it when it renders. ("There is nothing to
+        pick." needs high < low, which six goods never produce.)"""
+        import dopewars as game
+        return [""] + ["Pick 1-6.", "Your bag is full.", "Not enough money.",
+                       "That didn't work."] + [
+            f"{t['goods'][i]} is sold out." for i in game.GOODS] + [
+            f"You have no {t['goods'][i]}." for i in game.GOODS]
+
+    def test_both_screens_fit_one_packet(self):
+        """Stock numbers are wider than the per-player maxima they replaced,
+        so the budget is swept rather than spot-checked: real markets, both
+        themes, an empty/part/full bag, and every note that can sit above."""
+        import dopewars as game
+        import dopewars_menu as menu
+        import dopewars_theme as theme
+        worst, worst_screen = 0, ""
+        for seed in range(300):
+            market = game.new_game(seed)["market"]
+            for carried in (0, 6, "full"):
+                for cash in (0, 2400, 45000, 999999):
+                    state = game.new_game(seed)
+                    state["market"], state["cash"] = market, cash
+                    if carried == "full":
+                        state["inventory"] = {k: 0 for k in game.GOODS}
+                        state["inventory"]["weed"] = state["capacity"]
+                    else:
+                        for item in game.GOODS:
+                            state["inventory"][item] = carried
+                    for pg13 in (False, True):
+                        t = theme.theme(pg13)
+                        for note in self._reachable_notes(t):
+                            for screen_name in ("buy", "sell"):
+                                screen = menu.render(
+                                    state, {"menu": screen_name}, t, note=note)
+                                size = len(screen.encode("utf-8"))
+                                if size > worst:
+                                    worst, worst_screen = size, screen
+        self.assertLessEqual(worst, menu.MAX_SCREEN_BYTES,
+                             f"{worst} bytes:\n{worst_screen}")
+
+    def test_the_prompt_is_what_a_crowded_screen_gives_up(self):
+        """When a note plus a full market would spill, "Pick one." goes --
+        the numbered rows already say it -- and never [0]Back, which is the
+        only way off the screen."""
+        import dopewars as game
+        import dopewars_menu as menu
+        import dopewars_theme as theme
+        t = theme.theme(False)
+        state, _stocked = self._stocked_run()
+        state["cash"] = 999999
+        for item in game.GOODS:
+            state["market"][item].update(price=6246, stock=40)
+        screen = menu.render(state, {"menu": "buy"}, t,
+                             note="Rock candy is sold out.")
+        self.assertNotIn("Pick one.", screen)
+        self.assertIn("[0]Back", screen)
+        self.assertLessEqual(len(screen.encode("utf-8")), menu.MAX_SCREEN_BYTES)
+        # And an uncrowded screen keeps it.
+        self.assertIn("Pick one.", menu.render(state, {"menu": "buy"}, t))
+
+
 if __name__ == "__main__":
     unittest.main()

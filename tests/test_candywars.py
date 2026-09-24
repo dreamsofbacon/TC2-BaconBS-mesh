@@ -230,7 +230,7 @@ class MenuTests(_DbCase):
         before = self.seed(33, cash=5000)
         reply, _, nav = self.script(33, ['1 2 999'])
         self.assertEqual(before['inventory'], self.saved(33)['inventory'])
-        self.assertIn('Pick a number', reply)
+        self.assertIn('Pick 1-', reply)
         self.assertEqual('buy_qty', nav['menu'])
 
     def test_zero_goes_back_a_level_and_exits_from_the_top(self):
