@@ -8,7 +8,7 @@ from copy import deepcopy
 from hashlib import sha256
 
 GAME_ID = 'dopewars'
-VERSION = 4
+VERSION = 5
 DAYS = 30
 MAX_CASH = 1_000_000_000
 LOAN_LIMIT = 10_000
@@ -20,6 +20,11 @@ GOODS = {'ludes': 40, 'weed': 90, 'speed': 150, 'peyote': 190,
          'pcp': 1000, 'heroin': 1250, 'crystal': 1500, 'cocaine': 1800}
 PLACES = ('bronx', 'brooklyn', 'manhattan', 'queens', 'staten-island',
           'harlem', 'coney-island', 'central-park')
+# The bank is in one town on purpose. Reachable everywhere it would be
+# free insurance -- deposit before every trip, withdraw on arrival --
+# which is all keypresses and no decision. Having to go there makes
+# banking a detour weighed against the risk of carrying.
+BANK_PLACE = 'brooklyn'
 PLACE_LABELS = {place: place.replace('-', ' ').title() for place in PLACES}
 # Display only: commands and saved item identifiers remain plain text.
 GOOD_ICONS = {'ludes': '💤', 'weed': '🌿', 'speed': '⚡',
@@ -34,7 +39,10 @@ HELP = ('TRADE\nB ITEM QTY - buy\nS ITEM QTY - sell\nM - market\nI - inventory\n
         'TRAVEL\nT bronx / brooklyn / manhattan\nT queens / staten-island\n'
         'T harlem / coney-island / central-park\n'
         'Each trip: +1 day, +5% debt\n\n'
-        'MONEY & GEAR\nloan borrow AMOUNT\nloan repay AMOUNT\nE - equipment menu\n\n'
+        'MONEY & GEAR\nloan borrow AMOUNT\nloan repay AMOUNT\n'
+        'bank deposit AMOUNT\nbank withdraw AMOUNT\n'
+        'The bank is in Brooklyn; what is in it is safe\n'
+        'from a police stop.\nE - equipment menu\n\n'
         'ENCOUNTERS\nfight - attack\nrun - try to escape\n'
         'surrender - lose goods + 25% cash\n\n'
         'YOUR RUN\nsave - autosave status\nX - save & exit\n'
@@ -48,8 +56,9 @@ def good_label(item):
 
 def status(s):
     due = f" (due D{s['loan_due']})" if s['debt'] else ''
+    saved = f" | Bank ${s['bank']}" if s['bank'] else ''
     return (f"DopeWars D{s['day']}/{s['days']} | {PLACE_LABELS[s['place']]}\n"
-            f"Cash ${s['cash']} | Debt ${s['debt']}{due}\n"
+            f"Cash ${s['cash']} | Debt ${s['debt']}{due}{saved}\n"
             f"HP {s['hp']} | Bag {sum(s['inventory'].values())}/{s['capacity']}")
 
 
@@ -103,7 +112,7 @@ def new_game(seed, days=DAYS):
     if days not in (30, 365):
         raise ValueError('Choose 30 or 365 days.')
     s = dict(version=VERSION, seed=seed, draw=0, day=1, days=days, loan_due=30, place=PLACES[0],
-             cash=2400, debt=1200, hp=100, capacity=40, weapon=0, armor=0,
+             cash=2400, debt=1200, bank=0, hp=100, capacity=40, weapon=0, armor=0,
              inventory={item: 0 for item in GOODS}, market={}, phase='market',
              enemy_hp=0, moves=0, outcome='', event='')
     market(s)
@@ -111,7 +120,8 @@ def new_game(seed, days=DAYS):
 
 
 def score(s):
-    return max(0, s['cash'] - s['debt'])
+    # Banked money is yours; it is only out of reach of a police stop.
+    return max(0, s['cash'] + s['bank'] - s['debt'])
 
 
 def view(s):
@@ -149,7 +159,8 @@ def _settle(s):
     proceeds = sum(q * s['market'][k]['price'] for k, q in s['inventory'].items())
     s['cash'] = min(MAX_CASH, s['cash'] + proceeds)
     s['inventory'] = {k: 0 for k in GOODS}
-    _finish(s, 'Completed' if s['cash'] >= s['debt'] else 'Bankrupt')
+    _finish(s, 'Completed' if s['cash'] + s['bank'] >= s['debt']
+            else 'Bankrupt')
 
 
 def _arrival(s):
@@ -255,7 +266,7 @@ def command(state, text):
             if args[0] not in PLACES or args[0] == s['place']:
                 raise ValueError('Choose a different place: ' + ', '.join(PLACES))
             if s['debt'] and s['day'] >= s['loan_due']:
-                s['cash'] = 0
+                s['cash'] = s['bank'] = 0
                 s['inventory'] = {k: 0 for k in GOODS}
                 _finish(s, 'Bankrupt')
                 s['moves'] += 1
@@ -276,6 +287,25 @@ def command(state, text):
                     loot = _loot(s)
                     if loot:
                         reply += ' Loot ' + loot + '.'
+        elif verb == 'bank' and len(args) == 2 and args[0] in ('deposit', 'withdraw'):
+            if s['place'] != BANK_PLACE:
+                raise ValueError('The bank is in '
+                                 + PLACE_LABELS[BANK_PLACE] + '.')
+            amount = _amount(args[1])
+            if args[0] == 'deposit':
+                if amount > s['cash'] or s['bank'] + amount > MAX_CASH:
+                    raise ValueError('More than you are carrying, or over '
+                                     'the bank limit.')
+                s['cash'] -= amount
+                s['bank'] += amount
+            else:
+                if amount > s['bank'] or s['cash'] + amount > MAX_CASH:
+                    raise ValueError('More than the bank holds, or over '
+                                     'the cash limit.')
+                s['bank'] -= amount
+                s['cash'] += amount
+            reply = (f"Deposited ${amount}." if args[0] == 'deposit'
+                     else f"Withdrew ${amount}.")
         elif verb == 'loan' and len(args) == 2 and args[0] in ('borrow', 'repay'):
             amount = _amount(args[1])
             if args[0] == 'borrow':
@@ -308,7 +338,7 @@ def command(state, text):
             s[field], s['cash'] = target, s['cash'] - price
             reply = f'Purchased {item}.'
         elif verb == 'bankrupt' and not args:
-            s['cash'] = 0
+            s['cash'] = s['bank'] = 0
             s['inventory'] = {k: 0 for k in GOODS}
             _finish(s, 'Bankrupt')
             reply = 'Run ended by bankruptcy.'
@@ -335,7 +365,8 @@ def validate(s):
         raise ValueError('Unknown save schema')
     limits = {'seed': (0, 2**63 - 1), 'draw': (0, 10**12), 'day': (1, 365),
               'days': (30, 365), 'loan_due': (0, 394),
-              'cash': (0, MAX_CASH), 'debt': (0, MAX_CASH), 'hp': (0, 100),
+              'cash': (0, MAX_CASH), 'debt': (0, MAX_CASH),
+              'bank': (0, MAX_CASH), 'hp': (0, 100),
               'capacity': (40, 70), 'weapon': (0, 1), 'armor': (0, 1),
               'enemy_hp': (0, 45), 'moves': (0, 10**12)}
     for key, (low, high) in limits.items():
@@ -388,7 +419,17 @@ def migrate(state):
         state = _widen_catalogue(state, 3)
     if state.get('version') == 3:
         state = _widen_catalogue(state, 4)
+    if state.get('version') == 4:
+        state = _open_an_account(state)
     return state
+
+
+def _open_an_account(state):
+    """v4 -> v5: an empty bank account. Nothing else moves."""
+    s = deepcopy(state)
+    s['version'] = 5
+    s.setdefault('bank', 0)
+    return s
 
 
 def _widen_catalogue(state, version):

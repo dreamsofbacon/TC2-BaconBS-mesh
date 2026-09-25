@@ -391,7 +391,9 @@ def test_v1_save_migrates_without_losing_progress(connection):
     """A v1 save now has two schema hops to make, not one."""
     old = g.new_game(19)
     old['version'] = 1
+    # A v1 save predates both of these keys.
     old.pop('event')
+    old.pop('bank')
     old['place'] = 'uptown'
     old['inventory'] = {k: 0 for k in g._V1_GOODS}
     old['inventory']['weed'] = 3
@@ -414,6 +416,7 @@ def test_v2_save_keeps_every_number_it_had(connection):
     six = ('weed', 'hash', 'mushrooms', 'acid', 'oxy', 'cocaine')
     old = g.new_game(19)
     old['version'] = 2
+    old.pop('bank')
     old['inventory'] = {k: 0 for k in six}
     old['inventory'].update(weed=12, mushrooms=25, oxy=3)
     old['market'] = {k: {'price': g.GOODS[k], 'stock': 5} for k in six}

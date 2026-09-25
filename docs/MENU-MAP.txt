@@ -127,6 +127,10 @@ MAIN MENU   header: Bacon BBS  (mail:N shows unread count)
         fifth good -> Buy -> five of them, and "1 5 1 M" buys as many as
         you can. T travels, from here or from the main screen, and
         arriving somewhere shows you what it sells.
+        [5]Money is the loan and the bank together. The bank is in one
+        town -- the Cafeteria, or Brooklyn in PG-13 mode -- and what is
+        in it is out of reach of a Hall Monitor fine, though not of the
+        loan deadline. A balance shows on the main screen as "saved $n".
         The Hall Monitor sometimes stops you: [1]Talk your way out
         [2]Run for it [3]Hand over your candy.
         In PG-13 mode the same run reads as Dope Wars -- only the words

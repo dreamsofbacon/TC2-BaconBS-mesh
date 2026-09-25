@@ -24,6 +24,8 @@ Commands are case-insensitive. Amounts must be positive whole numbers.
 | `travel manhattan` / `t manhattan` | Advance one day, accrue interest when debt remains, generate a market and possible encounter |
 | `loan borrow 100` | Borrow, up to $10,000 outstanding debt |
 | `loan repay 100` | Repay debt using available cash |
+| `bank deposit 100` | Park cash in the bank, in Brooklyn only |
+| `bank withdraw 100` | Take it back out, in Brooklyn only |
 | `equipment` / `e` | Show equipment and prices |
 | `equipment bag` | $900, increase bag capacity from 40 to 70 once |
 | `equipment vest` | $1,200, reduce damage taken by 8 once |

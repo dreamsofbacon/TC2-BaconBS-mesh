@@ -62,9 +62,13 @@ def _status(state, t) -> str:
     # pushed it past one packet.
     owed = (f", {t['owed']} ${state['debt']} d{state['loan_due']}"
             if state['debt'] else "")
+    # "saved" rather than the themed word for the bank: it is true in both
+    # themes and four bytes shorter than "piggy bank" on the one line that
+    # appears every single turn.
+    saved = f", saved ${state['bank']}" if state['bank'] else ""
     carried = sum(state['inventory'].values())
-    return (f"Day {state['day']}/{state['days']} {place}: ${state['cash']}{owed}, "
-            f"{t['hp']} {state['hp']}, bag {carried}/{state['capacity']}")
+    return (f"Day {state['day']}/{state['days']} {place}: ${state['cash']}{saved}"
+            f"{owed}, {t['hp']} {state['hp']}, bag {carried}/{state['capacity']}")
 
 
 def _max_buy(state, item) -> int:
@@ -145,6 +149,21 @@ def _max_borrow(state) -> int:
     return max(0, min(game.LOAN_LIMIT - state['debt'], game.MAX_CASH - state['cash']))
 
 
+def _at_the_bank(state) -> bool:
+    return state['place'] == game.BANK_PLACE
+
+
+# What each money move can move at most, and the engine command for it.
+MONEY_OPS = {
+    'borrow': (_max_borrow, 'loan borrow'),
+    'repay': (lambda s: min(s['debt'], s['cash']), 'loan repay'),
+    'deposit': (lambda s: min(s['cash'], game.MAX_CASH - s['bank']),
+                'bank deposit'),
+    'withdraw': (lambda s: min(s['bank'], game.MAX_CASH - s['cash']),
+                 'bank withdraw'),
+}
+
+
 def _others(state):
     return [p for p in game.PLACES if p != state['place']]
 
@@ -208,15 +227,23 @@ def render(state, nav, t, note='') -> str:
             lines.append("Gear: " + ", ".join(owned) + ".")
         lines.append("[0]Back")
     elif menu == 'loan':
-        owed = (f"{t['owed']} ${state['debt']} by day {state['loan_due']}"
+        saved = f", ${state['bank']} in the {t['bank']}" if state['bank'] else ''
+        lines.append(f"${state['cash']} on you{saved}.")
+        owed = (f"{t['owed']} ${state['debt']} d{state['loan_due']}"
                 if state['debt'] else "nothing owed")
-        lines.append(f"{t['loan']}: {owed}. Up to ${game.LOAN_LIMIT} in all.")
-        lines.append("[1]Borrow [2]Pay back [0]Back. Or 1 500.")
-    elif menu == 'loan_amt':
-        if nav['op'] == 'borrow':
-            most, verb = _max_borrow(state), 'borrow'
+        lines.append(f"{t['loan']}: {owed}, up to ${game.LOAN_LIMIT}.")
+        if _at_the_bank(state):
+            lines.append("[1]Borrow [2]Pay back [3]Deposit [4]Withdraw "
+                         "[0]Back")
         else:
-            most, verb = min(state['debt'], state['cash']), 'pay back'
+            # Say where rather than offer a key that would only refuse.
+            lines.append(f"[1]Borrow [2]Pay back [0]Back. "
+                         f"{t['bank'].capitalize()}: "
+                         f"{t['places'][game.BANK_PLACE]}.")
+    elif menu == 'loan_amt':
+        op = nav['op']
+        most = MONEY_OPS[op][0](state)
+        verb = 'pay back' if op == 'repay' else op
         lines.append(f"How much to {verb}? 1-{most}, M for max. [0]Back")
     elif menu == 'confirm_end':
         lines.append("End the run now? What you carry sells at today's prices. "
@@ -229,8 +256,8 @@ def render(state, nav, t, note='') -> str:
             kind, item = state['event'].split(':', 1)
             icon = t.get(f'{kind}_icon', '')
             lines.append(f"{icon} " + t[kind].format(item=t['goods'][item]))
-        lines.append(f"[1]Market [2]Travel [3]Bag [4]Gear [5]{t['loan']} "
-                     "[6]End [0]Exit")
+        lines.append(f"[1]Market [2]Travel [3]Bag [4]Gear "
+                     f"[5]{t['money']} [6]End [0]Exit")
         if state['moves'] == 0 and state['days'] == 30:
             lines.append("[7]Make it a 365-day run")
 
@@ -439,18 +466,23 @@ def _step(turn, word, nav) -> dict:
         raise _Stop("Reply 0 to go back.")
 
     if menu == 'loan':
-        choice = _number(word, 1, 2)
-        return {'menu': 'loan_amt', 'op': 'borrow' if choice == 1 else 'repay'}
+        top = 4 if _at_the_bank(state) else 2
+        op = ('borrow', 'repay', 'deposit', 'withdraw')[_number(word, 1, top) - 1]
+        return {'menu': 'loan_amt', 'op': op}
 
     if menu == 'loan_amt':
-        borrowing = nav['op'] == 'borrow'
-        most = _max_borrow(state) if borrowing else min(state['debt'], state['cash'])
+        op = nav['op']
+        most, command = MONEY_OPS[op][0](state), MONEY_OPS[op][1]
         amount = _amount(word, most)
-        before, after = turn.act(f"loan {nav['op']} {amount}")
+        before, after = turn.act(f"{command} {amount}")
         if after['moves'] == before['moves']:
             raise _Stop("That didn't work.")
-        turn.note(f"Borrowed ${amount} from {t['loan_long']}." if borrowing
-                  else f"Paid back ${amount}.")
+        turn.note({
+            'borrow': f"Borrowed ${amount} from {t['loan_long']}.",
+            'repay': f"Paid back ${amount}.",
+            'deposit': f"Put ${amount} in the {t['bank']}.",
+            'withdraw': f"Took ${amount} out of the {t['bank']}.",
+        }[op])
         return {'menu': 'main'}
 
     if menu == 'confirm_end':
