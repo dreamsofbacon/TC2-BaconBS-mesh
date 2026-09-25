@@ -40,8 +40,11 @@ Commands are case-insensitive. Amounts must be positive whole numbers.
 | `new 30` / `new 365` | Choose duration before the first action, or start again after ending |
 | `new` | Start again with the same duration after ending |
 
-Goods: `weed`, `hash`, `mushrooms`, `acid`, `oxy`, `cocaine`.
-Locations: `bronx`, `brooklyn`, `manhattan`, `queens`, `staten-island`.
+Goods: `ludes`, `weed`, `speed`, `hash`, `mushrooms`, `opium`, `acid`,
+`oxy`, `heroin`, `cocaine` -- listed cheapest first, which is the order
+the menu numbers them in.
+Locations: `bronx`, `brooklyn`, `manhattan`, `queens`, `staten-island`,
+`harlem`, `coney-island`, `central-park`.
 
 ## Rules
 
@@ -147,7 +150,8 @@ Name/trademark clearance has not been established for public distribution.
 ## Local mesh presentation
 
 Candy Wars remains the default presentation, with Dope Wars available through
-the existing PG-13 preference. Both themes cover all six goods and five places.
+the existing PG-13 preference. Both themes cover all ten goods and eight
+places; a test fails if either gains an id the other has no word for.
 The numbered buy, sell, travel, gear and loan screens remain within the tested
 200-byte radio budget; typed commands still use the saved engine identifiers.
 

@@ -8,20 +8,28 @@ from copy import deepcopy
 from hashlib import sha256
 
 GAME_ID = 'dopewars'
-VERSION = 2
+VERSION = 3
 DAYS = 30
 MAX_CASH = 1_000_000_000
 LOAN_LIMIT = 10_000
-GOODS = {'weed': 90, 'hash': 230, 'mushrooms': 320, 'acid': 540,
-         'oxy': 900, 'cocaine': 1800}
-PLACES = ('bronx', 'brooklyn', 'manhattan', 'queens', 'staten-island')
+# Cheapest first: the menu numbers goods in this order, and a trading
+# screen reads best as a price list.
+GOODS = {'ludes': 40, 'weed': 90, 'speed': 150, 'hash': 230,
+         'mushrooms': 320, 'opium': 430, 'acid': 540, 'oxy': 900,
+         'heroin': 1250, 'cocaine': 1800}
+PLACES = ('bronx', 'brooklyn', 'manhattan', 'queens', 'staten-island',
+          'harlem', 'coney-island', 'central-park')
 PLACE_LABELS = {place: place.replace('-', ' ').title() for place in PLACES}
 # Display only: commands and saved item identifiers remain plain text.
-GOOD_ICONS = {'weed': '🌿', 'hash': '🟫', 'mushrooms': '🍄', 'acid': '🌀',
-              'oxy': '💊', 'cocaine': '❄️'}
+GOOD_ICONS = {'ludes': '💤', 'weed': '🌿', 'speed': '⚡',
+              'hash': '🟫', 'mushrooms': '🍄', 'opium': '🌺',
+              'acid': '🌀', 'oxy': '💊', 'heroin': '🥄',
+              'cocaine': '❄️'}
 HELP = ('TRADE\nB ITEM QTY - buy\nS ITEM QTY - sell\nM - market\nI - inventory\n'
-        'Items: weed, hash, mushrooms, acid, oxy, cocaine\nExample: B weed 2\n\n'
+        'Items: ludes, weed, speed, hash, mushrooms,\nopium, acid, oxy, heroin, cocaine\n'
+        'Example: B weed 2\n\n'
         'TRAVEL\nT bronx / brooklyn / manhattan\nT queens / staten-island\n'
+        'T harlem / coney-island / central-park\n'
         'Each trip: +1 day, +5% debt\n\n'
         'MONEY & GEAR\nloan borrow AMOUNT\nloan repay AMOUNT\nE - equipment menu\n\n'
         'ENCOUNTERS\nfight - attack\nrun - try to escape\n'
@@ -56,14 +64,16 @@ def draw(s, low, high):
 
 
 def market(s):
-    """Generate three to five stocked goods and an occasional price event."""
+    """Stock four to seven goods and roll an occasional price event."""
     s['market'] = {
         item: {'price': max(1, base * draw(s, 60, 170) // 100), 'stock': 0}
         for item, base in GOODS.items()
     }
     choices = list(GOODS)
     stocked = []
-    count = min(5, max(3, draw(s, 3, 5)))
+    # Clamped, not merely drawn: draw() is stubbed in tests and a count
+    # past the catalogue pops an empty list.
+    count = min(7, max(4, draw(s, 4, 7)))
     for _ in range(count):
         item = choices.pop(draw(s, 0, len(choices) - 1) % len(choices))
         stocked.append(item)
@@ -359,9 +369,34 @@ _V1_KEYS = {'version', 'seed', 'draw', 'day', 'days', 'loan_due', 'place',
 
 
 def migrate(state):
-    """Upgrade schema-v1 saves without rerolling their future RNG."""
-    if not isinstance(state, dict) or state.get('version') != 1:
+    """Walk an older save up to the current schema, one version at a
+    time, without rerolling its future RNG."""
+    if not isinstance(state, dict):
         return state
+    if state.get('version') == 1:
+        state = _migrate_v1(state)
+    if state.get('version') == 2:
+        state = _migrate_v2(state)
+    return state
+
+
+def _migrate_v2(state):
+    """v2 -> v3: four more goods and three more places.
+
+    The new goods start absent from the bag and unstocked here, so an
+    in-flight run keeps its cash, debt and holdings exactly. They appear
+    on the shelf from the next market -- that is, the next time the
+    player travels."""
+    s = deepcopy(state)
+    s['version'] = VERSION
+    for item, base in GOODS.items():
+        s['inventory'].setdefault(item, 0)
+        s['market'].setdefault(item, {'price': base, 'stock': 0})
+    return s
+
+
+def _migrate_v1(state):
+    """v1 -> v2: the four-good catalogue and the renamed places."""
     if set(state) != _V1_KEYS:
         raise ValueError('Unknown save schema')
     s = deepcopy(state)
@@ -369,7 +404,7 @@ def migrate(state):
         raise ValueError('Invalid inventory')
     if not isinstance(s.get('market'), dict) or set(s['market']) != set(_V1_GOODS):
         raise ValueError('Invalid market')
-    s['version'] = VERSION
+    s['version'] = 2
     s['place'] = _V1_PLACES.get(s['place'], s['place'])
     s['event'] = ''
     for item in GOODS:

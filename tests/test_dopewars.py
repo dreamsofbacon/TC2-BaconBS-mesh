@@ -23,8 +23,12 @@ def test_initialization():
     assert s != g.new_game(20)
     assert (s['day'], s['cash'], s['debt'], s['hp']) == (1, 2400, 1200, 100)
     assert sum(s['inventory'].values()) == 0
-    assert set(g.GOODS) == {'weed', 'hash', 'mushrooms', 'acid', 'oxy', 'cocaine'}
-    assert g.PLACES == ('bronx', 'brooklyn', 'manhattan', 'queens', 'staten-island')
+    assert set(g.GOODS) == {'ludes', 'weed', 'speed', 'hash', 'mushrooms',
+                            'opium', 'acid', 'oxy', 'heroin', 'cocaine'}
+    assert list(g.GOODS) == sorted(g.GOODS, key=g.GOODS.get)  # cheapest first
+    assert g.PLACES == ('bronx', 'brooklyn', 'manhattan', 'queens',
+                        'staten-island', 'harlem', 'coney-island',
+                        'central-park')
     assert g.validate(json.loads(json.dumps(s))) == s
 
 
@@ -33,7 +37,7 @@ def test_market_availability_events_and_prices_are_bounded():
     for seed in range(500):
         s = g.new_game(seed)
         stocked = sum(offer['stock'] > 0 for offer in s['market'].values())
-        assert 3 <= stocked <= 5
+        assert 4 <= stocked <= 7
         assert all(1 <= offer['price'] <= 10000 for offer in s['market'].values())
         if s['event']:
             events.add(s['event'].split(':', 1)[0])
@@ -301,9 +305,10 @@ def test_menu_and_dispatch_owns_global_commands(connection):
             index = next(i for i, (gid, _) in enumerate(ch.GAME_LIST, 1) if gid == 'dopewars')
             ch.handle_games_steps(42, str(index), iface)
             assert ch.get_user_state(42)['command'] == 'DOPEWARS'
-            # Played by menu since Candy Wars: 6 = the loan screen, 2 = pay
+            # Played by menu since Candy Wars: 5 = the loan screen, 2 = pay
             # back, 100 = the amount -- the same move as "loan repay 100".
-            mp.process_message(42, '6 2 100', iface)
+            # (5, not 6: Buy and Sell became one Market button.)
+            mp.process_message(42, '5 2 100', iface)
             assert stored(connection)['debt'] == 1100
             for text in ('s weed 1', 'm', 'i', 'h', 'n', '!CM', '!BB', 'save', 'equipment', 'travel manhattan'):
                 with mock.patch.object(mp, 'handle_dopewars_steps') as dispatch:
@@ -378,18 +383,43 @@ def test_365_deadline_and_choice_persist(connection):
 
 
 def test_v1_save_migrates_without_losing_progress(connection):
+    """A v1 save now has two schema hops to make, not one."""
     old = g.new_game(19)
     old['version'] = 1
     old.pop('event')
     old['place'] = 'uptown'
-    for item in ('mushrooms', 'oxy'):
-        old['inventory'].pop(item)
-        old['market'].pop(item)
+    old['inventory'] = {k: 0 for k in g._V1_GOODS}
+    old['inventory']['weed'] = 3
+    old['market'] = {k: {'price': g.GOODS[k], 'stock': 4}
+                     for k in g._V1_GOODS}
     old['cash'] = 1777
     migrated = door._load(json.dumps(old))
     assert migrated['version'] == g.VERSION
     assert migrated['place'] == 'manhattan'
     assert migrated['cash'] == 1777
-    assert migrated['inventory']['mushrooms'] == migrated['inventory']['oxy'] == 0
-    assert migrated['market']['mushrooms']['stock'] == 0
-    assert migrated['market']['oxy']['stock'] == 0
+    assert migrated['inventory']['weed'] == 3
+    for item in set(g.GOODS) - set(g._V1_GOODS):
+        assert migrated['inventory'][item] == 0
+        assert migrated['market'][item]['stock'] == 0
+
+
+def test_v2_save_keeps_every_number_it_had(connection):
+    """The schema hop the live nodes will actually take. A run in
+    progress must not lose cash, debt or a single item to it."""
+    six = ('weed', 'hash', 'mushrooms', 'acid', 'oxy', 'cocaine')
+    old = g.new_game(19)
+    old['version'] = 2
+    old['inventory'] = {k: 0 for k in six}
+    old['inventory'].update(weed=12, mushrooms=25, oxy=3)
+    old['market'] = {k: {'price': g.GOODS[k], 'stock': 5} for k in six}
+    old.update(cash=3098, debt=10000, day=10, capacity=70, moves=33)
+    migrated = door._load(json.dumps(old))
+    assert migrated['version'] == g.VERSION
+    assert (migrated['cash'], migrated['debt']) == (3098, 10000)
+    assert sum(migrated['inventory'].values()) == 40
+    assert migrated['inventory']['weed'] == 12
+    for item in set(g.GOODS) - set(six):
+        assert migrated['inventory'][item] == 0
+        # Unstocked here; they turn up on the next market, which is the
+        # next time the player travels.
+        assert migrated['market'][item]['stock'] == 0

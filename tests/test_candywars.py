@@ -193,8 +193,9 @@ class PacketBudgetTests(_DbCase):
         for pg13 in (False, True):
             self.outputs = []
             self.seed(20, **big)
-            for words in (['1'], ['1', '1'], ['2'], ['2', '1'], ['3'], ['4'],
-                          ['5'], ['6'], ['6', '1'], ['6', '2'], ['7'], ['9']):
+            for words in (['1'], ['1', 'm'], ['1', '1'], ['1', '1', '1'],
+                          ['1', '1', '2'], ['2'], ['3'], ['4'], ['5'],
+                          ['5', '1'], ['5', '2'], ['6'], ['9']):
                 self.script(20, words, pg13=pg13)
             self.seed(21, phase='police', enemy_hp=45)
             self.script(21, [], pg13=pg13)
@@ -208,35 +209,40 @@ class PacketBudgetTests(_DbCase):
 class MenuTests(_DbCase):
 
     def test_one_reply_buys_a_chosen_quantity(self):
-        state = self.seed(30, cash=5000)
+        state = self.seed(30, cash=5000, market={'hash': {'price': 100, 'stock': 50}})
         price = state['market']['hash']['price']
-        reply, _, _ = self.script(30, ['1 2 3'])
+        # Market, the fourth good, Buy, three of them.
+        reply, _, _ = self.script(30, ['1 4 1 3'])
         self.assertEqual(3, self.saved(30)['inventory']['hash'])
         self.assertEqual(5000 - 3 * price, self.saved(30)['cash'])
         self.assertIn('Bought 3 Jelly beans', reply)
 
     def test_m_buys_as_many_as_you_can(self):
-        state = self.seed(31, cash=5000)
-        self.script(31, ['1 1 m'])
+        state = self.seed(31, cash=5000,
+                          market={'weed': {'price': 100, 'stock': 50}})
+        self.script(31, ['1 2 1 m'])
         expected = menu._max_buy(state, 'weed')
         self.assertEqual(expected, self.saved(31)['inventory']['weed'])
 
     def test_a_step_at_a_time_works_too(self):
-        self.seed(32, cash=5000)
-        self.script(32, ['1', '2', '2'])
+        self.seed(32, cash=5000, market={'hash': {'price': 100, 'stock': 50}})
+        self.script(32, ['1', '4', '1', '2'])
         self.assertEqual(2, self.saved(32)['inventory']['hash'])
 
     def test_too_many_is_refused_and_nothing_changes(self):
-        before = self.seed(33, cash=5000)
-        reply, _, nav = self.script(33, ['1 2 999'])
+        before = self.seed(33, cash=5000, market={'hash': {'price': 100, 'stock': 50}})
+        reply, _, nav = self.script(33, ['1 4 1 999'])
         self.assertEqual(before['inventory'], self.saved(33)['inventory'])
         self.assertIn('Pick 1-', reply)
         self.assertEqual('buy_qty', nav['menu'])
 
     def test_zero_goes_back_a_level_and_exits_from_the_top(self):
-        self.seed(34)
-        _, leave, nav = self.script(34, ['1', '2', '0'])
-        self.assertEqual('buy', nav['menu'])
+        self.seed(34, cash=5000, market={'hash': {'price': 100, 'stock': 50}})
+        # Quantity -> the good -> the market -> the main screen -> out.
+        _, leave, nav = self.script(34, ['1', '4', '1', '0'])
+        self.assertEqual('item', nav['menu'])
+        _, leave, nav = self.script(34, ['1', '4', '0'])
+        self.assertEqual('market', nav['menu'])
         _, leave, nav = self.script(34, ['1', '0'])
         self.assertEqual('main', nav['menu'])
         _, leave, _ = self.script(34, ['0'])
@@ -244,7 +250,7 @@ class MenuTests(_DbCase):
 
     def test_moving_costs_a_day(self):
         before = self.seed(35)
-        self.script(35, ['3 1'])
+        self.script(35, ['2 1'])
         after = self.saved(35)
         self.assertTrue(after['day'] == before['day'] + 1 or after['phase'] == 'police')
 

@@ -26,13 +26,18 @@ EXIT_WORDS = {'x', '!x', 'q', 'quit', 'exit'}
 # packet of airtime on every turn that shows it.
 MAX_SCREEN_BYTES = 200
 
-# The number after the slash belongs to the screen you are on: what
-# the market has when buying, what you are carrying when selling.
-# Unlabelled it was read as the bag on both -- "it says it is full,
-# but says 0" -- and it is the one thing on the row that cannot be
-# worked out from anywhere else. Both are shorter than the "Pick
-# one." they replaced, so the label is paid for.
-_LEGENDS = {'buy': "$/stock [0]Back", 'sell': "$/bag [0]Back"}
+# The market row is "$price/stock", plus "+n" for what is already in
+# the bag, and the footer says so: unlabelled, the number after the
+# slash was read as the bag, against a bag the status line had just
+# called full.
+_FOOTER = "$/stock +bag [0]Back"
+_FOOTER_MORE = "$/stock +bag [M]ore [0]Back"
+
+# Ten goods do not fit one packet, so the market pages. A page is as
+# many rows as the packet holds rather than a fixed count -- the rows
+# vary by a factor of two in width, and a fixed count would either
+# waste half a screen or overrun it.
+_PAGE_BUDGET = MAX_SCREEN_BYTES
 
 # Mirrors the engine's own gear table (dopewars.command, 'equipment'). The
 # menu checks these before asking, so a refusal is said in theme rather than
@@ -64,6 +69,60 @@ def _max_buy(state, item) -> int:
     return max(0, min(offer['stock'], state['cash'] // offer['price'], room))
 
 
+def _market_rows(state, t):
+    """One row per good worth a keypress: on the shelf, or in the bag.
+
+    Numbers are the good's place in the catalogue, not its place on the
+    screen, so [4] is the same thing in every town and on every page --
+    including on a page it is not currently printed on.
+    """
+    rows = []
+    for index, item in enumerate(game.GOODS, start=1):
+        offer, held = state['market'][item], state['inventory'][item]
+        if not offer['stock'] and not held:
+            continue
+        icon = t.get('icons', {}).get(item, '')
+        # A space after the icon: several emoji are drawn double-width
+        # and a few carry a variation selector, and without it the
+        # glyph lands on top of the first letter of the name.
+        row = (f"[{index}]{icon} {t['goods'][item]} ${offer['price']}"
+               f"/{offer['stock'] or 'out'}")
+        if held:
+            row += f" +{held}"
+        rows.append(row)
+    return rows
+
+
+def _market_page(state, nav, t, budget=_PAGE_BUDGET):
+    """(lines, next page's first row) for the market at nav['start']."""
+    carried = sum(state['inventory'].values())
+    head = f"Market: ${state['cash']} bag {carried}/{state['capacity']}"
+    rows = _market_rows(state, t)
+    if not rows:
+        return [head, "Nothing on the shelf, nothing in your bag.",
+                "[0]Back"], 0
+    start = nav.get('start', 0)
+    if not 0 <= start < len(rows):
+        start = 0
+    used = len(head.encode('utf-8'))
+    reserve = len(_FOOTER_MORE.encode('utf-8')) + 1
+    lines = [head]
+    for row in rows[start:]:
+        cost = len(row.encode('utf-8')) + 1
+        # Always place one row, even a freakishly wide one: a page that
+        # showed nothing could never be paged past.
+        if len(lines) > 1 and used + cost + reserve > budget:
+            break
+        used += cost
+        lines.append(row)
+    shown = len(lines) - 1
+    nxt = start + shown
+    if nxt >= len(rows):
+        nxt = 0
+    lines.append(_FOOTER if nxt == 0 and start == 0 else _FOOTER_MORE)
+    return lines, nxt
+
+
 def _max_borrow(state) -> int:
     return max(0, min(game.LOAN_LIMIT - state['debt'], game.MAX_CASH - state['cash']))
 
@@ -83,48 +142,27 @@ def render(state, nav, t, note='') -> str:
         return "\n".join(lines)
 
     if phase == 'police':
-        lines += [f"{t.get('encounter_icon', '')}{t['encounter']} {t['hp']} {state['hp']}.",
+        lines += [f"{t.get('encounter_icon', '')} {t['encounter']} {t['hp']} {state['hp']}.",
                   f"[1]{t['fight']} [2]{t['run']} [3]{t['surrender']} [0]Exit"]
         return "\n".join(lines)
 
     menu = nav.get('menu', 'main')
     place = t['places'][state['place']]
 
-    if menu in ('buy', 'sell'):
-        verb = 'Buy' if menu == 'buy' else 'Sell'
+    if menu == 'market':
+        # One screen for both sides of the trade. Buy and Sell were two
+        # lists of the same six goods, each showing one number, and you
+        # had to guess from the main screen which one you wanted.
+        lines += _market_page(state, nav, t,
+                              MAX_SCREEN_BYTES - _note_cost(note))[0]
+    elif menu == 'item':
+        item = nav['item']
+        offer, held = state['market'][item], state['inventory'][item]
+        icon = t.get('icons', {}).get(item, '')
         room = state['capacity'] - sum(state['inventory'].values())
-        # No place name here: the main screen this was reached from
-        # already says where you are, and with six goods, an icon each
-        # and a note line above ('Your bag is full.') the place pushed
-        # this screen past one packet.
-        #
-        # Each screen says the half of the bag it is about -- room to buy
-        # into, goods to sell out of -- and names its own dead end rather
-        # than leaving "room 0" to imply it. Six zeroes in a column explain
-        # neither.
-        carried = sum(state['inventory'].values())
-        if menu == 'buy':
-            state_of_bag = f"room {room}" if room else "bag full"
-        else:
-            state_of_bag = (f"bag {carried}/{state['capacity']}" if carried
-                            else "bag empty")
-        lines.append(f"{verb}: ${state['cash']} {state_of_bag}")
-        for index, item in enumerate(game.GOODS, start=1):
-            offer = state['market'][item]
-            name = t['goods'][item]
-            if menu == 'buy':
-                # What the market has, not what this player can take. The
-                # latter is min(stock, cash, room), so a full bag or an
-                # empty wallet showed /0 against all six goods at once and
-                # read as a market that had dried up -- reported from the
-                # field as exactly that. Cash and room are in the header;
-                # picking an item you cannot afford says which limit it is.
-                tail = f"/{offer['stock']}" if offer['stock'] else "/out"
-            else:
-                tail = f"/{state['inventory'][item]}"
-            icon = t.get('icons', {}).get(item, '')
-            lines.append(f"[{index}]{icon}{name} ${offer['price']}{tail}")
-        lines.append(_LEGENDS[menu])
+        lines.append(f"{icon} {t['goods'][item]} ${offer['price']}")
+        lines.append(f"Shelf {offer['stock']}, bag {held}, room {room}.")
+        lines.append("[1]Buy [2]Sell [0]Back")
     elif menu in ('buy_qty', 'sell_qty'):
         item = nav['item']
         most = (_max_buy(state, item) if menu == 'buy_qty'
@@ -172,11 +210,11 @@ def render(state, nav, t, note='') -> str:
         if state.get('event'):
             kind, item = state['event'].split(':', 1)
             icon = t.get(f'{kind}_icon', '')
-            lines.append(icon + t[kind].format(item=t['goods'][item]))
-        lines.append(f"[1]Buy [2]Sell [3]Travel [4]Bag [5]Gear [6]{t['loan']} "
-                     "[7]End [0]Exit")
+            lines.append(f"{icon} " + t[kind].format(item=t['goods'][item]))
+        lines.append(f"[1]Market [2]Travel [3]Bag [4]Gear [5]{t['loan']} "
+                     "[6]End [0]Exit")
         if state['moves'] == 0 and state['days'] == 30:
-            lines.append("[8]Make it a 365-day run")
+            lines.append("[7]Make it a 365-day run")
 
     # One packet beats a few words, but only just: each screen gives up
     # its least useful text rather than spend a second packet of airtime.
@@ -185,12 +223,20 @@ def render(state, nav, t, note='') -> str:
     # so a line that grows later costs a word, not an extra packet.
     screen = "\n".join(lines)
     if len(screen.encode('utf-8')) > MAX_SCREEN_BYTES:
-        if lines[-1] in _LEGENDS.values():
+        if lines[-1] == _FOOTER:
             lines = lines[:-1] + ["[0]Back"]
+        elif lines[-1] == _FOOTER_MORE:
+            # [M]ore stays: without it the later pages are unreachable.
+            lines = lines[:-1] + ["[M]ore [0]Back"]
         elif not note and lines and lines[0] == t['title']:
             lines = lines[1:]
         screen = "\n".join(lines)
     return screen
+
+
+def _note_cost(note):
+    """Bytes a note above a screen takes, itself plus its newline."""
+    return len(note.encode('utf-8')) + 1 if note else 0
 
 
 # ── One word at a time ──────────────────────────────────────────────────────
@@ -262,37 +308,57 @@ def _step(turn, word, nav) -> dict:
         return {'menu': 'main'}
 
     if menu == 'main':
-        top = 8 if state['moves'] == 0 and state['days'] == 30 else 7
-        # A letter for the one people reach for mid-run. Unambiguous: with
-        # "Travel" on the button, G is Gear and nothing else.
+        top = 7 if state['moves'] == 0 and state['days'] == 30 else 6
+        # Letters for the two people reach for every turn, spelling what
+        # the buttons say.
         if word in ('t', 'travel'):
             return {'menu': 'move'}
+        if word in ('m', 'market'):
+            return {'menu': 'market', 'start': 0}
         choice = _number(word, 1, top)
-        if choice == 8:
+        if choice == 7:
             turn.act("new 365")
             turn.note("Now a 365-day run.")
             return {'menu': 'main'}
-        return {'menu': {1: 'buy', 2: 'sell', 3: 'move', 4: 'bag',
-                         5: 'gear', 6: 'loan', 7: 'confirm_end'}[choice]}
+        return {'menu': {1: 'market', 2: 'move', 3: 'bag',
+                         4: 'gear', 5: 'loan', 6: 'confirm_end'}[choice]}
 
     if word == '0':
         # One level up from every sub-screen.
-        up = {'buy_qty': 'buy', 'sell_qty': 'sell', 'loan_amt': 'loan'}
-        return {'menu': up.get(menu, 'main')}
+        up = {'buy_qty': 'item', 'sell_qty': 'item', 'item': 'market',
+              'loan_amt': 'loan'}
+        back = up.get(menu, 'main')
+        if back == 'item':
+            return {'menu': 'item', 'item': nav['item']}
+        return {'menu': back}
 
-    if menu in ('buy', 'sell'):
+    if menu == 'market':
+        # Travel from here too. Arriving lands on this screen, so
+        # without T the way on would be 0 then T, every single day.
+        if word in ('t', 'travel'):
+            return {'menu': 'move'}
+        if word in ('m', 'more'):
+            return {'menu': 'market',
+                    'start': _market_page(state, nav, t)[1]}
         item = list(game.GOODS)[_number(word, 1, len(game.GOODS)) - 1]
-        if menu == 'buy' and not _max_buy(state, item):
-            # Say which limit it is -- "can't buy any" left the player to guess
-            # between an empty shelf, an empty wallet and a full bag.
-            if state['capacity'] <= sum(state['inventory'].values()):
-                raise _Stop("Your bag is full.")
-            if not state['market'][item]['stock']:
-                raise _Stop(f"{t['goods'][item]} is sold out.")
-            raise _Stop("Not enough money.")
-        if menu == 'sell' and not state['inventory'][item]:
+        return {'menu': 'item', 'item': item}
+
+    if menu == 'item':
+        item = nav['item']
+        if _number(word, 1, 2) == 1:
+            if not _max_buy(state, item):
+                # Say which limit it is -- "can't buy any" left the player
+                # to guess between an empty shelf, an empty wallet and a
+                # full bag.
+                if state['capacity'] <= sum(state['inventory'].values()):
+                    raise _Stop("Your bag is full.")
+                if not state['market'][item]['stock']:
+                    raise _Stop(f"{t['goods'][item]} is sold out.")
+                raise _Stop("Not enough money.")
+            return {'menu': 'buy_qty', 'item': item}
+        if not state['inventory'][item]:
             raise _Stop(f"You have no {t['goods'][item]}.")
-        return {'menu': f"{menu}_qty", 'item': item}
+        return {'menu': 'sell_qty', 'item': item}
 
     if menu in ('buy_qty', 'sell_qty'):
         item = nav['item']
@@ -305,7 +371,9 @@ def _step(turn, word, nav) -> dict:
             raise _Stop("That didn't work.")
         turn.note(f"{'Bought' if buying else 'Sold'} {qty} {t['goods'][item]} "
                   f"for ${qty * price}.")
-        return {'menu': 'main'}
+        # Back to the shelf, not the front door: one trade is rarely the
+        # whole errand, and the market header carries cash and bag.
+        return {'menu': 'market', 'start': 0}
 
     if menu == 'move':
         others = _others(state)
@@ -331,6 +399,7 @@ def _step(turn, word, nav) -> dict:
                 else:
                     if 'Loot full.' in turn.last_reply:
                         turn.note(t['loot_full'])
+            return {'menu': 'market', 'start': 0}
         return {'menu': 'main'}
 
     if menu == 'gear':
