@@ -8,25 +8,28 @@ from copy import deepcopy
 from hashlib import sha256
 
 GAME_ID = 'dopewars'
-VERSION = 3
+VERSION = 4
 DAYS = 30
 MAX_CASH = 1_000_000_000
 LOAN_LIMIT = 10_000
 # Cheapest first: the menu numbers goods in this order, and a trading
 # screen reads best as a price list.
-GOODS = {'ludes': 40, 'weed': 90, 'speed': 150, 'hash': 230,
-         'mushrooms': 320, 'opium': 430, 'acid': 540, 'oxy': 900,
-         'heroin': 1250, 'cocaine': 1800}
+GOODS = {'ludes': 40, 'weed': 90, 'speed': 150, 'peyote': 190,
+         'hash': 230, 'mushrooms': 320, 'mda': 380, 'opium': 430,
+         'acid': 540, 'ketamine': 620, 'meth': 750, 'oxy': 900,
+         'pcp': 1000, 'heroin': 1250, 'crystal': 1500, 'cocaine': 1800}
 PLACES = ('bronx', 'brooklyn', 'manhattan', 'queens', 'staten-island',
           'harlem', 'coney-island', 'central-park')
 PLACE_LABELS = {place: place.replace('-', ' ').title() for place in PLACES}
 # Display only: commands and saved item identifiers remain plain text.
 GOOD_ICONS = {'ludes': '💤', 'weed': '🌿', 'speed': '⚡',
-              'hash': '🟫', 'mushrooms': '🍄', 'opium': '🌺',
-              'acid': '🌀', 'oxy': '💊', 'heroin': '🥄',
+              'peyote': '🌵', 'hash': '🟫', 'mushrooms': '🍄',
+              'mda': '💜', 'opium': '🌺', 'acid': '🌀',
+              'ketamine': '🐴', 'meth': '🔥', 'oxy': '💊',
+              'pcp': '🧪', 'heroin': '🥄', 'crystal': '💎',
               'cocaine': '❄️'}
 HELP = ('TRADE\nB ITEM QTY - buy\nS ITEM QTY - sell\nM - market\nI - inventory\n'
-        'Items: ludes, weed, speed, hash, mushrooms,\nopium, acid, oxy, heroin, cocaine\n'
+        'Items: ludes, weed, speed, peyote, hash,\nmushrooms, mda, opium, acid, ketamine,\nmeth, oxy, pcp, heroin, crystal, cocaine\n'
         'Example: B weed 2\n\n'
         'TRAVEL\nT bronx / brooklyn / manhattan\nT queens / staten-island\n'
         'T harlem / coney-island / central-park\n'
@@ -51,7 +54,8 @@ def status(s):
 
 
 def inventory_view(s):
-    goods = '\n'.join(f"{good_label(k)} x{q}" for k, q in s['inventory'].items())
+    goods = '\n'.join(f"{good_label(k)} x{q}"
+                      for k, q in s['inventory'].items() if q) or 'empty'
     return (f"{status(s)}\n\nBAG\n{goods}\n\n"
             f"GEAR\nWeapon: {'yes' if s['weapon'] else 'no'}\n"
             f"Vest: {'yes' if s['armor'] else 'no'}\n\nM - market\nH - help\nX - save & exit")
@@ -64,7 +68,7 @@ def draw(s, low, high):
 
 
 def market(s):
-    """Stock four to seven goods and roll an occasional price event."""
+    """Stock five to nine goods and roll an occasional price event."""
     s['market'] = {
         item: {'price': max(1, base * draw(s, 60, 170) // 100), 'stock': 0}
         for item, base in GOODS.items()
@@ -73,7 +77,7 @@ def market(s):
     stocked = []
     # Clamped, not merely drawn: draw() is stubbed in tests and a count
     # past the catalogue pops an empty list.
-    count = min(7, max(4, draw(s, 4, 7)))
+    count = min(9, max(5, draw(s, 5, 9)))
     for _ in range(count):
         item = choices.pop(draw(s, 0, len(choices) - 1) % len(choices))
         stocked.append(item)
@@ -119,8 +123,13 @@ def view(s):
         return (f"{header}\n\n🚨 POLICE | HP {s['enemy_hp']}\n"
                 "FIGHT - attack\nRUN - try to escape\n"
                 "SURRENDER - lose goods + 25% cash\n\nX - save & exit")
-    listing = '\n'.join(f"{good_label(k)} ${v['price']} | stock {v['stock']}"
-                        for k, v in s['market'].items())
+    # Only what can be traded here: with sixteen goods, a full listing
+    # is mostly "stock 0" and pushes this reply past the size the door
+    # holds itself to. The menu's Market screen filters the same way.
+    listing = '\n'.join(
+        f"{good_label(k)} ${v['price']} | stock {v['stock']}"
+        for k, v in s['market'].items()
+        if v['stock'] or s['inventory'][k])
     options = '\nNEW 30 / NEW 365 - game length' if s['moves'] == 0 else ''
     event = ''
     if s['event']:
@@ -376,19 +385,23 @@ def migrate(state):
     if state.get('version') == 1:
         state = _migrate_v1(state)
     if state.get('version') == 2:
-        state = _migrate_v2(state)
+        state = _widen_catalogue(state, 3)
+    if state.get('version') == 3:
+        state = _widen_catalogue(state, 4)
     return state
 
 
-def _migrate_v2(state):
-    """v2 -> v3: four more goods and three more places.
+def _widen_catalogue(state, version):
+    """A schema hop that only adds goods: v2 -> v3 -> v4.
 
-    The new goods start absent from the bag and unstocked here, so an
-    in-flight run keeps its cash, debt and holdings exactly. They appear
-    on the shelf from the next market -- that is, the next time the
-    player travels."""
+    The new ones start absent from the bag and unstocked here, so an
+    in-flight run keeps its cash, debt and holdings exactly and meets
+    them on its next market -- the next time the player travels.
+
+    Both hops do the same thing, so they share the code rather than
+    each getting a near-copy that could drift."""
     s = deepcopy(state)
-    s['version'] = VERSION
+    s['version'] = version
     for item, base in GOODS.items():
         s['inventory'].setdefault(item, 0)
         s['market'].setdefault(item, {'price': base, 'stock': 0})

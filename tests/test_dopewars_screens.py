@@ -323,6 +323,11 @@ class MarketScreenTests(unittest.TestCase):
             nav = {"menu": "market", "start": menu._market_page(state, nav, t)[1]}
         return "\n".join(out)
 
+    def _rows(self, state, pg13=False):
+        """Every good's row, in catalogue order, free of paging."""
+        import dopewars_menu as menu
+        return menu._market_rows(state, self._theme(pg13))
+
     def _stocked_run(self):
         import dopewars as game
         state = game.new_game(12345)
@@ -351,15 +356,17 @@ class MarketScreenTests(unittest.TestCase):
                 self.assertIn(f"/{state['market'][item]['stock']}", screens)
 
     def test_the_shelf_number_is_the_shelf_not_the_player(self):
-        """The whole defect in one assertion: cash changed, the market did
-        not, so not one number on the screen may move."""
+        """The whole defect in one assertion: cash changed, the market
+        did not, so every row must say the same thing it did before.
+
+        Rows, not screens: a longer cash figure is a wider header, which
+        can move a row onto the next page. Where a row falls is a
+        packet-fitting detail; what it says is the bug."""
         state, _stocked = self._stocked_run()
         state["cash"] = 20
-        broke = self._pages(state)
+        broke = self._rows(state)
         state["cash"] = 999999
-        flush = self._pages(state)
-        self.assertEqual(broke.replace("$20", "$X"),
-                         flush.replace("$999999", "$X"))
+        self.assertEqual(broke, self._rows(state))
 
     # --- what the rows say -------------------------------------------------
 
@@ -397,10 +404,10 @@ class MarketScreenTests(unittest.TestCase):
         import dopewars_menu as menu
         state, _stocked = self._stocked_run()
         screen = self._market(state)
-        self.assertTrue(screen.endswith(menu._FOOTER)
-                        or screen.endswith(menu._FOOTER_MORE), screen)
-        self.assertIn("stock", menu._FOOTER)
-        self.assertIn("bag", menu._FOOTER)
+        self.assertTrue(screen.split(chr(10))[-1].startswith(menu._FOOTER_KEY),
+                        screen)
+        self.assertIn("stock", menu._FOOTER_KEY)
+        self.assertIn("bag", menu._FOOTER_KEY)
 
     def test_the_header_counts_the_bag(self):
         state, _stocked = self._stocked_run()
@@ -444,6 +451,45 @@ class MarketScreenTests(unittest.TestCase):
             if nav["start"] == 0:
                 break
         self.assertEqual(0, nav["start"], "paging never returns to the first page")
+
+    def test_the_pages_say_which_one_you_are_on(self):
+        """Sixteen goods take two or three pages, so "press M until it
+        looks familiar" is not good enough."""
+        import dopewars as game
+        import dopewars_menu as menu
+        state, _stocked = self._stocked_run()
+        for item in game.GOODS:
+            state["market"][item]["stock"] = 9
+        nav, seen, labels = {"menu": "market", "start": 0}, set(), []
+        while nav["start"] not in seen:
+            seen.add(nav["start"])
+            labels.append(self._market(state, start=nav["start"]).split(chr(10))[-1])
+            nav = {"menu": "market",
+                   "start": menu._market_page(state, nav, self._theme())[1]}
+        total = len(labels)
+        self.assertGreater(total, 1, "this state is meant to need paging")
+        for index, label in enumerate(labels, start=1):
+            with self.subTest(page=index):
+                self.assertIn(f"{index}/{total}", label)
+
+    def test_no_row_is_lost_or_repeated_across_the_pages(self):
+        """A pager that drops a good makes it untradeable, and one that
+        repeats one wastes the packet it is printed in."""
+        import dopewars as game
+        import dopewars_menu as menu
+        state, _stocked = self._stocked_run()
+        for item in game.GOODS:
+            state["market"][item]["stock"] = 9
+            state["inventory"][item] = 2
+        t = self._theme()
+        every = menu._market_rows(state, t)
+        nav, seen, shown = {"menu": "market", "start": 0}, set(), []
+        while nav["start"] not in seen:
+            seen.add(nav["start"])
+            lines, nxt = menu._market_page(state, nav, t)
+            shown.extend(lines[1:-1])
+            nav = {"menu": "market", "start": nxt}
+        self.assertEqual(every, shown)
 
     def test_the_numbers_are_the_catalogue_not_the_page(self):
         """[4] is the same good in every town and on every page, including a

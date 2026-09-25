@@ -31,7 +31,11 @@ MAX_SCREEN_BYTES = 200
 # slash was read as the bag, against a bag the status line had just
 # called full.
 _FOOTER = "$/stock +bag [0]Back"
-_FOOTER_MORE = "$/stock +bag [M]ore [0]Back"
+_FOOTER_MORE = "$/stock +bag [M]ore {page}/{pages} [0]Back"
+# What the fit rule trims either of them to, and the width the pager
+# must keep free for the wider one.
+_FOOTER_KEY = "$/stock +bag "
+_FOOTER_WIDEST = _FOOTER_MORE.format(page=9, pages=9)
 
 # Ten goods do not fit one packet, so the market pages. A page is as
 # many rows as the packet holds rather than a fixed count -- the rows
@@ -93,6 +97,30 @@ def _market_rows(state, t):
     return rows
 
 
+def _paginate(rows, head, budget):
+    """Split the rows into windows, each fitting one packet.
+
+    Whole pages rather than a rolling window: the player needs to know
+    how many there are and that pressing [M] enough times comes back
+    round, which a window computed only forwards cannot say.
+    """
+    reserve = len(_FOOTER_WIDEST.encode('utf-8')) + 1
+    room = budget - len(head.encode('utf-8')) - reserve
+    pages, index = [], 0
+    while index < len(rows):
+        first, used = index, 0
+        while index < len(rows):
+            cost = len(rows[index].encode('utf-8')) + 1
+            # Always place one row, even a freakishly wide one: a page
+            # showing nothing could never be paged past.
+            if index > first and used + cost > room:
+                break
+            used += cost
+            index += 1
+        pages.append((first, index))
+    return pages
+
+
 def _market_page(state, nav, t, budget=_PAGE_BUDGET):
     """(lines, next page's first row) for the market at nav['start']."""
     carried = sum(state['inventory'].values())
@@ -101,26 +129,16 @@ def _market_page(state, nav, t, budget=_PAGE_BUDGET):
     if not rows:
         return [head, "Nothing on the shelf, nothing in your bag.",
                 "[0]Back"], 0
+    pages = _paginate(rows, head, budget)
     start = nav.get('start', 0)
-    if not 0 <= start < len(rows):
-        start = 0
-    used = len(head.encode('utf-8'))
-    reserve = len(_FOOTER_MORE.encode('utf-8')) + 1
-    lines = [head]
-    for row in rows[start:]:
-        cost = len(row.encode('utf-8')) + 1
-        # Always place one row, even a freakishly wide one: a page that
-        # showed nothing could never be paged past.
-        if len(lines) > 1 and used + cost + reserve > budget:
-            break
-        used += cost
-        lines.append(row)
-    shown = len(lines) - 1
-    nxt = start + shown
-    if nxt >= len(rows):
-        nxt = 0
-    lines.append(_FOOTER if nxt == 0 and start == 0 else _FOOTER_MORE)
-    return lines, nxt
+    here = next((i for i, (first, _) in enumerate(pages) if first == start), 0)
+    first, past = pages[here]
+    lines = [head] + rows[first:past]
+    if len(pages) == 1:
+        lines.append(_FOOTER)
+    else:
+        lines.append(_FOOTER_MORE.format(page=here + 1, pages=len(pages)))
+    return lines, pages[(here + 1) % len(pages)][0]
 
 
 def _max_borrow(state) -> int:
@@ -223,11 +241,10 @@ def render(state, nav, t, note='') -> str:
     # so a line that grows later costs a word, not an extra packet.
     screen = "\n".join(lines)
     if len(screen.encode('utf-8')) > MAX_SCREEN_BYTES:
-        if lines[-1] == _FOOTER:
-            lines = lines[:-1] + ["[0]Back"]
-        elif lines[-1] == _FOOTER_MORE:
-            # [M]ore stays: without it the later pages are unreachable.
-            lines = lines[:-1] + ["[M]ore [0]Back"]
+        if lines[-1].startswith(_FOOTER_KEY):
+            # The legend goes; [M]ore and [0]Back stay, being the only
+            # ways off the screen.
+            lines = lines[:-1] + [lines[-1][len(_FOOTER_KEY):]]
         elif not note and lines and lines[0] == t['title']:
             lines = lines[1:]
         screen = "\n".join(lines)

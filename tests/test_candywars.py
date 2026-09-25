@@ -211,11 +211,12 @@ class MenuTests(_DbCase):
     def test_one_reply_buys_a_chosen_quantity(self):
         state = self.seed(30, cash=5000, market={'hash': {'price': 100, 'stock': 50}})
         price = state['market']['hash']['price']
-        # Market, the fourth good, Buy, three of them.
-        reply, _, _ = self.script(30, ['1 4 1 3'])
+        # Market, the fifth good, Buy, three of them.
+        reply, _, _ = self.script(30, ['1 5 1 3'])
         self.assertEqual(3, self.saved(30)['inventory']['hash'])
         self.assertEqual(5000 - 3 * price, self.saved(30)['cash'])
-        self.assertIn('Bought 3 Jelly beans', reply)
+        self.assertIn(f"Bought 3 {dopewars_theme.theme(False)['goods']['hash']}",
+                      reply)
 
     def test_m_buys_as_many_as_you_can(self):
         state = self.seed(31, cash=5000,
@@ -226,12 +227,12 @@ class MenuTests(_DbCase):
 
     def test_a_step_at_a_time_works_too(self):
         self.seed(32, cash=5000, market={'hash': {'price': 100, 'stock': 50}})
-        self.script(32, ['1', '4', '1', '2'])
+        self.script(32, ['1', '5', '1', '2'])
         self.assertEqual(2, self.saved(32)['inventory']['hash'])
 
     def test_too_many_is_refused_and_nothing_changes(self):
         before = self.seed(33, cash=5000, market={'hash': {'price': 100, 'stock': 50}})
-        reply, _, nav = self.script(33, ['1 4 1 999'])
+        reply, _, nav = self.script(33, ['1 5 1 999'])
         self.assertEqual(before['inventory'], self.saved(33)['inventory'])
         self.assertIn('Pick 1-', reply)
         self.assertEqual('buy_qty', nav['menu'])
@@ -239,9 +240,9 @@ class MenuTests(_DbCase):
     def test_zero_goes_back_a_level_and_exits_from_the_top(self):
         self.seed(34, cash=5000, market={'hash': {'price': 100, 'stock': 50}})
         # Quantity -> the good -> the market -> the main screen -> out.
-        _, leave, nav = self.script(34, ['1', '4', '1', '0'])
+        _, leave, nav = self.script(34, ['1', '5', '1', '0'])
         self.assertEqual('item', nav['menu'])
-        _, leave, nav = self.script(34, ['1', '4', '0'])
+        _, leave, nav = self.script(34, ['1', '5', '0'])
         self.assertEqual('market', nav['menu'])
         _, leave, nav = self.script(34, ['1', '0'])
         self.assertEqual('main', nav['menu'])

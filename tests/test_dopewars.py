@@ -23,8 +23,10 @@ def test_initialization():
     assert s != g.new_game(20)
     assert (s['day'], s['cash'], s['debt'], s['hp']) == (1, 2400, 1200, 100)
     assert sum(s['inventory'].values()) == 0
-    assert set(g.GOODS) == {'ludes', 'weed', 'speed', 'hash', 'mushrooms',
-                            'opium', 'acid', 'oxy', 'heroin', 'cocaine'}
+    assert set(g.GOODS) == {'ludes', 'weed', 'speed', 'peyote', 'hash',
+                            'mushrooms', 'mda', 'opium', 'acid', 'ketamine',
+                            'meth', 'oxy', 'pcp', 'heroin', 'crystal',
+                            'cocaine'}
     assert list(g.GOODS) == sorted(g.GOODS, key=g.GOODS.get)  # cheapest first
     assert g.PLACES == ('bronx', 'brooklyn', 'manhattan', 'queens',
                         'staten-island', 'harlem', 'coney-island',
@@ -37,7 +39,7 @@ def test_market_availability_events_and_prices_are_bounded():
     for seed in range(500):
         s = g.new_game(seed)
         stocked = sum(offer['stock'] > 0 for offer in s['market'].values())
-        assert 4 <= stocked <= 7
+        assert 5 <= stocked <= 9
         assert all(1 <= offer['price'] <= 10000 for offer in s['market'].values())
         if s['event']:
             events.add(s['event'].split(':', 1)[0])
@@ -46,6 +48,9 @@ def test_market_availability_events_and_prices_are_bounded():
 
 def test_buy_sell_stock_cash_and_pure_api():
     s = g.new_game(19)
+    # Stocked outright rather than hoped for: which goods a seed puts on
+    # the shelf changes whenever the catalogue does.
+    s['market']['weed'] = {'price': 137, 'stock': 20}
     before = deepcopy(s)
     price = s['market']['weed']['price']
     bought = act(s, 'buy weed 2')

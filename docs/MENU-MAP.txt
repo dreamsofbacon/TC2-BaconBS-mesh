@@ -119,12 +119,12 @@ MAIN MENU   header: Bacon BBS  (mail:N shows unread count)
     [11] Candy Wars -- buy low, sell high, 30 or 365 days. Played by menu:
         [1]Market [2]Travel [3]Bag [4]Gear [5]Sibling [6]End [0]Exit
         Market lists what is for sale here: "$price/stock", and "+n" for
-        what is already in your bag. Ten goods do not fit one packet, so
-        [M] pages; the numbers belong to the goods, not the page, so [4]
-        works even on a page it is not printed on. Picking one offers
-        [1]Buy [2]Sell.
-        A reply is read a word at a time, so "1 4 1 5" is Market -> the
-        fourth good -> Buy -> five of them, and "1 4 1 M" buys as many as
+        what is already in your bag. Sixteen goods do not fit one packet,
+        so [M] pages, and the footer says which page of how many; the
+        numbers belong to the goods, not the page, so [5] works even on a
+        page it is not printed on. Picking one offers [1]Buy [2]Sell.
+        A reply is read a word at a time, so "1 5 1 5" is Market -> the
+        fifth good -> Buy -> five of them, and "1 5 1 M" buys as many as
         you can. T travels, from here or from the main screen, and
         arriving somewhere shows you what it sells.
         The Hall Monitor sometimes stops you: [1]Talk your way out
