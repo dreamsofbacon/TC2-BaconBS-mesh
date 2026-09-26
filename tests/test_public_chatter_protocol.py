@@ -23,6 +23,13 @@ class PublicChatterProtocolTests(unittest.TestCase):
         self.interface = SimpleNamespace(
             bbs_nodes=[], max_text_bytes=80, protocol_name="Meshtastic"
         )
+        # These exercise the chatter wire format, much of it over a radio,
+        # which carries chatter only when [public_chatter] sync_over_radio
+        # is on -- see test_public_chatter_radio.py for that switch.
+        over_radio = mock.patch.object(
+            db_operations, "public_chatter_syncs_on", return_value=True)
+        over_radio.start()
+        self.addCleanup(over_radio.stop)
 
     def tearDown(self):
         message_processing.set_public_chatter_cross_link_relay(None)
@@ -86,6 +93,7 @@ class PublicChatterProtocolTests(unittest.TestCase):
         row = self.record()
         frames = []
         self.interface.protocol_name = "MQTT:test"
+        self.interface.is_low_latency = True
         self.interface.max_text_bytes = 32768
         with mock.patch.object(db_operations, "peer_supports", return_value=True), mock.patch.object(
             utils, "_send_one_sync", side_effect=lambda frame, destination, *_args, **_kwargs: frames.append((frame, destination))
@@ -108,6 +116,7 @@ class PublicChatterProtocolTests(unittest.TestCase):
         conn.execute("DELETE FROM public_chatter")
         conn.commit()
         self.interface.protocol_name = "MQTT:test"
+        self.interface.is_low_latency = True
         relayed = []
         message_processing.set_public_chatter_cross_link_relay(
             lambda stored, origin: relayed.append((stored[0], origin)))

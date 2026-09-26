@@ -3250,6 +3250,24 @@ def is_public_chatter_sync_enabled() -> bool:
     return _config_bool('public_chatter', 'sync', True)
 
 
+def public_chatter_syncs_on(interface) -> bool:
+    """Whether chatter travels on this particular link.
+
+    Over MQTT it costs nothing that matters, so it follows `sync` alone. Over
+    a radio every observation is airtime spent re-sending what the peer
+    could often hear for itself, and a chatter manifest is the largest there
+    is -- so radio links carry it only when `[public_chatter]
+    sync_over_radio = true`, for the node that wants chatter from far
+    beyond its own range.
+    """
+    if not is_public_chatter_sync_enabled():
+        return False
+    if interface is None or getattr(interface, 'is_low_latency', False):
+        return True
+    from utils import _config_bool
+    return _config_bool('public_chatter', 'sync_over_radio', False)
+
+
 def public_chatter_disabled_hash() -> str:
     """The public_chatter hash a node advertises when it opts out.
 
@@ -4223,7 +4241,11 @@ def get_mismatched_peer_nodes(expected_peer_nodes=None) -> set:
         # them; it has opted out. Comparing anyway reports a gap that can
         # never close, since the peer drops those frames on arrival.
         compare_zork = zork_save_sync_enabled and not peer_opts_out_of_zork_saves(phz)
-        compare_chatter = peer_supports(peer, 'pchat') and len(row) > 16 and int(row[15]) >= 0
+        # Either side advertising the opt-out sentinel means chatter is not
+        # exchanged at all; comparing anyway found a "gap" every cycle.
+        compare_chatter = (peer_supports(peer, 'pchat') and len(row) > 16 and int(row[15]) >= 0
+                           and not peer_opts_out_of_public_chatter(row[16])
+                           and not peer_opts_out_of_public_chatter(local.get('public_chatter_hash')))
         compare_chatter_hash = compare_chatter and peer_supports(peer, 'pch2')
         if (
             pb != int(local.get('bulletins', 0))
@@ -4280,7 +4302,11 @@ def get_mismatched_peer_scopes(expected_peer_nodes=None) -> dict:
             scopes.append('profiles')
         if ps != int(local.get('game_scores', 0)) or (phs and phs != str(local.get('game_scores_hash', ''))):
             scopes.append('game_scores')
-        compare_chatter = peer_supports(peer, 'pchat') and len(row) > 16 and int(row[15]) >= 0
+        # Either side advertising the opt-out sentinel means chatter is not
+        # exchanged at all; comparing anyway found a "gap" every cycle.
+        compare_chatter = (peer_supports(peer, 'pchat') and len(row) > 16 and int(row[15]) >= 0
+                           and not peer_opts_out_of_public_chatter(row[16])
+                           and not peer_opts_out_of_public_chatter(local.get('public_chatter_hash')))
         compare_chatter_hash = compare_chatter and peer_supports(peer, 'pch2')
         if (compare_chatter
             and (int(row[15]) != int(local.get('public_chatter', 0))

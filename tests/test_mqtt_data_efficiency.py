@@ -207,7 +207,7 @@ class RepairBackoffTests(unittest.TestCase):
     BASE = 15
 
     def setUp(self):
-        self.iface = types.SimpleNamespace(bbs_nodes=[], nodes={})
+        self.iface = types.SimpleNamespace(bbs_nodes=[], nodes={}, is_low_latency=True)
         self.requested = []
         self.clock = [10_000.0]
         mp._reset_repair_backoff()

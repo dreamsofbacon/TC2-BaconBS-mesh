@@ -1611,8 +1611,10 @@ def send_channel_comment_to_bbs_nodes(channel_key, sender_short_name, comment_da
 def send_public_chatter_to_bbs_nodes(row, bbs_nodes, interface):
     """Send one immutable chatter observation only to capable peers."""
     try:
-        from db_operations import peer_supports
+        from db_operations import peer_supports, public_chatter_syncs_on
     except Exception:
+        return
+    if not public_chatter_syncs_on(interface):
         return
     capable_peers = [node_id for node_id in bbs_nodes if peer_supports(node_id, 'pchat')]
     if not capable_peers or not row:
@@ -1684,9 +1686,29 @@ def send_sync_state_to_bbs_nodes(counts, bbs_nodes, interface):
             except Exception:
                 logging.debug("per-peer SYNCSTATE failed for %s", node_id, exc_info=True)
                 peer_counts = counts
-            _send_one_sync(_sync_state_frame(peer_counts), node_id, interface)
+            _send_one_sync(_sync_state_frame(_counts_for_link(peer_counts, interface)),
+                           node_id, interface)
         return
-    _send_one_sync_to_all(_sync_state_frame(counts), bbs_nodes, interface)
+    _send_one_sync_to_all(_sync_state_frame(_counts_for_link(counts, interface)),
+                          bbs_nodes, interface)
+
+
+def _counts_for_link(counts, interface):
+    """Say "I do not take part" in chatter on a link that does not carry it.
+
+    Otherwise a radio peer sees our chatter count, finds a gap, and asks for
+    the largest manifest there is over the air -- the traffic that not
+    carrying chatter on this link is meant to avoid.
+    """
+    try:
+        import db_operations
+        if db_operations.public_chatter_syncs_on(interface):
+            return counts
+        return dict(counts, public_chatter=0,
+                    public_chatter_hash=db_operations.public_chatter_disabled_hash())
+    except Exception:
+        logging.debug("chatter link check failed", exc_info=True)
+        return counts
 
 
 def _sync_state_frame(counts) -> str:

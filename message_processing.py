@@ -1188,6 +1188,8 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
     by_peer = get_mismatched_peer_scopes({sender_node_id})
     scopes = by_peer.get(str(sender_node_id), [])
     _note_scopes_converged(sender_node_id, scopes)
+    if 'public_chatter' in scopes and not _scope_is_wanted('public_chatter', interface):
+        scopes = [s for s in scopes if s != 'public_chatter']
     if not scopes:
         return
     logging.info(f"SYNCSTATE-driven mismatch eval for {sender_node_id}: scopes={scopes}")
@@ -1261,7 +1263,7 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
         _note_repair_requested(sender_node_id, scope, interface, now)
 
 
-def _scope_is_wanted(scope: str) -> bool:
+def _scope_is_wanted(scope: str, interface=None) -> bool:
     """Whether this node takes part in a scope at all.
 
     Checked on the way IN as well as out. Declining to ask for a scope is
@@ -1273,8 +1275,8 @@ def _scope_is_wanted(scope: str) -> bool:
     if scope != "public_chatter":
         return True
     try:
-        from db_operations import is_public_chatter_sync_enabled
-        return is_public_chatter_sync_enabled()
+        from db_operations import public_chatter_syncs_on
+        return public_chatter_syncs_on(interface)
     except Exception:
         logging.debug("could not read the chatter sync setting", exc_info=True)
         return True
@@ -1288,9 +1290,9 @@ def _queue_striped_reconcile(scope: str, sender_node_id: str, manifest: dict, in
     peer responded before the window closed, behaviour is identical to the original
     single-peer reconcile.
     """
-    if not _scope_is_wanted(scope):
+    if not _scope_is_wanted(scope, interface):
         logging.info("Ignoring a %s manifest from %s: this node does not sync "
-                     "that scope", scope, sender_node_id)
+                     "that scope on this link", scope, sender_node_id)
         return
     # Zero collection window → reconcile synchronously (no batching). Keeps the
     # single-peer path deterministic for tests and lets operators opt out of the
@@ -2631,6 +2633,13 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                 scopes = list(scopes)
                 scopes.insert(idx + 1, 'channel_comments')
             for scope in scopes:
+                if not _scope_is_wanted(scope, interface):
+                    # A peer on older code may still ask; answering would
+                    # send the largest manifest there is over a link that
+                    # does not carry chatter.
+                    logging.info("Not sending a %s manifest to %s: not synced on "
+                                 "this link", scope, sender_node_id)
+                    continue
                 if scope in _SUPPORTED_HASH_SCOPES:
                     _send_hash_manifest_to_peer(scope, sender_node_id, interface)
         elif message.startswith("HASHREC|"):
