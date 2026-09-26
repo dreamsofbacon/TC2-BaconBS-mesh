@@ -1106,7 +1106,7 @@ REPAIR_BACKOFF_CAP_SECONDS = 1800.0
 # largest there is; repairing it more often than this buys nothing.
 PUBLIC_CHATTER_REPAIR_FLOOR_SECONDS = 600.0
 
-# (peer, scope) -> {'delay': seconds, 'next_at': epoch, 'exchanges': n}
+# (peer, scope) -> {'delay', 'base', 'requested_at', 'next_at', 'exchanges'}
 _repair_backoff: dict = {}
 # (peer, scope) -> keys the last reconcile found different, to tell a repair
 # that is working through a backlog from one that finds the same keys again.
@@ -1139,11 +1139,13 @@ def _note_repair_requested(peer: str, scope: str, interface, now: float) -> None
     else:
         delay = min(max(entry['delay'] * 2, base), REPAIR_BACKOFF_CAP_SECONDS)
         exchanges = entry['exchanges'] + 1
+    if entry is not None and entry['exchanges']:
         logging.info(
             f"Repair of {key[1]} with {peer} has not converged after {entry['exchanges']} "
             f"exchange(s); next attempt in {delay:.0f}s"
         )
-    _repair_backoff[key] = {'delay': delay, 'next_at': now + delay, 'exchanges': exchanges}
+    _repair_backoff[key] = {'delay': delay, 'base': base, 'requested_at': now,
+                            'next_at': now + delay, 'exchanges': exchanges}
 
 
 def _note_scopes_converged(peer: str, mismatched_scopes) -> None:
@@ -1162,6 +1164,10 @@ def _note_reconcile_keys(peer: str, scope: str, keys) -> None:
     That is a backlog being worked through, a pass at a time, and slowing it
     down would only delay convergence. The same keys again is a repair that
     is not landing, and the backoff is left to grow.
+
+    Reset to the base interval, not removed: chatter finds a new key or two
+    on nearly every pass, and removing the entry let the next request go
+    out on the next SYNCSTATE -- every 30 seconds on the live fleet.
     """
     # Keyed by the scope itself: channels and channel_comments reconcile
     # separately, and sharing one entry would make each look new to the other.
@@ -1171,7 +1177,11 @@ def _note_reconcile_keys(peer: str, scope: str, keys) -> None:
     _repair_progress[progress_key] = current
     # A first pass has nothing to be compared against, so it proves nothing.
     if previous is not None and current - previous:
-        _repair_backoff.pop((str(peer), _repair_backoff_scope(scope)), None)
+        entry = _repair_backoff.get((str(peer), _repair_backoff_scope(scope)))
+        if entry is not None:
+            entry['delay'] = 0.0
+            entry['exchanges'] = 0
+            entry['next_at'] = entry['requested_at'] + entry['base']
 
 
 def _reset_repair_backoff() -> None:

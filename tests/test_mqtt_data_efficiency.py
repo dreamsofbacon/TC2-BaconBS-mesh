@@ -301,6 +301,25 @@ class RepairBackoffTests(unittest.TestCase):
                            after=mp.PUBLIC_CHATTER_REPAIR_FLOOR_SECONDS - 1), [])
         self.assertIn("public_chatter", self.syncstate(["public_chatter"], after=1))
 
+    def test_new_chatter_every_pass_does_not_undo_the_floor(self):
+        """The live failure after deploy: each chatter reconcile found a new
+        record or two, the reset removed the backoff, and forgecam asked for
+        the manifest again on the next SYNCSTATE -- 14 times in an hour."""
+        sent_at = []
+        for step in range(120):  # one hour of SYNCSTATEs, 30 seconds apart
+            if self.syncstate(["public_chatter"], after=30 if step else 0):
+                sent_at.append(self.clock[0])
+                mp._note_reconcile_keys(PEER, "public_chatter", {f"pch:{step}"})
+        gaps = [b - a for a, b in zip(sent_at, sent_at[1:])]
+        self.assertTrue(gaps and min(gaps) >= mp.PUBLIC_CHATTER_REPAIR_FLOOR_SECONDS, gaps)
+
+    def test_progress_still_brings_a_long_wait_back_to_base(self):
+        for _ in range(6):
+            self.syncstate(["mail"], after=mp.REPAIR_BACKOFF_CAP_SECONDS)
+            mp._note_reconcile_keys(PEER, "mail", {"same"})
+        mp._note_reconcile_keys(PEER, "mail", {"new"})
+        self.assertEqual(self.syncstate(["mail"], after=self.BASE), ["mail"])
+
     def test_backoff_is_per_peer(self):
         self.syncstate(["mail"])
         self.syncstate(["mail"], after=self.BASE)
