@@ -8,7 +8,12 @@ completely unchanged -- this module only has to look like a radio interface.
 
 Sync frames use ``{topic_prefix}/bbs``. Every subscriber on that topic sees
 every message and filters locally by the packet's ``to`` field, exactly like
-a real LoRa mesh (an inherently broadcast RF medium). Retained peer status
+a real LoRa mesh (an inherently broadcast RF medium). A frame for one peer
+that has advertised the ``mqdm`` capability goes to
+``{topic_prefix}/bbs/to/{its label}`` instead, which only that peer
+subscribes to: on a shared topic every node downloads every other pair's
+traffic, and on a busy prefix that was most of what a node received.
+Retained peer status
 and client-roster summaries use sibling topics under
 ``{topic_prefix}/{local_id}``; each bridge subscribes to those summaries for
 peer discovery and known-client sharing. A ``topic_prefix`` scopes one bridge
@@ -49,6 +54,7 @@ import os
 import queue
 import re
 import threading
+import time
 from types import SimpleNamespace
 from typing import Any, Optional
 
@@ -62,6 +68,19 @@ from pubsub import pub
 # traffic -- this alone satisfies the "turbo mode" chunking requirement,
 # no new chunking code needed.
 MQTT_MAX_TEXT_BYTES = 32768
+
+# Retained telemetry is republished only when it changes, plus once per this
+# many seconds so a broker that lost its retained store (a restart) is
+# refilled and peers' discovery timestamps stay reasonably fresh. It used to
+# go out every diagnostics cycle -- every 30 seconds, every 5 during a sync.
+PUBLISH_HEARTBEAT_SECONDS = 600.0
+
+# Fields that change every cycle without saying anything new. Left out of
+# the did-it-change comparison, still sent whenever the payload is.
+_VOLATILE_PUBLISH_FIELDS = ("updated_at", "last_seen")
+
+# Wire capability a peer advertises when it listens on its own direct topic.
+DIRECT_TOPIC_CAPABILITY = "mqdm"
 
 _BROADCAST_LABELS = ("", "*", "0", "255")
 
@@ -127,6 +146,18 @@ def _mqtt_node_id(topic_prefix: str, label: str) -> str:
     into its own bucket rather than falling through to MeshCore's default.
     """
     return f"mqtt:{topic_prefix}:{label}"
+
+
+def _publish_comparison_key(payload: Any) -> str:
+    """What a retained payload says, less the fields that change every cycle."""
+    def strip(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {k: strip(v) for k, v in value.items()
+                    if k not in _VOLATILE_PUBLISH_FIELDS}
+        if isinstance(value, list):
+            return [strip(v) for v in value]
+        return value
+    return json.dumps(strip(payload), sort_keys=True, separators=(",", ":"), default=str)
 
 
 def _fnv1a32(text: str) -> int:
@@ -260,11 +291,14 @@ class MqttInterface:
         # recent nodes" would shrink nothing that a subscriber actually
         # sees.
         self._published_client_topics: set = set()
+        # topic -> (comparison key, published at). See _publish_json.
+        self._last_published: dict[str, tuple[str, float]] = {}
         self.publish_prefix = (
             sanitize_topic_segment(publish_prefix, allow_slash=True) or self.topic_prefix
         )
 
         self._topic = f"{self.topic_prefix}/bbs"
+        self._direct_topic = self._direct_topic_for(self.local_id)
         self._closed = False
         self._connected_event = threading.Event()
         self._connect_error: Optional[BaseException] = None
@@ -382,6 +416,10 @@ class MqttInterface:
         del userdata, flags, properties
         if reason_code == 0:
             client.subscribe(self._topic, qos=1)
+            client.subscribe(self._direct_topic, qos=1)
+            # A reconnect may be to a broker that lost its retained store, so
+            # the next cycle republishes everything rather than only changes.
+            self._last_published.clear()
             for topic in self._status_discovery_topics():
                 client.subscribe(topic, qos=0)
             for topic in self._client_discovery_topics():
@@ -458,7 +496,7 @@ class MqttInterface:
         # no 'from' field and would fall out of the parser below anyway, but
         # depending on that would make the sync path quietly sensitive to
         # anything else we ever subscribe to.
-        if msg.topic != self._topic:
+        if msg.topic not in (self._topic, self._direct_topic):
             if str(msg.topic).endswith("/clients"):
                 self._record_peer_clients(msg.topic, data)
             else:
@@ -469,6 +507,13 @@ class MqttInterface:
             # No sender label, or our own publish echoed back to us.
             return
         to_label = _clean_label(data.get("to"))
+        if to_label not in _BROADCAST_LABELS and to_label != self.local_id:
+            # Addressed to some other node sharing this topic. This used to be
+            # dispatched on the belief that on_receive filters by `to`; it
+            # does not, so a node answered requests meant for its neighbours
+            # -- two nodes each sending a whole manifest to a peer that had
+            # asked somebody else, every repair cycle.
+            return
         text = str(data.get("text", ""))
 
         sender_id = _mqtt_node_id(self.topic_prefix, from_label)
@@ -477,14 +522,8 @@ class MqttInterface:
 
         if to_label in _BROADCAST_LABELS:
             to_num = 0
-        elif to_label == self.local_id:
-            to_num = self.myInfo.my_node_num
         else:
-            # Addressed to some other node sharing this topic -- still
-            # dispatched (matching the "everyone sees everything, filter
-            # locally" broadcast-medium design); on_receive already
-            # discriminates by the `to` field for every other transport.
-            to_num = _node_num(_mqtt_node_id(self.topic_prefix, to_label))
+            to_num = self.myInfo.my_node_num
 
         packet = {
             "decoded": {
@@ -584,6 +623,25 @@ class MqttInterface:
                 return label
         return None
 
+    def _direct_topic_for(self, label: str) -> str:
+        return f"{self._topic}/to/{sanitize_topic_segment(label)}"
+
+    def _peer_listens_direct(self, label: str) -> bool:
+        """Whether this peer has said it reads its own direct topic.
+
+        Only a peer's SYNCSTATE can say so, so the first frames to a new
+        peer, and every frame to one on older code, keep using the shared
+        topic -- which is what that peer is listening on.
+        """
+        try:
+            from utils import peers_all_support
+            return peers_all_support(
+                [_mqtt_node_id(self.topic_prefix, label)], DIRECT_TOPIC_CAPABILITY)
+        except Exception:
+            logging.debug("MQTT[%s]: capability lookup failed for %s",
+                          self.link_name, label, exc_info=True)
+            return False
+
     def sendText(
         self,
         text: str,
@@ -599,8 +657,11 @@ class MqttInterface:
             )
         is_broadcast = destinationId in (0, 255, "0", "255", None)
         to_label = "*" if is_broadcast else self._label_for_destination(destinationId)
+        topic = self._topic
+        if not is_broadcast and self._peer_listens_direct(to_label):
+            topic = self._direct_topic_for(to_label)
         payload = json.dumps({"from": self.local_id, "to": to_label, "text": text})
-        info = self._client.publish(self._topic, payload, qos=1, retain=False)
+        info = self._client.publish(topic, payload, qos=1, retain=False)
         try:
             info.wait_for_publish(timeout=self.send_timeout_seconds)
         except Exception as exc:
@@ -644,13 +705,27 @@ class MqttInterface:
         Published data is a side effect of the periodic diagnostics cycle;
         a broker refusing it (ACL) or a dropped connection must never
         disturb that cycle or the sync engine sharing this connection.
+
+        A retained message the broker already holds is not sent again until
+        it changes or PUBLISH_HEARTBEAT_SECONDS pass: a subscriber reads the
+        retained copy either way, so repeating it only costs data.
         """
         if self._closed:
             return False
+        now = time.monotonic()
+        key = None
+        if retain:
+            key = _publish_comparison_key(payload)
+            last = self._last_published.get(topic)
+            if (last is not None and last[0] == key
+                    and now - last[1] < PUBLISH_HEARTBEAT_SECONDS):
+                return True
         try:
             self._client.publish(
                 topic, json.dumps(payload, separators=(",", ":")), qos=0, retain=retain,
             )
+            if key is not None:
+                self._last_published[topic] = (key, now)
             return True
         except Exception:
             logging.debug(
@@ -718,6 +793,7 @@ class MqttInterface:
             self._publish_json(topic, client)
 
         for stale in self._published_client_topics - current:
+            self._last_published.pop(stale, None)
             try:
                 self._client.publish(stale, "", qos=0, retain=True)
             except Exception:

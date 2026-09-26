@@ -74,3 +74,18 @@ for _var, _filename in _SANDBOXED_PATHS.items():
     os.environ[_var] = os.path.join(_SANDBOX, _filename)
 
 TEST_SANDBOX = _SANDBOX
+
+
+import sys
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _fresh_repair_backoff():
+    """A repair backoff is per-process memory, and one test's must not hold
+    back the next test's HASHREQ. Only touched if something imported it."""
+    module = sys.modules.get("message_processing")
+    if module is not None and hasattr(module, "_reset_repair_backoff"):
+        module._reset_repair_backoff()
+    yield

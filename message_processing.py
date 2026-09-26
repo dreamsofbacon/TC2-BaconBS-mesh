@@ -1095,6 +1095,91 @@ def _prune_recent_syncstate_repairs(interface=None) -> None:
         _recent_syncstate_repairs.pop(key, None)
 
 
+# A scope that is still out of step after a manifest exchange waits twice as
+# long before the next one, up to this. Without it a scope that cannot
+# converge -- a peer on older code, a record identity bug -- re-sent its whole
+# manifest every repair cycle for ever: every 15 seconds on MQTT, where one
+# public_chatter manifest is ~165 KB.
+REPAIR_BACKOFF_CAP_SECONDS = 1800.0
+# public_chatter's hash moves on its own as rows expire, so it is rarely in
+# step, and new chatter already travels live as PCHAT. Its manifest is the
+# largest there is; repairing it more often than this buys nothing.
+PUBLIC_CHATTER_REPAIR_FLOOR_SECONDS = 600.0
+
+# (peer, scope) -> {'delay': seconds, 'next_at': epoch, 'exchanges': n}
+_repair_backoff: dict = {}
+# (peer, scope) -> keys the last reconcile found different, to tell a repair
+# that is working through a backlog from one that finds the same keys again.
+_repair_progress: dict = {}
+
+
+def _repair_backoff_scope(scope: str) -> str:
+    # A channels HASHREQ fetches channel_comments too; they back off together.
+    return 'channels' if scope == 'channel_comments' else scope
+
+
+def _repair_base_delay(scope: str, interface) -> float:
+    base = float(get_repair_cycle_seconds(interface))
+    if scope == 'public_chatter':
+        return max(base, PUBLIC_CHATTER_REPAIR_FLOOR_SECONDS)
+    return base
+
+
+def _repair_backoff_allows(peer: str, scope: str, now: float) -> bool:
+    entry = _repair_backoff.get((str(peer), scope))
+    return entry is None or now >= entry['next_at']
+
+
+def _note_repair_requested(peer: str, scope: str, interface, now: float) -> None:
+    key = (str(peer), _repair_backoff_scope(scope))
+    entry = _repair_backoff.get(key)
+    base = _repair_base_delay(key[1], interface)
+    if entry is None:
+        delay, exchanges = base, 1
+    else:
+        delay = min(max(entry['delay'] * 2, base), REPAIR_BACKOFF_CAP_SECONDS)
+        exchanges = entry['exchanges'] + 1
+        logging.info(
+            f"Repair of {key[1]} with {peer} has not converged after {entry['exchanges']} "
+            f"exchange(s); next attempt in {delay:.0f}s"
+        )
+    _repair_backoff[key] = {'delay': delay, 'next_at': now + delay, 'exchanges': exchanges}
+
+
+def _note_scopes_converged(peer: str, mismatched_scopes) -> None:
+    """Forget the backoff of every scope that is no longer out of step."""
+    still = {_repair_backoff_scope(s) for s in mismatched_scopes}
+    for key in [k for k in _repair_backoff if k[0] == str(peer) and k[1] not in still]:
+        _repair_backoff.pop(key, None)
+    for key in [k for k in _repair_progress
+                if k[0] == str(peer) and _repair_backoff_scope(k[1]) not in still]:
+        _repair_progress.pop(key, None)
+
+
+def _note_reconcile_keys(peer: str, scope: str, keys) -> None:
+    """Reset the backoff when a reconcile found keys the last one did not.
+
+    That is a backlog being worked through, a pass at a time, and slowing it
+    down would only delay convergence. The same keys again is a repair that
+    is not landing, and the backoff is left to grow.
+    """
+    # Keyed by the scope itself: channels and channel_comments reconcile
+    # separately, and sharing one entry would make each look new to the other.
+    progress_key = (str(peer), scope)
+    current = frozenset(str(k) for k in keys)
+    previous = _repair_progress.get(progress_key)
+    _repair_progress[progress_key] = current
+    # A first pass has nothing to be compared against, so it proves nothing.
+    if previous is not None and current - previous:
+        _repair_backoff.pop((str(peer), _repair_backoff_scope(scope)), None)
+
+
+def _reset_repair_backoff() -> None:
+    """Test hook."""
+    _repair_backoff.clear()
+    _repair_progress.clear()
+
+
 def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
     # Don't pile hash-repair on top of an active full sync — it overwhelms LoRa.
     if get_sync_progress().get('in_progress'):
@@ -1102,12 +1187,20 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
 
     by_peer = get_mismatched_peer_scopes({sender_node_id})
     scopes = by_peer.get(str(sender_node_id), [])
+    _note_scopes_converged(sender_node_id, scopes)
     if not scopes:
         return
     logging.info(f"SYNCSTATE-driven mismatch eval for {sender_node_id}: scopes={scopes}")
+    now = time.time()
+    backed_off = [s for s in scopes
+                  if not _repair_backoff_allows(sender_node_id, _repair_backoff_scope(s), now)]
+    if backed_off:
+        scopes = [s for s in scopes if s not in backed_off]
+        logging.debug(f"Repair backoff holds {backed_off} for {sender_node_id}")
+        if not scopes:
+            return
 
     _prune_recent_syncstate_repairs(interface)
-    now = time.time()
     repair_sig = (str(sender_node_id), tuple(sorted(scopes)))
     last_sent = _recent_syncstate_repairs.get(repair_sig)
     if last_sent is not None and (now - float(last_sent)) < get_repair_cycle_seconds(interface):
@@ -1165,6 +1258,7 @@ def _request_targeted_repair_if_needed(sender_node_id: str, interface) -> None:
     for scope in requested_scopes:
         send_hash_request_to_bbs_nodes([sender_node_id], interface, scope=scope)
         _mark_hashreq_pending(sender_node_id, scope)
+        _note_repair_requested(sender_node_id, scope, interface, now)
 
 
 def _scope_is_wanted(scope: str) -> bool:
@@ -1264,6 +1358,7 @@ def _do_striped_reconcile(scope: str, peer_manifests: dict, interface) -> None:
         all_need_from_remote |= need
         differing_shared = {k for k in (remote_keys & local_keys) if local.get(k) != remote.get(k)}
         push_keys_set |= (local_keys - remote_keys) | differing_shared
+        _note_reconcile_keys(peer_id, scope, need | (local_keys - remote_keys))
 
     total_pull = len(all_need_from_remote)
     logging.info(
@@ -1379,6 +1474,7 @@ def _reconcile_remote_manifest(scope: str, sender_node_id: str, interface) -> No
     # path just round-trips the peer's truncated content back to us.
     differing_shared = {k for k in (remote_keys & local_keys) if local.get(k) != remote.get(k)}
     push_keys = sorted((local_keys - remote_keys) | differing_shared)
+    _note_reconcile_keys(sender_node_id, scope, need_from_remote | set(push_keys))
     logging.info(
         f"Reconciling manifest scope={scope} peer={sender_node_id} "
         f"remote_keys={len(remote_keys)} local_keys={len(local_keys)} "
