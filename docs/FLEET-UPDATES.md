@@ -208,6 +208,29 @@ python scripts/fleet_sign.py verify <blob>
 
 ---
 
+## The BBS name and greeting
+
+The same key can sign the fleet's name and main greeting, so every node
+shows the same welcome without each one naming a trusted editor in
+`[bbs] accept_identity_from`:
+
+```sh
+python scripts/fleet_sign.py identity --welcome-file greeting.txt
+python scripts/fleet_sign.py identity --name "Bacon BBS" --welcome-file greeting.txt
+```
+
+Paste the output into **Settings → Fleet** on any one node. It is verified
+exactly like an update, adopted there, and passed on; every node that trusts
+the key adopts it, and nodes that were offline get it on the next 15-minute
+sweep. Either value may be left out to keep the current one. A node's own
+`[bbs] node_welcome` line is never part of it.
+
+A later local edit on the Welcome page still changes that node, and still
+reaches only the peers that list it in `accept_identity_from`. To change the
+greeting everywhere, sign a new one.
+
+---
+
 ## When something goes wrong
 
 **A node reverted itself.** `update_state.json` in the repo says which

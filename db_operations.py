@@ -9351,6 +9351,72 @@ def _ensure_fleet_identity_table(c) -> None:
                 );''')
 
 
+def _ensure_signed_identity_table(c) -> None:
+    # Only ever written after a signature check, like fleet_target.
+    c.execute('''CREATE TABLE IF NOT EXISTS fleet_identity_signed (
+                    group_name TEXT PRIMARY KEY,
+                    instruction TEXT NOT NULL,
+                    issued_at TEXT NOT NULL,
+                    signer_key_id TEXT NOT NULL DEFAULT '',
+                    accepted_at TEXT NOT NULL
+                );''')
+
+
+def get_signed_fleet_identity(group: str):
+    """The signed identity this node adopted for ``group``: (blob, issued_at)."""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        _ensure_signed_identity_table(c)
+        row = c.execute(
+            "SELECT instruction, issued_at FROM fleet_identity_signed WHERE group_name = ?",
+            (str(group or ''),)).fetchone()
+        if row:
+            return (str(row[0]), str(row[1]))
+    except Exception:
+        logging.debug("could not read signed fleet identity", exc_info=True)
+    return (None, '')
+
+
+def adopt_signed_fleet_identity(payload: dict, instruction: str) -> bool:
+    """Record a VERIFIED identity and make its values this node's.
+
+    The caller has checked the signature; this only refuses one that is not
+    newer than the last adopted. No accept list: the fleet key is the
+    authority, which is the point of signing it. Stamped now rather than
+    with the signing time, so it outranks any unsigned value already held
+    and the ordinary BBSID sweep carries it on as the newest.
+    """
+    group = str(payload.get('g') or '').strip()
+    issued = str(payload.get('t') or '').strip()
+    values = payload.get('i') or {}
+    if not group or not issued or not isinstance(values, dict):
+        return False
+    _, previous = get_signed_fleet_identity(group)
+    if previous and issued <= previous:
+        return False
+    now = datetime.now(timezone.utc).isoformat(timespec='microseconds')
+    conn = get_db_connection()
+    c = conn.cursor()
+    _ensure_signed_identity_table(c)
+    c.execute(
+        '''INSERT INTO fleet_identity_signed
+               (group_name, instruction, issued_at, signer_key_id, accepted_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(group_name) DO UPDATE SET
+             instruction = excluded.instruction,
+             issued_at = excluded.issued_at,
+             signer_key_id = excluded.signer_key_id,
+             accepted_at = excluded.accepted_at''',
+        (group, str(instruction), issued, str(payload.get('k') or ''), now))
+    conn.commit()
+    source = f"fleet:{payload.get('k') or ''}"
+    for key in FLEET_IDENTITY_KEYS:
+        if key in values:
+            set_fleet_identity(key, values[key], now, source)
+    return True
+
+
 def get_fleet_identity(key: str):
     """The stored fleet value and its stamp, or (None, '') if unset."""
     if key not in FLEET_IDENTITY_KEYS:
@@ -9461,7 +9527,33 @@ def sync_fleet_identity_to_nodes(bbs_nodes: list, interface, force: bool = False
             if send_fleet_identity_to_bbs_nodes(key, value, stamp, [peer_id], interface):
                 _advertised_identity[cache_key] = stamp
                 sent += 1
+
+    # The signed identity too, on the same sweep: it is what nodes without an
+    # accept list adopt, and a node that was offline when it was pasted
+    # would otherwise never hear it.
+    from utils import send_fleet_target_to_bbs_nodes
+    for instruction, issued in _signed_identities():
+        for peer_id in bbs_nodes:
+            cache_key = (str(peer_id), 'signed')
+            if (not force and str(peer_id) not in sweeping
+                    and _advertised_identity.get(cache_key) == issued):
+                continue
+            if send_fleet_target_to_bbs_nodes(instruction, [peer_id], interface):
+                _advertised_identity[cache_key] = issued
+                sent += 1
     return sent
+
+
+def _signed_identities() -> list:
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        _ensure_signed_identity_table(c)
+        return [(str(r[0]), str(r[1])) for r in c.execute(
+            "SELECT instruction, issued_at FROM fleet_identity_signed")]
+    except Exception:
+        logging.debug("could not list signed fleet identities", exc_info=True)
+        return []
 
 
 # Per peer, not one global: sync_node_roles_to_nodes runs once per

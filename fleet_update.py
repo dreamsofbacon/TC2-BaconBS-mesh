@@ -45,6 +45,16 @@ _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 # Payload keys are single letters because this has to fit a LoRa packet.
 _REQUIRED_FIELDS = ("g", "c", "v", "t", "n", "k")
 
+# A signed BBS identity: the fleet's name and greeting, set once by whoever
+# holds the fleet key and adopted by every node that trusts it -- no
+# per-node accept list. "i" carries the values; there is no commit.
+_IDENTITY_REQUIRED_FIELDS = ("g", "t", "n", "k", "i")
+IDENTITY_KEYS = ("name", "welcome")
+
+# What a node will reassemble from FLEETVER chunks. A signer that produces
+# anything longer makes a blob no node can receive, so it is refused there.
+MAX_INSTRUCTION_CHARS = 4096
+
 
 class FleetVerificationError(Exception):
     """A signed instruction was rejected. The message says why.
@@ -114,7 +124,7 @@ def encode_instruction(payload: dict, signature: bytes) -> str:
     return f"{_b64(canonical_payload(payload))}.{_b64(signature)}"
 
 
-def decode_instruction(blob: str) -> tuple:
+def decode_instruction(blob: str, required_fields=_REQUIRED_FIELDS) -> tuple:
     """Split a blob into (payload dict, signature bytes) WITHOUT trusting it.
 
     Nothing here has been verified yet. The caller must pass the result to
@@ -132,7 +142,7 @@ def decode_instruction(blob: str) -> tuple:
         raise FleetVerificationError(f"malformed instruction: {exc}") from exc
     if not isinstance(payload, dict):
         raise FleetVerificationError("malformed instruction: payload is not an object")
-    missing = [f for f in _REQUIRED_FIELDS if not str(payload.get(f, "")).strip()]
+    missing = [f for f in required_fields if not str(payload.get(f, "")).strip()]
     if missing:
         raise FleetVerificationError(
             f"instruction is missing required field(s): {', '.join(missing)}")
@@ -197,13 +207,30 @@ def verify_instruction(blob: str, trusted_keys: dict, group: str,
     checks so that an unsigned attacker learns nothing about our
     configuration from which rejection they get back.
     """
+    _require_trusted_keys(trusted_keys)
+    payload, signature = decode_instruction(blob)
+    _check_signature_and_group(payload, signature, trusted_keys, group)
+
+    if not _COMMIT_RE.match(str(payload.get("c", "")).strip().lower()):
+        raise FleetVerificationError("instruction does not name a full commit sha")
+
+    if last_issued_at and str(payload.get("t", "")) <= str(last_issued_at):
+        raise FleetVerificationError(
+            f"instruction is a replay: issued {payload.get('t')}, but this "
+            f"node has already accepted one from {last_issued_at}")
+
+    return payload
+
+
+def _require_trusted_keys(trusted_keys: dict) -> None:
     if not trusted_keys:
         raise FleetVerificationError(
             "no trusted fleet keys configured on this node, so update "
             "instructions are ignored")
 
-    payload, signature = decode_instruction(blob)
 
+def _check_signature_and_group(payload: dict, signature: bytes,
+                               trusted_keys: dict, group: str) -> None:
     named_key = str(payload.get("k", "")).strip().lower()
     public_raw = trusted_keys.get(named_key)
     if public_raw is None:
@@ -225,14 +252,64 @@ def verify_instruction(blob: str, trusted_keys: dict, group: str,
             f"instruction is for fleet group {payload.get('g')!r}, this node "
             f"is in {group!r}")
 
-    if not _COMMIT_RE.match(str(payload.get("c", "")).strip().lower()):
-        raise FleetVerificationError("instruction does not name a full commit sha")
+
+def is_identity_instruction(blob: str) -> bool:
+    """Whether a blob claims to be a signed identity rather than an update.
+
+    Only routes it; nothing is trusted until verify_identity_instruction.
+    """
+    try:
+        payload, _ = decode_instruction(blob, required_fields=())
+    except FleetVerificationError:
+        return False
+    return "i" in payload and "c" not in payload
+
+
+def build_identity_payload(group: str, signer_key_id: str, name=None,
+                           welcome=None, issued_at: Optional[str] = None) -> dict:
+    """Assemble an unsigned identity. Omitted values are left as they are."""
+    values = {}
+    if name is not None:
+        if not str(name).strip():
+            raise ValueError("the BBS name cannot be blank")
+        values["name"] = str(name).strip()
+    if welcome is not None:
+        values["welcome"] = str(welcome).replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not values:
+        raise ValueError("give a name, a greeting, or both")
+    if not str(group or "").strip():
+        raise ValueError("group is required: it is what scopes the identity")
+    return {
+        "g": str(group).strip(),
+        "i": values,
+        "t": issued_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "n": secrets.token_hex(8),
+        "k": str(signer_key_id).strip(),
+    }
+
+
+def verify_identity_instruction(blob: str, trusted_keys: dict, group: str,
+                                last_issued_at: Optional[str] = None) -> dict:
+    """Return the verified identity payload, or raise FleetVerificationError.
+
+    Its own replay clock, separate from update targets: an old identity must
+    not undo a newer one, and has no bearing on which commit a node runs.
+    """
+    _require_trusted_keys(trusted_keys)
+    payload, signature = decode_instruction(blob, _IDENTITY_REQUIRED_FIELDS)
+    _check_signature_and_group(payload, signature, trusted_keys, group)
+
+    values = payload.get("i")
+    if (not isinstance(values, dict) or not values
+            or any(key not in IDENTITY_KEYS or not isinstance(value, str)
+                   for key, value in values.items())):
+        raise FleetVerificationError(
+            "identity must carry a name and/or a greeting, as text")
 
     if last_issued_at and str(payload.get("t", "")) <= str(last_issued_at):
         raise FleetVerificationError(
-            f"instruction is a replay: issued {payload.get('t')}, but this "
-            f"node has already accepted one from {last_issued_at}")
-
+            f"identity is a replay: issued {payload.get('t')}, but this node "
+            f"has already adopted one from {last_issued_at}")
     return payload
 
 

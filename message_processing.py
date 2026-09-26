@@ -1958,6 +1958,9 @@ def _apply_fleet_instruction(blob: str, sender_node_id, interface=None) -> None:
 
     trusted = fleet_update.parse_trusted_keys(settings.get('trusted_keys', ''))
     group = settings.get('group', '')
+    if fleet_update.is_identity_instruction(blob):
+        _apply_signed_identity(blob, trusted, group, sender_node_id, interface)
+        return
     try:
         payload = fleet_update.verify_instruction(
             blob, trusted, group, last_issued_at=last_fleet_issued_at(group))
@@ -1980,6 +1983,34 @@ def _apply_fleet_instruction(blob: str, sender_node_id, interface=None) -> None:
             ]
             send_fleet_target_to_bbs_nodes(blob, peers, interface)
         _request_fleet_apply()
+
+
+def _apply_signed_identity(blob: str, trusted: dict, group: str,
+                           sender_node_id, interface=None) -> None:
+    """A signed BBS name/greeting: verified, adopted, passed on.
+
+    Rides FLEETVER's frames, so it needs no new capability; a peer on older
+    code fails to find a commit in it and ignores it. As with a target, the
+    sender is used only for logging -- the signature is the authority.
+    """
+    import fleet_update
+    from db_operations import adopt_signed_fleet_identity, get_signed_fleet_identity
+    try:
+        payload = fleet_update.verify_identity_instruction(
+            blob, trusted, group,
+            last_issued_at=get_signed_fleet_identity(group)[1])
+    except fleet_update.FleetVerificationError as exc:
+        logging.info("Fleet identity from %s not accepted: %s", sender_node_id, exc)
+        return
+    if not adopt_signed_fleet_identity(payload, blob):
+        return
+    logging.warning("Fleet identity adopted: %s (signed by %s, via %s)",
+                    ", ".join(sorted(payload.get('i') or {})),
+                    payload.get('k'), sender_node_id)
+    if interface is not None:
+        peers = [peer for peer in (getattr(interface, 'bbs_nodes', []) or [])
+                 if str(peer) != str(sender_node_id)]
+        send_fleet_target_to_bbs_nodes(blob, peers, interface)
 
 
 def _fleet_settings() -> dict:

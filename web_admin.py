@@ -5894,6 +5894,17 @@ def create_app(runtime_interface=None) -> Flask:
 
       trusted = fleet_update.parse_trusted_keys(settings.get("trusted_keys", ""))
       group = settings.get("group", "")
+      if fleet_update.is_identity_instruction(blob):
+        from db_operations import adopt_signed_fleet_identity, get_signed_fleet_identity
+        try:
+          payload = fleet_update.verify_identity_instruction(
+            blob, trusted, group, last_issued_at=get_signed_fleet_identity(group)[1])
+        except fleet_update.FleetVerificationError as exc:
+          return "rejected", None, str(exc)
+        if not adopt_signed_fleet_identity(payload, blob):
+          return "duplicate", payload, "Identity is not newer than the one already adopted."
+        # The server's identity sweep sends it on to every peer.
+        return "identity", payload, "Name and greeting adopted."
       try:
         payload = fleet_update.verify_instruction(
           blob, trusted, group, last_issued_at=last_fleet_issued_at(group))
@@ -5923,7 +5934,10 @@ def create_app(runtime_interface=None) -> Flask:
         return redirect(url_for("fleet_page"))
 
       status, payload, detail = _accept_fleet_instruction(blob)
-      if status == "accepted":
+      if status == "identity":
+        flash("Name and greeting adopted from the fleet key. Every node that "
+              "trusts it will adopt them within 15 minutes.", "success")
+      elif status == "accepted":
         flash(f"Target accepted: version {payload.get('v')} "
               f"(commit {str(payload.get('c'))[:12]}). It will be applied and "
               "relayed to peers.", "success")
@@ -5942,17 +5956,23 @@ def create_app(runtime_interface=None) -> Flask:
         return jsonify({"ok": False, "code": "too_large",
                         "error": "Signed instruction is too large."}), 413
       status, payload, detail = _accept_fleet_instruction(blob)
+      ok = status in ("accepted", "duplicate", "identity")
       response = {
-        "ok": status in ("accepted", "duplicate"),
+        "ok": ok,
         "code": status,
-        "error" if status not in ("accepted", "duplicate") else "message": detail,
+        "message" if ok else "error": detail,
       }
-      if payload:
+      if payload and status == "identity":
+        response["identity"] = {
+          "group": payload.get("g"), "keys": sorted(payload.get("i") or {}),
+          "issued_at": payload.get("t"),
+        }
+      elif payload:
         response["target"] = {
           "group": payload.get("g"), "commit": payload.get("c"),
           "version": payload.get("v"), "issued_at": payload.get("t"),
         }
-      http_status = 202 if status == "accepted" else (200 if status == "duplicate" else 400)
+      http_status = 202 if status in ("accepted", "identity") else (200 if status == "duplicate" else 400)
       return jsonify(response), http_status
 
     @app.get("/api/fleet/status")

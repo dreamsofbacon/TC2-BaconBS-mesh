@@ -9,6 +9,8 @@ hand over the entire fleet. Nodes hold only the public half.
     python scripts/fleet_sign.py --init            # once, ever
     python scripts/fleet_sign.py --sign HEAD       # each time you ship
     python scripts/fleet_sign.py --verify <blob>   # what does this blob say?
+    python scripts/fleet_sign.py identity --welcome-file greeting.txt
+                                                   # the fleet's name/greeting
 
 The signed blob is not secret. It is safe to paste into a chat, an issue, or
 the web admin of a node you do not control: it authorises one specific commit
@@ -139,6 +141,50 @@ def cmd_sign(args) -> int:
     print(f"key     {payload['k']}\n")
     print("Paste this into Settings -> Fleet on any one node; it propagates "
           "to the rest:\n")
+    print(blob)
+    return 0
+
+
+def cmd_identity(args) -> int:
+    """Sign the BBS name and/or greeting for every node in the group.
+
+    Pasted into Settings -> Fleet on any node, it is adopted there and passed
+    on; every node that trusts this key adopts it, with no accept list.
+    """
+    welcome = args.welcome
+    if args.welcome_file:
+        try:
+            welcome = Path(args.welcome_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            return _fail(f"Could not read {args.welcome_file}: {exc}")
+    from cryptography.hazmat.primitives import serialization
+    try:
+        private_key = load_private_key()
+        public_raw = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw)
+        payload = fleet_update.build_identity_payload(
+            require_group(args), fleet_update.key_id(public_raw),
+            name=args.name, welcome=welcome)
+    except ValueError as exc:
+        return _fail(str(exc))
+    blob = fleet_update.encode_instruction(
+        payload, fleet_update.sign_payload(payload, private_key))
+    if len(blob) > fleet_update.MAX_INSTRUCTION_CHARS:
+        return _fail(
+            f"Signed identity is {len(blob)} characters; nodes accept at most "
+            f"{fleet_update.MAX_INSTRUCTION_CHARS}. Shorten the greeting.")
+
+    print(f"group   {payload['g']}")
+    for key in fleet_update.IDENTITY_KEYS:
+        if key in payload["i"]:
+            value = payload["i"][key]
+            shown = value if len(value) <= 70 else value[:67] + "..."
+            print(f"{key:<7} {shown!r}")
+    print(f"issued  {payload['t']}")
+    print(f"key     {payload['k']}\n")
+    print("Paste this into Settings -> Fleet on any one node; every node that "
+          "trusts this key adopts it:\n")
     print(blob)
     return 0
 
@@ -666,14 +712,22 @@ def cmd_verify(args) -> int:
     Useful before publishing, and for anyone handed a blob who wants to know
     what they are being asked to run.
     """
+    identity = fleet_update.is_identity_instruction(args.blob)
+    verify = (fleet_update.verify_identity_instruction if identity
+              else fleet_update.verify_instruction)
     try:
-        payload, signature = fleet_update.decode_instruction(args.blob)
+        payload, signature = fleet_update.decode_instruction(
+            args.blob, required_fields=() if identity else fleet_update._REQUIRED_FIELDS)
     except fleet_update.FleetVerificationError as exc:
         return _fail(str(exc))
 
     print(f"group   {payload.get('g')}")
-    print(f"commit  {payload.get('c')}")
-    print(f"version {payload.get('v')}")
+    if identity:
+        for key, value in sorted((payload.get("i") or {}).items()):
+            print(f"{key:<7} {value!r}")
+    else:
+        print(f"commit  {payload.get('c')}")
+        print(f"version {payload.get('v')}")
     print(f"issued  {payload.get('t')}")
     print(f"key     {payload.get('k')}")
 
@@ -686,7 +740,7 @@ def cmd_verify(args) -> int:
         format=serialization.PublicFormat.Raw)
     trusted = {fleet_update.key_id(public_raw): public_raw}
     try:
-        fleet_update.verify_instruction(args.blob, trusted, payload.get("g", ""))
+        verify(args.blob, trusted, payload.get("g", ""))
         print("\nSignature verifies against your key.")
         return 0
     except fleet_update.FleetVerificationError as exc:
@@ -800,6 +854,14 @@ def main() -> int:
                           help="print the public key / config block")
     show.add_argument("--entry-only", action="store_true")
     show.set_defaults(func=cmd_show_pubkey)
+
+    identity = sub.add_parser(
+        "identity", help="sign the BBS name and/or greeting for the whole fleet")
+    identity.add_argument("--name", default=None, help="the BBS name")
+    identity.add_argument("--welcome", default=None, help="the greeting, inline")
+    identity.add_argument("--welcome-file", default=None,
+                          help="read the greeting from a UTF-8 text file")
+    identity.set_defaults(func=cmd_identity)
 
     verify = sub.add_parser("--verify", aliases=["verify"],
                             help="show what a signed blob says")

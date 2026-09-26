@@ -207,6 +207,11 @@
       authorises one commit for one group, is verified before anything is
       stored, and is rejected unless a key trusted by this node signed it.
     </p>
+    <p class="text-muted">
+      A signed BBS name and greeting from your fleet administrator is pasted
+      here too. Every node that trusts the key adopts it within 15 minutes,
+      with no accept list to set up on each one.
+    </p>
     <form method="post" action="{{ url_for('fleet_apply') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="form-group">
