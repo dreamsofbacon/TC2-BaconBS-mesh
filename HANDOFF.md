@@ -16,8 +16,8 @@ true when they were written.
 | | bbs.local (192.168.1.9) | forgecam.local (192.168.1.133) |
 | --- | --- | --- |
 | Radios | Meshtastic serial (primary) + MeshCore serial (secondary) | **none** — `[interface] type = none` |
-| MQTT links | mqtt2 `baconbbsvt` (mqtt.nerdtunnel.net:8884) only, as `Burlington-NNE` | mqtt1 `baconbbs` (LAN broker 192.168.1.134) as `node2`; mqtt2 `baconbbsvt` as `BaconBBS-VT2` |
-| Active links | 3 (two radios, mqtt2) | 2 (mqtt1, mqtt2) |
+| MQTT links | mqtt2 `baconbbsvt` (mqtt.nerdtunnel.net:8884) only, as `Burlington-NNE` | mqtt2 `baconbbsvt` as `BaconBBS-VT2`; mqtt1 `baconbbs` (LAN broker 192.168.1.134) configured but **disabled** |
+| Active links | 3 (two radios, mqtt2) | 1 (mqtt2) |
 | mqtt2 sync peers | `BaconBBS-VT2`, `Chattanooga`, `bbs` (the VPS) | `Burlington-NNE` |
 | Python | 3.13.5 | **3.9.2** |
 | Path | `/home/bacon/TC2-BaconBS-mesh` | same |
@@ -634,12 +634,16 @@ than an account, so removing one person's posts is one at a time.
 cleanly when its data is missing; `zork_port` still starts a session when
 `dfrotz` is absent. Same shape of fix applies.
 
-**forgecam's mqtt1 peer never answers.** bbs no longer has an mqtt1 link,
-but forgecam still does, with `[sync_mqtt1] bbs_nodes =
-mqtt:baconbbs:bbs-main`. On 2026-09-27 its log held 4,006 frames sent to
-that peer and none received -- about 100 KB an hour into the LAN broker for
-nothing. Either remove forgecam's `[mqtt1]` link or point it at a node that
-is actually there.
+**forgecam's mqtt1 link is disabled.** bbs no longer has an mqtt1 link, but
+forgecam still peered with `mqtt:baconbbs:bbs-main` over it: 4,006 frames
+sent, none ever received, about 100 KB an hour into the LAN broker. Its last
+known state for that peer looked "behind", so forgecam force-sent it a
+SYNCSTATE every 30 seconds. On 2026-09-27 `[mqtt1] enabled` was set to
+`false` and the links reloaded without a restart; the section is otherwise
+untouched and the previous file is `config.ini.bak-2026-09-27-mqtt1`.
+Setting it back to `true` restores the link. Not yet fixed in code: a peer
+that never answers is still sent a forced SYNCSTATE every cycle for as long
+as its stale row says it is behind.
 
 **Unpinned runtime dependencies:** `meshtastic`, `pypubsub`, `flask`.
 `meshcore` is pinned `>=2.3.8,<3`; 2.3.9.1 is available.
