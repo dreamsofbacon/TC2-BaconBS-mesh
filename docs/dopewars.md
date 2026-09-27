@@ -8,12 +8,30 @@ process, downloaded assets, or new runtime dependencies.
 Open **Games** in the BBS and select **DopeWars** by its displayed number.
 The same menu is used over radio, SSH and the web emulator. Selecting the game
 starts a default 30-day run or resumes the player's existing run. Before the
-first action, send `new 365` for a 365-day game or `new 30` for the short game.
+first action, choose `[7]365d` for a 365-day game, or keep the default short game.
 Choosing a length does not reroll the opening market. Once play begins, the
 duration cannot be changed until the run ends. After a BBS restart, open
 Games again; the in-memory menu session can reset but the game save remains.
 
-Commands are case-insensitive. Amounts must be positive whole numbers.
+### Numbered BBS menu
+
+Use `[2]Travel` (or `T`) to choose one of the other seven districts in your
+current city. In Queens, Kenner, or Flagami, return to the main screen and
+choose `[7]Airport` (or `A`). Choose a destination, review the cash fare, and
+send `Y` to board. `0` returns without buying; a non-yes response cancels.
+Unaffordable flights leave the game unchanged and keep the confirmation open.
+No bank funds are used. Successful flights open the destination market, or
+the encounter/end screen when normal travel rules require it.
+
+Candy Wars uses the same map and fares. Its New York airport, Queens, appears
+as **Library**; Kenner and Flagami retain their district names in both themes.
+The bank remains in Brooklyn (**Cafeteria**), not at every airport.
+
+### Engine commands
+
+The table below describes the engine API (`dopewars.command` and
+`dopewars_door.play`), not input to the numbered BBS menu. Commands are
+case-insensitive. Amounts must be positive whole numbers.
 
 | Command | Effect |
 | --- | --- |
@@ -22,6 +40,7 @@ Commands are case-insensitive. Amounts must be positive whole numbers.
 | `buy weed 2` / `b weed 2` | Buy two units, subject to stock, cash and bag space |
 | `sell weed 2` / `s weed 2` | Sell two owned units at the current price |
 | `travel manhattan` / `t manhattan` | Advance one day, accrue interest when debt remains, generate a market and possible encounter |
+| `flight miami yes` | Confirm a cash-only flight from another city’s airport to Flagami; also accepts `new-york` and `new-orleans` |
 | `loan borrow 100` | Borrow, up to $10,000 outstanding debt |
 | `loan repay 100` | Repay debt using available cash |
 | `bank deposit 100` | Park cash in the bank, in Brooklyn only |
@@ -46,20 +65,37 @@ Goods: `ludes`, `weed`, `speed`, `peyote`, `hash`, `mushrooms`, `mda`,
 `opium`, `acid`, `ketamine`, `meth`, `oxy`, `pcp`, `heroin`, `crystal`,
 `cocaine` -- listed cheapest first, which is the order the menu numbers
 them in. A town stocks five to nine of them.
-Locations: `bronx`, `brooklyn`, `manhattan`, `queens`, `staten-island`,
-`harlem`, `coney-island`, `central-park`.
+Locations are three eight-district city maps. New York keeps `bronx`,
+`brooklyn`, `manhattan`, `queens`, `staten-island`, `harlem`, `coney-island`,
+and `central-park`. New Orleans has `kenner`, `french-quarter`,
+`central-business-district`, `garden-district`, `treme`, `bywater`,
+`uptown-new-orleans`, and `mid-city`. Miami has `flagami`, `downtown-miami`,
+`brickell`, `south-beach`, `little-havana`, `wynwood`, `coconut-grove`, and
+`edgewater`.
 
 ## Rules
 
 Start on day 1 with $2,400, $1,200 debt, 100 health and a 40-unit bag.
 Buy low, travel and sell high. Only travel advances the calendar and regenerates
 the market. Staying put, viewing screens, reconnecting and invalid commands
-never reroll prices. Each market stocks three to five goods. Twenty percent of
+never reroll prices. Each market stocks five to nine goods. Twenty percent of
 markets feature either a discounted shipment or a scarce-good price spike.
 
-Each trip adds 5% interest, rounded up, while debt remains and has a 25% chance
-of a police encounter. After an uneventful trip there is a 15% chance to find
-$50–$250 or one to three units of a random good, limited by remaining bag space.
+Ground travel stays within the current city. Each trip adds 5% interest, rounded
+up, while debt remains and has a 25% chance of a police encounter. After an
+uneventful trip there is a 15% chance to find $50–$250 or one to three units of
+a random good, limited by remaining bag space. Queens, Kenner, and Flagami are
+airport districts. From an airport, the player can fly bidirectionally to
+either other city. Flights use cash-only fares that fluctuate once per game day
+and are deterministic for the saved seed/day/route: New Orleans–Miami
+$100–$225, New York–Miami $175–$325, and New York–New Orleans $200–$350. A
+flight requires confirmation, consumes one day, lands at the destination
+airport district, generates a fresh market, and uses the same interest,
+encounter, and loot rules as ground travel. Viewing fares, canceling, and
+invalid or unaffordable flight requests leave the game state unchanged. Fares
+use the departure day and do not consume gameplay randomness; adjacent days
+can occasionally have the same fare. Attempting a confirmed trip after the
+loan deadline still triggers the normal bankruptcy rule before boarding.
 No trading, borrowing or equipment purchases are allowed during an encounter;
 save/quit and information commands remain available.
 
@@ -153,11 +189,25 @@ Name/trademark clearance has not been established for public distribution.
 ## Local mesh presentation
 
 Candy Wars remains the default presentation, with Dope Wars available through
-the existing PG-13 preference. Both themes cover all sixteen goods and
-eight places; a test fails if either gains an id the other has no word
-for, or two goods share an icon.
-The numbered buy, sell, travel, gear and loan screens remain within the tested
-200-byte radio budget; typed commands still use the saved engine identifiers.
+the existing PG-13 preference. Both themes cover all sixteen goods and the
+24 districts across three cities; a test fails if either gains an id the other
+has no word for, or two goods share an icon.
+The numbered market, travel, airport, confirmation, gear and loan screens
+remain within the tested 200-byte UTF-8 radio budget. Engine commands continue
+to use the saved identifiers, independent of theme. Existing New York saves
+load without a schema change; the new districts use the same saved `place` field.
+
+### Airport validation
+
+Run the complete game suite with the development dependencies installed:
+
+```sh
+python -m pytest tests/test_dopewars*.py tests/test_candywars.py
+```
+
+Airport tests exercise all six directions through the database-backed door,
+both themes, cancellation and insufficient cash, reload-stable fares, normal
+travel effects, final-day/deadline handling, and packet budgets.
 
 Pure rules and rendering: `dopewars.py`; database adapter: `dopewars_door.py`.
 The game registry, launch handler and both dispatch guards follow existing

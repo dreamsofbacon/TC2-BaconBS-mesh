@@ -12,33 +12,75 @@ VERSION = 5
 DAYS = 30
 MAX_CASH = 1_000_000_000
 LOAN_LIMIT = 10_000
+BASE_STOCK_MIN = 10
+BASE_STOCK_MAX = 60
+COCAINE_BUST_PRICE_MIN = 300
+COCAINE_BUST_PRICE_MAX = 500
+COCAINE_BUST_STOCK_MAX = 3
 # Cheapest first: the menu numbers goods in this order, and a trading
 # screen reads best as a price list.
 GOODS = {'ludes': 40, 'weed': 90, 'speed': 150, 'peyote': 190,
          'hash': 230, 'mushrooms': 320, 'mda': 380, 'opium': 430,
          'acid': 540, 'ketamine': 620, 'meth': 750, 'oxy': 900,
          'pcp': 1000, 'heroin': 1250, 'crystal': 1500, 'cocaine': 1800}
-PLACES = ('bronx', 'brooklyn', 'manhattan', 'queens', 'staten-island',
-          'harlem', 'coney-island', 'central-park')
+NYC = 'new-york'
+NEW_ORLEANS = 'new-orleans'
+MIAMI = 'miami'
+CITIES = (NYC, NEW_ORLEANS, MIAMI)
+CITY_LABELS = {NYC: 'New York', NEW_ORLEANS: 'New Orleans', MIAMI: 'Miami'}
+CITY_PLACES = {
+    NYC: ('bronx', 'brooklyn', 'manhattan', 'queens', 'staten-island',
+          'harlem', 'coney-island', 'central-park'),
+    NEW_ORLEANS: ('kenner', 'french-quarter', 'central-business-district',
+                  'garden-district', 'treme', 'bywater', 'uptown-new-orleans',
+                  'mid-city'),
+    MIAMI: ('flagami', 'downtown-miami', 'brickell', 'south-beach',
+            'little-havana', 'wynwood', 'coconut-grove', 'edgewater'),
+}
+PLACES = tuple(place for city in CITIES for place in CITY_PLACES[city])
+PLACE_CITY = {place: city for city, places in CITY_PLACES.items() for place in places}
+AIRPORTS = {NYC: 'queens', NEW_ORLEANS: 'kenner', MIAMI: 'flagami'}
+FLIGHT_FARE_BANDS = {
+    frozenset((NEW_ORLEANS, MIAMI)): (100, 225),
+    frozenset((NYC, MIAMI)): (175, 325),
+    frozenset((NYC, NEW_ORLEANS)): (200, 350),
+}
 # The bank is in one town on purpose. Reachable everywhere it would be
 # free insurance -- deposit before every trip, withdraw on arrival --
 # which is all keypresses and no decision. Having to go there makes
 # banking a detour weighed against the risk of carrying.
 BANK_PLACE = 'brooklyn'
-PLACE_LABELS = {place: place.replace('-', ' ').title() for place in PLACES}
+PLACE_LABELS = {
+    'bronx': 'Bronx', 'brooklyn': 'Brooklyn', 'manhattan': 'Manhattan',
+    'queens': 'Queens', 'staten-island': 'Staten Is.', 'harlem': 'Harlem',
+    'coney-island': 'Coney Is.', 'central-park': 'Central Pk',
+    'kenner': 'Kenner', 'french-quarter': 'French Quarter',
+    'central-business-district': 'Central Business District',
+    'garden-district': 'Garden District', 'treme': 'Treme',
+    'bywater': 'Bywater', 'uptown-new-orleans': 'Uptown', 'mid-city': 'Mid-City',
+    'flagami': 'Flagami', 'downtown-miami': 'Downtown', 'brickell': 'Brickell',
+    'south-beach': 'South Beach', 'little-havana': 'Little Havana',
+    'wynwood': 'Wynwood', 'coconut-grove': 'Coconut Grove', 'edgewater': 'Edgewater',
+}
 # Display only: commands and saved item identifiers remain plain text.
 GOOD_ICONS = {'ludes': '💤', 'weed': '🌿', 'speed': '⚡',
               'peyote': '🌵', 'hash': '🟫', 'mushrooms': '🍄',
               'mda': '💜', 'opium': '🌺', 'acid': '🌀',
               'ketamine': '🐴', 'meth': '🔥', 'oxy': '💊',
-              'pcp': '🧪', 'heroin': '🥄', 'crystal': '💎',
+              'pcp': '🧪', 'heroin': '💉', 'crystal': '💎',
               'cocaine': '❄️'}
 HELP = ('TRADE\nB ITEM QTY - buy\nS ITEM QTY - sell\nM - market\nI - inventory\n'
         'Items: ludes, weed, speed, peyote, hash,\nmushrooms, mda, opium, acid, ketamine,\nmeth, oxy, pcp, heroin, crystal, cocaine\n'
         'Example: B weed 2\n\n'
-        'TRAVEL\nT bronx / brooklyn / manhattan\nT queens / staten-island\n'
-        'T harlem / coney-island / central-park\n'
+        'TRAVEL\nT DISTRICT - within your current city only\n'
+        + ''.join(CITY_LABELS[c] + ': ' + ', '.join(CITY_PLACES[c]) + '\n'
+                  for c in CITIES) +
         'Each trip: +1 day, +5% debt\n\n'
+        'AIRPORT\n'
+        'From Queens, Kenner or Flagami:\n'
+        'flight CITY yes - confirm cash fare\n'
+        'Cities: new-york, new-orleans, miami\n'
+        'Flights cost cash, take one day and use the normal travel rules.\n\n'
         'MONEY & GEAR\nloan borrow AMOUNT\nloan repay AMOUNT\n'
         'bank deposit AMOUNT\nbank withdraw AMOUNT\n'
         'The bank is in Brooklyn; what is in it is safe\n'
@@ -76,6 +118,26 @@ def draw(s, low, high):
     return low + int.from_bytes(data[:8], 'big') % (high - low + 1)
 
 
+def city(place):
+    return PLACE_CITY[place]
+
+
+def airport_city(place):
+    current = city(place)
+    return current if AIRPORTS[current] == place else None
+
+
+def flight_fare(s, destination):
+    """Return a stable daily fare without consuming the gameplay draw stream."""
+    origin = airport_city(s['place'])
+    if not origin or destination not in CITIES or destination == origin:
+        raise ValueError('Flights leave only from an airport to another city.')
+    low, high = FLIGHT_FARE_BANDS[frozenset((origin, destination))]
+    key = f"flight:{s['seed']}:{s['day']}:{min(origin, destination)}:{max(origin, destination)}"
+    value = int.from_bytes(sha256(key.encode()).digest()[:8], 'big')
+    return low + value % (high - low + 1)
+
+
 def market(s):
     """Stock five to nine goods and roll an occasional price event."""
     s['market'] = {
@@ -90,7 +152,7 @@ def market(s):
     for _ in range(count):
         item = choices.pop(draw(s, 0, len(choices) - 1) % len(choices))
         stocked.append(item)
-        s['market'][item]['stock'] = draw(s, 5, 30)
+        s['market'][item]['stock'] = draw(s, BASE_STOCK_MIN, BASE_STOCK_MAX)
 
     s['event'] = ''
     if draw(s, 1, 100) <= 20:
@@ -102,9 +164,16 @@ def market(s):
                 s['market'][item]['stock'], draw(s, 25, 40))
             s['event'] = f'deal:{item}'
         else:
-            s['market'][item]['price'] = GOODS[item] * draw(s, 220, 350) // 100
-            s['market'][item]['stock'] = min(
-                s['market'][item]['stock'], draw(s, 1, 5))
+            if item == 'cocaine':
+                # Cocaine is the premium risk/reward trade: it costs the most
+                # to carry, but a cocaine bust creates the biggest payout.
+                s['market'][item]['price'] = GOODS[item] * draw(
+                    s, COCAINE_BUST_PRICE_MIN, COCAINE_BUST_PRICE_MAX) // 100
+                scarce_stock = draw(s, 1, COCAINE_BUST_STOCK_MAX)
+            else:
+                s['market'][item]['price'] = GOODS[item] * draw(s, 220, 350) // 100
+                scarce_stock = draw(s, 1, 5)
+            s['market'][item]['stock'] = min(s['market'][item]['stock'], scarce_stock)
             s['event'] = f'bust:{item}'
 
 
@@ -187,6 +256,40 @@ def _loot(s):
     return f'goods:{item}:{qty}'
 
 
+def _travel(s, destination, fare=0):
+    """Apply one ground trip or flight, returning its travel side effects."""
+    if s['debt'] and s['day'] >= s['loan_due']:
+        s['cash'] = s['bank'] = 0
+        s['inventory'] = {k: 0 for k in GOODS}
+        _finish(s, 'Bankrupt')
+        return {'deadline': True, 'interest': 0, 'police': False, 'loot': ''}
+    if fare:
+        s['cash'] -= fare
+    s['place'] = destination
+    s['day'] += 1
+    interest = (s['debt'] * 5 + 99) // 100 if s['debt'] else 0
+    s['debt'] += interest
+    market(s)
+    if draw(s, 1, 100) <= 25:
+        s['phase'], s['enemy_hp'] = 'police', 45
+        return {'deadline': False, 'interest': interest, 'police': True, 'loot': ''}
+    _arrival(s)
+    loot = _loot(s) if s['phase'] != 'ended' else ''
+    return {'deadline': False, 'interest': interest, 'police': False, 'loot': loot}
+
+
+def _travel_reply(result, prefix='Arrived'):
+    if result['deadline']:
+        return 'Loan deadline missed.'
+    reply = (f'{prefix}. Debt increased 5% (+${result["interest"]}).'
+             if result['interest'] else f'{prefix}. Debt-free: no interest charged.')
+    if result['police']:
+        reply += ' Police stop!'
+    elif result['loot']:
+        reply += ' Loot ' + result['loot'] + '.'
+    return reply
+
+
 def command(state, text):
     """Invalid/read-only commands neither advance time nor consume randomness."""
     s = deepcopy(state)
@@ -264,29 +367,27 @@ def command(state, text):
             reply = f"{'Bought' if verb == 'buy' else 'Sold'} {qty} {good_label(item)} for ${cost}."
         elif verb == 'travel' and len(args) == 1:
             if args[0] not in PLACES or args[0] == s['place']:
-                raise ValueError('Choose a different place: ' + ', '.join(PLACES))
-            if s['debt'] and s['day'] >= s['loan_due']:
-                s['cash'] = s['bank'] = 0
-                s['inventory'] = {k: 0 for k in GOODS}
-                _finish(s, 'Bankrupt')
+                raise ValueError('Choose a different district in this city.')
+            if city(args[0]) != city(s['place']):
+                raise ValueError('Travel between cities is by airport.')
+            result = _travel(s, args[0])
+            reply = _travel_reply(result)
+            if result['deadline']:
                 s['moves'] += 1
-                return s, 'Loan deadline missed.\n' + view(s), False
-            s['place'] = args[0]
-            s['day'] += 1
-            interest = (s['debt'] * 5 + 99) // 100 if s['debt'] else 0
-            s['debt'] += interest
-            market(s)
-            reply = (f'Arrived. Debt increased 5% (+${interest}).' if interest
-                     else 'Arrived. Debt-free: no interest charged.')
-            if draw(s, 1, 100) <= 25:
-                s['phase'], s['enemy_hp'] = 'police', 45
-                reply += ' Police stop!'
-            else:
-                _arrival(s)
-                if s['phase'] != 'ended':
-                    loot = _loot(s)
-                    if loot:
-                        reply += ' Loot ' + loot + '.'
+                return s, reply + '\n' + view(s), False
+        elif verb == 'flight' and len(args) == 2 and args[1] in ('yes', 'confirm'):
+            destination = args[0]
+            origin = airport_city(s['place'])
+            if not origin or destination not in CITIES or destination == origin:
+                raise ValueError('Choose another city from this airport.')
+            fare = flight_fare(s, destination)
+            if s['cash'] < fare:
+                raise ValueError(f'You need ${fare} cash for that flight.')
+            result = _travel(s, AIRPORTS[destination], fare)
+            reply = _travel_reply(result, f'Boarded for {CITY_LABELS[destination]} for ${fare}')
+            if result['deadline']:
+                s['moves'] += 1
+                return s, reply + '\n' + view(s), False
         elif verb == 'bank' and len(args) == 2 and args[0] in ('deposit', 'withdraw'):
             if s['place'] != BANK_PLACE:
                 raise ValueError('The bank is in '
