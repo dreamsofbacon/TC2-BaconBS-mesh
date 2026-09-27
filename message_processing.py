@@ -2232,6 +2232,35 @@ def set_public_chatter_cross_link_relay(callback) -> None:
     _public_chatter_cross_link_relay = callback
 
 
+# Peers whose SYNCSTATE this process has heard, and what to do the first time.
+# A fleet deploy restarts every node within seconds, and MQTT sessions are
+# clean, so a node's first version report after the update can land while
+# its peer is still reconnecting -- lost, and the Fleet page reads `pending`
+# until the next heartbeat, half an hour later. A peer's first SYNCSTATE in
+# this process is the moment it is certainly listening, so server.py answers
+# it with this node's fleet state.
+_peers_heard_this_run: set = set()
+_peer_first_heard_hook = None
+
+
+def set_peer_first_heard_hook(callback) -> None:
+    global _peer_first_heard_hook
+    _peer_first_heard_hook = callback
+
+
+def _note_peer_heard(sender_node_id, interface) -> None:
+    peer = str(sender_node_id or '').strip()
+    if not peer or peer in _peers_heard_this_run:
+        return
+    _peers_heard_this_run.add(peer)
+    if _peer_first_heard_hook is None:
+        return
+    try:
+        _peer_first_heard_hook(peer, interface)
+    except Exception:
+        logging.debug("first-heard hook failed for %s", peer, exc_info=True)
+
+
 def _relay_public_chatter_if_new(unique_id: str, inserted: bool, interface) -> None:
     if not inserted or _public_chatter_cross_link_relay is None:
         return
@@ -2655,6 +2684,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     f"bH={bulletins_hash} mH={mail_hash} cH={channels_hash} zH={zork_saves_hash} pH={profiles_hash} gH={game_scores_hash} | "
                     f"v={peer_proto_v} caps=[{peer_caps_csv}]"
                 )
+                _note_peer_heard(sender_node_id, interface)
                 _retry_stale_hash_manifest_buffers(interface)
                 _retry_stale_zork_save_buffers(interface)
                 _request_targeted_repair_if_needed(sender_node_id, interface)

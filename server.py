@@ -74,6 +74,7 @@ from js8call_integration import JS8CallClient
 from message_processing import (
     on_receive,
     set_public_chatter_cross_link_relay,
+    set_peer_first_heard_hook,
     is_hashreq_pending_for_peer_scope,
     start_zork_save_best_candidate_resolution,
     process_pending_candidate_resolutions,
@@ -1732,6 +1733,18 @@ def _advertise_fleet_state(system_config: dict, bbs_nodes, interface,
         return 0
 
 
+def fleet_state_for_new_peer(system_config: dict):
+    """The first-heard hook: tell a peer our fleet state once it is listening.
+
+    Forced, because the ordinary advert is skipped while nothing has changed
+    -- and "nothing changed" is exactly what this node believes about a
+    report its peer never received. See message_processing._note_peer_heard.
+    """
+    def _send(peer, interface):
+        _advertise_fleet_state(system_config, [peer], interface, force=True)
+    return _send
+
+
 def _advertise_fleet_state_to_links(system_config: dict, links,
                                    force: bool = True) -> int:
     sent = 0
@@ -2539,6 +2552,7 @@ def main():
     global _active_links
     _active_links = links
     set_public_chatter_cross_link_relay(relay_public_chatter_to_mqtt_links)
+    set_peer_first_heard_hook(fleet_state_for_new_peer(system_config))
     publish_local_identities()
 
     trigger_path = get_manual_sync_trigger_path()

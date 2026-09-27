@@ -610,8 +610,11 @@ sessions are clean, so a frame sent while the receiver is reconnecting is
 gone. A fleet deploy restarts every node within seconds, and twice now the
 VPS's first report on the new version went out while bbs was restarting:
 the Fleet page showed it `pending` until its next SYNCSTATE heartbeat (up
-to 30 minutes). Harmless but misleading. The fix would be to re-send fleet
-status to a peer when it is first heard from after startup.
+to 30 minutes). Fixed after `5def3e1`: a node now answers each peer's first
+SYNCSTATE of its run with a forced fleet advert
+(`message_processing._note_peer_heard`, `server.fleet_state_for_new_peer`),
+because that SYNCSTATE proves the peer is listening. Watch the next deploy:
+every node should read `healthy` on the new version within a minute or two.
 
 **Web Fetch has no allowed hosts, and that is now the operator's to fix.**
 `[gateway] allowed_hosts` is still empty on the live node, so Web Fetch
