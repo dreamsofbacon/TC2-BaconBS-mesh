@@ -4,7 +4,10 @@ State of the deployment, the decisions behind it, and what is still open.
 For the feature backlog see [feature requests.txt](feature%20requests.txt);
 this file is about running the thing.
 
-Last updated 2026-09-07 at commit `0f518a9` (`v0.1.596`).
+Last updated 2026-09-27 at commit `5def3e1` (`v0.1.724`). The node table,
+Chattanooga, the VPS node, the release list and the open issues were checked
+against the live nodes that day; sections further down describe what was
+true when they were written.
 
 ---
 
@@ -13,13 +16,17 @@ Last updated 2026-09-07 at commit `0f518a9` (`v0.1.596`).
 | | bbs.local (192.168.1.9) | forgecam.local (192.168.1.133) |
 | --- | --- | --- |
 | Radios | Meshtastic serial (primary) + MeshCore serial (secondary) | **none** — `[interface] type = none` |
-| MQTT links | mqtt1 `baconbbs` (LAN broker 192.168.1.134), mqtt2 `baconbbsvt` (mqtt.nerdtunnel.net:8884) | same two |
-| Active links | 4 | 2 |
+| MQTT links | mqtt2 `baconbbsvt` (mqtt.nerdtunnel.net:8884) only, as `Burlington-NNE` | mqtt1 `baconbbs` (LAN broker 192.168.1.134) as `node2`; mqtt2 `baconbbsvt` as `BaconBBS-VT2` |
+| Active links | 3 (two radios, mqtt2) | 2 (mqtt1, mqtt2) |
+| mqtt2 sync peers | `BaconBBS-VT2`, `Chattanooga`, `bbs` (the VPS) | `Burlington-NNE` |
 | Python | 3.13.5 | **3.9.2** |
 | Path | `/home/bacon/TC2-BaconBS-mesh` | same |
 | Services | `mesh-bbs.service`, `bacon-web-admin.service`, `bacon-ssh.service` | `mesh-bbs.service`, `bacon-web-admin.service` |
 | Bacon BBS SSH | Active, dual-stack port 2222 | Disabled/inactive |
-| Fleet state | Healthy on `0f518a9` | Healthy on `0f518a9` |
+| Fleet state | Healthy on `5def3e1` | Healthy on `5def3e1` |
+
+bbs's radio sync sections (`[sync]`, `[sync2]`) list no peers, so it syncs
+with nobody over LoRa; all peering is on mqtt2.
 
 forgecam's Python 3.9 matters: `meshcore` and the supported AsyncSSH release
 require newer Python, so `requirements.txt` carries environment markers and
@@ -39,24 +46,25 @@ against one SQLite. Check the feature matrix, and test the property rather
 than the behaviour -- see "A test that cannot fail on the machine it runs
 on" under Testing.
 
-A third node, `mqtt:baconbbsvt:Chattanooga`, belongs to
-[materva](https://github.com/materva/TC2-BaconBS-mesh) and is reachable over
-the `baconbbsvt` broker. It is not ours to deploy to.
+### The other two nodes on `baconbbsvt`
 
-**It is not enrolled, and waiting will not change that.** It sits on
-`0.1.546` and has never stored a signed target. The transmission log settles
-where the fault is: 161 `FLEETVER` frames sent to it and none ever relayed
-back, against 161 sent and 160 returned for every peer that is enrolled,
-while it sends us 304 `FLEETSTATUS` frames over the same link. So the
-instruction reaches it and it declines to act -- its `[fleet] updates` is
-off, or our key `fkec622a` is not in its `trusted_keys`, or `cryptography`
-is missing. All three are on its side, and the second is a perfectly
-reasonable choice about a key somebody else holds.
+`mqtt:baconbbsvt:Chattanooga` belongs to
+[materva](https://github.com/materva/TC2-BaconBS-mesh). It is not ours to log
+in to, but **it is enrolled and follows signed targets**: it reported
+`0.1.723` and then `0.1.724` (`5def3e1`) `healthy` within a minute of each
+deploy on 2026-09-26/27, and it adopted the signed fleet greeting. Earlier
+sections that call it "pre-fix" or "stuck on 0.1.546" describe the time
+before it was enrolled; they are kept for the reasoning, not the state.
 
-The Fleet page now reports this as **not enrolled** rather than `pending`,
-because `pending` also describes the ninety seconds a healthy node spends
-converging -- which is how this hid for a day. Enrolling it needs, on their
-node:
+`mqtt:baconbbsvt:bbs` is our VPS node. It is enrolled, reports fleet status,
+and was on `0.1.724` by 2026-09-27 00:17 UTC (it relayed the signed greeting,
+which older code cannot read). These SSH credentials do not reach it, so it
+is checked through what it reports over MQTT.
+
+The Fleet page reports a node that never stored a signed target as **not
+enrolled** rather than `pending`, because `pending` also describes the
+ninety seconds a healthy node spends converging -- which is how
+Chattanooga's state hid for a day. Enrolling a node needs, on that node:
 
 ```sh
 python scripts/fleet_sign.py --group baconbbsvt enroll   "fkec622a:0hGvExa6i9yRn-kdbW4Kn6FHMfurPdmYeTCoud4vbuc"   --config config.ini --updates auto
@@ -64,8 +72,6 @@ sudo systemctl restart mesh-bbs.service bacon-web-admin.service
 ```
 
 That is the public half; it verifies signatures and cannot create them.
-Until then it keeps its pre-fix copies of the timestamp drift and the
-source-field parse bug, which is why it stays on our mismatch list.
 
 Recent deployed release sequence (2026-09-04):
 
@@ -103,6 +109,34 @@ Since (2026-09-05/06):
 | `bfeb9c0` | Invite files: hand someone a file and their node joins |
 | `e7bbb16` | Profile and Settings on the main menu, each doing one job |
 | `0f518a9` | A bio you write is a bio you keep |
+
+Between `0f518a9` and 2026-09-26 roughly 120 further commits shipped; `git
+log` has them. Deployed 2026-09-26/27:
+
+| Commit | Change |
+| --- | --- |
+| `f5c79bd` | MQTT sync stops paying for other nodes' conversations: frames for another node are dropped, peers advertising `mqdm` get their own topic, manifest repair backs off, retained status publishes on change |
+| `701f5cc` | Public chatter stays off the air unless `[public_chatter] sync_over_radio = true`; the chatter opt-out sentinel is finally honoured |
+| `33d6186` | New chatter keeps the 10-minute chatter repair floor |
+| `5def3e1` | The BBS name and greeting, signed once for the whole fleet (`fleet_sign.py identity`) |
+
+### MQTT data usage
+
+Measured on bbs from `sync_transmissions` (the frames, not MQTT/TLS
+overhead), one hour each:
+
+| | 2026-09-26 before | after `33d6186`, all nodes updated |
+| --- | --- | --- |
+| bbs total | 14.1 MB | 1.02 MB |
+| Chatter manifest requests from forgecam | 27 | 4 |
+| Manifests received that answered someone else's request | 9.3 MB | 0 |
+
+What is left is four chatter manifests an hour (~650 KB, the 10-minute
+floor working as designed) and the 15-minute account/identity sweeps. The
+query that produced these numbers groups `sync_transmissions` by
+`direction, frame_type` over the last hour, filtered to
+`destination_node_id LIKE 'mqtt:%'`; rerun it before and after any sync
+change.
 
 ---
 
@@ -557,14 +591,27 @@ NULL on forgecam. Dormant -- those scopes' aggregates hash no timestamp, so
 the mismatch never surfaces -- but it is a real gap and a different bug from
 the drift. Rows and ids are in the doc above.
 
-**The fleet identity allow-list is set on both nodes.** `[bbs]
-accept_identity_from` lists only the *other* node's link ids on each, so an
-edit to the BBS name or greeting propagates between them and Chattanooga --
-in neither list -- can neither rename this BBS nor be renamed by it. Empty
-remains the shipped default: the frame is unsigned, so out of the box
-nobody can. `[node_names]` also gained `Burlington` and `forgecam` entries
-grouping each node's two broker identities, without which the welcome
-announced four nodes for three.
+**The BBS name and greeting are now signed for the whole fleet.** On
+2026-09-27 the current greeting was signed with `fkec622a` and adopted by
+all four nodes; `fleet_identity.source_node_id` reads `fleet:fkec622a`. To
+change it, `python scripts/fleet_sign.py identity --welcome-file
+greeting.txt` and paste the output into Settings -> Fleet on any node. The
+older unsigned path still runs alongside: `[bbs] accept_identity_from` on
+bbs and forgecam lists only the other node, so a Welcome-page edit on one
+reaches only the other. Chattanooga sends its own unsigned BBSID every 15
+minutes, and bbs logs "Ignoring fleet identity ... not in
+accept_identity_from" each time -- harmless, the text is identical.
+`[node_names]` has `Burlington` and `forgecam` entries grouping each node's
+broker identities, without which the welcome announced more nodes than
+there are.
+
+**A version report can be lost when two nodes restart together.** MQTT
+sessions are clean, so a frame sent while the receiver is reconnecting is
+gone. A fleet deploy restarts every node within seconds, and twice now the
+VPS's first report on the new version went out while bbs was restarting:
+the Fleet page showed it `pending` until its next SYNCSTATE heartbeat (up
+to 30 minutes). Harmless but misleading. The fix would be to re-send fleet
+status to a peer when it is first heard from after startup.
 
 **Web Fetch has no allowed hosts, and that is now the operator's to fix.**
 `[gateway] allowed_hosts` is still empty on the live node, so Web Fetch
@@ -584,9 +631,12 @@ than an account, so removing one person's posts is one at a time.
 cleanly when its data is missing; `zork_port` still starts a session when
 `dfrotz` is absent. Same shape of fix applies.
 
-**Both nodes are bridged over *both* brokers.** mqtt1 and mqtt2 each carry the
-same pair, roughly doubling sync traffic between them. Dropping mqtt2 between
-these two would halve it, at the cost of the redundant path.
+**forgecam's mqtt1 peer never answers.** bbs no longer has an mqtt1 link,
+but forgecam still does, with `[sync_mqtt1] bbs_nodes =
+mqtt:baconbbs:bbs-main`. On 2026-09-27 its log held 4,006 frames sent to
+that peer and none received -- about 100 KB an hour into the LAN broker for
+nothing. Either remove forgecam's `[mqtt1]` link or point it at a node that
+is actually there.
 
 **Unpinned runtime dependencies:** `meshtastic`, `pypubsub`, `flask`.
 `meshcore` is pinned `>=2.3.8,<3`; 2.3.9.1 is available.
