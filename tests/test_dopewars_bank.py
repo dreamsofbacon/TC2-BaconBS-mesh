@@ -152,7 +152,7 @@ class BankScreenTests(unittest.TestCase):
         with self.assertRaises(menu._Stop):
             menu._step(turn, "3", {"menu": "loan"})
 
-    def test_a_balance_shows_on_the_screen_you_see_every_turn(self):
+    def test_a_balance_is_in_net_and_shown_on_the_money_screen(self):
         """Money you cannot see is money you forget, and this decides the
         final score."""
         for pg13 in (False, True):
@@ -160,7 +160,9 @@ class BankScreenTests(unittest.TestCase):
             state["bank"] = 500
             screen = menu.render(state, {"menu": "main"}, theme.theme(pg13))
             with self.subTest(theme=pg13):
-                self.assertIn("saved $500", screen)
+                self.assertIn("Net $1700", screen)
+                self.assertIn("500", menu.render(state, {"menu": "loan"},
+                                                 theme.theme(pg13)))
 
     def test_an_empty_account_costs_the_status_line_nothing(self):
         state = game.new_game(19)

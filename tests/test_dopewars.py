@@ -28,10 +28,38 @@ def test_initialization():
                             'meth', 'oxy', 'pcp', 'heroin', 'crystal',
                             'cocaine'}
     assert list(g.GOODS) == sorted(g.GOODS, key=g.GOODS.get)  # cheapest first
-    assert g.PLACES == ('bronx', 'brooklyn', 'manhattan', 'queens',
-                        'staten-island', 'harlem', 'coney-island',
-                        'central-park')
+    assert tuple(g.CITY_PLACES[g.NYC]) == ('bronx', 'brooklyn', 'manhattan', 'queens',
+                                           'staten-island', 'harlem',
+                                           'coney-island', 'central-park')
+    assert all(len(g.CITY_PLACES[city]) == 8 for city in g.CITIES)
+    assert g.AIRPORTS == {'new-york': 'queens', 'new-orleans': 'kenner',
+                          'miami': 'flagami'}
     assert g.validate(json.loads(json.dumps(s))) == s
+
+
+def test_ground_travel_stays_in_current_city_and_flights_use_airports():
+    s = g.new_game(19)
+    assert act(s, 'travel kenner') == s
+    s['place'] = 'queens'
+    fare = g.flight_fare(s, g.MIAMI)
+    assert 175 <= fare <= 325
+    assert fare == g.flight_fare(json.loads(json.dumps(s)), g.MIAMI)
+    with mock.patch.object(g, 'market'), mock.patch.object(g, 'draw', return_value=99):
+        arrived = act(s, 'flight miami yes')
+    assert arrived['place'] == 'flagami'
+    assert arrived['day'] == s['day'] + 1
+    assert arrived['cash'] == s['cash'] - fare
+
+
+def test_flight_requires_cash_and_does_not_change_state_when_unaffordable():
+    s = g.new_game(19)
+    s['place'] = 'queens'
+    fare = g.flight_fare(s, g.MIAMI)
+    s['cash'] = fare - 1
+    before = deepcopy(s)
+    arrived, reply, _ = g.command(s, 'flight miami yes')
+    assert arrived == before
+    assert f'${fare}' in reply
 
 
 def test_market_availability_events_and_prices_are_bounded():
@@ -44,6 +72,26 @@ def test_market_availability_events_and_prices_are_bounded():
         if s['event']:
             events.add(s['event'].split(':', 1)[0])
     assert events == {'deal', 'bust'}
+
+
+def test_supply_is_large_enough_for_bag_and_cocaine_bust_is_premium():
+    cocaine_bust = None
+    for seed in range(5000):
+        s = g.new_game(seed)
+        if not s['event']:
+            for offer in s['market'].values():
+                if offer['stock']:
+                    assert g.BASE_STOCK_MIN <= offer['stock'] <= g.BASE_STOCK_MAX
+        if s['event'] == 'bust:cocaine':
+            cocaine_bust = s
+            break
+
+    assert cocaine_bust is not None
+    offer = cocaine_bust['market']['cocaine']
+    assert 1 <= offer['stock'] <= g.COCAINE_BUST_STOCK_MAX
+    assert (g.GOODS['cocaine'] * g.COCAINE_BUST_PRICE_MIN // 100
+            <= offer['price']
+            <= g.GOODS['cocaine'] * g.COCAINE_BUST_PRICE_MAX // 100)
 
 
 def test_buy_sell_stock_cash_and_pure_api():
