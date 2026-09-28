@@ -1,0 +1,435 @@
+# Editable Dope Wars arrival descriptions
+# Keep exactly 10 numbered lines in every [CITY:...] and [DISTRICT:...] section.
+# Text after the | is shown to players. Blank lines and comments are ignored.
+
+[CITY:new-york]
+1|New York wakes beneath a low gray ceiling, with steam lifting from grates as traffic starts to roar.
+2|A cold front has pushed down the avenues, sharpening the horns and making every tower look taller.
+3|Warm rain has polished the sidewalks; delivery trucks and umbrellas are threading through the same narrow gaps.
+4|Sunlight breaks across the skyline after a storm, turning office windows into brief flashes of gold.
+5|A muggy harbor breeze is moving inland, carrying salt, diesel, and the smell of hot pavement.
+6|Wind funnels between the buildings while the city keeps its usual impossible schedule.
+7|An afternoon shower has emptied the side streets for a minute, but the stations are still packed.
+8|Clear weather has put people on every rooftop and stoop, with the whole city listening for the evening.
+9|Clouds are gathering over the river, and the air feels electrically close before the next downpour.
+10|The forecast is unsettled, but New York's boroughs are already trading rumors, packages, and opportunities.
+
+[CITY:chicago]
+1|Chicago opens under hard blue sky and lake wind, the kind that finds every gap in a jacket.
+2|Low clouds are dragging across the water while the elevated trains rattle through the cold.
+3|A spring storm has left the streets bright and wet, with the river reflecting the downtown towers.
+4|Dry air and a clear horizon make the skyline look close enough to touch from the lakefront.
+5|Wind cuts through the avenues as delivery doors slam and the city settles into its working rhythm.
+6|A warm spell has drawn people outside, but dark clouds are building beyond the lake.
+7|Rain is moving east across the city, turning the tracks, bridges, and sidewalks into silver lines.
+8|The temperature has dropped sharply; Chicago responds by moving faster and closing its doors tighter.
+9|Sun breaks through the clouds over the neighborhoods, bringing a brief calm between gusts.
+10|The lake is setting the weather today: bright one minute, steel-gray the next, never truly still.
+
+[CITY:san-diego]
+1|San Diego begins under a marine layer, with cool fog thinning slowly above the coastal neighborhoods.
+2|Bright sun has burned through the haze, leaving a clean ocean breeze and mild temperatures behind.
+3|A dry inland wind is pushing toward the coast, carrying dust, heat, and the smell of sun-warmed streets.
+4|Clouds hang over the water while the hills remain bright, giving the city two kinds of weather at once.
+5|An evening marine layer is rolling back in, softening the lights and cooling the pavement.
+6|The forecast is clear, but the ocean keeps its own schedule with a steady breeze off the bay.
+7|A brief coastal shower has left palms dripping and the sidewalks shining under sudden sun.
+8|Warm air is settling over the city; the beach is busy while the inland streets hold the heat.
+9|Low fog is collecting around the shoreline, making distant traffic sound farther away than it is.
+10|San Diego feels calm beneath the blue sky, though the wind suggests the weather can turn by sunset.
+
+[CITY:tijuana]
+1|Tijuana sits under dry afternoon heat, with bright signs and dusty hills beyond the crowded streets.
+2|A coastal breeze is pushing through the city, mixing cool air with food smoke and warm pavement.
+3|Clouds are building over the hills, but the border roads remain bright, noisy, and busy.
+4|Clear skies have brought out the crowds, and music spills into the streets with the afternoon heat.
+5|A dry wind carries dust through the avenues while traffic presses steadily toward the border.
+6|Night air is mild and restless, with storefronts glowing beneath a sky still holding the day's warmth.
+7|A brief shower has darkened the pavement without slowing the city for more than a few minutes.
+8|The hills are hazy in the heat, and every open doorway offers a different temperature and sound.
+9|Cool air is arriving from the coast, but the crowded central streets remain warm and active.
+10|Tijuana feels bright and unsettled under changing weather, with every route carrying a different story.
+
+[DISTRICT:bronx]
+1|elevated tracks and brick apartment blocks
+2|a ballpark crowd filtering through the avenues
+3|park hills rising above the neighborhood streets
+4|corner stores glowing beneath the train lines
+5|the river wind slipping between old warehouses
+6|street murals bright against weathered brick
+7|late traffic rolling past rows of stoops
+8|music drifting from open windows
+9|delivery vans crowding the curb
+10|the skyline appearing between neighborhood rooftops
+
+[DISTRICT:brooklyn]
+1|brownstones catching the first light
+2|bridge traffic moving above the rooftops
+3|the waterfront wind crossing the blocks
+4|small shops opening behind metal gates
+5|park paths busy after the rain
+6|old brick factories facing new construction
+7|bicycles threading through the side streets
+8|rooftops looking toward the harbor
+9|a distant train shaking the windows
+10|neighbors gathering under awnings
+
+[DISTRICT:manhattan]
+1|steam rising between the towers
+2|yellow cabs reflecting in wet pavement
+3|office crowds pouring from the subway
+4|the river wind turning every corner
+5|scaffolding shining after the rain
+6|street carts working beneath umbrellas
+7|rooftop water tanks against the clouds
+8|sirens echoing between the buildings
+9|a bright slice of sky above the avenues
+10|the sidewalks moving at full speed
+
+[DISTRICT:queens]
+1|subway noise rolling over mixed storefronts
+2|food stalls opening along busy blocks
+3|residential streets tucked behind traffic
+4|park trees bending in the breeze
+5|flushing streets bright with signs and umbrellas
+6|airport traffic humming somewhere nearby
+7|families gathering beneath shop awnings
+8|a warm smell of cooking in the evening air
+9|low rooftops spread toward the horizon
+10|many languages carrying through the same intersection
+
+[DISTRICT:staten-island]
+1|the ferry wake whitening the harbor
+2|salt air coming up from the shoreline
+3|quiet blocks opening toward the water
+4|hills and trees breaking up the city view
+5|rain tapping against ferry windows
+6|boats moving slowly beneath a cloudy sky
+7|the harbor appearing between suburban streets
+8|a cooler breeze off the Narrows
+9|porches drying after a shower
+10|the skyline fading into coastal haze
+
+[DISTRICT:chicago-loop]
+1|the elevated tracks turning above the street
+2|wind rushing down the tower canyons
+3|the river reflecting glass and steel
+4|office doors opening beneath dark clouds
+5|bridges shining after a lake-effect shower
+6|street musicians working beneath the train
+7|a clear view toward the lake
+8|traffic tightening around the midday rush
+9|steam rising from a service grate
+10|the skyline disappearing briefly in rain
+
+[DISTRICT:chicago-river-north]
+1|converted warehouses facing polished galleries
+2|the river wind moving between restaurants
+3|streetlights reflecting on wet pavement
+4|delivery trucks edging around evening crowds
+5|brick walls glowing after the clouds break
+6|a cold front pushing down the river
+7|patios filling during a brief warm spell
+8|the bridges lifting against a gray sky
+9|music leaking from basement doors
+10|glass towers catching the last sunlight
+
+[DISTRICT:chicago-wicker-park]
+1|storefronts bright beneath old apartment facades
+2|music posters lifting in the wind
+3|sidewalk cafes closing before the rain
+4|bikes and buses sharing the wet street
+5|brick alleys holding the day's warmth
+6|a sharp breeze crossing the boulevard
+7|neon signs flickering under low clouds
+8|people crowding under awnings
+9|mild air arriving after a storm
+10|street art standing out against the gray
+
+[DISTRICT:chicago-logan-square]
+1|wide boulevards lined with old trees
+2|mural walls glowing after a shower
+3|porches filling when the sun returns
+4|the elevated train humming beyond the blocks
+5|a cool wind moving through the square
+6|clouds racing over the neighborhood rooftops
+7|food smells gathering near the corners
+8|wet leaves shining along the boulevard
+9|neighbors watching a storm pass
+10|warm evening air settling over the old brick
+
+[DISTRICT:chicago-pilsen]
+1|bright murals beneath a hard blue sky
+2|brick storefronts holding the day's heat
+3|music and cooking smells crossing the sidewalks
+4|rainwater running along painted walls
+5|a lake breeze reaching inland
+6|people gathering under colorful awnings
+7|clouds darkening above the viaducts
+8|sunlight returning after a sudden shower
+9|old factories framing the neighborhood
+10|warm air lingering into the evening
+
+[DISTRICT:chicago-ohare]
+1|jet noise rolling over the terminal roads
+2|wind sweeping across the open runways
+3|rain streaking the glass departure halls
+4|clear weather bringing a long line of arrivals
+5|clouds closing in beyond the parking decks
+6|the cold making every automatic door feel welcome
+7|sunlight flashing across taxiing aircraft
+8|a thunderstorm warning glowing on the boards
+9|dry air and long sightlines across the fields
+10|the airport moving at a hurried, weather-driven pace
+
+[DISTRICT:chicago-hyde-park]
+1|lake wind moving past the university buildings
+2|tree-lined streets bright after rain
+3|museum crowds crossing beneath a cool sky
+4|old stone facades holding the morning chill
+5|sun breaking across the park lawns
+6|clouds gathering over the lakefront
+7|bikes moving through a brief warm spell
+8|wet pavement reflecting the neighborhood trees
+9|a steady breeze lifting papers along the curb
+10|quiet streets opening beneath clear evening light
+
+[DISTRICT:chicago-bronzeville]
+1|broad boulevards beneath a bright sky
+2|brick buildings warming after the morning cold
+3|jazz history carried through busy storefronts
+4|rain tapping the old apartment windows
+5|wind sweeping along the avenue
+6|neighbors gathering when the clouds break
+7|sunlight catching the neighborhood murals
+8|a storm passing east toward the lake
+9|warm pavement drying after the shower
+10|evening air settling over the historic blocks
+
+[DISTRICT:san-diego-middletown]
+1|airport traffic humming beyond the rooftops
+2|marine fog pressing against the terminal roads
+3|the harbor breeze cooling the afternoon
+4|sunlight breaking across the rail yards
+5|jets climbing through a clear blue sky
+6|a low cloud bank hiding the hills
+7|warm pavement drying after a brief shower
+8|salt air moving inland from the bay
+9|the city brightening as the marine layer lifts
+10|evening flights crossing a soft coastal sunset
+
+[DISTRICT:san-diego-little-italy]
+1|market awnings lifting in the harbor breeze
+2|warm sunlight on the narrow restaurant streets
+3|fog softening the high-rises near the water
+4|sidewalk tables filling after the clouds break
+5|the smell of cooking carried through cool air
+6|a dry wind turning the flags above the blocks
+7|rain beading on the market windows
+8|sunset light reaching between the old facades
+9|gulls circling beyond the rooftops
+10|a mild evening settling over the busy district
+
+[DISTRICT:san-diego-barrio-logan]
+1|murals glowing beneath bright coastal light
+2|the bridge traffic humming above the neighborhood
+3|a marine breeze moving through the industrial streets
+4|warm air gathering around the waterfront
+5|clouds rolling in from the bay
+6|rain making the painted walls shine
+7|sun returning over the shipyard edges
+8|salt air mixing with food smoke
+9|the pavement holding the day's heat
+10|a cool evening wind arriving from the water
+
+[DISTRICT:san-diego-hillcrest]
+1|cafe patios opening under clear skies
+2|the hilltop breeze moving through the intersections
+3|marine fog visible beyond the rooftops
+4|bright sun warming the sidewalks
+5|a short shower darkening the steep streets
+6|clouds hanging over the distant coast
+7|warm air carrying music from open doors
+8|trees bending in the afternoon breeze
+9|the neighborhood glowing after sunset
+10|cool air arriving as the hills lose the light
+
+[DISTRICT:san-diego-north-park]
+1|murals and shop fronts bright in the sun
+2|warm air gathering around the busy corners
+3|a marine layer fading beyond the rooftops
+4|brewery patios filling beneath cool clouds
+5|rain tapping the old bungalow porches
+6|dry wind moving through the side streets
+7|sunlight catching signs after the shower
+8|the hills clear in the distance
+9|evening warmth lingering on the sidewalks
+10|a mild breeze carrying music down the avenue
+
+[DISTRICT:san-diego-pacific-beach]
+1|surf noise rising beyond the streets
+2|marine fog sliding over the beach houses
+3|sun warming the boardwalk after a cool morning
+4|a strong ocean breeze lifting umbrellas
+5|clouds breaking above the water
+6|sand blowing across the open sidewalks
+7|rain passing quickly over the pier
+8|gulls circling in the clear afternoon
+9|the tide wind cooling the evening
+10|bright beach light returning after the haze
+
+[DISTRICT:san-diego-ocean-beach]
+1|the pier reaching into a hazy blue horizon
+2|salt wind rattling the shop signs
+3|fog wrapping the beach before noon
+4|sunlight flashing across wet sand
+5|a brief shower darkening the boardwalk
+6|waves loud beneath a low cloud deck
+7|warm air drawing people toward the water
+8|the evening breeze carrying smoke from beach fires
+9|clear skies opening over the pier
+10|cool marine air settling over the neighborhood
+
+[DISTRICT:san-ysidro]
+1|border traffic crawling beneath bright sun
+2|dry hills visible beyond the crossing roads
+3|a cool marine breeze meeting hot pavement
+4|clouds gathering over the international line
+5|rain briefly shining on the port-of-entry lanes
+6|the afternoon heat rising from the concrete
+7|vendors and commuters moving beneath a hazy sky
+8|wind pushing dust along the fences
+9|sunset light reaching across the busy streets
+10|the coastal air turning cool as evening arrives
+
+[DISTRICT:harlem]
+1|Harlem's brownstones hold the morning chill while music starts up along the avenue.
+2|A warm breeze carries food smells past the stoops and beneath a brightening sky.
+3|Rain darkens the brick, but conversation and traffic keep the sidewalks moving.
+4|A distant beat keeps time with the trains under a low bank of clouds.
+5|Sunlight reaches the upper floors while the street stays cool and busy.
+6|People gather beneath awnings as a brief shower crosses the neighborhood.
+7|The air is mild, the corners are active, and nobody misses much.
+8|Wind lifts flyers along the avenue as the afternoon crowds arrive.
+9|The weather turns warm toward evening, bringing more voices onto the block.
+10|Harlem settles into a lively night beneath clear air and glowing windows.
+
+[DISTRICT:coney-island]
+1|Salt air and fried food drift along the boardwalk beneath a bright sky.
+2|A sea breeze keeps the heat moving while the rides turn against the clouds.
+3|The beach is busy after a shower, with wet boards shining under the signs.
+4|Wind snaps at the awnings and pushes gulls inland from the water.
+5|Sunlight opens across the sand while the district shakes off its morning fog.
+6|Clouds gather over the pier, but the boardwalk crowd keeps moving.
+7|The temperature is mild, and the shoreline gives every street its own rhythm.
+8|A cool breeze comes off the water as evening lights begin to glow.
+9|The surf is loud beneath the gray sky, making the nearby traffic sound distant.
+10|Clear weather returns to the beach, bringing color back to every sign and stall.
+
+[DISTRICT:central-park]
+1|Trees and paths soften the city noise beneath a cool, clear morning.
+2|A sudden shower darkens the paths while the skyline disappears behind leaves.
+3|Sunlight breaks through the branches, warming the grass after the rain.
+4|Wind moves across the open lawns and carries traffic noise from beyond the trees.
+5|Joggers and cyclists share the paths beneath clouds moving toward the river.
+6|The park air is cooler than the streets, with birds competing against the horns.
+7|A warm afternoon brings visitors out wherever the shade has not claimed the benches.
+8|Low clouds make the towers look farther away while the paths stay busy.
+9|Rain beads on the leaves, and every footstep sounds sharper in the damp air.
+10|Clear evening light settles over the park while the city keeps glowing around it.
+
+[DISTRICT:tijuana-zona-rio]
+1|Glass towers and busy boulevards rise beneath a dry, bright sky.
+2|A coastal breeze slips between offices, restaurants, and traffic.
+3|Clouds gather over the hills while the district keeps moving.
+4|Sunlight flashes from windows after a brief coastal shower.
+5|The afternoon heat settles over sidewalks full of cars and voices.
+6|Warm air carries food smoke through the polished downtown blocks.
+7|The evening cools quickly as signs come alive along the avenues.
+8|Dusty hills sit beyond the traffic under a clear blue horizon.
+9|Wind moves wrappers along the curb while business carries on.
+10|Zona Río feels modern, crowded, and alert beneath changing skies.
+
+[DISTRICT:tijuana-centro]
+1|Old facades and bright signs crowd the warm central streets.
+2|A mild breeze carries music, food smoke, and traffic through the blocks.
+3|Rain darkens the pavement while pedestrians gather under awnings.
+4|Dry afternoon heat rises from the sidewalks and painted walls.
+5|Clear weather brings more voices into the plazas and side streets.
+6|Clouds hang over the hills as storefronts glow below.
+7|The air cools after sunset, but the center stays restless.
+8|Dust moves along the avenue beneath a hard blue sky.
+9|A brief shower leaves neon reflections trembling in the street.
+10|Centro feels close-packed, musical, and impossible to read at a glance.
+
+[DISTRICT:tijuana-playas]
+1|Ocean air rolls over the streets beneath a pale coastal sky.
+2|The breeze is cool, salty, and strong enough to move every awning.
+3|Low clouds hang over the water while the neighborhood stays bright.
+4|Sun breaks through the marine layer and warms the sidewalks quickly.
+5|A passing shower leaves the pavement shining toward the coast.
+6|The hills fade into haze beyond houses and busy corner shops.
+7|Evening wind brings salt air and the sound of distant traffic.
+8|Clear weather opens a wide view toward the water.
+9|Warm afternoon light settles over the district before the fog returns.
+10|Playas feels relaxed on the surface, with weather always moving in.
+
+[DISTRICT:tijuana-otay]
+1|Broad roads and warehouses sit under bright, dry afternoon light.
+2|Border traffic hums past hills that look sharp beneath the clear sky.
+3|A hot inland wind pushes dust across the industrial edges.
+4|Clouds build slowly while trucks keep moving through the district.
+5|A brief shower cools the pavement without slowing the roads.
+6|Sunlight reflects from fences, roofs, and passing vehicles.
+7|The air turns mild toward evening as the hills darken.
+8|Wind carries the smell of fuel and food across the busy blocks.
+9|Low haze softens the distance while local traffic stays loud.
+10|Otay is practical, exposed, and always connected to a route somewhere.
+
+[DISTRICT:tijuana-la-mesa]
+1|The rolling streets warm quickly beneath a clear inland sky.
+2|A dry breeze moves between homes, shops, and busy intersections.
+3|Clouds gather over the hills while traffic threads through the district.
+4|Sunlight catches dust in the air after a passing truck.
+5|A short rain leaves gutters running and storefronts bright.
+6|The afternoon heat lingers against the low buildings.
+7|Cool coastal air arrives late, softening the evening streets.
+8|Wind pushes through the open lots beneath a pale blue horizon.
+9|The district is bright and dry even when the coast disappears in haze.
+10|La Mesa feels spread out, active, and shaped by the weather.
+
+[DISTRICT:tijuana-five-ten]
+1|Traffic, shops, and bus stops crowd the avenue beneath warm air.
+2|A coastal breeze cuts through the heat for a few minutes at a time.
+3|Clouds pass over the district while signs shine below.
+4|A quick shower turns the pavement dark and reflective.
+5|Dry sunlight returns almost immediately after the rain.
+6|Food smoke and dust mix in the busy afternoon air.
+7|Evening cool settles over the road as the traffic keeps flowing.
+8|The hills appear between buildings beneath a clear sky.
+9|Wind rattles signs and carries voices down the commercial blocks.
+10|5 y 10 is loud, crowded, and always one turn from somewhere else.
+
+[DISTRICT:tijuana-agua-caliente]
+1|Warm air rises from the busy streets beneath bright afternoon sun.
+2|A dry breeze moves past hotels, shops, and distant hills.
+3|Clouds gather over the ridge while the district stays active.
+4|Rain briefly cools the pavement before the heat returns.
+5|Signs glow against a hazy sky as evening approaches.
+6|The air is mild near the coast but warmer inland.
+7|Sunlight breaks through the marine layer in sharp patches.
+8|Traffic noise carries beneath a clear, dry horizon.
+9|A warm wind lifts dust along the curb and through the side streets.
+10|Agua Caliente feels bright, busy, and tuned to the evening crowd.
+
+[DISTRICT:tijuana-libertad]
+1|Hillside streets climb beneath a clear sky and a dry breeze.
+2|Warm air carries cooking smells between close-set homes.
+3|Clouds settle over the rooftops while the roads remain busy.
+4|A brief shower darkens the steep pavement and brightens the walls.
+5|Sun returns quickly, leaving the district shining in the heat.
+6|Wind moves across the hills with a view toward the city lights.
+7|The evening air cools while voices carry between the blocks.
+8|Dust hangs over the road beneath a pale coastal horizon.
+9|Low fog softens the distance but never quiets the neighborhood.
+10|Libertad feels layered, uphill, and full of weather from the coast.

@@ -32,21 +32,21 @@ def test_initialization():
                                            'staten-island', 'harlem',
                                            'coney-island', 'central-park')
     assert all(len(g.CITY_PLACES[city]) == 8 for city in g.CITIES)
-    assert g.AIRPORTS == {'new-york': 'queens', 'new-orleans': 'kenner',
-                          'miami': 'flagami'}
+    assert g.AIRPORTS == {'new-york': 'queens', 'chicago': 'chicago-ohare',
+                          'san-diego': 'san-diego-middletown'}
     assert g.validate(json.loads(json.dumps(s))) == s
 
 
 def test_ground_travel_stays_in_current_city_and_flights_use_airports():
     s = g.new_game(19)
-    assert act(s, 'travel kenner') == s
+    assert act(s, 'travel chicago-ohare') == s
     s['place'] = 'queens'
-    fare = g.flight_fare(s, g.MIAMI)
-    assert 175 <= fare <= 325
-    assert fare == g.flight_fare(json.loads(json.dumps(s)), g.MIAMI)
+    fare = g.flight_fare(s, g.SAN_DIEGO)
+    assert 200 <= fare <= 350
+    assert fare == g.flight_fare(json.loads(json.dumps(s)), g.SAN_DIEGO)
     with mock.patch.object(g, 'market'), mock.patch.object(g, 'draw', return_value=99):
-        arrived = act(s, 'flight miami yes')
-    assert arrived['place'] == 'flagami'
+        arrived = act(s, 'flight san-diego yes')
+    assert arrived['place'] == 'san-diego-middletown'
     assert arrived['day'] == s['day'] + 1
     assert arrived['cash'] == s['cash'] - fare
 
@@ -54,10 +54,10 @@ def test_ground_travel_stays_in_current_city_and_flights_use_airports():
 def test_flight_requires_cash_and_does_not_change_state_when_unaffordable():
     s = g.new_game(19)
     s['place'] = 'queens'
-    fare = g.flight_fare(s, g.MIAMI)
+    fare = g.flight_fare(s, g.SAN_DIEGO)
     s['cash'] = fare - 1
     before = deepcopy(s)
-    arrived, reply, _ = g.command(s, 'flight miami yes')
+    arrived, reply, _ = g.command(s, 'flight san-diego yes')
     assert arrived == before
     assert f'${fare}' in reply
 

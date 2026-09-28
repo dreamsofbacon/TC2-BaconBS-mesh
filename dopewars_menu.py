@@ -61,10 +61,12 @@ def _status(state, t) -> str:
     due = f" (due D{state['loan_due']})" if state['debt'] else ""
     gear = ("🔫" if state['weapon'] else "") + ("🛡️" if state['armor'] else "")
     gear = gear or "—"
+    net = game.score(state)
+    net_display = f"${net}" if net < 1_000_000_000 else f"${net / 1_000_000_000:g}B"
     return (f"⏱️ D{state['day']}/{state['days']} | 📍 {place}"
             f" | 💵 ${state['cash']} | 💳 ${state['debt']}{due}\n"
             f"❤️ {state['hp']} | 🎒 {carried}/{state['capacity']}"
-            f" | Gear {gear} | Net ${game.score(state)}")
+            f" | Gear {gear} | Net {net_display}")
 
 
 def _max_buy(state, item) -> int:
@@ -153,9 +155,13 @@ def _at_the_airport(state) -> bool:
     return game.airport_city(state['place']) is not None
 
 
+def _at_the_border(state) -> bool:
+    return state['place'] in game.BORDER_PLACES
+
+
 def _airport_destinations(state):
     origin = game.airport_city(state['place'])
-    return [city for city in game.CITIES if city != origin]
+    return [city for city in game.CITIES if city in game.AIRPORTS and city != origin]
 
 
 # What each money move can move at most, and the engine command for it.
@@ -229,6 +235,10 @@ def render(state, nav, t, note='') -> str:
         fare = game.flight_fare(state, destination)
         lines.append(f"Fly to {game.CITY_LABELS[destination]} for ${fare}?")
         lines.append("[Y]es, board now [0]Back")
+    elif menu == 'border':
+        other = game.CITY_LABELS[game.city(game.BORDER_PLACES[state['place']])]
+        lines.append(f"Border terminal: {other}")
+        lines.append("[1]Cross legally [2]Hop fence [0]Back")
     elif menu == 'gear':
         lines.append(f"Gear (${state['cash']}):")
         for index, (key, price) in enumerate(GEAR, start=1):
@@ -277,10 +287,11 @@ def render(state, nav, t, note='') -> str:
             # drop the longer sentence so the three-line status header stays
             # inside one packet.
             lines.append(f"{icon} {t['goods'][item]}")
-        airport_option = " [7]Airport" if _at_the_airport(state) else ""
+        airport_option = (" [7]Airport" if _at_the_airport(state)
+                          else (" [7]Border" if _at_the_border(state) else ""))
         lines.append(f"[1]Mkt [2]Travel [3]Bag [4]Gear "
                      f"[5]$ [6]E{airport_option} [0]X")
-        if state['moves'] == 0 and state['days'] == 30 and not _at_the_airport(state):
+        if state['moves'] == 0 and state['days'] == 30 and not _at_the_airport(state) and not _at_the_border(state):
             lines.append("[7]365d")
 
     # One packet beats a few words, but only just: each screen gives up
@@ -294,11 +305,19 @@ def render(state, nav, t, note='') -> str:
             # The legend goes; [M]ore and [0]Back stay, being the only
             # ways off the screen.
             lines = lines[:-1] + [lines[-1][len(_FOOTER_KEY):]]
-        elif not note and lines and lines[0] == t['title']:
-            lines = lines[1:]
+        elif menu == 'main':
+            # Preserve the title by compressing separators and labels first;
+            # only a truly impossible packet should drop it.
+            lines = [line.replace(' | ', ' ').replace(' | Gear ', ' G ').replace(' | Net ', ' N ')
+                     for line in lines]
+            screen = "\n".join(lines)
+            if len(screen.encode('utf-8')) > MAX_SCREEN_BYTES and not note and lines and lines[0] == t['title']:
+                lines = lines[1:]
         screen = "\n".join(lines)
     if menu == 'main' and len(screen.encode('utf-8')) > MAX_SCREEN_BYTES:
         screen = screen.replace(' | ', ' ')
+    if menu == 'main' and len(screen.encode('utf-8')) > MAX_SCREEN_BYTES:
+        screen = screen.replace(' | Gear ', ' G ').replace(' | Net ', ' N ')
     return screen
 
 
@@ -377,18 +396,23 @@ def _step(turn, word, nav) -> dict:
 
     if menu == 'main':
         has_airport = _at_the_airport(state)
-        top = 7 if has_airport or (state['moves'] == 0 and state['days'] == 30) else 6
+        has_border = _at_the_border(state)
+        top = 7 if has_airport or has_border or (state['moves'] == 0 and state['days'] == 30) else 6
         # Letters for the two people reach for every turn, spelling what
         # the buttons say.
         if word in ('t', 'travel'):
             return {'menu': 'move'}
         if word in ('a', 'airport') and has_airport:
             return {'menu': 'airport'}
+        if word in ('b', 'border') and has_border:
+            return {'menu': 'border'}
         if word in ('m', 'market'):
             return {'menu': 'market', 'start': 0}
         choice = _number(word, 1, top)
         if choice == 7 and has_airport:
             return {'menu': 'airport'}
+        if choice == 7 and has_border:
+            return {'menu': 'border'}
         if choice == 7:
             turn.act("new 365")
             turn.note("Now a 365-day run.")
@@ -399,7 +423,7 @@ def _step(turn, word, nav) -> dict:
     if word == '0':
         # One level up from every sub-screen.
         up = {'buy_qty': 'item', 'sell_qty': 'item', 'item': 'market',
-              'loan_amt': 'loan', 'flight_confirm': 'airport'}
+              'loan_amt': 'loan', 'flight_confirm': 'airport', 'border': 'main'}
         back = up.get(menu, 'main')
         if back == 'item':
             return {'menu': 'item', 'item': nav['item']}
@@ -453,6 +477,23 @@ def _step(turn, word, nav) -> dict:
         destination = destinations[_number(word, 1, len(destinations)) - 1]
         return {'menu': 'flight_confirm', 'destination': destination}
 
+    if menu == 'border':
+        choice = _number(word, 1, 2)
+        before, after = turn.act('border ' + ('legal' if choice == 1 else 'fence'))
+        if after['phase'] == 'police':
+            turn.note('Border police encounter.')
+            return {'menu': 'main'}
+        if after['place'] != before['place']:
+            turn.note(f"Arrived in {game.CITY_LABELS[game.city(after['place'])]}.")
+            city_line, _ = game.arrival_descriptions(
+                before['seed'], before['moves'], before['day'] + 1,
+                after['place'], from_airport=True)
+            if city_line:
+                turn.note(city_line)
+        else:
+            turn.note('Turned back at the border.')
+        return {'menu': 'market', 'start': 0}
+
     if menu in ('move', 'flight_confirm'):
         fare = 0
         if menu == 'flight_confirm':
@@ -476,6 +517,14 @@ def _step(turn, word, nav) -> dict:
             turn.note(f"Day {after['day']}: {t['places'][place]}. That was the last day.")
         else:
             turn.note(f"Day {after['day']}: {t['places'][place]}.")
+        if after['moves'] != before['moves'] and after['phase'] != 'ended':
+            city_line, district_line = game.arrival_descriptions(
+                before['seed'], before['moves'], before['day'] + 1, place,
+                from_airport=(menu == 'flight_confirm'))
+            if city_line:
+                turn.note(city_line)
+            if district_line:
+                turn.note(district_line)
         if after['phase'] != 'ended':
             cash_found = after['cash'] - before['cash'] + fare
             if cash_found > 0:

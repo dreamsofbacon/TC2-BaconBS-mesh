@@ -6,6 +6,7 @@ See docs/dopewars.md for provenance and deliberately simplified rules.
 """
 from copy import deepcopy
 from hashlib import sha256
+from pathlib import Path
 
 GAME_ID = 'dopewars'
 VERSION = 5
@@ -24,26 +25,46 @@ GOODS = {'ludes': 40, 'weed': 90, 'speed': 150, 'peyote': 190,
          'acid': 540, 'ketamine': 620, 'meth': 750, 'oxy': 900,
          'pcp': 1000, 'heroin': 1250, 'crystal': 1500, 'cocaine': 1800}
 NYC = 'new-york'
-NEW_ORLEANS = 'new-orleans'
-MIAMI = 'miami'
-CITIES = (NYC, NEW_ORLEANS, MIAMI)
-CITY_LABELS = {NYC: 'New York', NEW_ORLEANS: 'New Orleans', MIAMI: 'Miami'}
+CHICAGO = 'chicago'
+SAN_DIEGO = 'san-diego'
+TIJUANA = 'tijuana'
+# Compatibility aliases for the legacy inline description table below; the
+# editable catalog loaded after it is the source of truth.
+NEW_ORLEANS = CHICAGO
+MIAMI = SAN_DIEGO
+CITIES = (NYC, CHICAGO, SAN_DIEGO, TIJUANA)
+CITY_LABELS = {NYC: 'New York', CHICAGO: 'Chicago',
+               SAN_DIEGO: 'San Diego', TIJUANA: 'Tijuana'}
 CITY_PLACES = {
     NYC: ('bronx', 'brooklyn', 'manhattan', 'queens', 'staten-island',
           'harlem', 'coney-island', 'central-park'),
-    NEW_ORLEANS: ('kenner', 'french-quarter', 'central-business-district',
-                  'garden-district', 'treme', 'bywater', 'uptown-new-orleans',
-                  'mid-city'),
-    MIAMI: ('flagami', 'downtown-miami', 'brickell', 'south-beach',
-            'little-havana', 'wynwood', 'coconut-grove', 'edgewater'),
+    CHICAGO: ('chicago-loop', 'chicago-river-north', 'chicago-wicker-park',
+              'chicago-logan-square', 'chicago-pilsen', 'chicago-ohare',
+              'chicago-hyde-park', 'chicago-bronzeville'),
+    SAN_DIEGO: ('san-diego-middletown', 'san-diego-little-italy',
+                'san-diego-barrio-logan', 'san-diego-hillcrest',
+                'san-diego-north-park', 'san-diego-pacific-beach',
+                'san-diego-ocean-beach', 'san-ysidro'),
+    TIJUANA: ('tijuana-zona-rio', 'tijuana-centro', 'tijuana-playas',
+              'tijuana-otay', 'tijuana-la-mesa', 'tijuana-five-ten',
+              'tijuana-agua-caliente', 'tijuana-libertad'),
 }
 PLACES = tuple(place for city in CITIES for place in CITY_PLACES[city])
 PLACE_CITY = {place: city for city, places in CITY_PLACES.items() for place in places}
-AIRPORTS = {NYC: 'queens', NEW_ORLEANS: 'kenner', MIAMI: 'flagami'}
+AIRPORTS = {NYC: 'queens', CHICAGO: 'chicago-ohare', SAN_DIEGO: 'san-diego-middletown'}
+BORDER_PLACES = {'san-ysidro': 'tijuana-zona-rio',
+                 'tijuana-zona-rio': 'san-ysidro',
+                 'tijuana-centro': 'san-ysidro',
+                 'tijuana-playas': 'san-ysidro',
+                 'tijuana-otay': 'san-ysidro',
+                 'tijuana-la-mesa': 'san-ysidro',
+                 'tijuana-five-ten': 'san-ysidro',
+                 'tijuana-agua-caliente': 'san-ysidro',
+                 'tijuana-libertad': 'san-ysidro'}
 FLIGHT_FARE_BANDS = {
-    frozenset((NEW_ORLEANS, MIAMI)): (100, 225),
-    frozenset((NYC, MIAMI)): (175, 325),
-    frozenset((NYC, NEW_ORLEANS)): (200, 350),
+    frozenset((CHICAGO, SAN_DIEGO)): (175, 325),
+    frozenset((NYC, SAN_DIEGO)): (200, 350),
+    frozenset((NYC, CHICAGO)): (200, 350),
 }
 # The bank is in one town on purpose. Reachable everywhere it would be
 # free insurance -- deposit before every trip, withdraw on arrival --
@@ -54,6 +75,20 @@ PLACE_LABELS = {
     'bronx': 'Bronx', 'brooklyn': 'Brooklyn', 'manhattan': 'Manhattan',
     'queens': 'Queens', 'staten-island': 'Staten Is.', 'harlem': 'Harlem',
     'coney-island': 'Coney Is.', 'central-park': 'Central Pk',
+    'chicago-loop': 'The Loop', 'chicago-river-north': 'River North',
+    'chicago-wicker-park': 'Wicker Park', 'chicago-logan-square': 'Logan Square',
+    'chicago-pilsen': 'Pilsen', 'chicago-ohare': "O'Hare",
+    'chicago-hyde-park': 'Hyde Park', 'chicago-bronzeville': 'Bronzeville',
+    'san-diego-middletown': 'Middletown', 'san-diego-little-italy': 'Little Italy',
+    'san-diego-barrio-logan': 'Barrio Logan', 'san-diego-hillcrest': 'Hillcrest',
+    'san-diego-north-park': 'North Park', 'san-diego-pacific-beach': 'Pacific Beach',
+    'san-diego-ocean-beach': 'Ocean Beach', 'san-ysidro': 'San Ysidro',
+    'tijuana-zona-rio': 'Zona Río', 'tijuana-centro': 'Centro',
+    'tijuana-playas': 'Playas', 'tijuana-otay': 'Otay',
+    'tijuana-la-mesa': 'La Mesa', 'tijuana-five-ten': '5 y 10',
+    'tijuana-agua-caliente': 'Agua Caliente', 'tijuana-libertad': 'Libertad',
+    'tijuana': 'Tijuana',
+    # Legacy labels used while constructing the replaced inline catalog.
     'kenner': 'Kenner', 'french-quarter': 'French Quarter',
     'central-business-district': 'Central Business District',
     'garden-district': 'Garden District', 'treme': 'Treme',
@@ -62,6 +97,112 @@ PLACE_LABELS = {
     'south-beach': 'South Beach', 'little-havana': 'Little Havana',
     'wynwood': 'Wynwood', 'coconut-grove': 'Coconut Grove', 'edgewater': 'Edgewater',
 }
+
+# Arrival copy is deliberately short: the numbered door puts it above the
+# status screen, which must fit in one Meshtastic packet.
+CITY_DESCRIPTIONS = {
+    NYC: (
+        'New York rises around you: busy streets, bright signs, and opportunity.',
+        'The city hums with traffic, horns, and deals waiting on every corner.',
+        'Skyscrapers cut the sky while the sidewalks carry a steady current of people.',
+        'Cold wind funnels between buildings, carrying the smell of food and rain.',
+        'New York never seems to sleep; somewhere nearby, a market is opening.',
+        'The streets are crowded, loud, and full of places to disappear into.',
+        'A restless city stretches in every direction, stitched together by trains.',
+        'Neon, brick, and concrete make a hard-edged maze around you.',
+        'You arrive beneath a skyline that makes every plan feel possible.',
+        'The city greets you with rushing feet and a thousand competing sounds.',
+    ),
+    NEW_ORLEANS: (
+        'New Orleans welcomes you with warm air, old brick, and music in the distance.',
+        'The city feels relaxed on the surface, but every street has a story.',
+        'Humidity hangs over the roads as the smell of food drifts from nearby kitchens.',
+        'Balconies, battered walls, and bright signs frame the city around you.',
+        'A brass note floats through the air somewhere beyond the next block.',
+        'The streets are slow-moving, colorful, and never quite predictable.',
+        'Warm weather and older buildings give the city an unmistakable character.',
+        'The city is alive with porch talk, cooking smells, and distant music.',
+        'Rain clouds gather over a city that knows how to keep moving.',
+        'New Orleans feels like a conversation already in progress.',
+    ),
+    MIAMI: (
+        'Miami greets you with bright sun, warm air, and water somewhere nearby.',
+        'Palm trees sway over streets where business and pleasure share the pavement.',
+        'The heat settles in quickly, softened by a breeze off the coast.',
+        'Colorful buildings and polished towers rise beneath a wide blue sky.',
+        'The city glitters in the sun, but the best opportunities hide in the shade.',
+        'Music, traffic, and ocean air mix together around you.',
+        'Miami moves at a quick pace, even when the heat tells you to slow down.',
+        'A storm may be brewing offshore; for now, the streets are bright and busy.',
+        'The coast is close, the weather is warm, and nobody looks surprised to see you.',
+        'Sunlight flashes off glass and water as the city opens up around you.',
+    ),
+}
+
+DISTRICT_DESCRIPTIONS = {
+    place: tuple(f'{PLACE_LABELS[place]}: {text}.' for text in texts)
+    for place, texts in {
+        'bronx': ('Block after block carries its own rhythm', 'The neighborhood is lively and watchful', 'Street art brightens the concrete', 'Local traffic fills the avenue', 'A cool breeze cuts between the buildings', 'People move with somewhere to be', 'The sidewalks offer plenty of cover', 'A corner shop does brisk business', 'The neighborhood feels close-knit', 'The weather changes nothing about the pace'),
+        'brooklyn': ('Brownstones line the busy streets', 'The neighborhood balances old brick and new money', 'A bakery smell follows you down the block', 'Delivery trucks squeeze past parked cars', 'The sidewalks are crowded but orderly', 'Small businesses keep the corners bright', 'A train rumbles somewhere nearby', 'The air is cool and carries a hint of rain', 'Locals watch the street without staring', 'There is always another side street to explore'),
+        'manhattan': ('Tall buildings turn the street into a canyon', 'Crowds stream past without slowing down', 'Taxis and delivery bikes compete for space', 'The skyline disappears into low clouds', 'Every block feels like a different world', 'Office workers spill into the streets', 'Bright signs reflect off wet pavement', 'The city noise is almost physical here', 'A subway entrance breathes warm air nearby', 'There is no shortage of eyes on the street'),
+        'queens': ('Air travelers and locals share the busy roads', 'The neighborhood is a patchwork of languages and food', 'Planes pass overhead on their way to the runway', 'A steady breeze moves through the broad streets', 'Small stores crowd the corners', 'The weather is mild, but the traffic is not', 'The area feels practical and always in motion', 'You can hear several neighborhoods at once', 'Rain beads on signs and windshields', 'The district is an easy place to blend in'),
+        'staten-island': ('The water is never far from the quieter streets', 'A ferry horn sounds across the gray morning', 'The district feels calmer than the city across the bay', 'Wind comes off the harbor carrying salt', 'Small roads wind past older homes', 'Clouds move quickly over the shoreline', 'The neighborhood keeps its own pace', 'A damp chill settles over the waterfront', 'The view is peaceful, but business still moves', 'The island feels removed without being empty'),
+        'harlem': ('Music and conversation spill onto the sidewalks', 'Brownstone blocks glow in the afternoon light', 'The neighborhood is proud, busy, and observant', 'A warm breeze carries food smells down the avenue', 'People gather beneath awnings to escape the weather', 'The street corners are full of stories', 'Rain darkens the brick and slows the traffic', 'A distant beat keeps time with the city', 'The area feels welcoming but nobody misses much', 'The district has energy in every direction'),
+        'coney-island': ('The boardwalk air smells of salt and fried food', 'Bright signs stand out beneath the open sky', 'A sea breeze keeps the heat moving', 'The beach is busy despite the gathering clouds', 'Tourists and locals weave through the same streets', 'The district feels festive even on a quiet day', 'Waves roll in beyond the buildings', 'Wind snaps at awnings along the avenue', 'The shoreline gives the neighborhood its mood', 'Summer seems close even when the sky is gray'),
+        'central-park': ('Trees and paths break up the surrounding city noise', 'Joggers and cyclists pass beneath a clear sky', 'The park air is cooler than the streets outside', 'A sudden shower darkens the paths', 'Open green space makes the skyline look distant', 'Birdsong competes with traffic beyond the trees', 'Visitors gather wherever the sun breaks through', 'The paths offer many routes and few explanations', 'Wind moves through the branches overhead', 'The district is peaceful, but never completely quiet'),
+        'kenner': ('Runways and low roads spread out beneath the humid sky', 'Travelers hurry past with bags and tired eyes', 'The airport district runs on schedules and coffee', 'Warm rain taps against the terminal windows', 'A plane climbs overhead as traffic crawls below', 'The district feels temporary, built for arrivals and departures', 'Bright signs point in every direction', 'The air smells of jet fuel and wet pavement', 'A calm breeze crosses the broad airport roads', 'People here are always headed somewhere else'),
+        'french-quarter': ('Old balconies overlook streets full of color and noise', 'Music leaks from doorways into the warm evening air', 'The pavement shines after a sudden shower', 'Food, rain, and river air mingle around you', 'The district is crowded, bright, and hard to read', 'Ironwork shadows stretch across the old brick', 'A brass rhythm echoes from somewhere nearby', 'The heat makes every shaded doorway valuable', 'Tourists drift while locals move with purpose', 'The Quarter feels awake even before sunset'),
+        'central-business-district': ('Glass towers rise over busy, practical streets', 'Workers hurry beneath a sky heavy with rain', 'The district is all offices, traffic, and quick decisions', 'Warm air funnels between the taller buildings', 'Lunch crowds fill the sidewalks', 'The skyline reflects in puddles along the curb', 'Delivery vans and pedestrians compete for every lane', 'The city feels focused here', 'A brief storm sends everyone under cover', 'Business continues no matter what the weather does'),
+        'garden-district': ('Shaded streets pass grand homes and old live oaks', 'The air is warm and carries the scent of wet leaves', 'Porches and gardens soften the city noise', 'A slow rain darkens the broad sidewalks', 'The neighborhood is quiet enough to hear birds', 'Moss hangs above streets that seem older than the traffic', 'Sunlight breaks through the branches in patches', 'The district feels elegant, watchful, and lived in', 'A warm breeze moves through the gardens', 'Old walls hide newer stories'),
+        'treme': ('Porches, music, and conversation fill the warm air', 'The neighborhood wears its history openly', 'A passing shower leaves the streets shining', 'Food smells drift from homes and corner kitchens', 'The district is lively without needing to hurry', 'Music competes with the hum of traffic', 'People watch the weather and carry on', 'The heat settles over the rooftops', 'Every block feels connected to the next', 'The streets have a rhythm of their own'),
+        'bywater': ('Bright homes and industrial edges share the same horizon', 'The river breeze cuts through the heavy heat', 'Colorful walls stand out beneath gathering clouds', 'The district feels creative, rough, and open-ended', 'Rainwater gathers quickly along the uneven streets', 'Music and machinery echo from different directions', 'The air is thick with weather from the river', 'Old buildings hold up beneath a bright sky', 'A slow afternoon settles over the neighborhood', 'There is room here for strange plans'),
+        'uptown-new-orleans': ('Live oaks shade long streets and busy porches', 'The warm air carries music from farther down the block', 'Rain clouds build over a neighborhood that keeps moving', 'The streets mix old homes with fresh activity', 'A humid breeze moves through the tree canopy', 'People linger outside while the weather allows it', 'The district feels settled but never still', 'Sunlight flashes across wet pavement', 'Food and conversation travel easily here', 'The neighborhood has a comfortable confidence'),
+        'mid-city': ('Canals, roads, and old buildings meet under wide skies', 'The neighborhood is busy with practical movement', 'A humid breeze carries the promise of rain', 'Water glints beyond the traffic', 'The district feels central without feeling polished', 'A short storm rolls over the rooftops', 'Street life gathers around every useful corner', 'The air is warm and heavy with summer', 'People know their routes through this maze', 'The neighborhood keeps going after dark'),
+        'flagami': ('Wide roads, palms, and airport traffic fill the warm air', 'The district moves between warehouses, homes, and runways', 'Bright sun bounces off cars and low buildings', 'A tropical shower passes quickly overhead', 'The heat is strong, but the breeze helps', 'Travelers and locals share the same busy corners', 'The neighborhood feels practical and close to the airport', 'Clouds gather over a very bright street', 'Traffic carries the sound of the city in every direction', 'There is always a flight or a deal nearby'),
+        'downtown-miami': ('Glass towers shine above streets warmed by the sun', 'The bay breeze reaches between the buildings', 'Workers and tourists fill the sidewalks', 'A quick rain leaves the pavement gleaming', 'The skyline looks sharp beneath the blue sky', 'Traffic, music, and construction compete for attention', 'Heat rises from the street after noon', 'Storm clouds build beyond the towers', 'The district is polished on one block and rough on the next', 'Water and concrete frame every decision'),
+        'brickell': ('Towers and palms rise together along busy streets', 'The air is warm, polished, and full of traffic', 'A sea breeze reaches the shaded sidewalks', 'Rain runs down glass while business continues below', 'The district glitters even under storm clouds', 'Restaurants and offices keep the streets active', 'Sunlight flashes across towers and expensive cars', 'The heat makes every patch of shade valuable', 'The neighborhood feels fast and carefully dressed', 'The bay is close, but the city is closer'),
+        'south-beach': ('Bright buildings face a hot breeze from the water', 'Music and traffic follow the shoreline', 'The sun is strong and the streets are busy', 'A sudden shower sends people beneath bright awnings', 'Salt air mixes with food and fuel', 'Palm shadows stretch across the pavement', 'The district stays lively after the heat fades', 'Clouds build over the water and move on', 'Colorful walls and white sand shape the view', 'Everyone here seems to be going somewhere fun'),
+        'little-havana': ('Music, coffee, and warm air fill the lively streets', 'The neighborhood is colorful, crowded, and welcoming', 'A tropical rain leaves the sidewalks shining', 'Food smells travel from open doors and busy kitchens', 'The heat encourages a slower pace', 'Conversation carries easily from one corner to the next', 'Bright signs stand out beneath the afternoon clouds', 'The district feels social even when the street is quiet', 'A warm breeze moves through the palms', 'There is always a song somewhere nearby'),
+        'wynwood': ('Murals turn nearly every wall into a landmark', 'Bright paint and hot pavement make the district glow', 'A quick storm darkens the colorful streets', 'Music and conversation spill from open doors', 'The air is warm, damp, and full of possibility', 'Artists, tourists, and locals share the same corners', 'Sunlight brings new details out of every wall', 'The district looks different from every direction', 'A humid breeze carries the smell of food trucks', 'Color is the first thing you notice here'),
+        'coconut-grove': ('Tropical trees shade winding streets near the water', 'The breeze is warm, salty, and easy to follow', 'Rain moves through the canopy in a sudden burst', 'The neighborhood feels relaxed but not sleepy', 'Boats and traffic share the same humid horizon', 'Greenery crowds the sidewalks and walls', 'Sunlight breaks through leaves after the shower', 'The district keeps a coastal, unhurried rhythm', 'Warm air carries food and sea smells together', 'The water is never far from view'),
+        'edgewater': ('The bay opens beyond towers and busy waterfront roads', 'A warm breeze moves between the buildings', 'Storm clouds gather over the water', 'The district is bright, modern, and close to the shore', 'Rain makes the waterfront lights shimmer', 'Traffic hums beneath balconies facing the bay', 'Sunlight flashes across glass and waves', 'The heat lingers after the afternoon shower', 'The skyline and water share the same horizon', 'The district feels open even among the towers'),
+    }.items()
+}
+
+
+def _load_editable_descriptions():
+    path = Path(__file__).with_name('dopewars_descriptions.txt')
+    cities, districts, section, rows = {}, {}, None, []
+
+    def finish():
+        if section is None:
+            return
+        if len(rows) != 10 or [n for n, _ in rows] != list(range(1, 11)):
+            raise RuntimeError(f'{path.name}: {section} must contain entries 1 through 10')
+        target = cities if section.startswith('CITY:') else districts
+        target[section.split(':', 1)[1]] = tuple(text for _, text in rows)
+
+    for raw in path.read_text(encoding='utf-8').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        if line.startswith('[') and line.endswith(']'):
+            finish()
+            section, rows = line[1:-1], []
+            if not (section.startswith('CITY:') or section.startswith('DISTRICT:')):
+                raise RuntimeError(f'{path.name}: unknown section {section}')
+            continue
+        if section is None or '|' not in line:
+            raise RuntimeError(f'{path.name}: entry outside a section')
+        number, text = line.split('|', 1)
+        rows.append((int(number), text.strip()))
+    finish()
+    if set(cities) != set(CITIES) or set(districts) != set(PLACES):
+        raise RuntimeError(f'{path.name}: catalog does not match the game map')
+    return cities, districts
+
+
+CITY_DESCRIPTIONS, DISTRICT_DESCRIPTIONS = _load_editable_descriptions()
 # Display only: commands and saved item identifiers remain plain text.
 GOOD_ICONS = {'ludes': '💤', 'weed': '🌿', 'speed': '⚡',
               'peyote': '🌵', 'hash': '🟫', 'mushrooms': '🍄',
@@ -124,13 +265,13 @@ def city(place):
 
 def airport_city(place):
     current = city(place)
-    return current if AIRPORTS[current] == place else None
+    return current if AIRPORTS.get(current) == place else None
 
 
 def flight_fare(s, destination):
     """Return a stable daily fare without consuming the gameplay draw stream."""
     origin = airport_city(s['place'])
-    if not origin or destination not in CITIES or destination == origin:
+    if not origin or destination not in AIRPORTS or destination == origin:
         raise ValueError('Flights leave only from an airport to another city.')
     low, high = FLIGHT_FARE_BANDS[frozenset((origin, destination))]
     key = f"flight:{s['seed']}:{s['day']}:{min(origin, destination)}:{max(origin, destination)}"
@@ -256,7 +397,32 @@ def _loot(s):
     return f'goods:{item}:{qty}'
 
 
-def _travel(s, destination, fare=0):
+def _arrival_description(s, destination, from_airport):
+    """Return a fresh arrival line without consuming gameplay RNG."""
+    return arrival_descriptions(s['seed'], s['moves'], s['day'],
+                                destination, from_airport)
+
+
+def arrival_descriptions(seed, moves, day, destination, from_airport=False):
+    """Choose the city/district copy for one arrival without changing state."""
+    key = f'arrival:{seed}:{moves}:{day}:{destination}'
+    value = int.from_bytes(sha256(key.encode()).digest()[:8], 'big')
+    district = _short_arrival(DISTRICT_DESCRIPTIONS[destination][value % 10])
+    city_line = ''
+    current_city = city(destination)
+    if from_airport:
+        city_line = _short_arrival(CITY_DESCRIPTIONS[current_city][(value // 10) % 10])
+    return city_line, district if not from_airport else ''
+
+
+def _short_arrival(text, limit=52):
+    """Keep arrival copy short enough to share a packet with an encounter."""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(' ', 1)[0] + '…'
+
+
+def _travel(s, destination, fare=0, from_airport=False):
     """Apply one ground trip or flight, returning its travel side effects."""
     if s['debt'] and s['day'] >= s['loan_due']:
         s['cash'] = s['bank'] = 0
@@ -267,15 +433,21 @@ def _travel(s, destination, fare=0):
         s['cash'] -= fare
     s['place'] = destination
     s['day'] += 1
+    city_description, district_description = _arrival_description(
+        s, destination, from_airport)
     interest = (s['debt'] * 5 + 99) // 100 if s['debt'] else 0
     s['debt'] += interest
     market(s)
     if draw(s, 1, 100) <= 25:
         s['phase'], s['enemy_hp'] = 'police', 45
-        return {'deadline': False, 'interest': interest, 'police': True, 'loot': ''}
+        return {'deadline': False, 'interest': interest, 'police': True, 'loot': '',
+                'city_description': city_description,
+                'district_description': district_description}
     _arrival(s)
     loot = _loot(s) if s['phase'] != 'ended' else ''
-    return {'deadline': False, 'interest': interest, 'police': False, 'loot': loot}
+    return {'deadline': False, 'interest': interest, 'police': False, 'loot': loot,
+            'city_description': city_description,
+            'district_description': district_description}
 
 
 def _travel_reply(result, prefix='Arrived'):
@@ -287,6 +459,10 @@ def _travel_reply(result, prefix='Arrived'):
         reply += ' Police stop!'
     elif result['loot']:
         reply += ' Loot ' + result['loot'] + '.'
+    if result.get('city_description'):
+        reply += ' ' + result['city_description']
+    if result.get('district_description'):
+        reply += ' ' + result['district_description']
     return reply
 
 
@@ -365,6 +541,26 @@ def command(state, text):
                 s['cash'] += cost
                 offer['stock'] += qty
             reply = f"{'Bought' if verb == 'buy' else 'Sold'} {qty} {good_label(item)} for ${cost}."
+        elif verb == 'border' and len(args) == 1 and args[0] in ('legal', 'fence'):
+            destination = BORDER_PLACES.get(s['place'])
+            if not destination:
+                raise ValueError('The border terminal is in San Ysidro.')
+            # Both routes take one game day.  A successful crossing is 65%;
+            # the next 15% is an incident, and the rest turns the player back.
+            outcome = draw(s, 1, 100)
+            s['day'] += 1
+            interest = (s['debt'] * 5 + 99) // 100 if s['debt'] else 0
+            s['debt'] += interest
+            market(s)
+            if outcome <= 65:
+                s['place'] = destination
+                _arrival(s)
+                reply = f"Crossed {'legally' if args[0] == 'legal' else 'the fence'} into {CITY_LABELS[city(s['place'])]}."
+            elif outcome <= 80:
+                s['phase'], s['enemy_hp'] = 'police', 45
+                reply = 'Border incident: police encounter.'
+            else:
+                reply = 'Turned back at the border.'
         elif verb == 'travel' and len(args) == 1:
             if args[0] not in PLACES or args[0] == s['place']:
                 raise ValueError('Choose a different district in this city.')
@@ -383,7 +579,7 @@ def command(state, text):
             fare = flight_fare(s, destination)
             if s['cash'] < fare:
                 raise ValueError(f'You need ${fare} cash for that flight.')
-            result = _travel(s, AIRPORTS[destination], fare)
+            result = _travel(s, AIRPORTS[destination], fare, from_airport=True)
             reply = _travel_reply(result, f'Boarded for {CITY_LABELS[destination]} for ${fare}')
             if result['deadline']:
                 s['moves'] += 1
