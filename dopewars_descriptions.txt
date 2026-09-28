@@ -50,6 +50,222 @@
 9|Cool air is arriving from the coast, but the crowded central streets remain warm and active.
 10|Tijuana feels bright and unsettled under changing weather, with every route carrying a different story.
 
+[CITY:new-orleans]
+1|New Orleans opens under humid air, old brick, and clouds gathering over the river.
+2|Warm rain has polished the streets while music and cooking smells drift through the city.
+3|A heavy sky hangs over the rooftops, but the city keeps its easy, colorful rhythm.
+4|Sun breaks through after a shower, lighting balconies, porches, and wet pavement.
+5|The river breeze carries heat, traffic, and a distant brass note between the neighborhoods.
+6|Clouds build over the city as locals move from shade to shade and keep doing business.
+7|A muggy afternoon has filled the streets with food smoke, conversation, and restless motion.
+8|Warm evening air settles over old buildings while the lights come on block by block.
+9|Rain threatens but never quite stops the city from gathering outside.
+10|New Orleans feels humid, musical, and full of routes that do not appear on a map.
+
+[CITY:miami]
+1|Miami wakes beneath bright sun, warm air, and a breeze moving in from the bay.
+2|A tropical shower has passed, leaving palms dripping and pavement shining.
+3|Heat shimmers above the streets while storm clouds gather offshore.
+4|Clear skies put color back into the buildings, cars, and water beyond the blocks.
+5|The coastal breeze is mild, but the humidity makes every shaded corner valuable.
+6|Rain is moving across the horizon as traffic and music keep the city wide awake.
+7|A hot afternoon has drawn people toward the water and under every available awning.
+8|The bay is bright beneath scattered clouds, with thunder possible later.
+9|Warm evening air carries salt, food smoke, and the glow of storefronts.
+10|Miami feels polished, restless, and one storm away from changing completely.
+
+[DISTRICT:kenner]
+1|Runways and low roads spread beneath humid clouds.
+2|Travelers hurry past with bags and tired eyes.
+3|Warm rain taps against terminal windows.
+4|A plane climbs overhead as traffic crawls below.
+5|Jet fuel and wet pavement mix in the heavy air.
+6|Bright signs point toward every possible departure.
+7|A calm breeze crosses the broad airport roads.
+8|The district feels temporary, built for arrivals and departures.
+9|Sun breaks through clouds over the parking lots.
+10|Kenner runs on schedules, coffee, and weather moving in from the Gulf.
+
+[DISTRICT:french-quarter]
+1|Old balconies overlook warm streets full of color and noise.
+2|Music leaks from doorways after a brief shower.
+3|Ironwork shadows stretch across wet brick.
+4|Food, rain, and river air mingle around the corners.
+5|The heat makes every shaded doorway valuable.
+6|A brass rhythm echoes somewhere beyond the crowd.
+7|Clouds gather while the pavement shines below.
+8|Tourists drift as locals move with purpose.
+9|Warm evening air settles between the old buildings.
+10|The Quarter stays awake beneath weather that changes by the block.
+
+[DISTRICT:central-business-district]
+1|Glass towers rise over busy streets beneath a humid sky.
+2|Workers hurry beneath clouds heavy with rain.
+3|Lunch crowds fill the sidewalks after the morning shower.
+4|Warm air funnels between the taller buildings.
+5|Puddles mirror the skyline along the curb.
+6|Delivery vans compete with pedestrians for every lane.
+7|A brief storm sends everyone under cover.
+8|Sunlight returns across the office windows.
+9|Traffic keeps moving no matter what the forecast says.
+10|The business district feels focused, wet, and impossible to slow down.
+
+[DISTRICT:garden-district]
+1|Live oaks shade grand homes beneath warm, damp air.
+2|A slow rain darkens the broad sidewalks.
+3|Porches and gardens soften the city noise.
+4|Moss hangs above streets older than the traffic.
+5|Sunlight breaks through branches in bright patches.
+6|The neighborhood is quiet enough to hear birds after a shower.
+7|A warm breeze moves through the gardens.
+8|Clouds build over the rooftops while the porches stay busy.
+9|Old walls hold the day's heat beneath the trees.
+10|The Garden District feels elegant, watchful, and thoroughly lived in.
+
+[DISTRICT:treme]
+1|Porches, music, and conversation fill the warm air.
+2|A passing shower leaves the streets shining.
+3|Food smells drift from homes and corner kitchens.
+4|The neighborhood wears its history openly.
+5|Heat settles over the rooftops by afternoon.
+6|People watch the clouds and carry on.
+7|Music competes with the hum of traffic.
+8|A humid breeze moves through the blocks.
+9|Sun returns quickly after the rain.
+10|Treme has a rhythm that the weather cannot interrupt.
+
+[DISTRICT:bywater]
+1|Bright homes and industrial edges share the same horizon.
+2|River wind cuts through the heavy heat.
+3|Colorful walls stand out beneath gathering clouds.
+4|Rainwater gathers along the uneven streets.
+5|Music and machinery echo in different directions.
+6|The air is thick with weather from the river.
+7|Old buildings hold up beneath a bright sky.
+8|A slow afternoon settles over the neighborhood.
+9|A warm breeze carries water and food smells together.
+10|Bywater feels creative, rough, and open to strange plans.
+
+[DISTRICT:uptown-new-orleans]
+1|Live oaks shade long streets and busy porches.
+2|Warm air carries music from farther down the block.
+3|Rain clouds build over homes that keep moving.
+4|A humid breeze moves through the tree canopy.
+5|Sunlight flashes across wet pavement.
+6|People linger outside while the weather allows it.
+7|Food and conversation travel easily here.
+8|A short storm passes over the rooftops.
+9|The evening air stays warm beneath the branches.
+10|Uptown feels settled, social, and never completely still.
+
+[DISTRICT:mid-city]
+1|Canals, roads, and old buildings meet beneath wide skies.
+2|A humid breeze carries the promise of rain.
+3|Water glints beyond the traffic.
+4|The district feels central without feeling polished.
+5|A short storm rolls over the rooftops.
+6|Street life gathers around every useful corner.
+7|The air is warm and heavy with summer.
+8|People know their routes through the maze.
+9|Sun returns between passing clouds.
+10|Mid-City keeps going after dark and after the weather changes.
+
+[DISTRICT:flagami]
+1|Wide roads, palms, and airport traffic fill the warm air.
+2|A tropical shower passes quickly over the low buildings.
+3|Bright sun bounces off cars and warehouses.
+4|Travelers and locals share the same busy corners.
+5|Heat settles over the streets beneath gathering clouds.
+6|A breeze helps for a minute before the humidity returns.
+7|Runway traffic hums beyond the neighborhood blocks.
+8|Rain beads on signs and windshields.
+9|The district feels practical and close to the airport.
+10|Flagami stays bright, busy, and one flight from somewhere else.
+
+[DISTRICT:downtown-miami]
+1|Glass towers shine above streets warmed by the sun.
+2|The bay breeze reaches between the buildings.
+3|Workers and tourists fill the sidewalks.
+4|A quick rain leaves the pavement gleaming.
+5|Storm clouds build beyond the skyline.
+6|Heat rises from the street after noon.
+7|Traffic, music, and construction compete for attention.
+8|Sunlight flashes across towers and water.
+9|The district is polished on one block and rough on the next.
+10|Downtown Miami keeps moving beneath a sky that changes fast.
+
+[DISTRICT:brickell]
+1|Towers and palms rise together along busy streets.
+2|The air is warm, polished, and full of traffic.
+3|A sea breeze reaches the shaded sidewalks.
+4|Rain runs down glass while business continues below.
+5|Restaurants and offices keep the streets active.
+6|Sunlight flashes across towers and expensive cars.
+7|The heat makes every patch of shade valuable.
+8|Storm clouds gather over the bay.
+9|The neighborhood feels fast and carefully dressed.
+10|Brickell stays bright even when the weather turns.
+
+[DISTRICT:south-beach]
+1|Bright buildings face a hot breeze from the water.
+2|Music and traffic follow the shoreline.
+3|A sudden shower sends people beneath bright awnings.
+4|Salt air mixes with food and fuel.
+5|Palm shadows stretch across the pavement.
+6|Clouds build over the water and move on.
+7|The sun is strong and the streets stay busy.
+8|Warm evening air arrives with the tide.
+9|Colorful walls and white sand shape the view.
+10|South Beach stays lively after the heat fades.
+
+[DISTRICT:little-havana]
+1|Music, coffee, and warm air fill the lively streets.
+2|A tropical rain leaves the sidewalks shining.
+3|Food smells travel from open doors and busy kitchens.
+4|The heat encourages a slower pace.
+5|Conversation carries easily from corner to corner.
+6|Bright signs stand out beneath afternoon clouds.
+7|A warm breeze moves through the palms.
+8|The district feels social even when the street is quiet.
+9|Sun returns quickly after the shower.
+10|Little Havana always seems to have a song nearby.
+
+[DISTRICT:wynwood]
+1|Murals turn nearly every wall into a landmark.
+2|Bright paint and hot pavement make the district glow.
+3|A quick storm darkens the colorful streets.
+4|Music and conversation spill from open doors.
+5|The air is warm, damp, and full of possibility.
+6|Artists, tourists, and locals share the same corners.
+7|Sunlight brings new details out of every wall.
+8|A humid breeze carries the smell of food trucks.
+9|Clouds pass over streets alive with color.
+10|Wynwood looks different from every direction.
+
+[DISTRICT:coconut-grove]
+1|Tropical trees shade winding streets near the water.
+2|The breeze is warm, salty, and easy to follow.
+3|Rain moves through the canopy in a sudden burst.
+4|Boats and traffic share the humid horizon.
+5|Greenery crowds the sidewalks and walls.
+6|Sunlight breaks through leaves after the shower.
+7|The neighborhood keeps a coastal rhythm.
+8|Warm air carries food and sea smells together.
+9|Storm clouds gather beyond the palms.
+10|Coconut Grove feels relaxed but never sleepy.
+
+[DISTRICT:edgewater]
+1|The bay opens beyond towers and waterfront roads.
+2|A warm breeze moves between the buildings.
+3|Storm clouds gather over the water.
+4|Rain makes waterfront lights shimmer.
+5|Traffic hums beneath balconies facing the bay.
+6|Sunlight flashes across glass and waves.
+7|The heat lingers after the afternoon shower.
+8|The skyline and water share one horizon.
+9|A clear spell brightens the towers.
+10|Edgewater feels open even among the high-rises.
+
 [DISTRICT:bronx]
 1|elevated tracks and brick apartment blocks
 2|a ballpark crowd filtering through the avenues

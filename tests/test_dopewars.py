@@ -32,7 +32,8 @@ def test_initialization():
                                            'staten-island', 'harlem',
                                            'coney-island', 'central-park')
     assert all(len(g.CITY_PLACES[city]) == 8 for city in g.CITIES)
-    assert g.AIRPORTS == {'new-york': 'queens', 'chicago': 'chicago-ohare',
+    assert g.AIRPORTS == {'new-york': 'queens', 'new-orleans': 'kenner',
+                          'chicago': 'chicago-ohare', 'miami': 'flagami',
                           'san-diego': 'san-diego-middletown'}
     assert g.validate(json.loads(json.dumps(s))) == s
 

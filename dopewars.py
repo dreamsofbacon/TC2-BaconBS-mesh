@@ -28,16 +28,18 @@ NYC = 'new-york'
 CHICAGO = 'chicago'
 SAN_DIEGO = 'san-diego'
 TIJUANA = 'tijuana'
-# Compatibility aliases for the legacy inline description table below; the
-# editable catalog loaded after it is the source of truth.
-NEW_ORLEANS = CHICAGO
-MIAMI = SAN_DIEGO
-CITIES = (NYC, CHICAGO, SAN_DIEGO, TIJUANA)
-CITY_LABELS = {NYC: 'New York', CHICAGO: 'Chicago',
+NEW_ORLEANS = 'new-orleans'
+MIAMI = 'miami'
+CITIES = (NYC, NEW_ORLEANS, CHICAGO, MIAMI, SAN_DIEGO, TIJUANA)
+CITY_LABELS = {NYC: 'New York', NEW_ORLEANS: 'New Orleans',
+               CHICAGO: 'Chicago', MIAMI: 'Miami',
                SAN_DIEGO: 'San Diego', TIJUANA: 'Tijuana'}
 CITY_PLACES = {
     NYC: ('bronx', 'brooklyn', 'manhattan', 'queens', 'staten-island',
           'harlem', 'coney-island', 'central-park'),
+    NEW_ORLEANS: ('kenner', 'french-quarter', 'central-business-district',
+                  'garden-district', 'treme', 'bywater',
+                  'uptown-new-orleans', 'mid-city'),
     CHICAGO: ('chicago-loop', 'chicago-river-north', 'chicago-wicker-park',
               'chicago-logan-square', 'chicago-pilsen', 'chicago-ohare',
               'chicago-hyde-park', 'chicago-bronzeville'),
@@ -45,13 +47,17 @@ CITY_PLACES = {
                 'san-diego-barrio-logan', 'san-diego-hillcrest',
                 'san-diego-north-park', 'san-diego-pacific-beach',
                 'san-diego-ocean-beach', 'san-ysidro'),
+    MIAMI: ('flagami', 'downtown-miami', 'brickell', 'south-beach',
+            'little-havana', 'wynwood', 'coconut-grove', 'edgewater'),
     TIJUANA: ('tijuana-zona-rio', 'tijuana-centro', 'tijuana-playas',
               'tijuana-otay', 'tijuana-la-mesa', 'tijuana-five-ten',
               'tijuana-agua-caliente', 'tijuana-libertad'),
 }
 PLACES = tuple(place for city in CITIES for place in CITY_PLACES[city])
 PLACE_CITY = {place: city for city, places in CITY_PLACES.items() for place in places}
-AIRPORTS = {NYC: 'queens', CHICAGO: 'chicago-ohare', SAN_DIEGO: 'san-diego-middletown'}
+AIRPORTS = {NYC: 'queens', NEW_ORLEANS: 'kenner',
+            CHICAGO: 'chicago-ohare', MIAMI: 'flagami',
+            SAN_DIEGO: 'san-diego-middletown'}
 BORDER_PLACES = {'san-ysidro': 'tijuana-zona-rio',
                  'tijuana-zona-rio': 'san-ysidro',
                  'tijuana-centro': 'san-ysidro',
@@ -65,6 +71,13 @@ FLIGHT_FARE_BANDS = {
     frozenset((CHICAGO, SAN_DIEGO)): (175, 325),
     frozenset((NYC, SAN_DIEGO)): (200, 350),
     frozenset((NYC, CHICAGO)): (200, 350),
+    frozenset((NYC, NEW_ORLEANS)): (175, 325),
+    frozenset((NYC, MIAMI)): (200, 350),
+    frozenset((NEW_ORLEANS, CHICAGO)): (175, 325),
+    frozenset((NEW_ORLEANS, MIAMI)): (125, 275),
+    frozenset((NEW_ORLEANS, SAN_DIEGO)): (175, 325),
+    frozenset((CHICAGO, MIAMI)): (175, 325),
+    frozenset((MIAMI, SAN_DIEGO)): (125, 275),
 }
 # The bank is in one town on purpose. Reachable everywhere it would be
 # free insurance -- deposit before every trip, withdraw on arrival --

@@ -157,21 +157,24 @@ def test_flight_arrival_matches_ground_menu(connection, pg13, seed):
     """Flights share themed loot/encounter/deadline handling, not just rules."""
     state = game.new_game(seed)
     state.update(place='queens', moves=1, cash=999999, debt=99999)
-    fare = game.flight_fare(state, game.CHICAGO)
+    destination = menu._airport_destinations(state)[0]
+    fare = game.flight_fare(state, destination)
     save(connection, state)
     flight, _, flight_nav = menu.handle(42, '7 1 yes', 'Pilot', pg13)
     arrived = load()
     assert len(flight.encode('utf-8')) <= 200, flight
     assert theme(pg13)['places'][arrived['place']] in flight or arrived['phase'] == 'police'
     local_state = deepcopy(state)
-    local_state.update(place='chicago-loop', cash=state['cash'] - fare)
+    local_place = next(p for p in game.CITY_PLACES[destination]
+                       if p != game.AIRPORTS[destination])
+    local_state.update(place=local_place, cash=state['cash'] - fare)
     save(connection, local_state)
     ground, _, ground_nav = menu.handle(42, '2 1', 'Pilot', pg13)
     assert flight_nav == ground_nav
     ground_place = menu._others(local_state)[0]
     city_line, _ = game.arrival_descriptions(
         state['seed'], state['moves'], state['day'] + 1,
-        game.AIRPORTS[game.CHICAGO], from_airport=True)
+        game.AIRPORTS[destination], from_airport=True)
     _, district_line = game.arrival_descriptions(
         state['seed'], state['moves'], state['day'] + 1,
         ground_place, from_airport=False)
@@ -197,7 +200,7 @@ def test_flight_final_day_and_deadline(connection, pg13, deadline):
         assert arrived['day'] == state['day']
         assert theme(pg13)['deadline'] in screen
     else:
-        assert arrived['place'] == game.AIRPORTS[game.CHICAGO]
+        assert arrived['place'] == game.AIRPORTS[menu._airport_destinations(state)[0]]
         assert arrived['day'] == 30
 
 
