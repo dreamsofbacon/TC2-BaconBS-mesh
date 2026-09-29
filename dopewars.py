@@ -15,6 +15,8 @@ MAX_CASH = 1_000_000_000
 LOAN_LIMIT = 10_000
 BASE_STOCK_MIN = 10
 BASE_STOCK_MAX = 60
+MIN_STOCKED_GOODS = 8
+MAX_STOCKED_GOODS = 14
 # Reliable everyday trades; remaining market slots continue to rotate.
 COMMON_GOODS = ('weed', 'heroin', 'cocaine')
 COCAINE_BUST_PRICE_MIN = 300
@@ -295,7 +297,7 @@ def flight_fare(s, destination):
 
 
 def market(s):
-    """Stock five to nine goods and roll an occasional price event."""
+    """Stock eight to fourteen goods and roll an occasional price event."""
     s['market'] = {
         item: {'price': max(1, base * draw(s, 60, 170) // 100), 'stock': 0}
         for item, base in GOODS.items()
@@ -306,7 +308,9 @@ def market(s):
         s['market'][item]['stock'] = draw(s, BASE_STOCK_MIN, BASE_STOCK_MAX)
     # Clamped, not merely drawn: draw() is stubbed in tests and a count
     # past the catalogue pops an empty list.
-    count = min(9, max(5, draw(s, 5, 9)))
+    count = min(MAX_STOCKED_GOODS,
+                max(MIN_STOCKED_GOODS, draw(s, MIN_STOCKED_GOODS,
+                                            MAX_STOCKED_GOODS)))
     for _ in range(count - len(stocked)):
         item = choices.pop(draw(s, 0, len(choices) - 1) % len(choices))
         stocked.append(item)
