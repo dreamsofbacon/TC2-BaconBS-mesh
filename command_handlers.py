@@ -3053,7 +3053,8 @@ def handle_dopewars_steps(sender_id, message, interface):
         send_message(f"{title} could not save that turn. Your last save is "
                      "safe; please try again.", sender_id, interface)
         return
-    send_message(response, sender_id, interface)
+    for market_message in response.split(dopewars_menu.MARKET_MESSAGE_SEPARATOR):
+        send_message(market_message, sender_id, interface)
     if leave:
         handle_games_command(sender_id, interface)
     else:

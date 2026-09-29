@@ -42,6 +42,7 @@ _FOOTER_WIDEST = _FOOTER_MORE.format(page=9, pages=9)
 # vary by a factor of two in width, and a fixed count would either
 # waste half a screen or overrun it.
 _PAGE_BUDGET = MAX_SCREEN_BYTES
+MARKET_MESSAGE_SEPARATOR = "\f"
 
 # Mirrors the engine's own gear table (dopewars.command, 'equipment'). The
 # menu checks these before asking, so a refusal is said in theme rather than
@@ -204,10 +205,10 @@ def render(state, nav, t, note='') -> str:
     place = t['places'][state['place']]
 
     if menu == 'market':
-        # One screen for both sides of the trade. Buy and Sell were two
-        # lists of the same six goods, each showing one number, and you
-        # had to guess from the main screen which one you wanted.
-        lines += "\n\n".join(_market_pages(state, t)).split("\n")
+        pages = _market_pages(state, t)
+        if note:
+            pages[0] = f"{note}\n{pages[0]}"
+        return MARKET_MESSAGE_SEPARATOR.join(pages)
     elif menu == 'item':
         item = nav['item']
         offer, held = state['market'][item], state['inventory'][item]
