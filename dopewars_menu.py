@@ -397,6 +397,9 @@ def _step(turn, word, nav) -> dict:
             turn.note(t['hit'].format(n=before['hp'] - after['hp']))
         if after['phase'] == 'ended' and after['outcome'] != 'Defeated':
             turn.note("That was the last day.")
+        if nav.get('border_return') and after['phase'] != 'ended':
+            origin = nav['border_return']
+            turn.note(f"Turned back at the border; returned to {t['places'][origin]}.")
         return {'menu': 'main'}
 
     if menu == 'main':
@@ -487,7 +490,7 @@ def _step(turn, word, nav) -> dict:
         before, after = turn.act('border ' + ('legal' if choice == 1 else 'fence'))
         if after['phase'] == 'police':
             turn.note('Border police encounter.')
-            return {'menu': 'main'}
+            return {'menu': 'main', 'border_return': before['place']}
         if after['place'] != before['place']:
             turn.note(f"Arrived in {game.CITY_LABELS[game.city(after['place'])]}.")
             city_line, _ = game.arrival_descriptions(
