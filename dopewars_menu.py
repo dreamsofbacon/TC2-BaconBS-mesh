@@ -131,13 +131,10 @@ def _market_pages(state, t):
     pages = (rows[:midpoint], rows[midpoint:])
     output = []
     for number, page in enumerate(pages, start=1):
-        lines = [f"Mkt {number}/2 ${state['cash']} b{carried}/{state['capacity']}"]
-        for index in range(0, len(page), 2):
-            left = page[index]
-            right = page[index + 1] if index + 1 < len(page) else ""
-            lines.append(f"{left} | {right}" if right else left)
-        if number == 1:
-            lines.append("0")
+        lines = [f"Market ${state['cash']} b{carried}/{state['capacity']}"]
+        lines += page
+        if number == 2:
+            lines.append("[0]")
         output.append("\n".join(lines))
     return output
 
