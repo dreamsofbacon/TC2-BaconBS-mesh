@@ -201,9 +201,12 @@ class PacketBudgetTests(_DbCase):
             self.script(21, [], pg13=pg13)
             self.seed(22, phase='ended', outcome='Completed', enemy_hp=0)
             self.script(22, [], pg13=pg13)
+            # A reply can be several messages (the whole market, or a
+            # long arrival description); each one is a packet.
             for text in self.outputs:
-                self.assertLessEqual(len(text.encode('utf-8')), self.BUDGET,
-                                     f"{len(text.encode())} bytes:\n{text}")
+                for part in text.split(menu.MESSAGE_SEPARATOR):
+                    self.assertLessEqual(len(part.encode('utf-8')), self.BUDGET,
+                                         f"{len(part.encode())} bytes:\n{part}")
 
 
 class MenuTests(_DbCase):

@@ -52,10 +52,12 @@ class ScreenBudgetTests(unittest.TestCase):
                     state = game.new_game(1)
                     state.update(place=place, cash=cash, debt=99999, event=event)
                     for name in MENUS:
-                        screen = menu.render(state, {"menu": name}, t)
-                        size = len(screen.encode("utf-8"))
-                        if size > worst_size:
-                            worst_size, worst_screen = size, screen
+                        reply = menu.render(state, {"menu": name}, t)
+                        # Each message of a reply is its own packet.
+                        for screen in reply.split(menu.MESSAGE_SEPARATOR):
+                            size = len(screen.encode("utf-8"))
+                            if size > worst_size:
+                                worst_size, worst_screen = size, screen
         return worst_size, worst_screen
 
     def test_candy_wars_fits(self):
@@ -99,8 +101,8 @@ class IconsReachThePlayerTests(unittest.TestCase):
             del db_operations.thread_local.connection
 
     def _every_market_page(self, pg13):
-        """The market pages, joined. Ten goods do not share one packet,
-        so no single screen carries every icon any more."""
+        """The whole market, every message of it. The goods do not share
+        one packet, so no single message carries every icon."""
         import dopewars as game
         import dopewars_menu as menu
         import dopewars_theme as theme
@@ -108,13 +110,8 @@ class IconsReachThePlayerTests(unittest.TestCase):
         state = game.new_game(1)
         for item in game.GOODS:
             state["market"][item]["stock"] = 9
-        pages, nav, seen = [], {"menu": "market", "start": 0}, set()
-        while nav["start"] not in seen:
-            seen.add(nav["start"])
-            pages.append(menu.render(state, nav, t))
-            nav = {"menu": "market",
-                   "start": menu._market_page(state, nav, t)[1]}
-        return "\n".join(pages)
+        reply = menu.render(state, {"menu": "market"}, t)
+        return "\n".join(reply.split(menu.MESSAGE_SEPARATOR))
 
     def test_every_good_carries_an_icon_in_both_themes(self):
         import dopewars as game
@@ -312,16 +309,14 @@ class MarketScreenTests(unittest.TestCase):
         return menu.render(state, {"menu": "market", "start": start},
                            self._theme(pg13), note=note)
 
-    def _pages(self, state, pg13=False):
-        """Every page of the market, joined -- ten goods do not share one."""
+    def _messages(self, state, pg13=False, note=""):
+        """The market reply, as the messages a player receives."""
         import dopewars_menu as menu
-        t = self._theme(pg13)
-        out, nav, seen = [], {"menu": "market", "start": 0}, set()
-        while nav["start"] not in seen:
-            seen.add(nav["start"])
-            out.append(menu.render(state, nav, t))
-            nav = {"menu": "market", "start": menu._market_page(state, nav, t)[1]}
-        return "\n".join(out)
+        return self._market(state, pg13, note).split(menu.MESSAGE_SEPARATOR)
+
+    def _pages(self, state, pg13=False):
+        """Every message of the market, joined."""
+        return "\n".join(self._messages(state, pg13))
 
     def _rows(self, state, pg13=False):
         """Every good's row, in catalogue order, free of paging."""
@@ -403,16 +398,15 @@ class MarketScreenTests(unittest.TestCase):
     def test_the_slash_and_the_plus_are_labelled(self):
         import dopewars_menu as menu
         state, _stocked = self._stocked_run()
-        screen = self._market(state)
-        self.assertTrue(screen.split(chr(10))[-1].startswith(menu._FOOTER_KEY),
-                        screen)
-        self.assertIn("stock", menu._FOOTER_KEY)
-        self.assertIn("bag", menu._FOOTER_KEY)
+        last = self._messages(state)[-1]
+        self.assertEqual(menu._FOOTER, last.split(chr(10))[-1], last)
+        self.assertIn("stock", menu._FOOTER)
+        self.assertIn("bag", menu._FOOTER)
 
     def test_the_header_counts_the_bag(self):
         state, _stocked = self._stocked_run()
         state["inventory"]["hash"] = 7
-        self.assertIn(f"bag 7/{state['capacity']}", self._market(state))
+        self.assertIn(f"bag 7/{state['capacity']}", self._messages(state)[0])
 
     def test_an_empty_town_with_an_empty_bag_says_so(self):
         import dopewars as game
@@ -422,7 +416,7 @@ class MarketScreenTests(unittest.TestCase):
             state["inventory"][item] = 0
         self.assertIn("Nothing on the shelf", self._market(state))
 
-    # --- paging ------------------------------------------------------------
+    # --- the whole market, in as many messages as it takes -----------------
 
     def test_every_good_is_reachable_across_the_pages(self):
         import dopewars as game
@@ -435,45 +429,31 @@ class MarketScreenTests(unittest.TestCase):
             with self.subTest(item=item):
                 self.assertIn(f"{t['goods'][item]} $", screens)
 
-    def test_a_page_with_more_behind_it_offers_more(self):
+    def test_a_full_market_arrives_whole_without_asking(self):
+        """Sixteen goods do not fit one packet, so the market is sent as
+        several messages at once -- no [M]ore to press -- with the header
+        opening the first and the way out closing the last."""
         import dopewars as game
         import dopewars_menu as menu
         state, _stocked = self._stocked_run()
         for item in game.GOODS:
             state["market"][item]["stock"] = 9
-        self.assertIn("[M]ore", self._market(state))
-        # And paging comes back round rather than dead-ending.
-        nav, seen = {"menu": "market", "start": 0}, []
-        for _ in range(6):
-            seen.append(nav["start"])
-            nav = {"menu": "market",
-                   "start": menu._market_page(state, nav, self._theme())[1]}
-            if nav["start"] == 0:
-                break
-        self.assertEqual(0, nav["start"], "paging never returns to the first page")
+        messages = self._messages(state)
+        self.assertGreater(len(messages), 1, "this state is meant to need two")
+        self.assertTrue(messages[0].startswith("Market:"), messages[0])
+        self.assertTrue(messages[-1].endswith("[0]Back"), messages[-1])
+        self.assertNotIn("[M]ore", self._pages(state))
 
-    def test_the_pages_say_which_one_you_are_on(self):
-        """Sixteen goods take two or three pages, so "press M until it
-        looks familiar" is not good enough."""
-        import dopewars as game
+    def test_m_shows_the_market_again(self):
+        """Everything is on screen already, so M is harmless, not an error."""
         import dopewars_menu as menu
         state, _stocked = self._stocked_run()
-        for item in game.GOODS:
-            state["market"][item]["stock"] = 9
-        nav, seen, labels = {"menu": "market", "start": 0}, set(), []
-        while nav["start"] not in seen:
-            seen.add(nav["start"])
-            labels.append(self._market(state, start=nav["start"]).split(chr(10))[-1])
-            nav = {"menu": "market",
-                   "start": menu._market_page(state, nav, self._theme())[1]}
-        total = len(labels)
-        self.assertGreater(total, 1, "this state is meant to need paging")
-        for index, label in enumerate(labels, start=1):
-            with self.subTest(page=index):
-                self.assertIn(f"{index}/{total}", label)
+        turn = menu._Turn(1, "caller", self._theme(), state)
+        self.assertEqual({"menu": "market"},
+                         menu._step(turn, "m", {"menu": "market"}))
 
-    def test_no_row_is_lost_or_repeated_across_the_pages(self):
-        """A pager that drops a good makes it untradeable, and one that
+    def test_no_row_is_lost_or_repeated_across_the_messages(self):
+        """A split that drops a good makes it untradeable, and one that
         repeats one wastes the packet it is printed in."""
         import dopewars as game
         import dopewars_menu as menu
@@ -481,15 +461,9 @@ class MarketScreenTests(unittest.TestCase):
         for item in game.GOODS:
             state["market"][item]["stock"] = 9
             state["inventory"][item] = 2
-        t = self._theme()
-        every = menu._market_rows(state, t)
-        nav, seen, shown = {"menu": "market", "start": 0}, set(), []
-        while nav["start"] not in seen:
-            seen.add(nav["start"])
-            lines, nxt = menu._market_page(state, nav, t)
-            shown.extend(lines[1:-1])
-            nav = {"menu": "market", "start": nxt}
-        self.assertEqual(every, shown)
+        every = menu._market_rows(state, self._theme())
+        lines = self._pages(state).split(chr(10))
+        self.assertEqual(every, lines[1:-1])
 
     def test_the_numbers_are_the_catalogue_not_the_page(self):
         """[4] is the same good in every town and on every page, including a
@@ -562,9 +536,9 @@ class MarketScreenTests(unittest.TestCase):
             f"{t['goods'][i]} is sold out." for i in game.GOODS] + [
             f"You have no {t['goods'][i]}." for i in game.GOODS]
 
-    def test_every_market_page_fits_one_packet(self):
-        """Ten goods, both themes, an empty/part/full bag, every refusal
-        that can sit above, and every page of each."""
+    def test_every_market_message_fits_one_packet(self):
+        """Every good, both themes, an empty/part/full bag, and every refusal
+        that can sit above -- each message of the reply, one packet."""
         import dopewars as game
         import dopewars_menu as menu
         import dopewars_theme as theme
@@ -583,22 +557,19 @@ class MarketScreenTests(unittest.TestCase):
                             state["inventory"][item] = carried
                     for pg13 in (False, True):
                         t = theme.theme(pg13)
-                        nav, seen = {"menu": "market", "start": 0}, set()
-                        while nav["start"] not in seen:
-                            seen.add(nav["start"])
-                            for note in self._reachable_notes(t):
-                                screen = menu.render(state, nav, t, note=note)
+                        for note in self._reachable_notes(t):
+                            reply = menu.render(state, {"menu": "market"}, t,
+                                                note=note)
+                            for screen in reply.split(menu.MESSAGE_SEPARATOR):
                                 size = len(screen.encode("utf-8"))
                                 if size > worst:
                                     worst, worst_screen = size, screen
-                            nav = {"menu": "market",
-                                   "start": menu._market_page(state, nav, t)[1]}
         self.assertLessEqual(worst, menu.MAX_SCREEN_BYTES,
                              f"{worst} bytes:\n{worst_screen}")
 
-    def test_a_crowded_page_keeps_the_way_out_and_the_way_on(self):
-        """When a note plus a full page would spill, the legend goes -- but
-        [0]Back and [M]ore are the only ways off the screen."""
+    def test_a_crowded_market_keeps_the_note_and_the_way_out(self):
+        """Wide rows and a note above them take more messages, not less
+        text: the note, every row and [0]Back all arrive."""
         import dopewars as game
         import dopewars_menu as menu
         state, _stocked = self._stocked_run()
@@ -606,10 +577,14 @@ class MarketScreenTests(unittest.TestCase):
         for item in game.GOODS:
             state["market"][item].update(price=6246, stock=40)
             state["inventory"][item] = 4
-        screen = self._market(state, note="Rock candy is sold out.")
-        self.assertLessEqual(len(screen.encode("utf-8")), menu.MAX_SCREEN_BYTES)
-        self.assertIn("[0]Back", screen)
-        self.assertIn("[M]ore", screen)
+        messages = self._messages(state, note="Rock candy is sold out.")
+        for message in messages:
+            self.assertLessEqual(len(message.encode("utf-8")),
+                                 menu.MAX_SCREEN_BYTES, message)
+        self.assertIn("Rock candy is sold out.", messages[0])
+        self.assertTrue(messages[-1].endswith("[0]Back"))
+        self.assertEqual(menu._market_rows(state, self._theme()),
+                         "\n".join(messages).split(chr(10))[2:-1])
 
 
 if __name__ == "__main__":

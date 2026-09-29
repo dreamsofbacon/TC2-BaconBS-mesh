@@ -31,18 +31,12 @@ MAX_SCREEN_BYTES = 200
 # slash was read as the bag, against a bag the status line had just
 # called full.
 _FOOTER = "$/stock +bag [0]Back"
-_FOOTER_MORE = "$/stock +bag [M]ore {page}/{pages} [0]Back"
-# What the fit rule trims either of them to, and the width the pager
-# must keep free for the wider one.
-_FOOTER_KEY = "$/stock +bag "
-_FOOTER_WIDEST = _FOOTER_MORE.format(page=9, pages=9)
 
-# Ten goods do not fit one packet, so the market pages. A page is as
-# many rows as the packet holds rather than a fixed count -- the rows
-# vary by a factor of two in width, and a fixed count would either
-# waste half a screen or overrun it.
-_PAGE_BUDGET = MAX_SCREEN_BYTES
-MARKET_MESSAGE_SEPARATOR = "\f"
+# One reply can be several messages: the whole market, or a long arrival
+# description ahead of the screen. render() separates them with this, and
+# messages() turns a reply into what is actually sent -- each one packet at
+# most, split between lines or words and never cut short.
+MESSAGE_SEPARATOR = "\f"
 
 # Mirrors the engine's own gear table (dopewars.command, 'equipment'). The
 # menu checks these before asking, so a refusal is said in theme rather than
@@ -100,53 +94,66 @@ def _market_rows(state, t):
     return rows
 
 
-def _paginate(rows, head, budget):
-    """Split the rows into windows, each fitting one packet.
+def _split_words(text, budget=MAX_SCREEN_BYTES):
+    """One line longer than a packet, as pieces that each fit, split
+    between words. Nothing is dropped."""
+    pieces, current = [], ""
+    for word in text.split(' '):
+        candidate = f"{current} {word}" if current else word
+        if len(candidate.encode('utf-8')) <= budget:
+            current = candidate
+            continue
+        if current:
+            pieces.append(current)
+        # A single word wider than a packet, which no real text has, is
+        # split by characters rather than lost.
+        while len(word.encode('utf-8')) > budget:
+            cut = budget
+            while len(word[:cut].encode('utf-8')) > budget:
+                cut -= 1
+            pieces.append(word[:cut])
+            word = word[cut:]
+        current = word
+    if current:
+        pieces.append(current)
+    return pieces
 
-    Whole pages rather than a rolling window: the player needs to know
-    how many there are and that pressing [M] enough times comes back
-    round, which a window computed only forwards cannot say.
-    """
-    reserve = len(_FOOTER_WIDEST.encode('utf-8')) + 1
-    room = budget - len(head.encode('utf-8')) - reserve
-    pages, index = [], 0
-    while index < len(rows):
-        first, used = index, 0
-        while index < len(rows):
-            cost = len(rows[index].encode('utf-8')) + 1
-            # Always place one row, even a freakishly wide one: a page
-            # showing nothing could never be paged past.
-            if index > first and used + cost > room:
-                break
-            used += cost
-            index += 1
-        pages.append((first, index))
-    return pages
+
+def _pack(lines, budget=MAX_SCREEN_BYTES):
+    """Lines packed into as few messages as fit one packet each."""
+    out, current = [], []
+    for line in lines:
+        pieces = (_split_words(line, budget)
+                  if len(line.encode('utf-8')) > budget else [line])
+        for piece in pieces:
+            if current and len("\n".join(current + [piece]).encode('utf-8')) > budget:
+                out.append("\n".join(current))
+                current = []
+            current.append(piece)
+    if current:
+        out.append("\n".join(current))
+    return out
+
+
+def messages(reply):
+    """A reply as the messages to send: split where render() split it, and
+    anything still over a packet split again rather than truncated."""
+    return [message for part in reply.split(MESSAGE_SEPARATOR)
+            for message in _pack(part.split("\n"))]
 
 
 def _market_pages(state, t):
-    """Return the readable market as exactly two automatic messages."""
+    """The whole market, as many messages as it takes to fit a packet each.
+
+    Every row is shown, so there is no [M]ore to press; the header opens
+    the first message and the legend with [0]Back closes the last. Two
+    messages on most days.
+    """
     carried = sum(state['inventory'].values())
-    rows = _market_rows(state, t)
-    midpoint = (len(rows) + 1) // 2
-    pages = (rows[:midpoint], rows[midpoint:])
-    output = []
-    for number, page in enumerate(pages, start=1):
-        lines = ([f"Market ${state['cash']} b{carried}/{state['capacity']}"]
-                 if number == 1 else [])
-        lines += page
-        if number == 2:
-            lines.append("[0]")
-        output.append("\n".join(lines))
-    return output
-
-
-def _market_page(state, nav, t, budget=_PAGE_BUDGET):
-    """Compatibility helper for callers that walk the old page cursor."""
-    pages = _market_pages(state, t)
-    start = nav.get('start', 0)
-    index = 1 if start else 0
-    return pages[index].split('\n'), 0
+    rows = (_market_rows(state, t)
+            or ["Nothing on the shelf, nothing in your bag."])
+    return _pack([f"Market: ${state['cash']} bag {carried}/{state['capacity']}"]
+                 + rows + [_FOOTER])
 
 
 def _max_borrow(state) -> int:
@@ -187,6 +194,21 @@ def _others(state):
 
 
 def render(state, nav, t, note='') -> str:
+    """The reply for this screen, with *note* above it.
+
+    A note that fits goes on top of the screen, as it always has. One that
+    does not -- the city and district descriptions on arrival run to two
+    packets -- goes ahead as messages of its own, split between words, so
+    neither the note nor the screen is cut to make room.
+    """
+    reply = _screen(state, nav, t, note)
+    if not note or all(len(part.encode('utf-8')) <= MAX_SCREEN_BYTES
+                       for part in reply.split(MESSAGE_SEPARATOR)):
+        return reply
+    return MESSAGE_SEPARATOR.join(_pack([note]) + [_screen(state, nav, t)])
+
+
+def _screen(state, nav, t, note='') -> str:
     lines = [note] if note else []
     phase = state['phase']
 
@@ -208,7 +230,7 @@ def render(state, nav, t, note='') -> str:
         pages = _market_pages(state, t)
         if note:
             pages[0] = f"{note}\n{pages[0]}"
-        return MARKET_MESSAGE_SEPARATOR.join(pages)
+        return MESSAGE_SEPARATOR.join(pages)
     elif menu == 'item':
         item = nav['item']
         offer, held = state['market'][item], state['inventory'][item]
@@ -306,11 +328,7 @@ def render(state, nav, t, note='') -> str:
     # Keep every action and statistic rather than truncating a screen.
     screen = "\n".join(lines)
     if len(screen.encode('utf-8')) > MAX_SCREEN_BYTES:
-        if lines[-1].startswith(_FOOTER_KEY):
-            # The legend goes; [M]ore and [0]Back stay, being the only
-            # ways off the screen.
-            lines = lines[:-1] + [lines[-1][len(_FOOTER_KEY):]]
-        elif menu == 'main':
+        if menu == 'main':
             # Preserve the title by compressing separators and labels first;
             # only a truly impossible packet should drop it.
             lines = [line.replace(' | ', ' ').replace(' | Gear ', ' G ').replace(' | Net ', ' N ')
@@ -443,8 +461,8 @@ def _step(turn, word, nav) -> dict:
         if word in ('t', 'travel'):
             return {'menu': 'move'}
         if word in ('m', 'more'):
-            return {'menu': 'market',
-                    'start': _market_page(state, nav, t)[1]}
+            # Every row is on screen now; [M]ore just shows it again.
+            return {'menu': 'market'}
         item = list(game.GOODS)[_number(word, 1, len(game.GOODS)) - 1]
         return {'menu': 'item', 'item': item}
 

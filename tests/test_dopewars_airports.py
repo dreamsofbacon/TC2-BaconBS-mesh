@@ -38,6 +38,16 @@ def load():
     return door.play_state(42)[1]
 
 
+def assert_fits(reply):
+    """Every message in a reply fits one packet. A reply can be several
+    messages -- the arrival descriptions go ahead of the screen -- and each
+    is split between words rather than cut, so nothing is lost."""
+    parts = reply.split(menu.MESSAGE_SEPARATOR)
+    for part in parts:
+        assert len(part.encode('utf-8')) <= menu.MAX_SCREEN_BYTES, part
+    assert menu.messages(reply) == parts
+
+
 @pytest.mark.parametrize('origin,destination', tuple(permutations(AIRPORT_CITIES, 2)))
 def test_routes_fares_and_normal_travel_processing(origin, destination):
     fares = set()
@@ -94,7 +104,7 @@ def test_menu_through_door(connection, pg13, origin, destination):
         nonlocal nav
         screen, leave, nav = menu.handle(42, text, 'Pilot', pg13, nav)
         assert not leave
-        assert len(screen.encode('utf-8')) <= 200, screen
+        assert_fits(screen)
         return screen
 
     assert '[7]Airport' in send(None)
@@ -133,7 +143,7 @@ def test_unaffordable_menu_flight_is_small_and_preserves_save(connection, pg13):
     screen, _, nav = menu.handle(42, '7 1 yes', 'Pilot', pg13)
     assert nav['menu'] == 'flight_confirm'
     assert load() == state
-    assert len(screen.encode('utf-8')) <= 200, screen
+    assert_fits(screen)
     assert 'cash' in screen
 
 
@@ -148,7 +158,7 @@ def test_airport_packet_budget(pg13):
             for nav in ({'menu': 'airport'},
                         {'menu': 'flight_confirm', 'destination': destination}):
                 screen = menu.render(state, nav, theme(pg13), 'Pick 1-2.')
-                assert len(screen.encode('utf-8')) <= 200, screen
+                assert_fits(screen)
 
 
 @pytest.mark.parametrize('pg13', [False, True])
@@ -162,7 +172,7 @@ def test_flight_arrival_matches_ground_menu(connection, pg13, seed):
     save(connection, state)
     flight, _, flight_nav = menu.handle(42, '7 1 yes', 'Pilot', pg13)
     arrived = load()
-    assert len(flight.encode('utf-8')) <= 200, flight
+    assert_fits(flight)
     assert theme(pg13)['places'][arrived['place']] in flight or arrived['phase'] == 'police'
     local_state = deepcopy(state)
     local_place = next(p for p in game.CITY_PLACES[destination]
@@ -194,7 +204,7 @@ def test_flight_final_day_and_deadline(connection, pg13, deadline):
         screen, _, _ = menu.handle(42, '7 1 yes', 'Pilot', pg13)
     arrived = load()
     assert arrived['phase'] == 'ended'
-    assert len(screen.encode('utf-8')) <= 200
+    assert_fits(screen)
     if deadline:
         assert arrived['place'] == state['place']
         assert arrived['day'] == state['day']
@@ -213,6 +223,6 @@ def test_airport_entry_screen_at_save_limits(pg13):
                      weapon=1, armor=1, event='deal:mushrooms')
         game.validate(state)
         screen = menu.render(state, {'menu': 'main'}, theme(pg13))
-        assert len(screen.encode('utf-8')) <= 200, screen
+        assert_fits(screen)
         assert '[7]Airport' in screen
         assert '[0]X' in screen

@@ -64,7 +64,7 @@ case-insensitive. Amounts must be positive whole numbers.
 Goods: `ludes`, `weed`, `speed`, `peyote`, `hash`, `mushrooms`, `mda`,
 `opium`, `acid`, `ketamine`, `meth`, `oxy`, `pcp`, `heroin`, `crystal`,
 `cocaine` -- listed cheapest first, which is the order the menu numbers
-them in. A town stocks five to nine of them; Weed, Heroin and Coke are always
+them in. A town stocks eight to fourteen of them; Weed, Heroin and Coke are always
 available, while the remaining slots rotate.
 Locations are three eight-district city maps. New York keeps `bronx`,
 `brooklyn`, `manhattan`, `queens`, `staten-island`, `harlem`, `coney-island`,
@@ -79,7 +79,7 @@ and `central-park`. New Orleans has `kenner`, `french-quarter`,
 Start on day 1 with $2,400, $1,200 debt, 100 health and a 40-unit bag.
 Buy low, travel and sell high. Only travel advances the calendar and regenerates
 the market. Staying put, viewing screens, reconnecting and invalid commands
-never reroll prices. Each market stocks five to nine goods. Weed, Heroin and
+never reroll prices. Each market stocks eight to fourteen goods. Weed, Heroin and
 Coke are always available; the other goods rotate. Twenty percent of markets
 feature either a discounted shipment or a scarce-good price spike.
 
@@ -194,8 +194,12 @@ Candy Wars remains the default presentation, with Dope Wars available through
 the existing PG-13 preference. Both themes cover all sixteen goods and the
 24 districts across three cities; a test fails if either gains an id the other
 has no word for, or two goods share an icon.
-The numbered market, travel, airport, confirmation, gear and loan screens
-remain within the tested 200-byte UTF-8 radio budget. Engine commands continue
+Every message stays within the tested 200-byte UTF-8 radio budget. The
+travel, airport, confirmation, gear and loan screens are one message each. The
+market is sent whole, as many messages as its rows need -- two on a normal
+day -- so there is no [M]ore to press. An arrival description too long to sit
+above the screen goes ahead of it as messages of its own, split between words
+and never cut short. Engine commands continue
 to use the saved identifiers, independent of theme. Existing New York saves
 load without a schema change; the new districts use the same saved `place` field.
 
