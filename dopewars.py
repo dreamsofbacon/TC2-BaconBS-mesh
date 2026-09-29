@@ -15,6 +15,8 @@ MAX_CASH = 1_000_000_000
 LOAN_LIMIT = 10_000
 BASE_STOCK_MIN = 10
 BASE_STOCK_MAX = 60
+# Reliable everyday trades; remaining market slots continue to rotate.
+COMMON_GOODS = ('weed', 'heroin', 'cocaine')
 COCAINE_BUST_PRICE_MIN = 300
 COCAINE_BUST_PRICE_MAX = 500
 COCAINE_BUST_STOCK_MAX = 3
@@ -298,12 +300,14 @@ def market(s):
         item: {'price': max(1, base * draw(s, 60, 170) // 100), 'stock': 0}
         for item, base in GOODS.items()
     }
-    choices = list(GOODS)
-    stocked = []
+    choices = [item for item in GOODS if item not in COMMON_GOODS]
+    stocked = list(COMMON_GOODS)
+    for item in stocked:
+        s['market'][item]['stock'] = draw(s, BASE_STOCK_MIN, BASE_STOCK_MAX)
     # Clamped, not merely drawn: draw() is stubbed in tests and a count
     # past the catalogue pops an empty list.
     count = min(9, max(5, draw(s, 5, 9)))
-    for _ in range(count):
+    for _ in range(count - len(stocked)):
         item = choices.pop(draw(s, 0, len(choices) - 1) % len(choices))
         stocked.append(item)
         s['market'][item]['stock'] = draw(s, BASE_STOCK_MIN, BASE_STOCK_MAX)

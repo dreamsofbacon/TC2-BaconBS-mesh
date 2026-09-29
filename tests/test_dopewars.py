@@ -75,6 +75,13 @@ def test_market_availability_events_and_prices_are_bounded():
     assert events == {'deal', 'bust'}
 
 
+def test_common_goods_are_available_on_every_market():
+    for seed in range(500):
+        s = g.new_game(seed)
+        assert all(s['market'][item]['stock'] > 0 for item in g.COMMON_GOODS)
+        assert 5 <= sum(offer['stock'] > 0 for offer in s['market'].values()) <= 9
+
+
 def test_supply_is_large_enough_for_bag_and_cocaine_bust_is_premium():
     cocaine_bust = None
     for seed in range(5000):
