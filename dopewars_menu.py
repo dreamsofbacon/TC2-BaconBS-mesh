@@ -123,42 +123,27 @@ def _paginate(rows, head, budget):
     return pages
 
 
-def _market_page(state, nav, t, budget=_PAGE_BUDGET):
-    """Render the complete compact market catalog.
-
-    The catalog deliberately leaves price and stock detail to the item
-    screen. That makes all goods reachable on one packet without hiding
-    half the market behind a More key.
-    """
+def _market_pages(state, t):
+    """Return the readable market as exactly two automatic messages."""
     carried = sum(state['inventory'].values())
-    head = f"Market: ${state['cash']} bag {carried}/{state['capacity']}"
-    entries = []
-    for index, item in enumerate(game.GOODS, start=1):
-        offer, held = state['market'][item], state['inventory'][item]
-        marker = '*' if offer['stock'] else ('+' if held else '-')
-        # The number selects the item; the detail screen supplies its full
-        # name, price, stock, and buy/sell controls. Three letters are enough
-        # to scan the catalog while leaving room for all four columns.
-        entries.append(f"{index}:{t['goods'][item][:3]}{marker}")
-    # Four compact columns keep the complete catalogue below the packet cap.
-    lines = [head]
-    for index in range(0, len(entries), 4):
-        lines.append(" ".join(entries[index:index + 4]))
-    lines.append("*:on +:bag -:out 0:back")
-    if len("\n".join(lines).encode('utf-8')) > budget:
-        # Arrival/event notes share the packet with the catalog. Keep the
-        # complete numbered menu even then; the item screen has the full
-        # themed name and trade details.
-        compact = []
-        for index, item in enumerate(game.GOODS, start=1):
-            offer, held = state['market'][item], state['inventory'][item]
-            marker = '*' if offer['stock'] else ('+' if held else '-')
-            compact.append(f"{index}{t['goods'][item][0]}{marker}")
-        lines = [f"M ${state['cash']} b{carried}/{state['capacity']}"]
-        for index in range(0, len(compact), 4):
-            lines.append(" ".join(compact[index:index + 4]))
-        lines.append("0")
-    return lines, 0
+    rows = _market_rows(state, t)
+    midpoint = (len(rows) + 1) // 2
+    pages = (rows[:midpoint], rows[midpoint:])
+    output = []
+    for number, page in enumerate(pages, start=1):
+        lines = [f"Mkt {number}/2 ${state['cash']} b{carried}/{state['capacity']}"]
+        lines += page
+        lines.append("[0]")
+        output.append("\n".join(lines))
+    return output
+
+
+def _market_page(state, nav, t, budget=_PAGE_BUDGET):
+    """Compatibility helper for callers that walk the old page cursor."""
+    pages = _market_pages(state, t)
+    start = nav.get('start', 0)
+    index = 1 if start else 0
+    return pages[index].split('\n'), 0
 
 
 def _max_borrow(state) -> int:
@@ -220,8 +205,7 @@ def render(state, nav, t, note='') -> str:
         # One screen for both sides of the trade. Buy and Sell were two
         # lists of the same six goods, each showing one number, and you
         # had to guess from the main screen which one you wanted.
-        lines += _market_page(state, nav, t,
-                              MAX_SCREEN_BYTES - _note_cost(note))[0]
+        lines += "\n\n".join(_market_pages(state, t)).split("\n")
     elif menu == 'item':
         item = nav['item']
         offer, held = state['market'][item], state['inventory'][item]
