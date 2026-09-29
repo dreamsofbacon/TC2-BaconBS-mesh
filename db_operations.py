@@ -6140,12 +6140,19 @@ def retry_mail_dm_delivery(delivery_id: int, error: str, delay_seconds: int) -> 
 # and channel comments record it in author_node_id, for posts made since that
 # column was added. The stored name is untouched, which keeps sync hashes as
 # they are.
-def _sender_name_sql(table: str, node_column: str = 'sender') -> str:
+def account_alias_sql(table: str, node_column: str, fallback_sql: str) -> str:
+    """SQL for the name a row's device goes by: its account's alias, or
+    *fallback_sql* when the device has no account or the alias is blank.
+    The web admin uses it too, so a post reads the same there as on air."""
     return (
         "COALESCE(NULLIF((SELECT a.alias FROM linked_nodes ln "
         "JOIN accounts a ON a.account_id = ln.account_id "
-        f"WHERE ln.node_id = {table}.{node_column}), ''), {table}.sender_short_name)"
+        f"WHERE ln.node_id = {table}.{node_column}), ''), {fallback_sql})"
     )
+
+
+def _sender_name_sql(table: str, node_column: str = 'sender') -> str:
+    return account_alias_sql(table, node_column, f"{table}.sender_short_name")
 
 
 def get_mail(recipient_id, source_node_ids=None):

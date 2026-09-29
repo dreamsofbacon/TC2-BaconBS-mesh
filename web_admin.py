@@ -8158,32 +8158,49 @@ def create_app(runtime_interface=None) -> Flask:
         # Only tables that record where a row came from can be filtered by it.
         node_filter = (request.args.get("node", "").strip()
                        if "source_node_id" in cfg["columns"] else "")
+        from db_operations import account_alias_sql
+        from utils import node_display_name, local_identities_for_display
+
+        # The name a post reads as, resolved the way the radio menus do: the
+        # writer's account alias when they have one, else the name stored
+        # with the post. Searchable too, so "twitch-" finds Twitch posts.
+        author_sql = {
+            "bulletins": account_alias_sql(
+                "bulletins", "author_node_id", "bulletins.sender_short_name"),
+            "mail": account_alias_sql("mail", "sender", "mail.sender_short_name"),
+        }.get(table)
+        if author_sql:
+            cfg = dict(cfg, searchable=list(cfg["searchable"]) + [author_sql])
+
+        where_sql, params = _table_where(cfg, search_query, node_filter)
         with get_db_connection() as conn:
             cursor = conn.cursor()
             if table == "bulletins":
-                select_sql = (
-                    "SELECT id, board, sender_short_name, date, subject, content, local_only, unique_id, "
-                    "COALESCE(content_complete, 1) AS _content_complete, "
-                    "COALESCE(expected_content_length, LENGTH(content)) AS _expected_content_length "
-                    "FROM bulletins"
-                )
-                where_sql, params = _table_where(cfg, search_query, node_filter)
-                cursor.execute(f"{select_sql}{where_sql} ORDER BY id DESC", params)
-            else:
-                where_sql, params = _table_where(cfg, search_query, node_filter)
                 cursor.execute(
-                    f"SELECT {', '.join(cfg['columns'])} FROM {table}{where_sql} ORDER BY id DESC",
-                    params,
-                )
+                    f"SELECT id, board, {author_sql} AS author, date, subject, "
+                    "content, local_only, unique_id, source_node_id, "
+                    "COALESCE(content_complete, 1) AS content_complete, "
+                    "COALESCE(expected_content_length, LENGTH(content)) AS expected_length "
+                    f"FROM bulletins{where_sql} ORDER BY id DESC", params)
+            elif table == "mail":
+                recipient_sql = account_alias_sql("mail", "recipient", "NULL")
+                cursor.execute(
+                    f"SELECT id, {author_sql} AS author, recipient, "
+                    f"{recipient_sql} AS recipient_alias, date, subject, content, "
+                    f"unique_id, source_node_id FROM mail{where_sql} ORDER BY id DESC",
+                    params)
+            else:
+                cursor.execute(
+                    "SELECT id, name, url, local_only, "
+                    "(SELECT COUNT(*) FROM channel_comments cc "
+                    " WHERE cc.channel_id = channels.id) AS comment_count "
+                    f"FROM channels{where_sql} ORDER BY id DESC", params)
             rows = [dict(row) for row in cursor.fetchall()]
 
-        display_columns = list(cfg["columns"])
-        column_labels = dict(cfg.get("column_labels", {}))
         node_options = []
         if "source_node_id" in cfg["columns"]:
             # Same resolver the radio menus use, so a node reads the same
             # name in both places.
-            from utils import node_display_name, local_identities_for_display
             from db_operations import get_content_source_nodes
             local_ids = local_identities_for_display()
             node_options = [{"value": LOCAL_NODE_SENTINEL, "label": "This node"}]
@@ -8194,55 +8211,39 @@ def create_app(runtime_interface=None) -> Flask:
                     "value": node_id,
                     "label": node_display_name(node_id, local_ids=local_ids)})
             for row in rows:
-                row["node"] = node_display_name(
-                    row.get("source_node_id"), local_ids=local_ids)
-        if table == "bulletins":
-            display_columns = ["board", "sender_short_name", "date", "subject", "node", "sync_status", "content"]
-            column_labels["node"] = "Node"
-            for row in rows:
-                expected = int(row.get("_expected_content_length") or len(str(row.get("content") or "")))
-                actual = len(str(row.get("content") or ""))
-                incomplete = int(row.get("_content_complete") or 0) == 0
-                row["sync_status"] = "Incomplete" if incomplete else "OK"
-                row["_sync_incomplete"] = incomplete
-                row["_sync_status_text"] = f"{actual}/{expected} chars" if incomplete else ""
-                row["_resolve_scope"] = "bulletins"
-                row["_resolve_key"] = str(row.get("unique_id") or "")
-                content = str(row.get("content") or "")
-                if len(content) > 200:
-                    row["content"] = content[:200] + "…"
-        elif table == "mail":
-            display_columns = ["sender_short_name", "recipient", "date", "subject", "node", "content"]
-            column_labels["sender_short_name"] = "From"
-            column_labels["recipient"] = "To"
-            column_labels["node"] = "Node"
-            for row in rows:
-                content = str(row.get("content") or "")
-                if len(content) > 200:
-                    row["content"] = content[:200] + "…"
+                # A post with no recorded origin was written here before
+                # origins were kept; saying nothing beats "unknown".
+                row["origin"] = (node_display_name(
+                    row["source_node_id"], local_ids=local_ids)
+                    if row.get("source_node_id") else "")
+
+        for row in rows:
+            if table == "bulletins":
+                incomplete = int(row["content_complete"] or 0) == 0
+                row["incomplete"] = incomplete
+                row["incomplete_detail"] = (
+                    f"{len(str(row['content'] or ''))}/{row['expected_length']} chars"
+                    if incomplete else "")
+            if table == "mail":
+                row["recipient_name"] = (
+                    row.get("recipient_alias")
+                    or node_display_name(row.get("recipient"), local_ids=local_ids))
 
         return render_template(
-            "table_list.html",
+            "post_list.html",
             title=cfg["title"],
             show_nav=True,
             table_title=cfg["title"],
             table_name=table,
-            display_columns=display_columns,
-            column_labels=column_labels,
             rows=rows,
             search_query=search_query,
             node_filter=node_filter,
             node_options=node_options,
-            db_path=app.config["DB_PATH"],
-            create_url=(url_for("bulletin_new") if table == "bulletins" else url_for("channel_new") if table == "channels" else None),
-            create_label=("New Bulletin Post" if table == "bulletins" else "New Channel Entry" if table == "channels" else ""),
-            edit_label=("Post/Edit" if table == "channels" else "Edit"),
-            comments_enabled=(table == "channels"),
+            create_url=(url_for("bulletin_new") if table == "bulletins"
+                        else url_for("channel_new") if table == "channels" else None),
+            create_label=("New Bulletin Post" if table == "bulletins"
+                          else "New Channel Entry" if table == "channels" else ""),
             bulk_delete=(table in BULK_DELETE_TABLES),
-            per_page=25,
-            page=1,
-            total_pages=None,
-            total_count=len(rows),
         )
 
     @app.route("/bulletins/new", methods=["GET", "POST"])

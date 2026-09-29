@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{#
+  Bulletins, Mail and Channels as a list of posts rather than a grid of
+  database columns. Each post leads with what a reader looks for -- the
+  subject and who wrote it -- and keeps the raw fields out of the way. The
+  grid it replaced hid the author entirely on a narrow screen.
+#}
+{% block content %}
+<div class="post-page">
+<div class="table-toolbar">
+  <h2 class="table-title">{{ table_title }}</h2>
+  <div class="table-toolbar-actions">
+    <form class="table-search-form" id="table-search-form" method="get">
+      <div class="search-box">
+        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14" aria-hidden="true"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.099zm-5.242 1.656a5.5 5.5 0 1 1 0-11 5.5 5.5 0 0 1 0 11z"/></svg>
+        <input type="text" id="table-search-input" name="q" value="{{ search_query }}"
+               placeholder="Search {{ table_title }}…" autocomplete="off" aria-label="Search {{ table_title }}">
+      </div>
+      {% if node_options %}
+      <select class="form-control" name="node" aria-label="Filter by origin node"
+              onchange="this.form.submit()">
+        <option value="">All nodes</option>
+        {% for option in node_options %}
+        <option value="{{ option.value }}"
+                {% if option.value == node_filter %}selected{% endif %}>{{ option.label }}</option>
+        {% endfor %}
+      </select>
+      {% endif %}
+      <button class="btn btn-sm" type="submit">Search</button>
+      {% if search_query or node_filter %}
+      <a class="btn btn-sm" href="{{ url_for('table_list', table=table_name) }}">Clear</a>
+      {% endif %}
+    </form>
+    {% if create_url %}
+    <div class="table-toolbar-right">
+      <a class="btn btn-primary btn-sm" id="new-record-btn" href="{{ create_url }}">{{ create_label }}</a>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% if bulk_delete and rows %}
+<form method="post" action="{{ url_for('table_delete_selected', table=table_name) }}"
+      id="bulk-delete-form" class="bulk-actions" data-bulk-delete
+      data-noun="{{ 'message' if table_name == 'mail' else 'row' }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {% if search_query %}<input type="hidden" name="q" value="{{ search_query }}">{% endif %}
+  {% if node_filter %}<input type="hidden" name="node" value="{{ node_filter }}">{% endif %}
+  <label class="post-select-all">
+    <input type="checkbox" data-bulk-all aria-label="Select every message shown"> Select all
+  </label>
+  <button type="submit" class="btn btn-sm btn-danger" data-bulk-submit disabled>Delete selected</button>
+  <span class="text-muted" data-bulk-count aria-live="polite">Tick messages to delete several at once.</span>
+</form>
+{% endif %}
+
+{% if rows %}
+<p class="post-count text-muted">{{ rows|length }} {{ table_title|lower if rows|length != 1 else table_name.rstrip('s') }}</p>
+<ol class="post-list" aria-label="{{ table_title }}">
+  {% for row in rows %}
+  {% set body = row.get('content') if table_name != 'channels' else row.get('url') %}
+  <li class="post{% if row.get('incomplete') %} post--incomplete{% endif %}" data-row-id="{{ row['id'] }}">
+    {% if bulk_delete %}
+    <input type="checkbox" class="post-select" name="row_ids" value="{{ row['id'] }}"
+           form="bulk-delete-form" data-bulk-row
+           aria-label="Select {{ row.get('subject') or ('message ' ~ row['id']) }}">
+    {% endif %}
+    <div class="post-main">
+      <h3 class="post-title">
+        {{ row.get('subject') or row.get('name') or '(no subject)' }}
+        {% if row.get('incomplete') %}
+        <strong class="badge badge-error" title="Only part of this post has arrived">Incomplete</strong>
+        <span class="text-muted post-detail">{{ row.get('incomplete_detail') }}</span>
+        {% endif %}
+        {% if row.get('local_only') %}<span class="badge badge-muted" title="Not shared with other nodes">Local only</span>{% endif %}
+      </h3>
+      <p class="post-meta">
+        {% if table_name == 'bulletins' %}
+          <span class="post-author">{{ row.get('author') or 'Unknown' }}</span>
+          <span>in {{ row.get('board') }}</span>
+          <time>{{ row.get('date') }}</time>
+          {% if row.get('origin') %}<span class="post-origin">from {{ row.get('origin') }}</span>{% endif %}
+        {% elif table_name == 'mail' %}
+          <span class="post-author">{{ row.get('author') or 'Unknown' }}</span>
+          <span>to <span class="post-author">{{ row.get('recipient_name') or row.get('recipient') }}</span></span>
+          <time>{{ row.get('date') }}</time>
+          {% if row.get('origin') %}<span class="post-origin">from {{ row.get('origin') }}</span>{% endif %}
+        {% else %}
+          <span>{{ row.get('comment_count', 0) }} comment{{ '' if row.get('comment_count') == 1 else 's' }}</span>
+        {% endif %}
+      </p>
+      {% if body %}
+      {% if body|length > 180 or '\n' in body %}
+      <details class="post-body">
+        <summary><span class="post-preview">{{ body }}</span><span class="post-more">Read all</span></summary>
+        <div class="post-full">{{ body }}</div>
+      </details>
+      {% else %}
+      <p class="post-preview post-preview--whole">{{ body }}</p>
+      {% endif %}
+      {% endif %}
+    </div>
+    <div class="post-actions">
+      <a class="btn btn-sm" href="{{ url_for('table_edit', table=table_name, row_id=row['id']) }}">{{ 'Post/Edit' if table_name == 'channels' else 'Edit' }}</a>
+      {% if table_name == 'channels' %}
+      <a class="btn btn-sm" href="{{ url_for('channel_comments', channel_id=row['id']) }}">Comments</a>
+      {% endif %}
+      {% if row.get('incomplete') and row.get('unique_id') %}
+      <form method="post" action="{{ url_for('resolve_record') }}" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="scope" value="bulletins">
+        <input type="hidden" name="key" value="{{ row['unique_id'] }}">
+        <input type="hidden" name="redirect_to" value="{{ request.full_path if request.query_string else request.path }}">
+        <button type="submit" class="btn btn-sm btn-success" title="Resolve sync conflict — accept the version from another peer">Resolve</button>
+      </form>
+      {% endif %}
+      <form method="post" action="{{ url_for('table_delete', table=table_name, row_id=row['id']) }}" class="inline-form"
+            onsubmit="return confirm('Delete this {{ table_name.rstrip('s') }}? Other nodes delete their copies too.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+      </form>
+    </div>
+  </li>
+  {% endfor %}
+</ol>
+{% else %}
+<div class="empty-state">
+  <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" width="48" height="48" aria-hidden="true"><circle cx="24" cy="24" r="20"/><path d="M16 24h16M24 16v16" stroke-linecap="round"/></svg>
+  <p>No {{ table_title | lower }} found{% if search_query %} matching "<strong>{{ search_query }}</strong>"{% endif %}.</p>
+  {% if create_url %}
+  <a class="btn btn-primary" href="{{ create_url }}">{{ create_label }}</a>
+  {% endif %}
+</div>
+{% endif %}
+{% if bulk_delete %}
+<script src="{{ url_for('static', filename='js/bulk-delete.js', v=asset_version) }}"></script>
+{% endif %}
+</div>
+{% endblock %}

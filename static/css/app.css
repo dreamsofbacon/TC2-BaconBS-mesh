@@ -1603,3 +1603,90 @@ kbd {
   .emu-transcript  { height: 300px; }
   .emu-input-row   { flex-direction: column; }
 }
+
+
+/* ── Post list (Bulletins, Mail, Channels) ─────────────────────────────
+   One block per post: subject, then who wrote it, then a preview. The
+   author is on its own line at every width -- the table this replaced
+   dropped it on a narrow screen. */
+.post-count { margin: 12px 0 8px; font-size: 0.85rem; }
+.post-select-all { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; }
+.post-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.post {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--border);
+}
+.post:first-child { border-top: 0; }
+.post:hover { background: var(--surface-2); }
+.post--incomplete { box-shadow: inset 3px 0 0 var(--error); }
+.post-select { margin-top: 4px; flex: none; }
+.post-main { flex: 1; min-width: 0; }
+.post-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.post-title .badge { margin-left: 6px; vertical-align: 2px; }
+.post-detail { font-size: 0.78rem; font-weight: 400; }
+.post-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin: 4px 0 0;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+.post-author { color: var(--link); font-weight: 600; overflow-wrap: anywhere; }
+.post-origin { color: var(--text-faint); }
+.post-preview {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 8px 0 0;
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.post-body summary { list-style: none; cursor: pointer; }
+.post-body summary::-webkit-details-marker { display: none; }
+.post-more { display: inline-block; margin-top: 4px; font-size: 0.8rem; color: var(--link); }
+.post-body[open] .post-preview,
+.post-body[open] .post-more { display: none; }
+.post-full {
+  margin-top: 8px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.post-actions { display: flex; flex: none; flex-wrap: wrap; gap: 6px; }
+
+/* The shared toolbar never wraps its search row, which pushed these pages
+   wider than a phone. Scoped here so the other pages using it are untouched. */
+.post-page { min-width: 0; }
+.post-page .table-search-form { flex-wrap: wrap; min-width: 0; }
+.post-page .search-box { flex: 1 1 200px; max-width: none; min-width: 0; }
+.post-page .table-search-form select { flex: 1 1 140px; min-width: 0; width: auto; }
+
+@media (max-width: 640px) {
+  .post { flex-wrap: wrap; column-gap: 10px; padding: 12px; }
+  .post-main { flex-basis: 0; flex-grow: 1; }
+  .post-actions { flex-basis: 100%; }
+  .post-select + .post-main + .post-actions { padding-left: 26px; }
+}
