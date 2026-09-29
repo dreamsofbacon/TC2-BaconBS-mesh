@@ -136,7 +136,8 @@ def _market_pages(state, t):
             left = page[index]
             right = page[index + 1] if index + 1 < len(page) else ""
             lines.append(f"{left} | {right}" if right else left)
-        lines.append("0")
+        if number == 1:
+            lines.append("0")
         output.append("\n".join(lines))
     return output
 
