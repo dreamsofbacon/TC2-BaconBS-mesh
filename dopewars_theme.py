@@ -151,6 +151,14 @@ THEMES = {
 }
 
 
+# Keep the presentation layer in sync with the engine's active map.  The
+# legacy catalog above is retained for theme wording, but obsolete places
+# must not make the menu crash when a saved run uses the current map.
+for _theme in THEMES.values():
+    _theme['places'].update({place: game.PLACE_LABELS[place]
+                             for place in game.PLACES})
+
+
 def theme(pg13: bool) -> dict:
     return THEMES[MATURE if pg13 else CANDY]
 

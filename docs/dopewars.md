@@ -64,7 +64,8 @@ case-insensitive. Amounts must be positive whole numbers.
 Goods: `ludes`, `weed`, `speed`, `peyote`, `hash`, `mushrooms`, `mda`,
 `opium`, `acid`, `ketamine`, `meth`, `oxy`, `pcp`, `heroin`, `crystal`,
 `cocaine` -- listed cheapest first, which is the order the menu numbers
-them in. A town stocks five to nine of them.
+them in. A town stocks five to nine of them; Weed, Heroin and Coke are always
+available, while the remaining slots rotate.
 Locations are three eight-district city maps. New York keeps `bronx`,
 `brooklyn`, `manhattan`, `queens`, `staten-island`, `harlem`, `coney-island`,
 and `central-park`. New Orleans has `kenner`, `french-quarter`,
@@ -78,8 +79,9 @@ and `central-park`. New Orleans has `kenner`, `french-quarter`,
 Start on day 1 with $2,400, $1,200 debt, 100 health and a 40-unit bag.
 Buy low, travel and sell high. Only travel advances the calendar and regenerates
 the market. Staying put, viewing screens, reconnecting and invalid commands
-never reroll prices. Each market stocks five to nine goods. Twenty percent of
-markets feature either a discounted shipment or a scarce-good price spike.
+never reroll prices. Each market stocks five to nine goods. Weed, Heroin and
+Coke are always available; the other goods rotate. Twenty percent of markets
+feature either a discounted shipment or a scarce-good price spike.
 
 Ground travel stays within the current city. Each trip adds 5% interest, rounded
 up, while debt remains and has a 25% chance of a police encounter. After an

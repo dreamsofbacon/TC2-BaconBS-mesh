@@ -15,6 +15,9 @@ from dopewars_theme import theme
 from player_identity import player_key
 
 
+AIRPORT_CITIES = tuple(city for city in game.CITIES if city in game.AIRPORTS)
+
+
 @pytest.fixture
 def connection():
     with sqlite3.connect(':memory:') as conn:
@@ -35,7 +38,7 @@ def load():
     return door.play_state(42)[1]
 
 
-@pytest.mark.parametrize('origin,destination', tuple(permutations(game.CITIES, 2)))
+@pytest.mark.parametrize('origin,destination', tuple(permutations(AIRPORT_CITIES, 2)))
 def test_routes_fares_and_normal_travel_processing(origin, destination):
     fares = set()
     for day in range(1, 31):
@@ -64,7 +67,7 @@ def test_routes_fares_and_normal_travel_processing(origin, destination):
         assert game.validate(actual) == actual
 
 
-@pytest.mark.parametrize('text', ['flight miami', 'flight miami no',
+@pytest.mark.parametrize('text', ['flight tijuana', 'flight tijuana no',
                                   'flight nowhere yes', 'flight new-york yes'])
 def test_invalid_flights_are_noops(text):
     state = game.new_game(19)
@@ -74,13 +77,13 @@ def test_invalid_flights_are_noops(text):
 
 def test_flight_requires_airport_and_cash_not_bank():
     state = game.new_game(19)
-    assert game.command(state, 'flight miami yes')[0] == state
+    assert game.command(state, 'flight tijuana yes')[0] == state
     state.update(place='queens', cash=0, bank=10000)
     assert game.command(state, 'flight miami yes')[0] == state
 
 
 @pytest.mark.parametrize('pg13', [False, True])
-@pytest.mark.parametrize('origin,destination', tuple(permutations(game.CITIES, 2)))
+@pytest.mark.parametrize('origin,destination', tuple(permutations(AIRPORT_CITIES, 2)))
 def test_menu_through_door(connection, pg13, origin, destination):
     state = game.new_game(19)
     state.update(place=game.AIRPORTS[origin], debt=0, loan_due=0, cash=10000)
@@ -136,10 +139,10 @@ def test_unaffordable_menu_flight_is_small_and_preserves_save(connection, pg13):
 
 @pytest.mark.parametrize('pg13', [False, True])
 def test_airport_packet_budget(pg13):
-    for origin in game.CITIES:
+    for origin in AIRPORT_CITIES:
         state = game.new_game(19)
         state.update(place=game.AIRPORTS[origin], cash=game.MAX_CASH)
-        for destination in game.CITIES:
+        for destination in AIRPORT_CITIES:
             if destination == origin:
                 continue
             for nav in ({'menu': 'airport'},
@@ -154,18 +157,31 @@ def test_flight_arrival_matches_ground_menu(connection, pg13, seed):
     """Flights share themed loot/encounter/deadline handling, not just rules."""
     state = game.new_game(seed)
     state.update(place='queens', moves=1, cash=999999, debt=99999)
-    fare = game.flight_fare(state, game.NEW_ORLEANS)
+    destination = menu._airport_destinations(state)[0]
+    fare = game.flight_fare(state, destination)
     save(connection, state)
     flight, _, flight_nav = menu.handle(42, '7 1 yes', 'Pilot', pg13)
     arrived = load()
     assert len(flight.encode('utf-8')) <= 200, flight
     assert theme(pg13)['places'][arrived['place']] in flight or arrived['phase'] == 'police'
     local_state = deepcopy(state)
-    local_state.update(place='french-quarter', cash=state['cash'] - fare)
+    local_place = next(p for p in game.CITY_PLACES[destination]
+                       if p != game.AIRPORTS[destination])
+    local_state.update(place=local_place, cash=state['cash'] - fare)
     save(connection, local_state)
     ground, _, ground_nav = menu.handle(42, '2 1', 'Pilot', pg13)
     assert flight_nav == ground_nav
-    assert flight == ground
+    ground_place = menu._others(local_state)[0]
+    city_line, _ = game.arrival_descriptions(
+        state['seed'], state['moves'], state['day'] + 1,
+        game.AIRPORTS[destination], from_airport=True)
+    _, district_line = game.arrival_descriptions(
+        state['seed'], state['moves'], state['day'] + 1,
+        ground_place, from_airport=False)
+    assert city_line in flight
+    assert district_line in ground
+    assert city_line not in ground
+    assert district_line not in flight
 
 
 @pytest.mark.parametrize('pg13', [False, True])
@@ -184,7 +200,7 @@ def test_flight_final_day_and_deadline(connection, pg13, deadline):
         assert arrived['day'] == state['day']
         assert theme(pg13)['deadline'] in screen
     else:
-        assert arrived['place'] == 'kenner'
+        assert arrived['place'] == game.AIRPORTS[menu._airport_destinations(state)[0]]
         assert arrived['day'] == 30
 
 

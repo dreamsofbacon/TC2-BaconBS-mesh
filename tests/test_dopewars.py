@@ -33,20 +33,21 @@ def test_initialization():
                                            'coney-island', 'central-park')
     assert all(len(g.CITY_PLACES[city]) == 8 for city in g.CITIES)
     assert g.AIRPORTS == {'new-york': 'queens', 'new-orleans': 'kenner',
-                          'miami': 'flagami'}
+                          'chicago': 'chicago-ohare', 'miami': 'flagami',
+                          'san-diego': 'san-diego-middletown'}
     assert g.validate(json.loads(json.dumps(s))) == s
 
 
 def test_ground_travel_stays_in_current_city_and_flights_use_airports():
     s = g.new_game(19)
-    assert act(s, 'travel kenner') == s
+    assert act(s, 'travel chicago-ohare') == s
     s['place'] = 'queens'
-    fare = g.flight_fare(s, g.MIAMI)
-    assert 175 <= fare <= 325
-    assert fare == g.flight_fare(json.loads(json.dumps(s)), g.MIAMI)
+    fare = g.flight_fare(s, g.SAN_DIEGO)
+    assert 200 <= fare <= 350
+    assert fare == g.flight_fare(json.loads(json.dumps(s)), g.SAN_DIEGO)
     with mock.patch.object(g, 'market'), mock.patch.object(g, 'draw', return_value=99):
-        arrived = act(s, 'flight miami yes')
-    assert arrived['place'] == 'flagami'
+        arrived = act(s, 'flight san-diego yes')
+    assert arrived['place'] == 'san-diego-middletown'
     assert arrived['day'] == s['day'] + 1
     assert arrived['cash'] == s['cash'] - fare
 
@@ -54,10 +55,10 @@ def test_ground_travel_stays_in_current_city_and_flights_use_airports():
 def test_flight_requires_cash_and_does_not_change_state_when_unaffordable():
     s = g.new_game(19)
     s['place'] = 'queens'
-    fare = g.flight_fare(s, g.MIAMI)
+    fare = g.flight_fare(s, g.SAN_DIEGO)
     s['cash'] = fare - 1
     before = deepcopy(s)
-    arrived, reply, _ = g.command(s, 'flight miami yes')
+    arrived, reply, _ = g.command(s, 'flight san-diego yes')
     assert arrived == before
     assert f'${fare}' in reply
 
@@ -67,11 +68,18 @@ def test_market_availability_events_and_prices_are_bounded():
     for seed in range(500):
         s = g.new_game(seed)
         stocked = sum(offer['stock'] > 0 for offer in s['market'].values())
-        assert 5 <= stocked <= 9
+        assert g.MIN_STOCKED_GOODS <= stocked <= g.MAX_STOCKED_GOODS
         assert all(1 <= offer['price'] <= 10000 for offer in s['market'].values())
         if s['event']:
             events.add(s['event'].split(':', 1)[0])
     assert events == {'deal', 'bust'}
+
+
+def test_common_goods_are_available_on_every_market():
+    for seed in range(500):
+        s = g.new_game(seed)
+        assert all(s['market'][item]['stock'] > 0 for item in g.COMMON_GOODS)
+        assert g.MIN_STOCKED_GOODS <= sum(offer['stock'] > 0 for offer in s['market'].values()) <= g.MAX_STOCKED_GOODS
 
 
 def test_supply_is_large_enough_for_bag_and_cocaine_bust_is_premium():
