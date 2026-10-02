@@ -660,7 +660,7 @@ class GameInputRoutingTests(unittest.TestCase):
 
         for command in ('n', 's', 'x', 'sm,,someone,,hello'):
             with self.subTest(command=command), \
-                    mock.patch.object(mp, 'handle_zork_steps') as handle_zork:
+                    mock.patch.object(ch, 'handle_zork_steps') as handle_zork:
                 ch.update_user_state(1234, {'command': 'ZORK', 'step': 1, 'game_id': 'zork1'})
                 mp.process_message(1234, command, self.iface)
                 handle_zork.assert_called_once_with(1234, command, self.iface)
@@ -669,7 +669,7 @@ class GameInputRoutingTests(unittest.TestCase):
         import message_processing as mp
 
         ch.update_user_state(1234, {'command': 'ZORK', 'step': 1, 'game_id': 'zork1'})
-        with mock.patch.object(mp, 'handle_zork_steps') as handle_zork, \
+        with mock.patch.object(ch, 'handle_zork_steps') as handle_zork, \
                 mock.patch.object(mp, 'handle_check_mail_command') as check_mail:
             mp.process_message(1234, '!CM', self.iface)
         handle_zork.assert_called_once_with(1234, '!CM', self.iface)
@@ -689,7 +689,7 @@ class GameInputRoutingTests(unittest.TestCase):
 
         for command in ('n', 's', 'x'):
             with self.subTest(command=command), \
-                    mock.patch.object(mp, 'handle_trivia_steps') as handle_trivia:
+                    mock.patch.object(ch, 'handle_trivia_steps') as handle_trivia:
                 ch.update_user_state(1234, {'command': 'TRIVIA', 'step': 1})
                 mp.process_message(1234, command, self.iface)
                 handle_trivia.assert_called_once_with(1234, command, self.iface)
@@ -698,7 +698,7 @@ class GameInputRoutingTests(unittest.TestCase):
         import message_processing as mp
 
         ch.update_user_state(1234, {'command': 'TRIVIA', 'step': 1})
-        with mock.patch.object(mp, 'handle_trivia_steps') as handle_trivia, \
+        with mock.patch.object(ch, 'handle_trivia_steps') as handle_trivia, \
                 mock.patch.object(mp, 'handle_check_mail_command') as check_mail:
             mp.process_message(1234, '!CM', self.iface)
         handle_trivia.assert_called_once_with(1234, '!CM', self.iface)

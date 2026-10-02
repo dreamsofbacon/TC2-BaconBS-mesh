@@ -133,8 +133,10 @@ class ScreenTests(_Case):
         self.score("67472072", "Stranger", points=100)
 
     def test_the_scoreboard_names_the_account_and_the_device(self):
-        index = [g for g, _ in ch.GAME_LIST].index("baconfall") + 1
-        ch.handle_scoreboard_steps(1234, str(index), None)
+        ch.update_user_state(1234, {'command': 'SCOREBOARD', 'step': 1})
+        self.addCleanup(ch.update_user_state, 1234, None)
+        for key in ch.games_menu_keys("baconfall"):
+            ch.handle_scoreboard_steps(1234, key, None)
         board = "\n".join(self.sent)
         self.assertIn("1. Materva (Pers) 500", board)
         self.assertIn("2. Stranger 100", board)
@@ -146,7 +148,10 @@ class ScreenTests(_Case):
     def test_a_board_still_renders_rows_without_a_user_id(self):
         """Older four-value rows, as some callers and tests still produce."""
         with mock.patch.object(ch, "get_game_scoreboard", return_value=[("Ada", 100, 350, 12)]):
-            ch.handle_scoreboard_steps(1234, "2", None)
+            ch.update_user_state(1234, {'command': 'SCOREBOARD', 'step': 1})
+            self.addCleanup(ch.update_user_state, 1234, None)
+            for key in ch.games_menu_keys("zork2"):
+                ch.handle_scoreboard_steps(1234, key, None)
         self.assertIn("1. Ada 100/350", "\n".join(self.sent))
 
 

@@ -146,9 +146,12 @@ class StorageTests(_Db):
         self.assertEqual(self.rows("game_scores", "67472072"), 1)
 
     def test_baconfall_runs_use_the_same_key(self):
+        """Filed with every other game's saves now, under the same key."""
         import baconfall_port
         baconfall_port.play(pid.meshcore_player_number(KEY))
-        self.assertEqual(self.rows("baconfall_runs", NEW), 1)
+        self.assertEqual(1, self.conn.execute(
+            "SELECT COUNT(*) FROM zork_saves WHERE user_id = ? AND game_id = 'baconfall'",
+            (NEW,)).fetchone()[0])
 
 
 class MigrationTests(_Db):

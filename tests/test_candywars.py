@@ -59,21 +59,14 @@ class _DbCase(unittest.TestCase):
             else:
                 state[key] = value
         game.validate(state)
-        from player_identity import player_key
-        conn = self.db.get_db_connection()
-        conn.execute('CREATE TABLE IF NOT EXISTS dopewars_runs '
-                     '(user_id TEXT PRIMARY KEY, state_json TEXT NOT NULL)')
-        conn.execute('INSERT OR REPLACE INTO dopewars_runs VALUES (?, ?)',
-                     (player_key(user), json.dumps(state)))
-        conn.commit()
+        import door_kit
+        door_kit.store_save(game.GAME_ID, user, state)
         return state
 
     def saved(self, user):
-        from player_identity import player_key
-        row = self.db.get_db_connection().execute(
-            'SELECT state_json FROM dopewars_runs WHERE user_id = ?',
-            (player_key(user),)).fetchone()
-        return json.loads(row[0])
+        import door_kit
+        import dopewars_door
+        return dopewars_door.expand(door_kit.load_save(game.GAME_ID, user))[0]
 
     def play(self, user, text, pg13=False, nav=None):
         reply, leave, nav = menu.handle(user, text, 'kid', pg13, nav)
@@ -170,8 +163,13 @@ class KidSafeTests(_DbCase):
                 mock.patch.object(ch, 'get_node_id_from_num', return_value='!kid00001'), \
                 mock.patch.object(ch, 'effective_pg13', return_value=False), \
                 mock.patch.object(ch, 'handle_help_command'):
+            # Titles are listed a group at a time, so open the group it
+            # is in on both the menu and the scoreboard.
+            group_key = ch.games_menu_keys('dopewars')[0]
             ch.handle_games_command(77, iface)
+            ch.handle_games_steps(77, group_key, iface)
             ch.handle_scoreboard_command(77, iface)
+            ch.handle_scoreboard_steps(77, group_key, iface)
             ch.handle_hall_of_fame_command(77, iface)
         self.addCleanup(ch.update_user_state, 77, None)
         joined = "\n".join(sent)

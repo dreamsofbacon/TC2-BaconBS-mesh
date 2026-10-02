@@ -62,34 +62,91 @@ class MenuTests(unittest.TestCase):
         self.addCleanup(ch.update_user_state, 5150, None)
         self.iface = types.SimpleNamespace(bbs_nodes=[], nodes={})
 
-    def test_the_menu_renumbers_around_a_hidden_game(self):
+    def _adventures(self):
+        return [game_id for game_id, info in ch.visible_games()
+                if info.get('group', 'adventure') == 'adventure']
+
+    def test_a_hidden_group_leaves_the_menu(self):
+        """Trivia King is alone in its group, so hiding it removes the line
+        and the groups after it move up."""
         with _hidden('trivia'):
             ch.handle_games_command(5150, self.iface)
-        first_line = self.sent[-1].splitlines()[1]
-        self.assertTrue(first_line.startswith('[1] Zork I'), first_line)
         self.assertNotIn('Trivia', self.sent[-1])
+        self.assertTrue(self.sent[-1].splitlines()[1].startswith('[1] Adventures'))
+
+    def test_a_group_renumbers_around_a_hidden_game(self):
+        with _hidden('zork1'):
+            ch.handle_games_command(5150, self.iface)
+            ch.handle_games_steps(5150, '1', self.iface)
+        lines = self.sent[-1].splitlines()
+        self.assertEqual('Adventures', lines[0])
+        self.assertEqual('[1] Zork II', lines[1])
+        self.assertNotIn('Zork I\n', self.sent[-1] + '\n')
 
     def test_a_number_opens_the_title_shown_beside_it(self):
         """The number a player reads must launch that game, not whatever
         sat at that position before the list was filtered."""
         launched = []
-        with _hidden('trivia'), \
+        with _hidden('zork1'), \
                 mock.patch.object(ch, '_launch_game',
                                   side_effect=lambda s, i, gid, name: launched.append(gid)):
+            ch.handle_games_command(5150, self.iface)
             ch.handle_games_steps(5150, '1', self.iface)
-        self.assertEqual(['zork1'], launched)
+            ch.handle_games_steps(5150, '1', self.iface)
+        self.assertEqual(['zork2'], launched)
 
     def test_a_number_past_the_shorter_list_is_refused(self):
-        with _hidden('trivia'):
-            ch.handle_games_steps(5150, str(len(ch.GAME_LIST)), self.iface)
+        with _hidden('zork1'):
+            shown = len(self._adventures())
+            ch.handle_games_command(5150, self.iface)
+            ch.handle_games_steps(5150, '1', self.iface)
+            ch.handle_games_steps(5150, str(shown + 1), self.iface)
         self.assertIn('Invalid choice', self.sent[-1])
-        self.assertIn(f'1-{len(ch.GAME_LIST) - 1}', self.sent[-1])
+        self.assertIn(f'1-{shown}', self.sent[-1])
 
-    def test_the_scoreboard_numbers_match_the_menu(self):
+    def test_a_title_alone_in_its_group_opens_in_one_key(self):
+        launched = []
+        with _hidden(None), \
+                mock.patch.object(ch, '_launch_game',
+                                  side_effect=lambda s, i, gid, name: launched.append(gid)):
+            ch.handle_games_command(5150, self.iface)
+            menu = self.sent[-1]
+            for key in ch.games_menu_keys('trivia'):
+                ch.handle_games_steps(5150, key, self.iface)
+        self.assertEqual(1, len(ch.games_menu_keys('trivia')))
+        self.assertIn('Trivia King', menu)
+        self.assertEqual(['trivia'], launched)
+
+    def test_zero_in_a_group_goes_back_to_the_groups(self):
+        with _hidden(None):
+            ch.handle_games_command(5150, self.iface)
+            ch.handle_games_steps(5150, '1', self.iface)
+            ch.handle_games_steps(5150, '0', self.iface)
+        self.assertIn('[S]cores', self.sent[-1])
+        self.assertFalse(ch.get_user_state(5150).get('group'))
+
+    def test_the_scoreboard_groups_match_the_menu(self):
         with _hidden('trivia'):
+            ch.handle_games_command(5150, self.iface)
+            menu_groups = [l for l in self.sent[-1].splitlines() if l.startswith('[') and l[1].isdigit()]
             ch.handle_scoreboard_command(5150, self.iface)
+        board_groups = [l for l in self.sent[-1].splitlines() if l.startswith('[') and l[1].isdigit()]
         self.assertNotIn('Trivia', self.sent[-1])
-        self.assertIn('[1] Zork I', self.sent[-1])
+        self.assertEqual(menu_groups, [l for l in board_groups if not l.startswith('[0]')])
+
+    def test_every_games_screen_fits_the_two_packet_budget(self):
+        """The flat list reached 309 of 320 bytes at eleven titles, which is
+        why it is grouped. Each screen must stay inside that."""
+        with _hidden(None), mock.patch.object(ch, 'with_help_tip', lambda menu, *a: menu):
+            ch.handle_games_command(5150, self.iface)
+            screens = [self.sent[-1]]
+            for number, (_key, _label, titles) in enumerate(ch.game_groups(), start=1):
+                if len(titles) > 1:
+                    ch.handle_games_command(5150, self.iface)
+                    ch.handle_games_steps(5150, str(number), self.iface)
+                    screens.append(self.sent[-1])
+        for screen in screens:
+            self.assertLessEqual(len(screen.encode('utf-8')), 320, screen)
 
     def test_every_game_hidden_says_so(self):
         """Not a menu of nothing but a scoreboard for games nobody can play."""

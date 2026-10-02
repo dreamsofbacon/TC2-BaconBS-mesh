@@ -6294,6 +6294,36 @@ def upsert_zork_save(user_id: int, save_data: bytes, game_id: str = 'zork1') -> 
     clear_sync_tombstone('zork_saves', f"{user_id}:{game_id}")
 
 
+# The table is named for the first games that used it, but a row is just a
+# player, a game id and an opaque blob, and the sync scope that carries it
+# never looks inside. The menu-driven door games keep their JSON saves here
+# too, which is the whole of what makes them follow a player between nodes:
+# no new frames, and a peer on older code stores and forwards them untouched.
+#
+# These two run inside the caller's own transaction and never commit, so a
+# game can read a save, play a turn and write it back as one unit.
+def read_game_save(conn, player_key: str, game_id: str) -> Optional[bytes]:
+    row = conn.execute(
+        "SELECT save_data FROM zork_saves WHERE user_id = ? AND game_id = ?",
+        (str(player_key), game_id)).fetchone()
+    return None if row is None else row[0]
+
+
+def write_game_save(conn, player_key: str, game_id: str, save_data: bytes) -> None:
+    conn.execute(
+        '''INSERT INTO zork_saves (user_id, game_id, save_data, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(user_id, game_id) DO UPDATE SET
+             save_data = excluded.save_data,
+             updated_at = excluded.updated_at''',
+        (str(player_key), game_id, save_data,
+         datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
+
+def ensure_game_saves_table() -> None:
+    _ensure_zork_saves_table()
+
+
 # One textual form for a save's timestamp, whichever route it arrived by.
 #
 # A save made locally is written by upsert_zork_save as "%Y-%m-%d %H:%M:%S".

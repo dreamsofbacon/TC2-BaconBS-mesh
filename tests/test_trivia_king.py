@@ -188,10 +188,9 @@ class WiringTests(unittest.TestCase):
 
     def test_a_trivia_session_owns_its_input(self):
         """N means 'next question' here and 'Ask Nomad' on the main menu."""
-        import pathlib
-        source = (pathlib.Path(__file__).resolve().parent.parent
-                  / "message_processing.py").read_text(encoding="utf-8")
-        self.assertIn("('ZORK', 'TRIVIA', 'BACONFALL', 'DOPEWARS')", source)
+        import command_handlers  # noqa: F401 -- registers the doors
+        import door_games
+        self.assertTrue(door_games.in_session({'command': 'TRIVIA', 'step': 1}))
 
     def test_the_old_name_is_gone(self):
         import pathlib

@@ -103,20 +103,83 @@ MAIN MENU   header: Bacon BBS  (mail:N shows unread count)
     [0] Back -> MAIN
 
 [3] Games
-    [1] Trivia King          [6] Deadline
-    [2] Zork I               [7] Enchanter
-    [3] Zork II              [8] Planetfall
-    [4] Zork III             [9] Starcross
-    [5] Hitchhiker's Guide   [10] Baconfall: The Last Sizzle
-                             [11] Candy Wars  (Dope Wars in PG-13 mode)
+    Titles are listed a group at a time. A group holding one title shows
+    the title itself, and opens it in one key.
+    [1] Adventures           -> [1] Zork I      [6] Enchanter
+                                [2] Zork II     [7] Planetfall
+                                [3] Zork III    [8] Starcross
+                                [4] Hitchhiker's Guide
+                                [5] Deadline    [9] Baconfall: The Last Sizzle
+                                [0] Back -> Games
+    [2] Classics             -> [1] Candy Wars  (Dope Wars in PG-13 mode)
+                                [2] Hamurabi          [5] Lemonade Stand
+                                [3] Hunt the Wumpus   [6] Oregon Trail
+                                [4] Lunar Lander
+                                [0] Back -> Games
+    [3] Daily                -> [1] Word of the Day
+                                [2] Number of the Day
+                                [3] Skillet Keep
+                                [0] Back -> Games
+    [4] Trivia King
     [S]cores [H]all of Fame [F]ortune [0]Back
-      [S] a title -> that game's high scores
+      [S] the same groups, then a title -> that game's high scores
       [H] one line per title, "-" where nobody has played
       [F] a fortune, then back to the Games menu
     Inside a game, X leaves without losing your place.
-    An operator can hide titles (Settings > Games), and the list renumbers.
+    An operator can hide titles (Settings > Games). The lists renumber, and
+    a group with nothing left in it is not shown.
 
-    [11] Candy Wars -- buy low, sell high, 30 or 365 days. Played by menu:
+    Hamurabi -- rule a city for ten years, one message a year. Each year
+        send three numbers: acres to buy (negative sells), bushels to feed,
+        acres to plant. [?] the rules, [0] save and exit. A finished reign
+        is scored; being deposed is not.
+    Hunt the Wumpus -- twenty rooms, three tunnels each. A room number
+        moves; "s" and 1-5 rooms shoots, e.g. s 4 14. Only a kill scores.
+    Lunar Lander -- a burn of 0-40 each five seconds, or several in one
+        message: 20 20 16. 0 is a burn here, so [X] is the way out. A
+        landing scores; a crash does not.
+    Lemonade Stand -- ten days. Each day send glasses, signs and price in
+        cents: 30 2 12. The score is the cash you finish with.
+    Oregon Trail -- 2040 miles in 18 turns. First the outfit, five dollar
+        amounts: oxen food ammo clothes supplies. Then each turn an action
+        and a meal: 1 2 travels eating moderately, 2 1 hunts; at a fort,
+        3 food ammo clothes supplies meal. Arriving scores.
+    In all five, every message is one packet, [?] shows the rules, and
+    leaving keeps your place.
+
+    Every game's save is kept in one place, so where [sync]
+    sync_zork_saves is on a game follows its player between nodes. Nothing is sent per turn: the sync
+    cycle fetches a save that has changed, and the newer of two copies wins
+    -- so playing the same game on two nodes before they have synced keeps
+    only the later session.
+
+    Daily -- one puzzle a day, the same on every node (worked out from the
+    UTC date, so nothing is synced), and one go each. Solving on
+    consecutive days builds a streak, which is what the scoreboard ranks.
+    Word of the Day -- a 5-letter word in 6 guesses. Each guess comes back
+        marked: CAPITAL right place, small letter elsewhere in the word,
+        dot not in it.   CRANE  C . a . E
+    Number of the Day -- 4 different digits in 8 guesses. B = right digit,
+        right place; C = right digit, wrong place.   1325 1B 2C
+
+    Skillet Keep -- a daily-turn adventure in the Baconfall world. Twelve
+    turns a day; the day turns at midnight UTC and a night's rest heals.
+        [1] Wilds   [1]Near [2]Deep [3]Far -- one turn, one whole fight,
+                    reported in a sentence. [0] back to the keep.
+        [2] Smith   [1] the next blade [2] the next armor
+        [3] Inn     heal fully, for gold
+        [4] Bank    [1]Deposit all [2]Withdraw all -- banked gold is safe
+        [5] Warden  needs this level's xp; beating one is a level. The
+                    tenth is the Ash King: a crown, and a fresh start.
+        [6] Board   who is in the keep, strongest first, and the news
+        [7] Duel    once a day, against the nearest-level player as they
+                    stand; their save is not touched
+        [?] rules   [X] save and exit ([0] goes back a screen here)
+    Falling in a fight costs half the gold you carry and ends your day.
+    The scoreboard ranks lifetime experience, and is updated on a level or
+    a crown rather than after every fight, to keep it off the air.
+
+    Candy Wars -- buy low, sell high, 30 or 365 days. Played by menu:
         [1]Market [2]Travel [3]Bag [4]Gear [5]Sibling [6]End [0]Exit
         Market lists what is for sale here: "$price/stock", and "+n" for
         what is already in your bag. Sixteen goods do not fit one packet,

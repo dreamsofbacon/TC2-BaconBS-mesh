@@ -271,13 +271,18 @@ def connection():
 
 
 def stored(con, user=42):
-    return json.loads(con.execute('SELECT state_json FROM dopewars_runs WHERE user_id=?', (player_key(user),)).fetchone()[0])
+    # Read through the connection given: some tests check from a second one.
+    from player_identity import player_key as _key
+    row = con.execute('SELECT save_data FROM zork_saves WHERE user_id=? AND game_id=?',
+                      (_key(user), g.GAME_ID)).fetchone()
+    import door_kit
+    return door.expand(door_kit.decode_save(row[0]))[0]
 
 
 def put(con, s, user=42):
+    import door_kit
     door.play(user)
-    con.execute('UPDATE dopewars_runs SET state_json=? WHERE user_id=?', (json.dumps(s), player_key(user)))
-    con.commit()
+    door_kit.store_save(g.GAME_ID, user, s)
 
 
 def test_save_resume_and_identity_isolation(connection):
@@ -335,7 +340,7 @@ def test_failed_score_or_save_rolls_back(connection):
         with pytest.raises(sqlite3.OperationalError):
             door.play(42, 'finish')
     assert stored(connection) == s
-    connection.execute("CREATE TRIGGER reject_save BEFORE UPDATE ON dopewars_runs BEGIN SELECT RAISE(ABORT, 'full'); END")
+    connection.execute("CREATE TRIGGER reject_save BEFORE UPDATE ON zork_saves BEGIN SELECT RAISE(ABORT, 'full'); END")
     connection.commit()
     with pytest.raises(sqlite3.IntegrityError):
         door.play(42, 'finish')
@@ -348,11 +353,13 @@ def test_failed_score_or_save_rolls_back(connection):
     json.dumps({**g.new_game(19), 'market': {'weed': 12}})])
 def test_bad_save_preserved(connection, raw):
     door.play(42)
-    connection.execute('UPDATE dopewars_runs SET state_json=?', (raw,))
+    connection.execute('UPDATE zork_saves SET save_data=? WHERE game_id=?',
+                       (raw.encode(), g.GAME_ID))
     connection.commit()
     with pytest.raises(door.SaveUnavailable):
         door.play(42)
-    assert connection.execute('SELECT state_json FROM dopewars_runs').fetchone()[0] == raw
+    assert bytes(connection.execute(
+        'SELECT save_data FROM zork_saves WHERE game_id=?', (g.GAME_ID,)).fetchone()[0]) == raw.encode()
 
 
 def test_menu_and_dispatch_owns_global_commands(connection):
@@ -363,8 +370,8 @@ def test_menu_and_dispatch_owns_global_commands(connection):
     try:
         with mock.patch.object(ch, 'send_message'), mock.patch.object(ch, 'get_node_id_from_num', return_value='!abc'), mock.patch.object(ch, 'get_node_short_name', return_value='Trader'):
             ch.handle_games_command(42, iface)
-            index = next(i for i, (gid, _) in enumerate(ch.GAME_LIST, 1) if gid == 'dopewars')
-            ch.handle_games_steps(42, str(index), iface)
+            for key in ch.games_menu_keys('dopewars'):
+                ch.handle_games_steps(42, key, iface)
             assert ch.get_user_state(42)['command'] == 'DOPEWARS'
             # Played by menu since Candy Wars: 5 = the loan screen, 2 = pay
             # back, 100 = the amount -- the same move as "loan repay 100".
@@ -372,7 +379,7 @@ def test_menu_and_dispatch_owns_global_commands(connection):
             mp.process_message(42, '5 2 100', iface)
             assert stored(connection)['debt'] == 1100
             for text in ('s weed 1', 'm', 'i', 'h', 'n', '!CM', '!BB', 'save', 'equipment', 'travel manhattan'):
-                with mock.patch.object(mp, 'handle_dopewars_steps') as dispatch:
+                with mock.patch.object(ch, 'handle_dopewars_steps') as dispatch:
                     mp.process_message(42, text, iface)
                     dispatch.assert_called_once_with(42, text, iface)
             mp.process_message(42, '!x', iface)

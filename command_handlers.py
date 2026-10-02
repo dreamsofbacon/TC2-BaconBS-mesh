@@ -73,9 +73,19 @@ from zork_port import (
 )
 import trivia_port
 import baconfall_port
+import door_games
+import door_kit
 import dopewars_door
 import dopewars_menu
 import dopewars_theme
+import hamurabi
+import lander
+import lemonade
+import numberday
+import oregon
+import skilletkeep
+import wordday
+import wumpus
 
 # Ordered list of playable games (matches GAMES keys in zork_port)
 GAME_LIST = list(GAMES.items())  # [(game_id, {name, ...}), ...]
@@ -104,6 +114,41 @@ def visible_games() -> list:
     hidden = hidden_game_ids()
     return [(game_id, info) for game_id, info in GAME_LIST
             if game_id.lower() not in hidden]
+
+
+# The Games menu, in the order it is shown. A flat list of every title
+# reached the two-packet budget at eleven, so titles are listed a group at a
+# time. A title names its group in zork_port.GAMES; one that names none is
+# an adventure, which is what every title was before there were groups.
+GAME_GROUPS = (('adventure', 'Adventures'), ('classic', 'Classics'),
+               ('daily', 'Daily'), ('trivia', 'Trivia'))
+
+
+def game_groups() -> list:
+    """[(key, label, [(game_id, info), ...])] for the titles this node
+    shows. A group with nothing visible in it is left out, so the numbers
+    on screen never point at an empty list."""
+    games = visible_games()
+    groups = []
+    for key, label in GAME_GROUPS:
+        titles = [(game_id, info) for game_id, info in games
+                  if info.get('group', 'adventure') == key]
+        if titles:
+            groups.append((key, label, titles))
+    return groups
+
+
+def games_menu_keys(game_id) -> list:
+    """The keys that open *game_id* from the Games menu, e.g. ['1', '4'].
+
+    One key when the title is alone in its group, since the group line is
+    then the title itself. Empty if the title is hidden or unknown.
+    """
+    for number, (_key, _label, titles) in enumerate(game_groups(), start=1):
+        for position, (candidate, _info) in enumerate(titles, start=1):
+            if candidate == game_id:
+                return [str(number)] if len(titles) == 1 else [str(number), str(position)]
+    return []
 
 # Read the configuration for menu options
 config = configparser.ConfigParser()
@@ -1563,17 +1608,70 @@ def handle_fortune_command(sender_id, interface):
     handle_games_command(sender_id, interface)
 
 
+def _group_lines(groups, sender_id, interface) -> list:
+    """One numbered line per group: its name and how many titles it holds,
+    or the title itself when it holds just one."""
+    lines = []
+    for number, (_key, label, titles) in enumerate(groups, start=1):
+        if len(titles) == 1:
+            lines.append(f"[{number}] {game_title(titles[0][0], sender_id, interface)}")
+        else:
+            lines.append(f"[{number}] {label} ({len(titles)})")
+    return lines
+
+
+def _title_lines(titles, sender_id, interface) -> list:
+    return [f"[{number}] {game_title(game_id, sender_id, interface)}"
+            for number, (game_id, _info) in enumerate(titles, start=1)]
+
+
+def _pick_game(state, choice, command, sender_id, interface):
+    """Resolve one number typed at a grouped game list.
+
+    Returns a game id once a title is chosen. Returns None after handling
+    everything else itself: opening a group's own screen, or refusing a
+    number that is not on screen. *command* is the session the screens
+    belong to ('GAMES_MENU' or 'SCOREBOARD'), kept in the state so the next
+    number is read against the same list.
+    """
+    groups = game_groups()
+    group_key = (state or {}).get('group')
+    if group_key:
+        titles = next((t for key, _label, t in groups if key == group_key), [])
+    else:
+        titles = None
+    options = titles if titles is not None else groups
+    try:
+        index = int(choice) - 1
+        if index < 0:
+            raise ValueError
+        picked = options[index]
+    except (ValueError, IndexError):
+        extra = "" if titles is not None or command != 'GAMES_MENU' else ", S, H, F,"
+        send_message(f"Invalid choice. Enter 1-{len(options)}{extra} or 0.",
+                     sender_id, interface)
+        return None
+    if titles is not None:
+        return picked[0]
+    key, label, group_titles = picked
+    if len(group_titles) == 1:
+        return group_titles[0][0]
+    lines = [label] + _title_lines(group_titles, sender_id, interface) + ["[0] Back"]
+    send_message("\n".join(lines), sender_id, interface)
+    update_user_state(sender_id, {'command': command, 'step': 2, 'group': key})
+    return None
+
+
 def handle_games_command(sender_id, interface):
-    games = visible_games()
-    if not games:
+    groups = game_groups()
+    if not groups:
         # Every title hidden: say so, rather than draw a menu of nothing but
         # a scoreboard for games nobody can play.
         send_message("No games are available on this node.", sender_id, interface)
         handle_help_command(sender_id, interface)
         return
     menu = "🎮 Games 🎮\n"
-    for i, (game_id, info) in enumerate(games, start=1):
-        menu += f"[{i}] {game_title(game_id, sender_id, interface)}\n"
+    menu += "\n".join(_group_lines(groups, sender_id, interface)) + "\n"
     menu += "[S]cores [H]all of Fame [F]ortune [0]Back"
     sync_notice = get_zork_save_sync_notice()
     if sync_notice:
@@ -1590,52 +1688,43 @@ def handle_games_command(sender_id, interface):
 
 def handle_games_steps(sender_id, message, interface):
     choice = message.strip()
+    state = get_user_state(sender_id) or {}
+    in_group = state.get('command') == 'GAMES_MENU' and bool(state.get('group'))
+
     if choice.lower() in ('x', '0', 'exit'):
+        if in_group:
+            # One level up: a group's list goes back to the groups.
+            handle_games_command(sender_id, interface)
+            return
         # Games is a top-level main-menu entry now, not a Utilities
         # submenu -- back means the main menu, same as Profile and Settings.
         handle_help_command(sender_id, interface)
         return
 
-    if choice.lower() == 's':
-        handle_scoreboard_command(sender_id, interface)
-        return
+    if not in_group:
+        if choice.lower() == 's':
+            handle_scoreboard_command(sender_id, interface)
+            return
 
-    if choice.lower() == 'h':
-        handle_hall_of_fame_command(sender_id, interface)
-        return
+        if choice.lower() == 'h':
+            handle_hall_of_fame_command(sender_id, interface)
+            return
 
-    if choice.lower() == 'f':
-        # Moved here from the Utilities menu, which no longer exists.
-        handle_fortune_command(sender_id, interface)
-        return
+        if choice.lower() == 'f':
+            # Moved here from the Utilities menu, which no longer exists.
+            handle_fortune_command(sender_id, interface)
+            return
 
-    games = visible_games()
-    try:
-        idx = int(choice) - 1
-        if idx < 0:
-            raise ValueError
-        game_id, info = games[idx]
-    except (ValueError, IndexError):
-        send_message(
-            f"Invalid choice. Enter 1-{len(games)}, S, H, F, or 0.",
-            sender_id, interface
-        )
+    game_id = _pick_game(state if in_group else None, choice, 'GAMES_MENU',
+                         sender_id, interface)
+    if game_id is None:
         return
-
     _launch_game(sender_id, interface, game_id,
                  game_title(game_id, sender_id, interface))
 
 
 def _launch_game(sender_id, interface, game_id, game_name):
-    if game_id == dopewars_door.game.GAME_ID:
-        handle_dopewars_steps(sender_id, None, interface)
-        return
-    if game_id == baconfall_port.game.GAME_ID:
-        handle_baconfall_steps(sender_id, None, interface)
-        return
-    if game_id == trivia_port.GAME_ID:
-        send_message(trivia_port.start(sender_id), sender_id, interface)
-        update_user_state(sender_id, {'command': 'TRIVIA', 'step': 1, 'game_id': game_id})
+    if door_games.launch(game_id, sender_id, interface):
         return
     sync_notice = get_zork_save_sync_notice()
     if has_zork_session(sender_id, game_id):
@@ -2143,27 +2232,25 @@ def handle_ask_nomad_steps(sender_id, message, interface):
 
 
 def handle_scoreboard_command(sender_id, interface):
-    menu = "🏆 Scoreboard 🏆\n"
-    for i, (game_id, info) in enumerate(visible_games(), start=1):
-        menu += f"[{i}] {game_title(game_id, sender_id, interface)}\n"
-    menu += "[0] Back"
-    send_message(menu, sender_id, interface)
+    lines = ["🏆 Scoreboard 🏆"] + _group_lines(game_groups(), sender_id, interface)
+    lines.append("[0] Back")
+    send_message("\n".join(lines), sender_id, interface)
     update_user_state(sender_id, {'command': 'SCOREBOARD', 'step': 1})
 
 
 def handle_scoreboard_steps(sender_id, message, interface):
     choice = message.strip()
+    state = get_user_state(sender_id) or {}
+    in_group = state.get('command') == 'SCOREBOARD' and bool(state.get('group'))
     if choice in ('0', 'x', 'back'):
-        handle_games_command(sender_id, interface)
+        if in_group:
+            handle_scoreboard_command(sender_id, interface)
+        else:
+            handle_games_command(sender_id, interface)
         return
-    games = visible_games()
-    try:
-        idx = int(choice) - 1
-        if idx < 0:
-            raise ValueError
-        game_id, info = games[idx]
-    except (ValueError, IndexError):
-        send_message(f"Enter 1-{len(games)} or 0 to go back.", sender_id, interface)
+    game_id = _pick_game(state if in_group else None, choice, 'SCOREBOARD',
+                         sender_id, interface)
+    if game_id is None:
         return
     scores = get_game_scoreboard(game_id, limit=5)
     if not scores:
@@ -3107,6 +3194,76 @@ def handle_trivia_steps(sender_id, message, interface):
         handle_games_command(sender_id, interface)
     else:
         update_user_state(sender_id, {'command': 'TRIVIA', 'step': 1, 'game_id': game_id})
+
+
+def _start_trivia(sender_id, interface):
+    send_message(trivia_port.start(sender_id), sender_id, interface)
+    update_user_state(sender_id, {'command': 'TRIVIA', 'step': 1,
+                                  'game_id': trivia_port.GAME_ID})
+
+
+# Every door registers here, once: the session command the router must leave
+# alone, and how the Games menu opens it. ZORK has no launcher of its own
+# because one command serves every Z-machine title; _launch_game starts those.
+door_games.register('ZORK', handle_zork_steps)
+door_games.register('TRIVIA', handle_trivia_steps, trivia_port.GAME_ID, _start_trivia)
+door_games.register('BACONFALL', handle_baconfall_steps, baconfall_port.game.GAME_ID,
+               lambda sender_id, interface: handle_baconfall_steps(sender_id, None, interface))
+door_games.register('DOPEWARS', handle_dopewars_steps, dopewars_door.game.GAME_ID,
+               lambda sender_id, interface: handle_dopewars_steps(sender_id, None, interface))
+
+
+def register_menu_door(module):
+    """Add a menu-driven door game from its module, in one call.
+
+    The module supplies COMMAND (its session name), GAME_ID, and
+    ``handle(user_id, text, short_name, nav) -> (reply, leave, nav)``, where
+    *text* is None when the game is opened and *nav* is whatever the game
+    wants handed back on the next message. Everything a door needs around
+    that is the same for all of them and lives here: packets, the save
+    failure messages, the way back to the Games menu.
+    """
+    command, game_id = module.COMMAND, module.GAME_ID
+
+    def steps(sender_id, message, interface):
+        state = get_user_state(sender_id) or {}
+        nav = state.get('nav') if state.get('command') == command else None
+        title = game_title(game_id, sender_id, interface)
+        try:
+            node_id = get_node_id_from_num(sender_id, interface)
+            short_name = get_node_short_name(node_id, interface) or str(sender_id)
+            reply, leave, nav = module.handle(sender_id, message, short_name, nav)
+        except door_kit.SaveUnavailable:
+            send_message(f"Your {title} save could not be read. It has been kept "
+                         "for the operator to look at.", sender_id, interface)
+            handle_games_command(sender_id, interface)
+            return
+        except sqlite3.Error:
+            logging.exception('%s could not save a turn for %s', title, sender_id)
+            send_message(f"{title} could not save that turn. Your last save is "
+                         "safe; please try again.", sender_id, interface)
+            return
+        for part in door_kit.messages(reply):
+            send_message(part, sender_id, interface)
+        if leave:
+            handle_games_command(sender_id, interface)
+        else:
+            update_user_state(sender_id, {'command': command, 'step': 1,
+                                          'game_id': game_id, 'nav': nav})
+
+    door_games.register(command, steps, game_id,
+                        lambda sender_id, interface: steps(sender_id, None, interface))
+    return steps
+
+
+# A new menu-driven game is one line here and one entry in zork_port.GAMES.
+MENU_DOORS = (hamurabi, wumpus, lander, lemonade, oregon)
+# Once-a-day puzzles: the same answer on every node, one go each.
+DAILY_DOORS = (wordday, numberday)
+for _module in MENU_DOORS + DAILY_DOORS:
+    register_menu_door(_module)
+# The daily-turn adventure keeps its own screens and its own day.
+register_menu_door(skilletkeep)
 
 
 def handle_stats_steps(sender_id, message, step, interface):

@@ -55,7 +55,7 @@ class BangShortcutsTests(unittest.TestCase):
                                   lambda *a, **k: opened.append('games')), \
                 mock.patch.object(mp, 'handle_public_chatter_steps',
                                   lambda *a, **k: opened.append('chatter')), \
-                mock.patch.object(mp, 'handle_zork_steps',
+                mock.patch.object(ch, 'handle_zork_steps',
                                   lambda *a, **k: opened.append('zork')):
             mp.process_message(4242, message, self.iface, is_sync_message=False,
                                sender_node_id='!abcd1234')
@@ -335,7 +335,7 @@ class EmptyInputTests(unittest.TestCase):
         shown = []
         with mock.patch.object(mp, '_auto_update_profile', lambda *a, **k: None),                 mock.patch.object(mp, 'handle_help_command',
                                   lambda *a, **k: shown.append('menu')),                 mock.patch.object(mp, 'handle_mail_steps',
-                                  lambda *a, **k: shown.append('mail')),                 mock.patch.object(mp, 'handle_zork_steps',
+                                  lambda *a, **k: shown.append('mail')),                 mock.patch.object(ch, 'handle_zork_steps',
                                   lambda *a, **k: shown.append('zork')),                 mock.patch.object(ch, 'send_message', lambda *a, **k: True):
             mp.process_message(4246, '', self.iface, is_sync_message=False,
                                sender_node_id='!abcd1234')

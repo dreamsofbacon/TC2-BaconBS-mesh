@@ -191,13 +191,18 @@ def connection():
 
 
 def stored(con, user=42):
-    return json.loads(con.execute('SELECT state_json FROM baconfall_runs WHERE user_id=?', (str(user),)).fetchone()[0])
+    # Read through the connection given: some tests check from a second one.
+    from player_identity import player_key as _key
+    row = con.execute('SELECT save_data FROM zork_saves WHERE user_id=? AND game_id=?',
+                      (_key(user), g.GAME_ID)).fetchone()
+    import door_kit
+    return door_kit.decode_save(row[0])
 
 
 def put(con, state, user=42):
+    import door_kit
     port.play(user)
-    con.execute('UPDATE baconfall_runs SET state_json=? WHERE user_id=?', (json.dumps(state), str(user)))
-    con.commit()
+    door_kit.store_save(g.GAME_ID, user, state)
 
 
 def test_save_exit_resume_and_player_isolation(connection):
@@ -241,11 +246,13 @@ def test_failed_score_write_rolls_back_winning_turn(connection):
 @pytest.mark.parametrize('raw', ['{broken', '{"version":999}', '{}', '[]'])
 def test_unreadable_save_is_preserved(connection, raw):
     port.play(42)
-    connection.execute('UPDATE baconfall_runs SET state_json=?', (raw,))
+    connection.execute('UPDATE zork_saves SET save_data=? WHERE game_id=?',
+                       (raw.encode(), g.GAME_ID))
     connection.commit()
     with pytest.raises(port.SaveUnavailable):
         port.play(42)
-    assert connection.execute('SELECT state_json FROM baconfall_runs').fetchone()[0] == raw
+    assert bytes(connection.execute(
+        'SELECT save_data FROM zork_saves WHERE game_id=?', (g.GAME_ID,)).fetchone()[0]) == raw.encode()
 
 
 def test_menu_launch_routes_input_and_exit(connection):
@@ -255,13 +262,13 @@ def test_menu_launch_routes_input_and_exit(connection):
     iface = types.SimpleNamespace(nodes={}, bbs_nodes=[])
     with mock.patch.object(ch, 'send_message'), mock.patch.object(ch, 'get_node_id_from_num', return_value='!abc'), mock.patch.object(ch, 'get_node_short_name', return_value='Crispy'):
         ch.handle_games_command(42, iface)
-        index = next(i for i, (gid, _) in enumerate(ch.GAME_LIST, 1) if gid == g.GAME_ID)
-        ch.handle_games_steps(42, str(index), iface)
+        for key in ch.games_menu_keys(g.GAME_ID):
+            ch.handle_games_steps(42, key, iface)
         assert ch.get_user_state(42)['command'] == 'BACONFALL'
         mp.process_message(42, '2', iface)
         assert stored(connection)['role'] == 'Smoke Ranger'
         for command in ('s', 'n', '!CM', 'h', 'm'):
-            with mock.patch.object(mp, 'handle_baconfall_steps') as dispatch:
+            with mock.patch.object(ch, 'handle_baconfall_steps') as dispatch:
                 mp.process_message(42, command, iface)
                 dispatch.assert_called_once_with(42, command, iface)
         mp.process_message(42, '!x', iface)
@@ -322,7 +329,7 @@ def test_failed_save_write_also_rolls_back_score(connection):
     s = fight(act=3)
     s['enemy']['hp'] = 1
     put(connection, s)
-    connection.execute('''CREATE TRIGGER reject_save BEFORE UPDATE ON baconfall_runs
+    connection.execute('''CREATE TRIGGER reject_save BEFORE UPDATE ON zork_saves
         BEGIN SELECT RAISE(ABORT, 'disk failed'); END''')
     connection.commit()
     with pytest.raises(sqlite3.IntegrityError):
@@ -351,9 +358,9 @@ def test_full_expedition_through_real_bbs_delivery(connection):
     try:
         _, error = session.send('!g')
         assert error is None
-        index = next(i for i, (gid, _) in enumerate(ch.GAME_LIST, 1) if gid == g.GAME_ID)
-        _, error = session.send(str(index))
-        assert error is None
+        for key in ch.games_menu_keys(g.GAME_ID):
+            _, error = session.send(key)
+            assert error is None
         # Fix the seed, but all player actions below use the real BBS router.
         put(connection, g.new_game(42))
         session.send('1')

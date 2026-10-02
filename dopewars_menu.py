@@ -18,25 +18,20 @@ theme -- never the engine's reply text -- so the engine's own words
 
 import dopewars as game
 import dopewars_door as door
+# The packet budget and the never-truncate splitting started here and are
+# shared by every door now; the names are kept so nothing that reads them
+# from this module has to change.
+from door_kit import (MAX_SCREEN_BYTES, MESSAGE_SEPARATOR, messages,
+                      pack as _pack, split_words as _split_words)
 from dopewars_theme import theme
 
 EXIT_WORDS = {'x', '!x', 'q', 'quit', 'exit'}
-
-# One Meshtastic packet of text. A screen over this spends a second
-# packet of airtime on every turn that shows it.
-MAX_SCREEN_BYTES = 200
 
 # The market row is "$price/stock", plus "+n" for what is already in
 # the bag, and the footer says so: unlabelled, the number after the
 # slash was read as the bag, against a bag the status line had just
 # called full.
 _FOOTER = "$/stock +bag [0]Back"
-
-# One reply can be several messages: the whole market, or a long arrival
-# description ahead of the screen. render() separates them with this, and
-# messages() turns a reply into what is actually sent -- each one packet at
-# most, split between lines or words and never cut short.
-MESSAGE_SEPARATOR = "\f"
 
 # Mirrors the engine's own gear table (dopewars.command, 'equipment'). The
 # menu checks these before asking, so a refusal is said in theme rather than
@@ -92,54 +87,6 @@ def _market_rows(state, t):
             row += f" +{held}"
         rows.append(row)
     return rows
-
-
-def _split_words(text, budget=MAX_SCREEN_BYTES):
-    """One line longer than a packet, as pieces that each fit, split
-    between words. Nothing is dropped."""
-    pieces, current = [], ""
-    for word in text.split(' '):
-        candidate = f"{current} {word}" if current else word
-        if len(candidate.encode('utf-8')) <= budget:
-            current = candidate
-            continue
-        if current:
-            pieces.append(current)
-        # A single word wider than a packet, which no real text has, is
-        # split by characters rather than lost.
-        while len(word.encode('utf-8')) > budget:
-            cut = budget
-            while len(word[:cut].encode('utf-8')) > budget:
-                cut -= 1
-            pieces.append(word[:cut])
-            word = word[cut:]
-        current = word
-    if current:
-        pieces.append(current)
-    return pieces
-
-
-def _pack(lines, budget=MAX_SCREEN_BYTES):
-    """Lines packed into as few messages as fit one packet each."""
-    out, current = [], []
-    for line in lines:
-        pieces = (_split_words(line, budget)
-                  if len(line.encode('utf-8')) > budget else [line])
-        for piece in pieces:
-            if current and len("\n".join(current + [piece]).encode('utf-8')) > budget:
-                out.append("\n".join(current))
-                current = []
-            current.append(piece)
-    if current:
-        out.append("\n".join(current))
-    return out
-
-
-def messages(reply):
-    """A reply as the messages to send: split where render() split it, and
-    anything still over a packet split again rather than truncated."""
-    return [message for part in reply.split(MESSAGE_SEPARATOR)
-            for message in _pack(part.split("\n"))]
 
 
 def _market_pages(state, t):

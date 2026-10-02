@@ -11,6 +11,8 @@ import uuid
 import threading
 from datetime import datetime, timezone
 
+import door_games
+
 from meshtastic import BROADCAST_NUM
 
 from command_handlers import (
@@ -93,6 +95,7 @@ from utils import (
     send_channel_comment_to_bbs_nodes,
     send_public_chatter_to_bbs_nodes,
     send_profile_to_bbs_nodes, send_game_score_to_bbs_nodes, send_zork_save_to_bbs_nodes,
+    decode_save_payload,
     send_delete_bulletin_to_bbs_nodes, send_delete_mail_to_bbs_nodes,
     send_delete_channel_comment_to_bbs_nodes,
     send_delete_channel_to_bbs_nodes,
@@ -3215,7 +3218,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     ordered = ''.join(buf['chunks'][i] for i in range(buf['total']))
                     user_id = decode_text(buf['user_b64'])
                     game_id = decode_text(buf['game_b64'])
-                    save_data = base64.b64decode(ordered.encode('ascii'))
+                    save_data = decode_save_payload(save_id, ordered)
                     expected_hash = str(buf.get('payload_hash', '') or '')
                     if expected_hash:
                         actual_hash = base64.urlsafe_b64encode(
@@ -3457,8 +3460,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
         # those shortcuts reach any main-menu item from anywhere, so two of
         # the eight top-level destinations were shortcut dead zones and the
         # only way out was 0.
-        _door_session = bool(state and state.get('command') in
-                             ('ZORK', 'TRIVIA', 'BACONFALL', 'DOPEWARS'))
+        _door_session = door_games.in_session(state)
         _navigating = (message_lower.startswith('!')
                        and not (is_cancel(message_lower) and _in_text_prompt(state)))
 
@@ -3549,14 +3551,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             # it was intercepted as the global command instead of reaching
             # the game as input, exactly the "quick keys steal game input"
             # complaint this closes for both games rather than just one.
-            if state['command'] == 'ZORK':
-                handle_zork_steps(sender_id, message, interface)
-            elif state['command'] == 'BACONFALL':
-                handle_baconfall_steps(sender_id, message, interface)
-            elif state['command'] == 'DOPEWARS':
-                handle_dopewars_steps(sender_id, message, interface)
-            else:
-                handle_trivia_steps(sender_id, message, interface)
+            door_games.step(state, sender_id, message, interface)
             return
         if state and state.get('command') == 'MAIL':
             # Mail is dispatched ahead of the global-prefix branch, which
@@ -3654,7 +3649,7 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
             # Active door sessions own their input, including shortcuts that
             # collide with top-level commands (Trivia King uses N for the next
             # question; the main menu uses N for Ask Nomad).
-            door_session = state and state.get('command') in ('ZORK', 'TRIVIA', 'BACONFALL', 'DOPEWARS')
+            door_session = door_games.in_session(state)
             # `handlers` guard is ours: an empty handler map means no menu is
             # active, and X should not then bounce the user to the main menu.
             if (handlers and message_lower == 'x' and not door_session
@@ -3727,14 +3722,8 @@ def process_message(sender_id, message, interface, is_sync_message=False, sender
                     handle_group_message_selection(sender_id, message, step, state, interface)
                 elif command == 'GAMES_MENU':
                     handle_games_steps(sender_id, message, interface)
-                elif command == 'ZORK':
-                    handle_zork_steps(sender_id, message, interface)
-                elif command == 'BACONFALL':
-                    handle_baconfall_steps(sender_id, message, interface)
-                elif command == 'DOPEWARS':
-                    handle_dopewars_steps(sender_id, message, interface)
-                elif command == 'TRIVIA':
-                    handle_trivia_steps(sender_id, message, interface)
+                elif door_games.is_door(command):
+                    door_games.step(state, sender_id, message, interface)
                 elif command == 'SCOREBOARD':
                     handle_scoreboard_steps(sender_id, message, interface)
                 elif command == 'PROFILE':

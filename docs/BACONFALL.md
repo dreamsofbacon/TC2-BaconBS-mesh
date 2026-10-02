@@ -73,9 +73,10 @@ guarding adds to it. Invalid commands and unaffordable actions never spend turns
 - `NEW`: start over only after replying `YES`; `NO` keeps the expedition.
 
 Information commands are free. Every turn saves automatically, so disconnects
-and BBS restarts preserve the expedition. Reopen Baconfall to resume. **Saves are
-local to this BBS node and sender identity**; moving to another BBS node or a
-different device starts a separate expedition. SSH resumes through the account's
+and BBS restarts preserve the expedition. Reopen Baconfall to resume. **A save belongs
+to a sender identity**, so a different device starts a separate expedition. Where
+`[sync] sync_zork_saves` is on, the save follows that identity to the other BBS
+nodes, and the newer of two copies wins. SSH resumes through the account's
 stable sender number. Synthetic web-emulator identities are for testing, not
 portable player accounts.
 
@@ -83,15 +84,19 @@ Death ends the run. Death and victory both record earned renown in the existing
 **Scores** and **Hall of Fame**. Every boss is worth 250 renown. Victory adds
 1,000 points plus five per remaining HP. Higher scores win; fewer turns break
 ties. Stronger routes offer more points, but make survival harder. Restarting
-never removes a previous high score. Scores use the BBS's existing mesh sync;
-unfinished expeditions do not generate radio save-sync traffic.
+never removes a previous high score. Scores use the BBS's existing mesh sync.
+An unfinished expedition's save is fetched by the regular sync cycle when it has
+changed; no frame is sent per turn.
 
 ## Implementation and verification
 
 `baconfall.py` is a pure state machine with seeded route generation. Its state
 contains the seed and random draw count, so restarting cannot reroll a route.
-`baconfall_port.py` stores one JSON save per sender in `baconfall_runs`, in the
-normal BBS database (including `BBS_DB_PATH`/the Docker volume). Its SQLite write
+`baconfall_port.py` stores one JSON save per sender with the other games'
+saves (the `zork_saves` table, which the save sync carries), in the normal BBS
+database (including `BBS_DB_PATH`/the Docker volume). Saves made before this
+lived in `baconfall_runs`; one found there is moved across on its owner's next
+turn. Its SQLite write
 transaction serializes turns across processes. The ending and scoreboard update
 commit together. Viewing an old ending does not republish a deleted score.
 Unsupported or unreadable saves are preserved for operator inspection.

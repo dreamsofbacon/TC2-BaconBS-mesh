@@ -1,14 +1,21 @@
-"""Durable, node-local Baconfall door sessions in the BBS database.
+"""Durable Baconfall door sessions in the BBS database.
 
 A database transaction serializes turns, including across server/web emulator
-processes. Saves are deliberately not broadcast with Z-machine save files.
+processes. Saves are kept with every other game's saves, so where
+[sync] sync_zork_saves is on an expedition follows its player between nodes.
+
+They used to live in a table of their own, baconfall_runs, which never left
+the node. A run found there is moved across the first time its owner plays.
 """
-import json
 import secrets
 
 import baconfall as game
-from db_operations import get_db_connection, upsert_game_score
+import door_kit
+from db_operations import (clear_sync_tombstone, ensure_game_saves_table,
+                           get_db_connection, upsert_game_score, write_game_save)
 from player_identity import player_key
+
+LEGACY_TABLE = 'baconfall_runs'
 
 
 class SaveUnavailable(ValueError):
@@ -17,7 +24,7 @@ class SaveUnavailable(ValueError):
 
 def _load(raw):
     try:
-        state = json.loads(raw)
+        state = door_kit.decode_save(raw)
         if not isinstance(state, dict) or state.get('version') != game.VERSION:
             raise ValueError('unsupported version')
         # Catch truncated/manual edits before any mutation can replace the save.
@@ -63,15 +70,13 @@ def play(user_id, text=None, short_name=None):
     # than for their score -- and strand every run saved before the move to
     # "mc-" identities. See player_identity.
     run_key = player_key(user_id)
+    ensure_game_saves_table()
     conn = get_db_connection()
-    conn.execute('''CREATE TABLE IF NOT EXISTS baconfall_runs (
-        user_id TEXT PRIMARY KEY, state_json TEXT NOT NULL)''')
-    conn.commit()
     with conn:
         conn.execute('BEGIN IMMEDIATE')
-        row = conn.execute('SELECT state_json FROM baconfall_runs WHERE user_id = ?',
-                           (run_key,)).fetchone()
-        state = _load(row[0]) if row else game.new_game(secrets.randbits(63))
+        raw, from_legacy = door_kit.read_save_or_legacy(
+            conn, run_key, game.GAME_ID, LEGACY_TABLE)
+        state = _load(raw) if raw is not None else game.new_game(secrets.randbits(63))
         previous_phase = state['phase']
         if text is None:
             reply, leave = game.view(state), False
@@ -82,7 +87,10 @@ def play(user_id, text=None, short_name=None):
             result = (game.score(state), state['moves'])
             upsert_game_score(user_id, game.GAME_ID, short_name or str(user_id),
                               result[0], 0, result[1], commit=False)
-        conn.execute('''INSERT INTO baconfall_runs (user_id, state_json) VALUES (?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET state_json = excluded.state_json''',
-                     (run_key, json.dumps(state, separators=(',', ':'))))
+        write_game_save(conn, run_key, game.GAME_ID, door_kit.encode_save(state))
+        if from_legacy:
+            door_kit.drop_legacy_save(conn, run_key, LEGACY_TABLE)
+    if raw is None or from_legacy:
+        # A first synced save may meet the marker a deleted one left behind.
+        clear_sync_tombstone('zork_saves', f"{run_key}:{game.GAME_ID}")
     return reply, leave, result

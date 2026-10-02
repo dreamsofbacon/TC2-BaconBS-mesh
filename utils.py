@@ -52,7 +52,7 @@ def get_max_text_bytes(interface=None) -> int:
 # peers ignore the trailing field, new peers ignore unknown caps — so the
 # rollout is loss-free in either direction.
 WIRE_PROTOCOL_VERSION: int = 2
-WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat', 'role', 'bbsid', 'acct', 'mdlv', 'auth', 'acctmv', 'door', 'feed', 'pg13', 'mqdm')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state, 'role'=user roles, 'bbsid'=fleet BBS name/greeting, 'acct'=fleet accounts (identity only, never credentials), 'mdlv'=mail relay delivery receipts, 'auth'=author device on bulletins and channel comments, 'acctmv'=device moves and unlinks travel between nodes, 'door'=curated text services (APIREQ kind 'd'), 'feed'=fleet-wide news feeds, owned by the node that added them, 'pg13'=an account's PG-13 content choice (CONTENTPREF), 'mqdm'=reads its own MQTT direct topic, so frames for it need not go to every node on the shared one
+WIRE_CAPABILITIES: tuple = ('cck', 'epoch', 'scc', 'nob64', 'bmgap', 'cuid', 'pgos', 'mrp', 'pchat', 'pch2', 'fver', 'fstat', 'role', 'bbsid', 'acct', 'mdlv', 'auth', 'acctmv', 'door', 'feed', 'pg13', 'mqdm', 'zs85')  # 'cck'=compact channel-comment keys, 'epoch'=epoch timestamps, 'scc'=single-char scope codes, 'nob64'=drop base64 on text fields, 'bmgap'=bitmap-base85 gap-fill encoding, 'cuid'=compact UUIDs in CONT/META frames, 'pgos'=peer-gossip (relay known peers' sync state), 'mrp'=mail relay preferences, 'pchat'=public chatter history, 'pch2'=canonical public-chatter hashes, 'fver'=signed fleet version targets, 'fstat'=advisory fleet rollout state, 'role'=user roles, 'bbsid'=fleet BBS name/greeting, 'acct'=fleet accounts (identity only, never credentials), 'mdlv'=mail relay delivery receipts, 'auth'=author device on bulletins and channel comments, 'acctmv'=device moves and unlinks travel between nodes, 'door'=curated text services (APIREQ kind 'd'), 'feed'=fleet-wide news feeds, owned by the node that added them, 'pg13'=an account's PG-13 content choice (CONTENTPREF), 'mqdm'=reads its own MQTT direct topic, so frames for it need not go to every node on the shared one, 'zs85'=lean game-save frames: payload in Ascii85 rather than base64, and an 8-character save id (ZORKSAVE with a '85.' save id)
 
 # Single-char scope codes used by the 'scc' wire capability.  Senders gate
 # encoding on peers_all_support(peers, 'scc'); receivers always pass tokens
@@ -2583,8 +2583,38 @@ def send_game_score_to_bbs_nodes(user_id, game_id, short_name, score, max_score,
         _send_one_sync(message, node_id, interface)
 
 
+# A save id starting with this was sent in Ascii85. The rest of a save id is
+# URL-safe base64, which has no '.', so the two cannot be confused.
+ZORKSAVE_ASCII85_PREFIX = "85."
+
+
+def encode_save_payload(save_data: bytes, ascii85: bool) -> str:
+    """A save's bytes as frame text.
+
+    Base64 spends four characters on three bytes; Ascii85 spends five on
+    four, about 6% fewer on the air. Its alphabet ('!' to 'u', and 'z') has
+    no '|', so it cannot be mistaken for a field separator.
+    """
+    if ascii85:
+        return base64.a85encode(save_data or b"").decode("ascii")
+    return base64.b64encode(save_data or b"").decode("ascii")
+
+
+def decode_save_payload(save_id: str, text: str) -> bytes:
+    """The bytes of a reassembled save, in whichever form its id says."""
+    if str(save_id).startswith(ZORKSAVE_ASCII85_PREFIX):
+        return base64.a85decode(text.encode("ascii"))
+    return base64.b64decode(text.encode("ascii"))
+
+
 def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nodes, interface, pause_seconds=None, only_indices=None):
-    """Send binary zork save payload as chunked base64 sync frames.
+    """Send a game save to peers as chunked sync frames.
+
+    The encoding is chosen per peer, from what that peer has advertised,
+    not once for the whole set. A gap-fill is a resend to one peer, and it
+    has to produce the same chunks the first send did; choosing by "do all
+    my peers support it" would change the answer between the two whenever
+    one peer of several was on older code.
 
     When ``only_indices`` is provided (iterable of int), only those chunk
     indices are emitted — used to satisfy gap-fill (ZORKGAP) requests so we
@@ -2593,8 +2623,18 @@ def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nod
     """
     if not is_zork_save_sync_enabled():
         return
+    lean = [node_id for node_id in bbs_nodes if peers_all_support([node_id], 'zs85')]
+    plain = [node_id for node_id in bbs_nodes if node_id not in lean]
+    for group, ascii85 in ((plain, False), (lean, True)):
+        if group:
+            _send_zork_save_frames(user_id, game_id, save_data, updated_at, group,
+                                   interface, pause_seconds, only_indices, ascii85)
+
+
+def _send_zork_save_frames(user_id, game_id, save_data, updated_at, bbs_nodes, interface, pause_seconds, only_indices, ascii85):
+    """One encoding of one save, to the peers that take that encoding."""
     only_set = set(int(i) for i in only_indices) if only_indices is not None else None
-    payload_b64 = base64.b64encode(save_data or b"").decode("ascii")
+    payload_b64 = encode_save_payload(save_data, ascii85)
     payload_hash = base64.urlsafe_b64encode(hashlib.blake2b(save_data or b"", digest_size=8).digest()).decode("ascii").rstrip("=")
     _use_epoch = peers_all_support(bbs_nodes, 'epoch')
     _use_plain = peers_all_support(bbs_nodes, 'nob64')
@@ -2606,6 +2646,15 @@ def send_zork_save_to_bbs_nodes(user_id, game_id, save_data, updated_at, bbs_nod
     # wire form) so the identity is stable regardless of encoding choice.
     save_id_raw = f"{user_id}:{game_id}:{updated_at}:{len(payload_b64)}"
     save_id = base64.urlsafe_b64encode(save_id_raw.encode("utf-8")).decode("ascii").rstrip("=")
+    if ascii85:
+        # The id above is the whole of save_id_raw in base64, some 44
+        # characters, and it rides in every frame: for a 110-byte save it is
+        # most of what goes on the air. All it has to do is name one save
+        # stably across a resend, which eight characters of a hash of the
+        # same string do. Only the newer form gets this -- a peer on older
+        # code keeps receiving the id it has always received.
+        save_id = ZORKSAVE_ASCII85_PREFIX + base64.urlsafe_b64encode(
+            hashlib.blake2b(save_id_raw.encode("utf-8"), digest_size=6).digest()).decode("ascii")
 
     prefix = f"ZORKSAVE|{save_id}|{user_b64}|{game_b64}|{updated_at_wire}|{payload_hash}|"
     # Reserve enough room for chunk index and total chunk counters.

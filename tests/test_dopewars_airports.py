@@ -28,10 +28,9 @@ def connection():
 
 
 def save(conn, state):
+    import door_kit
     door.play(42)
-    conn.execute('UPDATE dopewars_runs SET state_json=? WHERE user_id=?',
-                 (json.dumps(state), player_key(42)))
-    conn.commit()
+    door_kit.store_save(game.GAME_ID, 42, state)
 
 
 def load():

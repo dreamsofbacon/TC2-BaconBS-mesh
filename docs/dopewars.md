@@ -136,10 +136,26 @@ draw counter, inventory, market and pending encounter are stored together in
 score submission and the terminal save share a transaction. Failed writes roll
 back, and malformed/future-version saves are preserved for operator inspection.
 
-Runs are **node-local**, keyed by the existing canonical player identity
-(including MeshCore's `mc-` key). Different identities have different games;
-this does not introduce account/device linking. Back up the BBS database to
-back up runs. No DopeWars saves are broadcast or included in Z-machine save sync.
+Runs are keyed by the existing canonical player identity (including
+MeshCore's `mc-` key). Different identities have different games; this does not
+introduce account/device linking. A run is kept with every other game's saves,
+so where `[sync] sync_zork_saves` is on it follows its player to the other
+nodes: nothing is sent per turn, the sync cycle fetches a save that changed, and
+the newer of two copies wins. Runs used to be node-local, in a `dopewars_runs`
+table; one found there is moved across the first time its owner plays.
+
+The stored save leaves out the market. `market()` builds it from the run's seed
+and draw counter alone, and trading only moves stock, so `dopewars_door` stores
+the draw the market was built from and the stock that has changed since
+(`"market": {"@": 412, "d": {"weed": -6}, "#": <price check>}`) and rebuilds
+the rest on load; the bag is stored as only what is carried. The engine is not
+changed: the draw is found by stepping back until one regenerates exactly the
+stored prices, and a market that cannot be regenerated exactly is stored whole.
+Every save is expanded again before it is written, and stored whole if that
+does not give back the identical state. **If `market()` is ever changed**, a
+compact save made before the change rebuilds different prices after it; the
+price check makes that a logged warning rather than a silent reroll. A typical
+save is about 200 bytes stored, down from about 950.
 
 A completed run submits once to the existing `game_scores` system as `dopewars`.
 Both durations currently share that scoreboard (longer runs have more earning

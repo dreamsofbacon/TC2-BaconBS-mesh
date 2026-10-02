@@ -22,6 +22,7 @@ GAMES: dict[str, dict] = {
     'trivia': {
         'name': 'Trivia King',
         'door': True,
+        'group': 'trivia',
     },
     'zork1': {
         'name': 'Zork I',
@@ -70,6 +71,47 @@ GAMES: dict[str, dict] = {
     'dopewars': {
         'name': 'DopeWars',
         'door': True,
+        'group': 'classic',
+    },
+    'hamurabi': {
+        'name': 'Hamurabi',
+        'door': True,
+        'group': 'classic',
+    },
+    'wumpus': {
+        'name': 'Hunt the Wumpus',
+        'door': True,
+        'group': 'classic',
+    },
+    'lander': {
+        'name': 'Lunar Lander',
+        'door': True,
+        'group': 'classic',
+    },
+    'lemonade': {
+        'name': 'Lemonade Stand',
+        'door': True,
+        'group': 'classic',
+    },
+    'oregon': {
+        'name': 'Oregon Trail',
+        'door': True,
+        'group': 'classic',
+    },
+    'wordday': {
+        'name': 'Word of the Day',
+        'door': True,
+        'group': 'daily',
+    },
+    'numberday': {
+        'name': 'Number of the Day',
+        'door': True,
+        'group': 'daily',
+    },
+    'skilletkeep': {
+        'name': 'Skillet Keep',
+        'door': True,
+        'group': 'daily',
     },
 }
 
