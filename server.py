@@ -1137,54 +1137,6 @@ def _build_activity_events(limit: int = 25) -> list:
     return events
 
 
-def deliver_due_link_codes(links) -> int:
-    """Send any link codes whose delay has elapsed.
-
-    A dual-boot device cannot receive anything while it is rebooting into
-    its other protocol, so the delayed option queues the code instead of
-    replying immediately (see command_handlers._handle_request_link_code).
-    Delivery goes to every node linked to that account, routed per-node
-    because an account's devices can live on different links.
-
-    Best-effort per recipient: one unreachable device must not stop the
-    others from getting it, and the row is already consumed by
-    take_due_link_codes so a failure never re-sends the code on every tick.
-    """
-    try:
-        from db_operations import take_due_link_codes, get_linked_node_ids
-        due = take_due_link_codes()
-    except Exception:
-        logging.debug("delayed link codes: lookup failed", exc_info=True)
-        return 0
-    if not due:
-        return 0
-
-    from utils import send_message as _send
-    sent = 0
-    for entry in due:
-        try:
-            targets = get_linked_node_ids(entry['account_id'])
-        except Exception:
-            logging.debug("delayed link code: no targets resolvable", exc_info=True)
-            continue
-        text = (
-            "Link code: " + str(entry['code']) + chr(10)
-            + "Valid for " + str(entry['ttl_minutes']) + " minutes total from when "
-            "it was requested, one-time use. Enter it from the device you want "
-            "to link: Profile > Linked Devices > [2] Enter a code."
-        )
-        for node_id in targets:
-            try:
-                _send(text, node_id, _link_for_node(links, node_id).interface)
-                sent += 1
-            except Exception:
-                logging.debug(
-                    f"delayed link code: could not deliver to {node_id}", exc_info=True)
-    if sent:
-        logging.info(f"Delivered {sent} delayed link-code message(s).")
-    return sent
-
-
 # How long a retry may back off to. The doubling used to run all the way to
 # an hour and stay there, which on the live fleet meant MeshCore deliveries
 # taking five and seven hours: "send returned false" there is the radio
@@ -2698,7 +2650,6 @@ def main():
             if now >= next_diagnostics_write:
                 publish_mqtt_status(links, write_runtime_diagnostics_snapshot(links, system_config))
                 persist_mesh_clients(links)
-                deliver_due_link_codes(links)
                 deliver_due_mail_dms(
                     links,
                     active_window_seconds=system_config.get('mail_active_window_seconds', 900),

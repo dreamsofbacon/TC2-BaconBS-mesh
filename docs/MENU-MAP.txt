@@ -259,8 +259,7 @@ MAIN MENU   header: Bacon BBS  (mail:N shows unread count)
     [1] Edit bio
     [2] Linked devices
         [1]..[5] the usual link/unlink actions
-        [6] ...
-        [7] Reset SSH password  -- sends a six-digit code to a linked
+        [6] Reset SSH password  -- sends a six-digit code to a linked
             radio; log in as reset:<alias> with it to set a new one
     [3] Offline mail relay   -- ON means other people can send you mail
         and the BBS pushes it to your radio. Confirms before changing.

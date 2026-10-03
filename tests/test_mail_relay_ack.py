@@ -30,7 +30,7 @@ _CACHE_KEYS = ("config_init", "server", "radio_link")
 
 def _install_fake_meshtastic():
     """Just enough of the meshtastic package for server to import (as in
-    test_delayed_link_code)."""
+    test_mail_dm_delivery)."""
     def _stub(name):
         m = types.ModuleType(name)
         sys.modules[name] = m

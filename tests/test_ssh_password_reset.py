@@ -2,7 +2,7 @@
 
 Reported 2026-09-14: there was no user-side reset. A radio linked to the
 account proves who the user is; it asks for a one-time code (Settings &
-Profile > Linked devices > [7]) and the user logs in as "reset:<alias>" with
+Profile > Linked devices > [6]) and the user logs in as "reset:<alias>" with
 that code as the password, then chooses a new one.
 """
 import asyncio
@@ -129,11 +129,13 @@ class RadioRequestTests(_DbCase):
 
     def choose(self, node):
         command_handlers.update_user_state(1, {"command": "ACCOUNT", "step": 1})
-        command_handlers.handle_account_steps(1, "7", self.iface, sender_node_id=node)
+        command_handlers.handle_account_steps(1, "6", self.iface, sender_node_id=node)
         return [c.args[0] for c in self.send.call_args_list]
 
     def test_the_menu_offers_it(self):
-        self.assertIn("[7] Reset SSH password", command_handlers._ACCOUNT_MENU_TEXT)
+        self.assertIn("[6] Reset SSH password", command_handlers._ACCOUNT_MENU_TEXT)
+        self.assertNotIn("[7]", command_handlers._ACCOUNT_MENU_TEXT)
+        self.assertNotIn("delayed", command_handlers._ACCOUNT_MENU_TEXT)
 
     def test_a_linked_radio_gets_a_code_and_instructions(self):
         _account()

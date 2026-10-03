@@ -132,7 +132,7 @@ changes saved in the web Settings page apply within a few seconds.
 ### Resetting a forgotten password
 
 A radio linked to the account proves who the user is. On that radio, Settings
-& Profile > Linked devices > `[7] Reset SSH password` sends a one-time
+& Profile > Linked devices > `[6] Reset SSH password` sends a one-time
 six-digit code, valid for 10 minutes. The user then logs in as
 `reset:<alias>` with the code as the SSH password (with the shared gate, they
 type `reset:<alias>` at the `BBS username:` prompt and then the code), and is
