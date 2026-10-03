@@ -369,13 +369,13 @@ def _rival(roster, state):
 
 def handle(user_id, text, short_name, nav=None):
     """One message in, one reply out: (reply, leave, nav)."""
-    import secrets
     from db_operations import get_db_connection, upsert_game_score
 
     word = (text or '').strip().lower()
     menu = (nav or {}).get('menu', 'town') if text is not None else 'town'
     if word in EXIT_WORDS:
         return f"{NAME} saved. Your turns keep until midnight UTC.", True, None
+    first, new_state = door_kit.first_visit(sys.modules[__name__])
 
     def turn(state):
         conn = get_db_connection()
@@ -414,10 +414,12 @@ def handle(user_id, text, short_name, nav=None):
         if state['level'] != level_before or state['crowns'] != crowns_before:
             upsert_game_score(user_id, GAME_ID, state['name'], score(state), 0,
                               state['days'], commit=False)
-        return state, (render(state, next_menu, " ".join(events)), {'menu': next_menu})
+        screen = render(state, next_menu, " ".join(events))
+        if text is None:
+            screen = door_kit.opening(RULES, screen, first)
+        return state, (screen, {'menu': next_menu})
 
-    reply, next_nav = door_kit.run_turn(
-        GAME_ID, user_id, lambda: new_game(secrets.randbits(63)), turn, validate)
+    reply, next_nav = door_kit.run_turn(GAME_ID, user_id, new_state, turn, validate)
     return reply, False, next_nav
 
 

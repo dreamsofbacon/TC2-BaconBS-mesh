@@ -66,8 +66,8 @@ class SaveFollowsThePlayerTests(TwoNodes):
     def test_a_reign_started_on_one_node_continues_on_another(self):
         with mock.patch.object(hamurabi, '_draw', steady):
             hamurabi.handle(USER, None, "Ruler")
-            hamurabi.handle(USER, "0 2000 500", "Ruler")
-            reply, _, _ = hamurabi.handle(USER, "0 2050 0", "Ruler")
+            hamurabi.handle(USER, "4", "Ruler")                      # year 2
+            reply, _, _ = hamurabi.handle(USER, "4", "Ruler")        # year 3
         self.assertIn("Yr 3/10", reply)
         rows = self.saves()
 
@@ -91,9 +91,9 @@ class SaveFollowsThePlayerTests(TwoNodes):
     def test_the_newer_copy_wins_whichever_way_it_travels(self):
         with mock.patch.object(hamurabi, '_draw', steady):
             hamurabi.handle(USER, None, "Ruler")
-            hamurabi.handle(USER, "0 2000 500", "Ruler")             # year 2
+            hamurabi.handle(USER, "4", "Ruler")                      # year 2
             older = [(u, g, d, "2026-10-01 10:00:00") for u, g, d, _ in self.saves()]
-            hamurabi.handle(USER, "0 2050 0", "Ruler")               # year 3
+            hamurabi.handle(USER, "4", "Ruler")                      # year 3
             newer = [(u, g, d, "2026-10-01 11:00:00") for u, g, d, _ in self.saves()]
 
         self.on("b")

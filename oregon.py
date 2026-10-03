@@ -1,11 +1,10 @@
 """Oregon Trail: 2040 miles, a wagon, and eighteen fortnights before winter.
 
-The 1971 teletype game, cut to fit a radio. The original asked several
-questions a turn and timed how fast you could type BANG; here a fortnight
-is one line. First the outfit, in one message: dollars for oxen, food,
-ammunition, clothing and supplies. Then each turn an action and how well to
-eat: "1 2" travels eating moderately, "2 1" hunts and eats poorly, and at a
-fort "3 40 0 10 0 2" buys food and clothing before moving on.
+The 1971 teletype game, played by menu like everything else on the BBS.
+First the general store: pick an item, read what it is for, say how many
+dollars to spend -- or take the ready-made outfit. Then each turn is a
+choice off the trail screen: travel on, hunt, set the rations, or stop at a
+fort when there is one. [?] on any screen explains that screen.
 
 The trail's arithmetic follows the classic listing closely -- mileage from
 the oxen, what a fort charges, what goes wrong and what it costs. Every word
@@ -28,9 +27,21 @@ MEALS = {1: 13, 2: 18, 3: 23}       # food eaten a fortnight
 DOCTOR = 20
 BULLETS_PER_DOLLAR = 50
 
-RULES = ("Reach Oregon in 18 turns. Outfit: 5 amounts in $: oxen(200-300) food "
-         "ammo clothes supplies. Then: 1 travel, 2 hunt, 3 fort (buy: food ammo "
-         "clothes supplies), then meal 1-3. e.g. 1 2")
+RULES = ("Reach Oregon, 2040 miles off, in 18 turns. Buy an outfit, then each "
+         "turn travel, hunt or trade at a fort. Choose by number; [?] explains "
+         "any screen. Run out of food, or medicine when ill, and it ends.")
+
+ITEMS = ('oxen', 'food', 'ammo', 'clothes', 'supplies')
+LABELS = {'oxen': 'Oxen', 'food': 'Food', 'ammo': 'Ammo', 'clothes': 'Clothes',
+          'supplies': 'Supplies'}
+# A balanced outfit for anyone who would rather not choose. It is the one the
+# tests show arriving nearly nine times in ten.
+READY_MADE = {'oxen': 250, 'food': 220, 'ammo': 40, 'clothes': 90, 'supplies': 80}
+RATIONS = {1: 'poorly', 2: 'moderately', 3: 'well'}
+FORTS = ("Fort Kearney", "Fort Laramie", "Fort Bridger", "Fort Hall",
+         "Fort Boise", "Fort Walla Walla", "Fort Vancouver", "Fort Dalles",
+         "Fort Clatsop")
+FORT_STOP_MILES = 45
 
 
 class Refused(ValueError):
@@ -43,7 +54,8 @@ def new_game(seed) -> dict:
     return {'v': SAVE_VERSION, 'seed': int(seed), 'draws': 0,
             'phase': 'outfit', 'outcome': '', 'turn': 0, 'miles': 0,
             'oxen': 0, 'food': 0, 'ammo': 0, 'clothes': 0, 'supplies': 0,
-            'cash': PURSE, 'sick': False, 'meal': 2}
+            'cash': PURSE, 'sick': False, 'meal': 2,
+            'cart': {item: 0 for item in ITEMS}, 'fort_stop': False}
 
 
 def validate(state) -> dict:
@@ -54,7 +66,70 @@ def validate(state) -> dict:
     for key in ('turn', 'miles', 'oxen', 'food', 'ammo', 'clothes', 'supplies', 'cash'):
         if not isinstance(state[key], int):
             raise ValueError(f"bad {key}")
+    # Saves from before the menus have neither; they start empty.
+    state.setdefault('cart', {item: 0 for item in ITEMS})
+    state.setdefault('fort_stop', False)
+    if set(state['cart']) != set(ITEMS) or any(
+            not isinstance(v, int) or v < 0 for v in state['cart'].values()):
+        raise ValueError("bad cart")
     return state
+
+
+# ── The store and the forts ─────────────────────────────────────────────────
+
+def left_to_spend(state) -> int:
+    return PURSE - sum(state['cart'].values())
+
+
+def allocate(state, item, dollars) -> None:
+    """Set what the outfit spends on one item. Replaces the earlier amount."""
+    if state['phase'] != 'outfit':
+        raise Refused("You have already set out.")
+    if dollars < 0:
+        raise Refused("Amounts cannot be negative.")
+    most = left_to_spend(state) + state['cart'][item]
+    if dollars > most:
+        raise Refused(f"You have ${most} for {LABELS[item].lower()}.")
+    if item == 'oxen' and dollars and not OXEN_RANGE[0] <= dollars <= OXEN_RANGE[1]:
+        raise Refused(f"Oxen cost ${OXEN_RANGE[0]}-${OXEN_RANGE[1]}.")
+    state['cart'][item] = dollars
+
+
+def set_out(state) -> None:
+    """Leave Independence with what is in the cart."""
+    cart = state['cart']
+    if not OXEN_RANGE[0] <= cart['oxen'] <= OXEN_RANGE[1]:
+        raise Refused(f"No wagon moves without oxen: spend ${OXEN_RANGE[0]}-"
+                      f"${OXEN_RANGE[1]} on them first.")
+    outfit(state, *(cart[item] for item in ITEMS))
+
+
+def fort_name(state) -> str:
+    return FORTS[min(len(FORTS) - 1, state['turn'] // 2 - 1)]
+
+
+def fort_buy(state, item, dollars) -> int:
+    """Buy at a fort. Returns what was got. A fort charges half as much
+    again as home, and stopping costs miles, taken when you travel on."""
+    if state['phase'] != 'play' or not at_fort(state):
+        raise Refused("There is no fort here.")
+    if item == 'oxen':
+        raise Refused("The fort has no oxen to sell.")
+    if not 0 < dollars <= state['cash']:
+        raise Refused(f"You have ${state['cash']}.")
+    got = dollars * 2 // 3
+    if item == 'ammo':
+        got *= BULLETS_PER_DOLLAR
+    state['cash'] -= dollars
+    state[item] += got
+    state['fort_stop'] = True
+    return got
+
+
+def set_rations(state, meal) -> None:
+    if meal not in MEALS:
+        raise Refused("Rations are 1 poorly, 2 moderately or 3 well.")
+    state['meal'] = meal
 
 
 def outfit(state, oxen, food, ammo, clothes, supplies) -> None:
@@ -223,6 +298,10 @@ def play_turn(state, action, meal, buys=()) -> list:
         events.append(f"The doctor is paid ${DOCTOR}.")
 
     progress = 200 + (state['oxen'] - 220) // 5 + door_kit.draw(state, 0, 10)
+    if state.get('fort_stop'):
+        # Trading at a fort took the first days of this fortnight.
+        progress -= FORT_STOP_MILES
+        state['fort_stop'] = False
     if action == 3:
         food, ammo, clothes, supplies = buys
         state['cash'] -= sum(buys)
@@ -287,67 +366,183 @@ def result(state):
 
 # ── Screens ─────────────────────────────────────────────────────────────────
 
+ITEM_HELP = {
+    'oxen': "Oxen pull the wagon. Spend $200-$300; more oxen cover more miles a turn.",
+    'food': "Food: $1 buys 1 lb. Everyone together eats 13-23 lb a turn, 18 at moderate rations.",
+    'ammo': "Ammo: $1 buys 50 bullets. A hunt uses 13-28. Bullets also drive off bandits.",
+    'clothes': "Clothes keep out the cold. With under about $25 of them the mountains bring illness.",
+    'supplies': "Supplies are medicine and repairs. Run out while someone is ill and the trail ends.",
+}
+
+SCREEN_HELP = {
+    'outfit': ("Spend your $700 before setting out; what is left goes with you as "
+               "cash for forts and doctors. Pick an item to see what it is for. "
+               "Not sure? [6] buys a balanced outfit, then [7] sets out."),
+    'trail': ("Each Travel is two weeks on the trail; reach mile 2040 by turn 18. "
+              "Hunting brings meat but costs bullets and miles. Every other turn "
+              "there is a fort. Eating poorly saves food, but illness is worse."),
+    'rations': ("Rations are how well everyone eats, from now on. Poorly saves "
+                "food but makes illness more likely and worse; well costs food "
+                "and keeps people healthy."),
+    'fort': ("A fort sells food, ammo, clothes and supplies at half again home's "
+             "price. Stopping costs about 45 miles of this turn. Buy, then [5] "
+             "to travel on."),
+}
+
+
 def _stores(state) -> str:
-    return (f"Food {state['food']} Ammo {state['ammo']} Clothes {state['clothes']} "
-            f"Supplies {state['supplies']} Cash ${state['cash']}")
+    return (f"Food {state['food']}lb Bullets {state['ammo']} Clothes ${state['clothes']} "
+            f"Supplies ${state['supplies']} Cash ${state['cash']}")
 
 
-def render(state, note='') -> str:
-    if state['phase'] == 'outfit':
-        lines = [f"Oregon Trail: {TRAIL_MILES} miles, {MAX_TURNS} turns. You have ${PURSE}.",
-                 "Send 5 amounts: oxen(200-300) food ammo clothes supplies",
-                 "e.g. 250 200 60 80 40. The rest is cash. [?]Rules [0]Exit"]
-    elif state['phase'] == 'ended':
+def home_menu(state) -> str:
+    return {'outfit': 'outfit', 'play': 'trail'}.get(state['phase'], 'ended')
+
+
+def _screen(state, nav) -> list:
+    menu = nav.get('menu') or home_menu(state)
+    if state['phase'] == 'ended':
         if state['outcome'] == 'arrived':
-            lines = [f"Arrived in {state['turn']} turns. " + _stores(state),
-                     f"Score {score(state)}. [1]Go again [0]Exit"]
-        else:
-            lines = [f"The journey ended at mile {state['miles']}, turn {state['turn']}.",
-                     "[1]Set out again [0]Exit"]
-    else:
-        fort = " [3]Fort" if at_fort(state) else ""
-        lines = [f"Turn {state['turn']}/{MAX_TURNS}, mile {state['miles']}/{TRAIL_MILES}.",
-                 _stores(state),
-                 f"[1]Travel [2]Hunt{fort}, then meal 1-3. e.g. 1 2 [?]Rules [0]Exit"]
-    screen = "\n".join(lines)
+            return [f"You reached Oregon in {state['turn']} turns! " + _stores(state),
+                    f"Score {score(state)}. [1]Set out again [0]Exit"]
+        return [f"The journey ended at mile {state['miles']}, turn {state['turn']}.",
+                "[1]Set out again [0]Exit"]
+    if menu == 'spend':
+        item = nav['item']
+        most = left_to_spend(state) + state['cart'][item]
+        return [ITEM_HELP[item],
+                f"Spend how much on {LABELS[item].lower()}? Now ${state['cart'][item]}, "
+                f"up to ${most}. Send dollars, or [B]Back"]
+    if menu == 'outfit':
+        cart = state['cart']
+        return [f"General store, Independence. ${left_to_spend(state)} of ${PURSE} left.",
+                " ".join(f"{LABELS[i]} ${cart[i]}" for i in ITEMS),
+                "[1]Oxen [2]Food [3]Ammo [4]Clothes [5]Supplies",
+                "[6]Ready-made outfit [7]Set out [?]Help [0]Exit"]
+    if menu == 'rations':
+        return [f"Rations, now {RATIONS[state['meal']]}:",
+                "[1]Poorly: 13 lb a turn, more illness",
+                "[2]Moderately: 18 lb a turn",
+                "[3]Well: 23 lb a turn, less illness",
+                "[0]Back"]
+    if menu == 'fort':
+        return [f"{fort_name(state)} trading post. Cash ${state['cash']}.",
+                "[1]Food [2]Ammo [3]Clothes [4]Supplies",
+                "[5]Travel on [?]Help [0]Back"]
+    if menu == 'fort_spend':
+        item = nav['item']
+        return [ITEM_HELP[item],
+                f"At the fort $3 buys what $2 did at home. Spend how much on "
+                f"{LABELS[item].lower()}? Up to ${state['cash']}. [B]Back"]
+    fort = " [4]Fort" if at_fort(state) else ""
+    lines = [f"Turn {state['turn']} of {MAX_TURNS}. Mile {state['miles']} of {TRAIL_MILES}.",
+             _stores(state),
+             f"Eating {RATIONS[state['meal']]}." + (f" {fort_name(state)} is here."
+                                                    if at_fort(state) else ""),
+             f"[1]Travel on [2]Hunt [3]Rations{fort} [?]Help [0]Exit"]
+    return lines
+
+
+def render(state, note='', nav=None) -> str:
+    """The screen for *nav*, with *note* -- what just happened -- above it.
+    A note too long to share the packet goes ahead as its own message."""
+    screen = "\n".join(_screen(state, nav or {}))
     if not note:
         return screen
     if door_kit.fits(f"{note}\n{screen}"):
         return f"{note}\n{screen}"
-    # What happened on the trail goes ahead as its own message, whole.
-    return door_kit.MESSAGE_SEPARATOR.join(door_kit.pack([note]) + [screen])
+    return door_kit.MESSAGE_SEPARATOR.join(door_kit.pack(note.splitlines()) + [screen])
 
 
 # ── Door ────────────────────────────────────────────────────────────────────
 
+EXIT_WORDS = door_kit.MENU_EXIT_WORDS
+AGAIN = "A new wagon, a new outfit to buy."
+
+
+def _dollars(word):
+    return door_kit.amount(word, "an amount in dollars, like 150")
+
+
+_choice = door_kit.choice
+
+
+def step(state, nav, word):
+    """One menu choice. Returns (note, next nav, leave)."""
+    menu = nav.get('menu') or home_menu(state)
+
+    if menu == 'outfit':
+        if word == '0':
+            return '', {}, True
+        choice = _choice(word, 7)
+        if choice <= 5:
+            return '', {'menu': 'spend', 'item': ITEMS[choice - 1]}, False
+        if choice == 6:
+            state['cart'] = dict(READY_MADE)
+            return ("The storekeeper loads a balanced outfit. "
+                    "[7] sets out, or change any item."), {}, False
+        set_out(state)
+        return f"You set out from Independence with ${state['cash']} in hand.", {}, False
+
+    if menu == 'spend':
+        if word in door_kit.BACK_WORDS:
+            return '', {}, False
+        allocate(state, nav['item'], _dollars(word))
+        return f"{LABELS[nav['item']]}: ${state['cart'][nav['item']]}.", {}, False
+
+    if menu == 'rations':
+        if word == '0':
+            return '', {}, False
+        set_rations(state, _choice(word, 3))
+        return f"Everyone eats {RATIONS[state['meal']]} from now on.", {}, False
+
+    if menu == 'fort':
+        if word == '0':
+            return '', {}, False
+        choice = _choice(word, 5)
+        if choice == 5:
+            return " ".join(play_turn(state, 1, state['meal'])), {}, False
+        return '', {'menu': 'fort_spend', 'item': ITEMS[choice]}, False
+
+    if menu == 'fort_spend':
+        if word in door_kit.BACK_WORDS:
+            return '', {'menu': 'fort'}, False
+        item = nav['item']
+        got = fort_buy(state, item, _dollars(word))
+        unit = " bullets" if item == 'ammo' else (" lb" if item == 'food' else "")
+        amount = f"{got}{unit}" if unit else f"${got} worth"
+        return f"Bought {amount} of {LABELS[item].lower()}.", {'menu': 'fort'}, False
+
+    # The trail.
+    if word == '0':
+        return '', {}, True
+    top = 4 if at_fort(state) else 3
+    choice = _choice(word, top)
+    if choice == 1:
+        return " ".join(play_turn(state, 1, state['meal'])), {}, False
+    if choice == 2:
+        return " ".join(play_turn(state, 2, state['meal'])), {}, False
+    if choice == 3:
+        return '', {'menu': 'rations'}, False
+    return '', {'menu': 'fort'}, False
+
+
 def respond(state, word) -> str:
-    try:
-        numbers = [int(part) for part in word.replace(',', ' ').replace('$', ' ').split()]
-    except ValueError:
-        numbers = None
-    try:
-        if state['phase'] == 'outfit':
-            if not numbers or len(numbers) != 5:
-                return "Send five amounts: oxen food ammo clothes supplies."
-            outfit(state, *numbers)
-            return "You set out from Independence."
-        if not numbers:
-            return "Send an action and a meal, e.g. 1 2."
-        action = numbers[0]
-        if action == 3:
-            if len(numbers) not in (5, 6):
-                return "At a fort send: 3 food ammo clothes supplies meal."
-            buys = tuple(numbers[1:5])
-            meal = numbers[5] if len(numbers) == 6 else 2
-        else:
-            if len(numbers) > 2:
-                return "Send an action and a meal, e.g. 1 2."
-            buys = ()
-            meal = numbers[1] if len(numbers) == 2 else 2
-        return " ".join(play_turn(state, action, meal, buys))
-    except Refused as refused:
-        return str(refused)
+    """One choice from the screen a player is on when they arrive: the
+    menu door contract, for callers that keep no screen of their own."""
+    note, _nav, _leave = step(state, {}, word)
+    return note
+
+
+def screen_help(state, nav):
+    """More than the rules say, about the screen the player is on. An
+    amount screen already shows its item's line, so its help is the help
+    for the shop it belongs to."""
+    menu = nav.get('menu') or home_menu(state)
+    return SCREEN_HELP[{'spend': 'outfit', 'fort_spend': 'fort',
+                        'ended': 'trail'}.get(menu, menu)]
 
 
 def handle(user_id, text, short_name, nav=None):
-    return door_kit.handle(sys.modules[__name__], user_id, text, short_name)
+    """One message in, one reply out: (reply, leave, nav)."""
+    return door_kit.menu_handle(sys.modules[__name__], user_id, text, short_name, nav)

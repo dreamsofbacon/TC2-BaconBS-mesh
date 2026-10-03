@@ -114,11 +114,24 @@ class ScreenTests(unittest.TestCase):
         for last in lasts:
             for weather in game.WEATHER:
                 state = game.new_game(1)
-                state.update(day=10, cash=99999999, weather=weather, last=last)
-                self.assertTrue(door_kit.fits(game.render(state)), game.render(state))
+                state.update(day=10, cash=99999, weather=weather, last=last,
+                             plan={'glasses': 9999, 'signs': 99, 'price': 100})
+                for menu in (None, 'glasses', 'signs', 'price'):
+                    screen = game.render(state, '', {'menu': menu})
+                    self.assertTrue(door_kit.fits(screen), screen)
                 if last is not None:
                     state.update(phase='ended', outcome='finished')
                     self.assertTrue(door_kit.fits(game.render(state)), game.render(state))
+
+    def test_absurd_numbers_take_more_messages_never_a_cut(self):
+        state = game.new_game(1)
+        state.update(cash=10 ** 12, weather='hot',
+                     plan={'glasses': 10 ** 9, 'signs': 10 ** 6, 'price': 100})
+        parts = door_kit.messages(game.render(state))
+        for part in parts:
+            self.assertTrue(door_kit.fits(part), part)
+        self.assertIn("1000000000 glasses", " ".join(parts))
+        self.assertIn("[4]Open stand", parts[-1])
 
     def test_a_refusal_keeps_the_day_whole(self):
         state = game.new_game(1)
@@ -127,23 +140,31 @@ class ScreenTests(unittest.TestCase):
         for part in parts:
             self.assertTrue(door_kit.fits(part), part)
         self.assertIn(note, " ".join(parts))
-        self.assertIn("Send: glasses signs price", parts[-1])
+        self.assertIn("[4]Open stand", parts[-1])
 
     def test_the_rules_are_one_packet(self):
         self.assertTrue(door_kit.fits(game.RULES), len(game.RULES.encode()))
 
+    def test_a_save_from_before_the_menus_gets_a_plan(self):
+        state = game.new_game(1)
+        del state['plan']
+        self.assertEqual(game.FIRST_PLAN, game.validate(state)['plan'])
+
 
 class DoorTests(unittest.TestCase):
+    NAME = "Kid"
+
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
-        path = os.path.join(self.folder.name, "lemonade.db")
+        path = os.path.join(self.folder.name, "door.db")
         env = mock.patch.dict(os.environ, {"BBS_DB_PATH": path})
         env.start()
         self.addCleanup(env.stop)
         db_operations.thread_local.connection = sqlite3.connect(path)
         db_operations.initialize_database()
         self.addCleanup(self._close)
+        self.nav = {}
 
     def _close(self):
         conn = getattr(db_operations.thread_local, "connection", None)
@@ -151,28 +172,60 @@ class DoorTests(unittest.TestCase):
             conn.close()
             del db_operations.thread_local.connection
 
+    def say(self, text, user=606):
+        reply, leave, nav = game.handle(user, text, self.NAME, self.nav.get(user))
+        self.nav[user] = nav
+        return reply, leave
+
+    def test_the_first_visit_brings_the_rules(self):
+        parts = door_kit.messages(self.say(None)[0])
+        self.assertEqual(game.RULES, parts[0])
+        self.assertIn("Day 1/10", parts[-1])
+
     def test_a_whole_summer_ends_on_the_scoreboard(self):
-        reply, _, _ = game.handle(51, None, "Kid")
-        self.assertIn("Day 1/10", reply)
-        reply, _, _ = game.handle(51, "lots", "Kid")
-        self.assertIn("three numbers", reply)
-        reply, _, _ = game.handle(51, "9999 0 10", "Kid")
+        reply, _ = self.say(None)
+        self.assertIn("Plan: 20 glasses, 1 sign, 10c each", reply)
+        reply, _ = self.say("lots")
+        self.assertIn("Choose 1-4", reply)
+        self.say("1")
+        reply, _ = self.say("9999")
+        self.assertIn("you have $2.00", reply)
+        reply, _ = self.say("4")
         self.assertIn("you have $2.00", reply)
         self.assertIn("Day 1/10", reply)
+        self.say("1")
+        self.say("20")
+        self.say("3")
+        reply, _ = self.say("12c")
+        self.assertIn("12c each", reply)
         for _ in range(game.DAYS):
-            reply, _, _ = game.handle(51, "20, 1, 12c", "Kid")
+            reply, _ = self.say("4")
         self.assertIn("Summer's over", reply)
         board = db_operations.get_game_scoreboard(game.GAME_ID, limit=5)
         self.assertEqual(("Kid", game.DAYS), (board[0][0], board[0][3]))
-        reply, leave, _ = game.handle(51, "0", "Kid")
+        reply, leave = self.say("0")
         self.assertTrue(leave)
 
-    def test_leaving_mid_summer_keeps_your_place(self):
-        game.handle(52, None, "Kid")
-        game.handle(52, "10 0 10", "Kid")
-        game.handle(52, "0", "Kid")
-        reply, _, _ = game.handle(52, None, "Kid")
+    def test_each_part_of_the_plan_explains_itself(self):
+        self.say(None)
+        self.assertIn("enough for 100", self.say("1")[0])
+        self.say("b")
+        self.assertIn("each one adds less", self.say("2")[0])
+        self.assertIn("0 signs", self.say("0")[0])
+        reply, _ = self.say("3")
+        self.assertIn("Cheap sells more", reply)
+        reply, _ = self.say("500")
+        self.assertIn("Charge 1 to 100", reply)
+
+    def test_leaving_mid_summer_keeps_your_place_and_your_plan(self):
+        self.say(None, user=52)
+        self.say("2", user=52)
+        self.say("3", user=52)
+        self.say("4", user=52)
+        self.say("0", user=52)
+        reply, _ = self.say(None, user=52)
         self.assertIn("Day 2/10", reply)
+        self.assertIn("3 signs", reply)
 
 
 if __name__ == "__main__":

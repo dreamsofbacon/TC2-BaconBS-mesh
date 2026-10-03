@@ -189,23 +189,111 @@ class TurnTests(unittest.TestCase):
         self.assertLess(arrived, 300)
 
 
+class StoreTests(unittest.TestCase):
+    def test_an_amount_replaces_the_last_one_for_that_item(self):
+        state = game.new_game(1)
+        game.allocate(state, 'food', 300)
+        game.allocate(state, 'food', 120)
+        self.assertEqual(120, state['cart']['food'])
+        self.assertEqual(game.PURSE - 120, game.left_to_spend(state))
+
+    def test_the_store_will_not_overspend_or_sell_odd_oxen(self):
+        state = game.new_game(1)
+        game.allocate(state, 'food', 600)
+        with self.assertRaises(game.Refused) as refused:
+            game.allocate(state, 'supplies', 200)
+        self.assertIn("You have $100", str(refused.exception))
+        for oxen in (50, 301, -1):
+            with self.assertRaises(game.Refused):
+                game.allocate(state, 'oxen', oxen)
+
+    def test_no_wagon_leaves_without_oxen(self):
+        state = game.new_game(1)
+        with self.assertRaises(game.Refused) as refused:
+            game.set_out(state)
+        self.assertIn("oxen", str(refused.exception))
+        self.assertEqual('outfit', state['phase'])
+
+    def test_the_ready_made_outfit_sets_out_with_change(self):
+        state = game.new_game(1)
+        state['cart'] = dict(game.READY_MADE)
+        game.set_out(state)
+        self.assertEqual(('play', 1), (state['phase'], state['turn']))
+        self.assertEqual(game.PURSE - sum(game.READY_MADE.values()), state['cash'])
+
+    def test_a_fort_sells_at_half_again_and_charges_the_miles_on_leaving(self):
+        state = underway(turn=2, cash=90)
+        got = game.fort_buy(state, 'food', 30)
+        self.assertEqual(20, got)
+        self.assertEqual(60, state['cash'])
+        self.assertTrue(state['fort_stop'])
+        with mock.patch.object(door_kit, 'draw', quiet):
+            game.play_turn(state, 1, 2)
+        self.assertEqual(200 + 6 + 10 - game.FORT_STOP_MILES, state['miles'])
+        self.assertFalse(state['fort_stop'])
+
+    def test_a_fort_only_where_there_is_one_and_never_on_credit(self):
+        with self.assertRaises(game.Refused):
+            game.fort_buy(underway(turn=1), 'food', 10)
+        with self.assertRaises(game.Refused):
+            game.fort_buy(underway(turn=2, cash=5), 'food', 10)
+        with self.assertRaises(game.Refused):
+            game.fort_buy(underway(turn=2), 'oxen', 10)
+
+    def test_bullets_are_bought_by_the_dollar(self):
+        state = underway(turn=2, cash=90, ammo=0)
+        self.assertEqual(20 * game.BULLETS_PER_DOLLAR, game.fort_buy(state, 'ammo', 30))
+
+    def test_a_save_from_before_the_menus_still_loads(self):
+        state = underway()
+        del state['cart'], state['fort_stop']
+        self.assertIs(state, game.validate(state))
+        self.assertFalse(state['fort_stop'])
+
+
 class ScreenTests(unittest.TestCase):
-    def test_every_screen_fits_one_packet(self):
-        screens = [game.render(game.new_game(1))]
+    def _every_screen(self):
+        rich = dict(turn=18, miles=2039, food=9999, ammo=99999, clothes=999,
+                    supplies=999, cash=700)
+        yield game.new_game(1), {}
+        store = game.new_game(1)
+        store['cart'] = dict(game.READY_MADE)
+        yield store, {}
+        for item in game.ITEMS:
+            yield store, {'menu': 'spend', 'item': item}
         for turn in (1, 2, game.MAX_TURNS):
-            screens.append(game.render(underway(
-                turn=turn, miles=2039, food=9999, ammo=99999, clothes=999,
-                supplies=999, cash=700)))
+            state = underway(**{**rich, 'turn': turn})
+            yield state, {}
+            yield state, {'menu': 'rations'}
+        fort = underway(**{**rich, 'turn': 16})
+        yield fort, {'menu': 'fort'}
+        for item in game.ITEMS[1:]:
+            yield fort, {'menu': 'fort_spend', 'item': item}
         for outcome in ('arrived', 'starved', 'untreated', 'medicine', 'winter'):
-            screens.append(game.render(underway(
-                phase='ended', outcome=outcome, turn=18, miles=2040, food=9999,
-                ammo=99999, clothes=999, supplies=999, cash=700)))
-        for screen in screens:
-            self.assertTrue(door_kit.fits(screen), screen)
+            yield underway(phase='ended', outcome=outcome, **rich), {}
+
+    def test_every_screen_fits_one_packet(self):
+        for state, nav in self._every_screen():
+            screen = game.render(state, '', nav)
+            with self.subTest(menu=nav.get('menu'), phase=state['phase']):
+                self.assertTrue(door_kit.fits(screen), screen)
+
+    def test_every_help_text_fits_one_packet(self):
+        for text in list(game.SCREEN_HELP.values()) + list(game.ITEM_HELP.values()):
+            self.assertTrue(door_kit.fits(text), text)
+
+    def test_every_choice_is_a_numbered_menu_item(self):
+        """No screen asks for a line of several numbers any more."""
+        for state, nav in self._every_screen():
+            screen = game.render(state, '', nav)
+            self.assertRegex(screen, r"\[[0B]\]")
+            self.assertNotIn("e.g. 1 2", screen)
 
     def test_the_fort_is_offered_only_where_there_is_one(self):
-        self.assertNotIn("[3]Fort", game.render(underway(turn=1)))
-        self.assertIn("[3]Fort", game.render(underway(turn=2)))
+        self.assertNotIn("Fort", game.render(underway(turn=1)))
+        screen = game.render(underway(turn=2))
+        self.assertIn("[4]Fort", screen)
+        self.assertIn("Fort Kearney is here", screen)
 
     def test_a_long_run_of_events_goes_ahead_whole(self):
         note = ("The doctor is paid $20. Good hunting: 102 lb of meat. Bandits! "
@@ -216,7 +304,7 @@ class ScreenTests(unittest.TestCase):
         for part in parts:
             self.assertTrue(door_kit.fits(part), part)
         self.assertEqual(note.split(), " ".join(parts[:-1]).split())
-        self.assertIn("[1]Travel", parts[-1])
+        self.assertIn("[1]Travel on", parts[-1])
 
     def test_the_rules_are_one_packet(self):
         self.assertTrue(door_kit.fits(game.RULES), len(game.RULES.encode()))
@@ -233,6 +321,7 @@ class DoorTests(unittest.TestCase):
         db_operations.thread_local.connection = sqlite3.connect(path)
         db_operations.initialize_database()
         self.addCleanup(self._close)
+        self.nav = {}
 
     def _close(self):
         conn = getattr(db_operations.thread_local, "connection", None)
@@ -240,42 +329,112 @@ class DoorTests(unittest.TestCase):
             conn.close()
             del db_operations.thread_local.connection
 
-    def test_outfit_then_travel_then_arrive_on_the_scoreboard(self):
-        reply, _, _ = game.handle(31, None, "Pioneer")
-        self.assertIn("Send 5 amounts", reply)
-        reply, _, _ = game.handle(31, "250 200", "Pioneer")
-        self.assertIn("five amounts", reply)
-        reply, _, _ = game.handle(31, "250 900 0 0 0", "Pioneer")
-        self.assertIn("you have $700", reply)
-        reply, _, _ = game.handle(31, "$250, 220, 40, 90, 80", "Pioneer")
-        self.assertIn("Independence", reply)
-        self.assertIn("Turn 1/18", reply)
-        reply, _, _ = game.handle(31, "3 10 0 0 0 2", "Pioneer")
-        self.assertIn("No fort here", reply)
+    def say(self, text, user=31):
+        reply, leave, nav = game.handle(user, text, "Pioneer", self.nav.get(user))
+        self.nav[user] = nav
+        return reply, leave
+
+    def test_the_store_is_a_menu_that_explains_each_item(self):
+        reply, leave = self.say(None)
+        self.assertIn("General store", reply)
+        self.assertIn("[1]Oxen [2]Food", reply)
+        reply, _ = self.say("2")
+        self.assertIn("$1 buys 1 lb", reply)
+        self.assertIn("Spend how much on food?", reply)
+        reply, _ = self.say("lots")
+        self.assertIn("Send an amount in dollars", reply)
+        reply, _ = self.say("$150")
+        self.assertIn("Food: $150.", reply)
+        self.assertIn("$550 of $700 left", reply)
+
+    def test_b_goes_back_from_an_amount_and_zero_leaves_from_the_store(self):
+        self.say(None)
+        self.say("6")
+        self.say("3")
+        reply, leave = self.say("b")
+        self.assertFalse(leave)
+        self.assertIn("Ammo $40", reply)
+        self.say("3")
+        reply, _ = self.say("0")           # an amount: no ammo at all
+        self.assertIn("Ammo $0", reply)
+        reply, leave = self.say("0")
+        self.assertTrue(leave)
+        self.assertIn("saved", reply)
+
+    def test_help_explains_the_screen_you_are_on(self):
+        self.say(None)
+        reply, _ = self.say("?")
+        parts = door_kit.messages(reply)
+        self.assertEqual([game.RULES, game.SCREEN_HELP['outfit']], parts[:2])
+        self.assertIn("General store", parts[-1])
+
+    def test_ready_made_set_out_travel_and_arrive_on_the_scoreboard(self):
+        self.say(None)
+        reply, _ = self.say("6")
+        self.assertIn("balanced outfit", reply)
+        reply, _ = self.say("7")
+        self.assertIn("You set out", reply)
+        self.assertIn("Turn 1 of 18", reply)
         with mock.patch.object(door_kit, 'draw', quiet):
             for _ in range(12):
-                reply, _, _ = game.handle(31, "1 2", "Pioneer")
-                if "Oregon!" in reply:
+                reply, _ = self.say("1")
+                if "reached Oregon" in reply:
                     break
-        self.assertIn("Oregon!", reply)
+        self.assertIn("reached Oregon", reply)
         board = db_operations.get_game_scoreboard(game.GAME_ID, limit=5)
         self.assertEqual("Pioneer", board[0][0])
-        reply, _, _ = game.handle(31, "1", "Pioneer")
-        self.assertIn("Send 5 amounts", reply)
+        reply, _ = self.say("1")
+        self.assertIn("General store", reply)
+
+    def test_rations_are_a_menu_and_stick(self):
+        self.say(None)
+        self.say("6")
+        self.say("7")
+        reply, _ = self.say("3")
+        self.assertIn("[1]Poorly: 13 lb", reply)
+        reply, _ = self.say("3")
+        self.assertIn("Everyone eats well", reply)
+        with mock.patch.object(door_kit, 'draw', quiet):
+            reply, _ = self.say("1")
+        self.assertIn(f"Food {220 - 23}lb", reply)
+
+    def test_trading_at_a_fort_then_travelling_on(self):
+        self.say(None)
+        self.say("6")
+        self.say("7")
+        with mock.patch.object(door_kit, 'draw', quiet):
+            reply, _ = self.say("1")
+        self.assertIn("[4]Fort", reply)
+        reply, _ = self.say("4")
+        self.assertIn("Fort Kearney trading post", reply)
+        reply, _ = self.say("1")
+        self.assertIn("$3 buys what $2 did at home", reply)
+        reply, _ = self.say("15")
+        self.assertIn("Bought 10 lb of food", reply)
+        self.assertIn("trading post", reply)
+        with mock.patch.object(door_kit, 'draw', quiet):
+            reply, _ = self.say("5")
+        self.assertIn("Turn 3 of 18", reply)
 
     def test_a_lost_journey_is_not_scored(self):
-        game.handle(32, None, "Lost")
-        game.handle(32, "250 5 40 90 80", "Lost")
-        reply, _, _ = game.handle(32, "1 3", "Lost")
+        self.say(None)
+        self.say("1")
+        self.say("250")
+        self.say("2")
+        self.say("5")
+        self.say("7")
+        reply, _ = self.say("1")
         self.assertIn("food is gone", reply)
+        self.assertIn("[1]Set out again", reply)
         self.assertEqual([], db_operations.get_game_scoreboard(game.GAME_ID, limit=5))
 
-    def test_the_meal_defaults_to_moderate(self):
-        game.handle(33, None, "Plain")
-        game.handle(33, "250 220 40 90 80", "Plain")
-        with mock.patch.object(door_kit, 'draw', quiet):
-            reply, _, _ = game.handle(33, "1", "Plain")
-        self.assertIn("Food 202", reply)
+    def test_a_choice_that_is_not_on_the_screen_says_what_is(self):
+        self.say(None)
+        self.say("6")
+        self.say("7")
+        reply, _ = self.say("4")          # no fort on turn 1
+        self.assertIn("Choose 1-3", reply)
+        self.assertIn("Turn 1 of 18", reply)
 
 
 if __name__ == "__main__":

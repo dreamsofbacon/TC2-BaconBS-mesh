@@ -3,8 +3,8 @@
 Gregory Yob's 1973 game, played by number. Every room has three tunnels.
 Somewhere are the Wumpus, two bottomless pits and two rooms of bats; the
 player has five arrows and only their senses -- a smell, a draft, a rustle
--- to say what is next door. A turn is one number to move, or "s" and up to
-five room numbers to send a crooked arrow through them.
+-- to say what is next door. Every turn is a menu: go down one of the three
+tunnels, or aim an arrow a room at a time, up to five, and loose it.
 
 The rules are the classic ones; every word of text is new. The engine is
 pure and seeded, like the other small games.
@@ -12,6 +12,10 @@ pure and seeded, like the other small games.
 import sys
 
 import door_kit
+
+
+class Refused(door_kit.Refused):
+    """A move the cave does not allow, said in the player's terms."""
 
 GAME_ID = 'wumpus'
 COMMAND = 'WUMPUS'
@@ -30,9 +34,9 @@ CAVE = {
     19: (11, 18, 20), 20: (13, 16, 19),
 }
 
-RULES = ("Find the Wumpus and shoot it. Send a room number to move. Send s "
-         "and 1-5 rooms to shoot, e.g. s 4 14. Smell = Wumpus near, draft = "
-         "pit near, rustle = bats near. A miss may wake it.")
+RULES = ("Find the Wumpus in a 20-room cave and shoot it. Each turn go to a "
+         "next room or shoot; an arrow can fly 5 rooms. Smell = Wumpus near, "
+         "draft = pit, rustle = bats. A miss may wake it. [?] shows this.")
 
 
 # ── Engine ──────────────────────────────────────────────────────────────────
@@ -113,7 +117,7 @@ def _arrive(state, events) -> None:
 def move(state, room) -> list:
     """Walk to an adjoining room. Returns what happened, in order."""
     if room not in CAVE[state['room']]:
-        raise ValueError(f"No tunnel to {room}. From here: "
+        raise Refused(f"No tunnel to {room}. From here: "
                          + " ".join(map(str, CAVE[state['room']])) + ".")
     state['moves'] += 1
     state['room'] = room
@@ -126,9 +130,9 @@ def shoot(state, path) -> list:
     """Send an arrow through up to five rooms. A room the arrow cannot reach
     from where it is sends it down a tunnel at random, as it always has."""
     if not 1 <= len(path) <= MAX_ARROW_ROOMS:
-        raise ValueError(f"Name 1 to {MAX_ARROW_ROOMS} rooms for the arrow.")
+        raise Refused(f"Name 1 to {MAX_ARROW_ROOMS} rooms for the arrow.")
     if any(room not in CAVE for room in path):
-        raise ValueError("Rooms are numbered 1 to 20.")
+        raise Refused("Rooms are numbered 1 to 20.")
     state['moves'] += 1
     state['arrows'] -= 1
     events, at = [], state['room']
@@ -164,49 +168,84 @@ def result(state):
 
 # ── Screens ─────────────────────────────────────────────────────────────────
 
-def render(state, note='') -> str:
-    lines = [note] if note else []
+def onward(state, path) -> list:
+    """Rooms an arrow on *path* can be sent into next: the tunnels from
+    where it is, less the one it came along. Never back the way it came,
+    so never straight back at the archer."""
+    at = path[-1] if path else state['room']
+    came = path[-2] if len(path) > 1 else (state['room'] if path else None)
+    return [room for room in CAVE[at] if room != came]
+
+
+def render(state, note='', nav=None) -> str:
+    nav = nav or {}
     if state['phase'] == 'ended':
         if state['outcome'] == 'won':
-            lines.append(f"The hunt is over in {state['moves']} moves. "
-                         f"Score {score(state)}.")
+            lines = [f"The hunt is over in {state['moves']} moves. Score {score(state)}."]
         else:
-            lines.append(f"The hunt ends here, after {state['moves']} moves.")
+            lines = [f"The hunt ends here, after {state['moves']} moves."]
         lines.append("[1]Hunt again [0]Exit")
+    elif nav.get('menu') == 'aim':
+        path = nav.get('path', [])
+        rooms = onward(state, path)
+        if not path:
+            lines = [f"Shoot from room {state['room']}, {state['arrows']} arrows left. "
+                     "Into which room?",
+                     " ".join(f"[{n}]{room}" for n, room in enumerate(rooms, 1))
+                     + " [0]Back"]
+        else:
+            flown = ">".join(map(str, [state['room']] + path))
+            more = MAX_ARROW_ROOMS - len(path)
+            lines = [f"Arrow path {flown}. "
+                     + (f"It can fly {more} more rooms, on into rooms you have "
+                        "not seen." if more else "That is as far as it flies.")]
+            options = ["[1]Loose it"]
+            if more:
+                options += [f"[{n}]On to {room}" for n, room in enumerate(rooms, 2)]
+            lines.append(" ".join(options) + " [0]Back")
     else:
-        tunnels = " ".join(map(str, CAVE[state['room']]))
-        lines.append(f"Room {state['room']}. Tunnels: {tunnels}. "
-                     f"Arrows {state['arrows']}.")
-        lines += senses(state)
-        lines.append("Room number to move, s + rooms to shoot. [?]Rules [0]Exit")
-    screen = "\n".join(lines)
-    if note and not door_kit.fits(screen):
-        return door_kit.MESSAGE_SEPARATOR.join(
-            door_kit.pack([note]) + ["\n".join(lines[1:])])
-    return screen
+        lines = [f"Room {state['room']}. Arrows {state['arrows']}."]
+        lines += senses(state) or ["All quiet."]
+        lines.append(" ".join(f"[{n}]Go to {room}"
+                              for n, room in enumerate(CAVE[state['room']], 1))
+                     + " [4]Shoot [?]Help [0]Exit")
+    return door_kit.render_with_note(note, lines)
 
 
 # ── Door ────────────────────────────────────────────────────────────────────
 
+AGAIN = "A new cave. Something is asleep in it."
+EXIT_WORDS = door_kit.MENU_EXIT_WORDS
+
+
+def step(state, nav, word):
+    """One menu choice. Returns (note, next nav, leave)."""
+    if nav.get('menu') == 'aim':
+        path = list(nav.get('path', []))
+        if word == '0':
+            return '', ({'menu': 'aim', 'path': path[:-1]} if path else {}), False
+        rooms = onward(state, path)
+        if not path:
+            return '', {'menu': 'aim', 'path': [rooms[door_kit.choice(word, 3) - 1]]}, False
+        more = MAX_ARROW_ROOMS > len(path)
+        picked = door_kit.choice(word, 1 + len(rooms) if more else 1)
+        if picked == 1:
+            return " ".join(shoot(state, path)), {}, False
+        return '', {'menu': 'aim', 'path': path + [rooms[picked - 2]]}, False
+    if word == '0':
+        return '', {}, True
+    picked = door_kit.choice(word, 4)
+    if picked == 4:
+        return '', {'menu': 'aim', 'path': []}, False
+    return " ".join(move(state, CAVE[state['room']][picked - 1])), {}, False
+
+
 def respond(state, word) -> str:
-    """Apply one line of input; return the note for the next screen."""
-    parts = word.replace(',', ' ').split()
-    shooting = parts[0] in ('s', 'shoot')
-    try:
-        rooms = [int(part) for part in (parts[1:] if shooting else parts)]
-    except ValueError:
-        return "Send a room number to move, or s and rooms to shoot."
-    try:
-        if shooting:
-            events = shoot(state, rooms)
-        elif len(rooms) == 1:
-            events = move(state, rooms[0])
-        else:
-            return "One room to move. To shoot, start with s."
-    except ValueError as refused:
-        return str(refused)
-    return " ".join(events)
+    """One choice from the main screen: the menu door contract, for
+    callers that keep no screen of their own."""
+    note, _nav, _leave = step(state, {}, word)
+    return note
 
 
 def handle(user_id, text, short_name, nav=None):
-    return door_kit.handle(sys.modules[__name__], user_id, text, short_name)
+    return door_kit.menu_handle(sys.modules[__name__], user_id, text, short_name, nav)

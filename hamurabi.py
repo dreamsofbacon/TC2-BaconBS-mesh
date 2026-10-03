@@ -1,9 +1,10 @@
 """Hamurabi: rule a city-state for ten years, one message a year.
 
 The 1968 teletype game, which is very nearly this medium already. Each year
-the steward reports, and the ruler answers with three numbers: acres to buy
+the steward reports, and the ruler sets a plan from a menu: acres to buy
 (or, negative, to sell), bushels to feed the people, and acres to plant.
-One packet out and one line back per year, so a whole reign is ten turns.
+Each year opens with a plan that feeds everyone and plants what it can, so
+a ruler changes only what they want to and then ends the year.
 
 The rules are the classic ones; every word of text is new. The engine is
 pure: a state dict in, a state dict out, with every random draw taken from
@@ -27,12 +28,12 @@ YEARS = 10
 BUSHELS_PER_PERSON = 20
 ACRES_PER_PERSON = 10
 
-RULES = ("10 years. Each year send 3 numbers: acres to buy (negative sells), "
-         "bushels to feed, acres to plant. A person eats 20 bushels and farms "
-         "10 acres. 1 bushel seeds 2 acres. Starve over 45% and you're out.")
+RULES = ("Rule for 10 years. Each year set a plan -- land to buy or sell, "
+         "grain to feed, acres to plant -- then [4] ends the year. Choose by "
+         "number; [?] shows this. Starve over 45% in a year and you are out.")
 
 
-class Refused(ValueError):
+class Refused(door_kit.Refused):
     """An order the steward cannot carry out, said in the player's terms."""
 
 
@@ -55,7 +56,29 @@ def new_game(seed) -> dict:
         'starved_pct_sum': 0.0, 'deaths': 0,
     }
     state['price'] = _draw(state, 17, 26)
+    state['plan'] = default_plan(state)
     return state
+
+
+def most_plantable(state) -> int:
+    """Acres the plan's land and the people can plant, seed aside."""
+    return min(state['land'] + state['plan']['buy'], state['pop'] * ACRES_PER_PERSON)
+
+
+def grain_left(state) -> int:
+    """What the store would hold after this year's plan, before harvest."""
+    plan = state['plan']
+    return (state['grain'] - plan['buy'] * state['price'] - plan['feed']
+            - (plan['plant'] + 1) // 2)
+
+
+def default_plan(state) -> dict:
+    """Feed everyone, then plant all the seed left will cover. A starting
+    point: the ruler changes what they want to."""
+    feed = min(state['pop'] * BUSHELS_PER_PERSON, state['grain'])
+    plant = min(state['land'], state['pop'] * ACRES_PER_PERSON,
+                2 * (state['grain'] - feed))
+    return {'buy': 0, 'feed': feed, 'plant': plant}
 
 
 def validate(state) -> dict:
@@ -67,6 +90,8 @@ def validate(state) -> dict:
             raise ValueError(f"bad {key}")
     if state['phase'] not in ('play', 'ended'):
         raise ValueError("bad phase")
+    if 'plan' not in state:       # a save from before the menus
+        state['plan'] = default_plan(state)
     return state
 
 
@@ -138,6 +163,7 @@ def play_year(state, buy, feed, plant) -> dict:
     else:
         state['year'] += 1
         state['price'] = _draw(state, 17, 26)
+        state['plan'] = default_plan(state)
     return state
 
 
@@ -174,64 +200,94 @@ def verdict(state) -> str:
 
 # ── Screens ─────────────────────────────────────────────────────────────────
 
-def render(state, note='') -> str:
+def _report(state) -> str:
     last = state['last']
-    if state['phase'] == 'ended':
-        lines = [note] if note else []
-        lines += [
-            f"Reign over after {years_played(state)} years: {state['pop']} people, "
-            f"{state['land']} acres, {state['deaths']} starved.",
-            verdict(state),
-            f"Score {score(state)}. [1]Rule again [0]Exit",
-        ]
-        return "\n".join(lines)
-    report = (f"Harvest {last['yield']}/acre, rats ate {last['rats']}. "
-              f"{last['starved']} starved, {last['came']} came.")
+    report = (f"Crop {last['yield']}/acre, rats {last['rats']}, "
+              f"starved {last['starved']}, came {last['came']}.")
     if last['plague']:
         report += " Plague halved the people!"
-    status = (f"Yr {state['year']}/{YEARS} People {state['pop']} "
-              f"Grain {state['grain']} Land {state['land']}")
-    ask = f"Land costs {state['price']}. Send: buy feed plant"
-    # The same screen at three widths. One packet beats a few words: the
-    # worked example goes first, and only numbers no real reign reaches
-    # push the report into a message of its own. Nothing is ever cut.
-    full = [status, report, ask, "e.g. 0 2000 1000  [?]Rules [0]Exit"]
-    compact = [status, report, ask + " [?]Rules [0]Exit"]
-    sep = door_kit.MESSAGE_SEPARATOR
-    for body in (full, compact):
-        screen = "\n".join(body)
-        if note and door_kit.fits(f"{note}\n{screen}"):
-            return f"{note}\n{screen}"
-        if door_kit.fits(screen):
-            # A note too long to sit above goes ahead as its own message.
-            return sep.join(door_kit.pack([note]) + [screen]) if note else screen
-    return sep.join((door_kit.pack([note]) if note else [])
-                    + door_kit.pack([status, report]) + [compact[-1]])
+    return report
+
+
+def _plan_line(state) -> str:
+    plan, left = state['plan'], grain_left(state)
+    spare = f"{left} left" if left >= 0 else f"{-left} short"
+    return (f"Plan: buy {plan['buy']} feed {plan['feed']} plant {plan['plant']}, "
+            f"{spare}. Land {state['price']}/acre")
+
+
+def _screen(state, nav) -> list:
+    if state['phase'] == 'ended':
+        return [f"Reign over after {years_played(state)} years: {state['pop']} people, "
+                f"{state['land']} acres, {state['deaths']} starved.",
+                verdict(state),
+                f"Score {score(state)}. [1]Rule again [0]Exit"]
+    plan = state['plan']
+    menu = nav.get('menu')
+    if menu == 'land':
+        return [f"Land costs {state['price']} bu an acre. You own {state['land']} "
+                f"acres and {state['grain']} bu. Send acres to buy, or a minus to "
+                f"sell: -50 sells 50. Now {plan['buy']}. [B]Back"]
+    if menu == 'feed':
+        need = state['pop'] * BUSHELS_PER_PERSON
+        return [f"Each person eats {BUSHELS_PER_PERSON} bu a year: {need} feeds all "
+                f"{state['pop']}. Less and some starve; over 45% and you are deposed. "
+                f"Send bushels. Now {plan['feed']}. [B]Back"]
+    if menu == 'plant':
+        return [f"An acre takes 1/2 bu of seed and a person farms {ACRES_PER_PERSON}: "
+                f"up to {most_plantable(state)} acres. It yields 1-5 bu an acre. "
+                f"Send acres. Now {plan['plant']}. [B]Back"]
+    return [f"Yr {state['year']}/{YEARS} Pop {state['pop']} "
+            f"Grain {state['grain']} Land {state['land']}",
+            _report(state),
+            _plan_line(state),
+            "[1]Land [2]Feed [3]Plant [4]End year [?]Help [0]Exit"]
+
+
+def render(state, note='', nav=None) -> str:
+    lines = _screen(state, nav or {})
+    if note or door_kit.fits("\n".join(lines)):
+        return door_kit.render_with_note(note, lines)
+    # Only numbers no real reign reaches push the report into a message of
+    # its own. Nothing is ever cut.
+    return door_kit.MESSAGE_SEPARATOR.join(
+        door_kit.pack(lines[:2]) + ["\n".join(lines[2:])])
 
 
 # ── Door ────────────────────────────────────────────────────────────────────
 
-def _numbers(text):
-    """Three whole numbers from one line, or None. Commas are forgiven."""
-    parts = text.replace(',', ' ').split()
-    if len(parts) != 3:
-        return None
-    try:
-        return [int(part) for part in parts]
-    except ValueError:
-        return None
+AGAIN = "A new city, and ten years to rule it."
+EXIT_WORDS = door_kit.MENU_EXIT_WORDS
+
+
+def step(state, nav, word):
+    """One menu choice. Returns (note, next nav, leave)."""
+    menu = nav.get('menu')
+    if menu in ('land', 'feed', 'plant'):
+        if word in door_kit.BACK_WORDS:
+            return '', {}, False
+        number = door_kit.amount(word, "a whole number, or B to go back")
+        if menu != 'land' and number < 0:
+            raise Refused("Send a number of 0 or more.")
+        if menu == 'land' and -number > state['land']:
+            raise Refused(f"You own only {state['land']} acres.")
+        state['plan']['buy' if menu == 'land' else menu] = number
+        return '', {}, False
+    if word == '0':
+        return '', {}, True
+    picked = door_kit.choice(word, 4)
+    if picked < 4:
+        return '', {'menu': ('land', 'feed', 'plant')[picked - 1]}, False
+    plan = state['plan']
+    play_year(state, plan['buy'], plan['feed'], plan['plant'])
+    return '', {}, False
 
 
 def respond(state, word) -> str:
-    """Apply one line of input; return the note for the next screen."""
-    orders = _numbers(word)
-    if orders is None:
-        return "Send three numbers: buy feed plant."
-    try:
-        play_year(state, *orders)
-    except Refused as refused:
-        return str(refused)
-    return ''
+    """One choice from the main screen: the menu door contract, for
+    callers that keep no screen of their own."""
+    note, _nav, _leave = step(state, {}, word)
+    return note
 
 
 def result(state):
@@ -245,4 +301,4 @@ def result(state):
 def handle(user_id, text, short_name, nav=None):
     """One message in, one reply out: (reply, leave, nav)."""
     import sys
-    return door_kit.handle(sys.modules[__name__], user_id, text, short_name)
+    return door_kit.menu_handle(sys.modules[__name__], user_id, text, short_name, nav)

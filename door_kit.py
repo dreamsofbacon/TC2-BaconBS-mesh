@@ -240,22 +240,22 @@ def handle(game, user_id, text, short_name):
     '?' shows the rules, an ended game offers [1] to play again, and a score
     is written once, in the same transaction as the move that ended it.
     """
-    import secrets
     from db_operations import upsert_game_score
 
     word = (text or '').strip().lower()
     # A game where 0 is a move (a burn of nothing) names its own way out.
     if word in getattr(game, 'EXIT_WORDS', EXIT_WORDS):
         return f"{game.NAME} saved. Carry on from Games.", True, None
+    first, new_state = first_visit(game)
 
     def turn(state):
         if text is None or word == '':
-            return state, game.render(state)
+            return state, opening(game.RULES, game.render(state), first)
         if word in HELP_WORDS:
             return state, MESSAGE_SEPARATOR.join(pack([game.RULES]) + [game.render(state)])
         if state['phase'] == 'ended':
             if word == '1':
-                state = game.new_game(secrets.randbits(63))
+                state = game.new_game(_seed())
             return state, game.render(state)
         note = game.respond(state, word)
         if state['phase'] == 'ended':
@@ -265,9 +265,135 @@ def handle(game, user_id, text, short_name):
                                   outcome[0], 0, outcome[1], commit=False)
         return state, game.render(state, note or '')
 
-    reply = run_turn(game.GAME_ID, user_id,
-                     lambda: game.new_game(secrets.randbits(63)), turn, game.validate)
+    reply = run_turn(game.GAME_ID, user_id, new_state, turn, game.validate)
     return reply, False, None
+
+
+def _seed() -> int:
+    import secrets
+    return secrets.randbits(63)
+
+
+def first_visit(game, make=None):
+    """A new-save maker that remembers whether it was used. A player with
+    no save has never opened this game, so their first screen comes with
+    the rules; after that it goes straight to the menu, and [?] brings the
+    rules back. Returns ``(first, new_state)``; ``first`` is a list, empty
+    until ``new_state`` runs."""
+    first = []
+
+    def new_state():
+        first.append(True)
+        return make() if make is not None else game.new_game(_seed())
+
+    return first, new_state
+
+
+def opening(rules, screen, first) -> str:
+    """The screen, with the rules sent ahead of it on a first visit."""
+    return MESSAGE_SEPARATOR.join(pack([rules]) + [screen]) if first else screen
+
+
+MENU_EXIT_WORDS = {'x', '!x', 'q', 'quit', 'exit'}
+# On a screen that asks for an amount, 0 is an amount -- no food, no land,
+# no signs -- so the way back is a letter.
+BACK_WORDS = {'b', 'back'}
+
+
+class Refused(ValueError):
+    """A choice the game cannot carry out, said in the player's terms."""
+
+
+def menu_handle(game, user_id, text, short_name, nav=None):
+    """One message in, one reply out, for a game played entirely by
+    numbered menus. Returns ``(reply, leave, nav)``.
+
+    Here [0] means "back" inside a submenu and "save and leave" on the
+    game's main screen, so only the exit words leave from anywhere. The
+    game module supplies, beyond what ``handle`` needs:
+
+    * ``render(state, note='', nav=None)`` -- the screen *nav* names
+    * ``step(state, nav, word)`` -> ``(note, next_nav, leave)`` for one
+      choice, raising ``Refused`` (or the game's own) with what to do instead
+    * optionally ``screen_help(state, nav)`` -> more help for that screen,
+      sent after the rules when a player asks, or None
+    * optionally ``AGAIN``, the note shown when a new game starts
+
+    An ended game offers [1] to play again and [0] to leave, and its score
+    is written in the same transaction as the move that ended it.
+    """
+    from db_operations import upsert_game_score
+
+    word = (text or '').strip().lower()
+    if word in getattr(game, 'EXIT_WORDS', MENU_EXIT_WORDS):
+        return f"{game.NAME} saved. Carry on from Games.", True, None
+    nav = dict(nav or {}) if text is not None else {}
+    first, new_state = first_visit(game)
+    leaving = (f"{game.NAME} saved. Carry on from Games.", True, {})
+
+    def turn(state):
+        if text is None or word == '':
+            return state, (opening(game.RULES, game.render(state, '', nav), first),
+                           False, nav)
+        if word in HELP_WORDS:
+            more = getattr(game, 'screen_help', lambda _s, _n: None)(state, nav)
+            parts = pack([game.RULES]) + (pack([more]) if more else [])
+            return state, (MESSAGE_SEPARATOR.join(parts + [game.render(state, '', nav)]),
+                           False, nav)
+        if state['phase'] == 'ended':
+            if word == '0':
+                return state, leaving
+            if word != '1':
+                return state, (game.render(state, "Choose 1 to play again, or 0 to leave."),
+                               False, {})
+            state = game.new_game(_seed())
+            return state, (game.render(state, getattr(game, 'AGAIN', '')), False, {})
+        try:
+            note, next_nav, leave = game.step(state, nav, word)
+        except (Refused, getattr(game, 'Refused', Refused)) as refused:
+            return state, (game.render(state, str(refused), nav), False, nav)
+        if leave:
+            return state, leaving
+        if state['phase'] == 'ended':
+            outcome = game.result(state)
+            if outcome is not None:
+                upsert_game_score(user_id, game.GAME_ID, short_name or str(user_id),
+                                  outcome[0], 0, outcome[1], commit=False)
+            next_nav = {}
+        return state, (game.render(state, note, next_nav), False, next_nav)
+
+    return run_turn(game.GAME_ID, user_id, new_state, turn, game.validate)
+
+
+def choice(word, top) -> int:
+    """A menu number from 1 to *top*, or Refused saying what to send."""
+    try:
+        number = int(word)
+    except ValueError:
+        raise Refused(f"Choose 1-{top}.") from None
+    if not 1 <= number <= top:
+        raise Refused(f"Choose 1-{top}.")
+    return number
+
+
+def amount(word, what="a number") -> int:
+    """A whole number someone typed, forgiving $, c, commas and spaces."""
+    cleaned = word.replace('$', '').replace(',', '').replace(' ', '').rstrip('c')
+    try:
+        return int(cleaned)
+    except ValueError:
+        raise Refused(f"Send {what}.") from None
+
+
+def render_with_note(note, lines) -> str:
+    """*lines* as one screen with *note* above it; a note too long to share
+    the packet goes ahead as its own message. Nothing is cut."""
+    screen = "\n".join(lines)
+    if not note:
+        return screen
+    if fits(f"{note}\n{screen}"):
+        return f"{note}\n{screen}"
+    return MESSAGE_SEPARATOR.join(pack(note.splitlines()) + [screen])
 
 
 def draw(state, low, high) -> int:
@@ -309,6 +435,7 @@ def daily_handle(game, user_id, text, short_name):
     word = (text or '').strip().lower()
     if word in EXIT_WORDS:
         return f"{game.NAME}: see you tomorrow.", True, None
+    first, new_state = first_visit(game, new_daily_state)
 
     def turn(state):
         today = fleet_day()
@@ -317,7 +444,7 @@ def daily_handle(game, user_id, text, short_name):
                 state['streak'] = 0
             state.update(day=today, guesses=[], done=False, won=False)
         if text is None or word == '':
-            return state, daily_render(game, state)
+            return state, opening(game.RULES, daily_render(game, state), first)
         if word in HELP_WORDS:
             return state, MESSAGE_SEPARATOR.join(
                 pack([game.RULES]) + [daily_render(game, state)])
@@ -345,7 +472,7 @@ def daily_handle(game, user_id, text, short_name):
             raise ValueError("bad daily save")
         return state
 
-    reply = run_turn(game.GAME_ID, user_id, new_daily_state, turn, load)
+    reply = run_turn(game.GAME_ID, user_id, new_state, turn, load)
     return reply, False, None
 
 

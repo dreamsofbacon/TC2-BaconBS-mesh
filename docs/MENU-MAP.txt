@@ -129,23 +129,46 @@ MAIN MENU   header: Bacon BBS  (mail:N shows unread count)
     An operator can hide titles (Settings > Games). The lists renumber, and
     a group with nothing left in it is not shown.
 
-    Hamurabi -- rule a city for ten years, one message a year. Each year
-        send three numbers: acres to buy (negative sells), bushels to feed,
-        acres to plant. [?] the rules, [0] save and exit. A finished reign
-        is scored; being deposed is not.
-    Hunt the Wumpus -- twenty rooms, three tunnels each. A room number
-        moves; "s" and 1-5 rooms shoots, e.g. s 4 14. Only a kill scores.
+    The first time a player opens any of these games -- the classics,
+    the daily puzzles and Skillet Keep -- its rules come first, as their
+    own message, then the game. After that it opens straight on the game;
+    [?] or HELP sends the rules again, then the screen.
+
+    The classics are played by numbered menu. On a screen that asks for an
+    amount, 0 is an amount (no food, no land), so [B] goes back there;
+    everywhere else [0] goes back, or saves and exits from the game's main
+    screen. X leaves from anywhere.
+
+    Hamurabi -- rule a city for ten years. Each year opens with a plan that
+        feeds everyone and plants what the grain allows:
+        [1]Land [2]Feed [3]Plant [4]End year [?]Help [0]Exit
+        [1]-[3] each explain themselves and ask one number (a minus sells
+        land). The plan line shows the grain left, or how much it is short.
+        A finished reign is scored; being deposed is not.
+    Hunt the Wumpus -- twenty rooms, three tunnels each.
+        [1]-[3]Go to <room> [4]Shoot [?]Help [0]Exit
+        [4] aims the arrow a room at a time, up to five, never back the way
+        it came: pick the first room, then [1]Loose it or [2]-[3]On to
+        <room>; [0] takes back the last room. Only a kill scores.
     Lunar Lander -- a burn of 0-40 each five seconds, or several in one
         message: 20 20 16. 0 is a burn here, so [X] is the way out. A
         landing scores; a crash does not.
-    Lemonade Stand -- ten days. Each day send glasses, signs and price in
-        cents: 30 2 12. The score is the cash you finish with.
-    Oregon Trail -- 2040 miles in 18 turns. First the outfit, five dollar
-        amounts: oxen food ammo clothes supplies. Then each turn an action
-        and a meal: 1 2 travels eating moderately, 2 1 hunts; at a fort,
-        3 food ammo clothes supplies meal. Arriving scores.
-    In all five, every message is one packet, [?] shows the rules, and
-    leaving keeps your place.
+    Lemonade Stand -- ten days. Each day's plan carries over from the last:
+        [1]Glasses [2]Signs [3]Price [4]Open stand [?]Help [0]Exit
+        [1]-[3] each explain themselves and ask one number. The score is
+        the cash you finish with.
+    Oregon Trail -- 2040 miles in 18 turns.
+        General store: [1]Oxen [2]Food [3]Ammo [4]Clothes [5]Supplies
+            (each asks one dollar amount and says what it buys)
+            [6]Ready-made outfit [7]Set out [?]Help [0]Exit
+        On the trail: [1]Travel on [2]Hunt [3]Rations [4]Fort [?]Help [0]Exit
+            [3] -> [1]Poorly [2]Moderately [3]Well; the choice sticks
+            [4] only where there is a fort: [1]Food [2]Ammo [3]Clothes
+            [4]Supplies [5]Travel on [0]Back. Prices are half again home's,
+            and a stop costs 45 miles on the next leg.
+        [?] sends the rules, then help for the screen you are on. Arriving
+        scores.
+    In all five, every message is one packet and leaving keeps your place.
 
     Every game's save is kept in one place, so where [sync]
     sync_zork_saves is on a game follows its player between nodes. Nothing is sent per turn: the sync

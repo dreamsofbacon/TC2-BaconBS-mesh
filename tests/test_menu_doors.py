@@ -116,8 +116,12 @@ class PlayThroughTheRouterTests(unittest.TestCase):
                 self.assertEqual(module.COMMAND, ch.get_user_state(7373)['command'])
                 self.assertTrue(opening)
 
+                # '?' explains -- the game's rules, or help for the screen
+                # the player is on -- and then shows that screen again.
                 asked = self.say("?")
-                self.assertEqual(module.RULES, asked[0])
+                self.assertGreaterEqual(len(asked), 2)
+                self.assertNotEqual(opening[-1], asked[0])
+                self.assertEqual(opening[-1], asked[-1])
                 for message in asked:
                     self.assertTrue(door_kit.fits(message), message)
 
@@ -130,6 +134,36 @@ class PlayThroughTheRouterTests(unittest.TestCase):
                     resumed = self.say(key)
                 self.assertEqual(opening[-1], resumed[-1])
                 self.say(exit_word)
+
+                # The rules came with the very first screen, and only then.
+                self.assertEqual(module.RULES, opening[0])
+                self.assertNotIn(module.RULES, resumed)
+
+    def test_every_game_sends_its_rules_on_the_first_visit_only(self):
+        """Puzzles and the keep too: a newcomer is told how to play once,
+        then goes straight to the game, with [?] there to ask again."""
+        patches = [
+            mock.patch.object(ch, 'send_message',
+                              side_effect=lambda text, *a, **k: self.sent.append(text) or True),
+            mock.patch.object(ch, 'get_node_id_from_num', return_value='!door7373'),
+            mock.patch.object(ch, 'get_node_short_name', return_value='Tester'),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        for module in ch.MENU_DOORS + ch.DAILY_DOORS + (ch.skilletkeep,):
+            with self.subTest(game=module.__name__):
+                for visit in range(2):
+                    del self.sent[:]
+                    door_games.launch(module.GAME_ID, 7373, self.iface)
+                    if visit == 0:
+                        self.assertEqual(module.RULES, self.sent[0])
+                        self.assertGreaterEqual(len(self.sent), 2)
+                    else:
+                        self.assertNotIn(module.RULES, self.sent)
+                del self.sent[:]
+                door_games.step(ch.get_user_state(7373), 7373, "help", self.iface)
+                self.assertEqual(module.RULES, self.sent[0])
 
 
 if __name__ == "__main__":

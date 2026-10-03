@@ -114,71 +114,92 @@ class EngineTests(unittest.TestCase):
             game.validate(state)
 
 
+class PlanTests(unittest.TestCase):
+    def test_each_year_opens_with_a_plan_that_feeds_everyone(self):
+        state = game.new_game(1)
+        self.assertEqual({'buy': 0, 'feed': 2000, 'plant': 1000}, state['plan'])
+        self.assertEqual(300, game.grain_left(state))
+        game.play_year(state, **state['plan'])
+        self.assertEqual(state['pop'] * game.BUSHELS_PER_PERSON
+                         if state['grain'] >= state['pop'] * 20 else state['grain'],
+                         state['plan']['feed'])
+        self.assertEqual(0, state['plan']['buy'])
+
+    def test_a_save_from_before_the_menus_gets_a_plan(self):
+        state = game.new_game(1)
+        del state['plan']
+        self.assertIs(state, game.validate(state))
+        self.assertIn('plant', state['plan'])
+
+
 class ScreenTests(unittest.TestCase):
-    def _states(self, pop, grain, land):
-        """A reign in progress, finished and deposed, at these sizes."""
+    def _states(self, pop, grain, land, plague=False):
+        """A reign in progress, its three planning screens, and its ends."""
         for seed in range(20):
-            yield game.new_game(seed)
+            yield game.new_game(seed), {}
             big = game.new_game(seed)
             big.update(year=10, pop=pop, grain=grain, land=land, price=26,
-                       last={'yield': 5, 'rats': grain, 'starved': pop,
-                             'came': pop, 'plague': True})
-            yield big
+                       last={'yield': 5, 'rats': grain // 2, 'starved': pop // 10,
+                             'came': pop // 10, 'plague': plague})
+            big['plan'] = game.default_plan(big)
+            for menu in (None, 'land', 'feed', 'plant'):
+                yield big, {'menu': menu}
             for outcome in ('finished', 'deposed'):
                 ended = copy.deepcopy(big)
                 ended.update(phase='ended', outcome=outcome, deaths=pop * 10)
-                yield ended
+                yield ended, {}
 
-    def test_every_screen_a_reign_can_reach_fits_one_packet(self):
-        """Ten years cannot grow a city past a few thousand people; this is
-        ten times that, with a plague and the rats both in the report."""
-        for state in self._states(pop=9999, grain=999999, land=99999):
-            screen = game.render(state)
-            with self.subTest(phase=state['phase'], outcome=state['outcome'],
-                              size=len(screen.encode('utf-8'))):
+    def test_every_screen_a_reign_reaches_fits_one_packet(self):
+        """A big city for ten years: a thousand people, a granary of 49999."""
+        for state, nav in self._states(pop=999, grain=49999, land=4999):
+            screen = game.render(state, '', nav)
+            with self.subTest(phase=state['phase'], menu=nav.get('menu')):
                 self.assertNotIn(door_kit.MESSAGE_SEPARATOR, screen)
                 self.assertTrue(door_kit.fits(screen), screen)
 
     def test_absurd_numbers_take_more_messages_never_a_cut(self):
-        for state in self._states(pop=10 ** 9, grain=10 ** 12, land=10 ** 10):
+        for state, nav in self._states(pop=10 ** 9, grain=10 ** 12, land=10 ** 10,
+                                       plague=True):
             for note in ("", "Planting 999999 acres needs 500000 bushels; 12345 would be left."):
-                parts = door_kit.messages(game.render(state, note))
+                parts = door_kit.messages(game.render(state, note, nav))
                 with self.subTest(phase=state['phase'], note=bool(note)):
                     for part in parts:
                         self.assertTrue(door_kit.fits(part), part)
                     joined = " ".join(parts)
-                    self.assertIn(str(state['pop']), joined)
                     if note:
                         self.assertIn(note, joined)
                     if state['phase'] == 'play':
-                        self.assertIn("Send: buy feed plant", parts[-1])
-                        self.assertIn("[0]Exit", parts[-1])
+                        self.assertRegex(parts[-1], r"\[[0B]\]")
+                    if state['year'] == 10 and state['phase'] == 'play' \
+                            and not nav.get('menu'):
+                        self.assertIn(str(state['pop']), joined)
+                        self.assertIn("Plague", joined)
+                        self.assertIn("[4]End year", parts[-1])
 
-    def test_a_refusal_goes_above_the_report_or_ahead_of_it(self):
+    def test_the_plan_says_what_it_leaves_or_lacks(self):
         state = game.new_game(1)
-        short = game.render(state, "Too few.")
-        self.assertEqual("Too few.", short.splitlines()[0])
-        self.assertNotIn(door_kit.MESSAGE_SEPARATOR, short)
-        long_note = "Planting 999999 acres needs 500000 bushels; 12345 would be left."
-        parts = door_kit.messages(game.render(state, long_note))
-        self.assertEqual(long_note, parts[0])
-        self.assertIn("Yr 1/10", parts[1])
+        self.assertIn("300 left", game.render(state))
+        state['plan']['buy'] = 100
+        self.assertIn(f"{100 * state['price'] - 300} short", game.render(state))
 
     def test_the_rules_are_one_packet(self):
         self.assertTrue(door_kit.fits(game.RULES), len(game.RULES.encode('utf-8')))
 
 
 class DoorTests(unittest.TestCase):
+    NAME = "Ruler"
+
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
-        path = os.path.join(self.folder.name, "hamurabi.db")
+        path = os.path.join(self.folder.name, "door.db")
         env = mock.patch.dict(os.environ, {"BBS_DB_PATH": path})
         env.start()
         self.addCleanup(env.stop)
         db_operations.thread_local.connection = sqlite3.connect(path)
         db_operations.initialize_database()
         self.addCleanup(self._close)
+        self.nav = {}
 
     def _close(self):
         conn = getattr(db_operations.thread_local, "connection", None)
@@ -186,42 +207,69 @@ class DoorTests(unittest.TestCase):
             conn.close()
             del db_operations.thread_local.connection
 
-    def play(self, text):
-        reply, leave, _nav = game.handle(606, text, "Ruler")
+    def say(self, text, user=606):
+        reply, leave, nav = game.handle(user, text, self.NAME, self.nav.get(user))
+        self.nav[user] = nav
         return reply, leave
 
-    def test_opening_shows_year_one_and_leaving_keeps_the_reign(self):
-        reply, leave = self.play(None)
+    def test_the_first_visit_brings_the_rules_and_later_ones_do_not(self):
+        reply, leave = self.say(None)
+        parts = door_kit.messages(reply)
+        self.assertEqual(game.RULES, parts[0])
+        self.assertIn("Yr 1/10", parts[-1])
+        self.say("x")
+        reply, _ = self.say(None)
+        self.assertNotIn(game.RULES, reply)
         self.assertIn("Yr 1/10", reply)
-        self.assertFalse(leave)
-        self.play("0 2000 500")
-        reply, leave = self.play("0")
+
+    def test_end_year_plays_the_plan_and_leaving_keeps_the_reign(self):
+        self.say(None)
+        reply, _ = self.say("4")
+        self.assertIn("Yr 2/10", reply)
+        reply, leave = self.say("0")
         self.assertTrue(leave)
         self.assertIn("saved", reply)
-        reply, _ = self.play(None)
+        reply, _ = self.say(None)
         self.assertIn("Yr 2/10", reply)
 
-    def test_three_numbers_play_a_year_and_anything_else_explains(self):
-        self.play(None)
-        reply, _ = self.play("hello")
-        self.assertIn("three numbers", reply)
-        self.assertIn("Yr 1/10", reply)
-        reply, _ = self.play("0, 2000, 500")
-        self.assertIn("Yr 2/10", reply)
+    def test_each_part_of_the_plan_is_its_own_screen(self):
+        self.say(None)
+        reply, _ = self.say("2")
+        self.assertIn("2000 feeds all 100", reply)
+        reply, _ = self.say("lots")
+        self.assertIn("Send a whole number", reply)
+        reply, _ = self.say("1500")
+        self.assertIn("feed 1500", reply)
+        self.assertIn("800 left", reply)
+        self.say("1")
+        reply, _ = self.say("-50")
+        self.assertIn("buy -50", reply)
+        self.say("3")
+        reply, leave = self.say("b")
+        self.assertFalse(leave)
+        self.assertIn("plant 1000", reply)
+        self.assertIn("[4]End year", reply)
 
-    def test_a_refusal_names_the_limit_and_keeps_the_year(self):
-        self.play(None)
-        reply, _ = self.play("5000 0 0")
+    def test_a_plan_that_cannot_be_met_names_the_limit_and_keeps_the_year(self):
+        self.say(None)
+        self.say("1")
+        self.say("5000")
+        reply, _ = self.say("4")
         self.assertIn("you have 2800 bushels", reply)
         self.assertIn("Yr 1/10", reply)
 
     def test_a_finished_reign_is_scored_once_and_a_deposed_one_is_not(self):
-        self.play(None)
-        reply, _ = self.play("0 0 0")
+        self.say(None)
+        self.say("2")
+        self.say("0")
+        self.say("3")
+        self.say("0")
+        reply, _ = self.say("4")
         self.assertIn("deposed", reply)
         self.assertEqual([], db_operations.get_game_scoreboard(game.GAME_ID, limit=5))
 
-        self.play("1")
+        reply, _ = self.say("1")
+        self.assertIn("Yr 1/10", reply)
         # A full granary and no plague, so ten years of feeding everyone
         # is certain to finish.
         state = door_kit.load_save(game.GAME_ID, 606)
@@ -230,19 +278,19 @@ class DoorTests(unittest.TestCase):
         with mock.patch.object(game, '_draw',
                                lambda state, low, high: high if high == 100 else low):
             for _ in range(game.YEARS):
-                reply, _ = self.play("0 40000 0")
+                reply, _ = self.say("4")
         self.assertIn("Score", reply)
         board = db_operations.get_game_scoreboard(game.GAME_ID, limit=5)
         self.assertEqual(1, len(board))
         self.assertEqual("Ruler", board[0][0])
         self.assertEqual(game.YEARS, board[0][3])
 
-    def test_the_rules_come_with_the_screen(self):
-        self.play(None)
-        reply, _ = self.play("?")
-        parts = door_kit.messages(reply)
-        self.assertEqual(game.RULES, parts[0])
-        self.assertIn("Yr 1/10", parts[-1])
+    def test_help_brings_the_rules_back(self):
+        self.say(None)
+        for word in ("?", "help"):
+            parts = door_kit.messages(self.say(word)[0])
+            self.assertEqual(game.RULES, parts[0])
+            self.assertIn("Yr 1/10", parts[-1])
 
 
 class WiringTests(unittest.TestCase):

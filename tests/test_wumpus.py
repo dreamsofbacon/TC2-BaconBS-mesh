@@ -152,6 +152,25 @@ class ScreenTests(unittest.TestCase):
             screen = game.render(state)
             self.assertEqual(3, len(game.senses(state)))
             self.assertTrue(door_kit.fits(screen), screen)
+            for n, tunnel in enumerate(near, 1):
+                self.assertIn(f"[{n}]Go to {tunnel}", screen)
+
+    def test_every_aiming_screen_fits_one_packet(self):
+        state = cave(room=1)
+        paths = [[]]
+        while paths:
+            path = paths.pop()
+            screen = game.render(state, '', {'menu': 'aim', 'path': path})
+            self.assertTrue(door_kit.fits(screen), screen)
+            if len(path) < game.MAX_ARROW_ROOMS:
+                paths += [path + [room] for room in game.onward(state, path)]
+
+    def test_an_arrow_is_never_aimed_back_the_way_it_came(self):
+        state = cave(room=1)
+        self.assertEqual(list(game.CAVE[1]), game.onward(state, []))
+        self.assertNotIn(1, game.onward(state, [2]))
+        self.assertNotIn(2, game.onward(state, [2, 3]))
+        self.assertEqual(2, len(game.onward(state, [2, 3])))
 
     def test_the_end_screens_fit_and_a_long_note_goes_ahead(self):
         for outcome in ('won', 'pit', 'eaten', 'arrow', 'unarmed'):
@@ -174,16 +193,19 @@ class ScreenTests(unittest.TestCase):
 
 
 class DoorTests(unittest.TestCase):
+    NAME = "Hunter"
+
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
-        path = os.path.join(self.folder.name, "wumpus.db")
+        path = os.path.join(self.folder.name, "door.db")
         env = mock.patch.dict(os.environ, {"BBS_DB_PATH": path})
         env.start()
         self.addCleanup(env.stop)
         db_operations.thread_local.connection = sqlite3.connect(path)
         db_operations.initialize_database()
         self.addCleanup(self._close)
+        self.nav = {}
 
     def _close(self):
         conn = getattr(db_operations.thread_local, "connection", None)
@@ -191,40 +213,66 @@ class DoorTests(unittest.TestCase):
             conn.close()
             del db_operations.thread_local.connection
 
+    def say(self, text, user=606):
+        reply, leave, nav = game.handle(user, text, self.NAME, self.nav.get(user))
+        self.nav[user] = nav
+        return reply, leave
+
     def _place(self, user, **fields):
         state = door_kit.load_save(game.GAME_ID, user)
         state.update(fields)
         door_kit.store_save(game.GAME_ID, user, state)
 
+    def test_the_first_visit_brings_the_rules(self):
+        parts = door_kit.messages(self.say(None, user=88)[0])
+        self.assertEqual(game.RULES, parts[0])
+        self.assertIn("[4]Shoot", parts[-1])
+
     def test_a_hunt_from_the_menu_to_the_scoreboard(self):
-        reply, leave, _ = game.handle(88, None, "Hunter")
-        self.assertIn("Tunnels:", reply)
+        self.say(None, user=88)
         self._place(88, room=1, wumpus=3, pits=[18, 19], bats=[16, 17])
-        reply, _, _ = game.handle(88, "12", "Hunter")
-        self.assertIn("No tunnel to 12", reply)
-        reply, _, _ = game.handle(88, "2", "Hunter")
+        reply, _ = self.say("1", user=88)          # room 1's first tunnel is 2
         self.assertIn("Room 2.", reply)
         self.assertIn("foul", reply)
-        reply, _, _ = game.handle(88, "s 3", "Hunter")
+        reply, _ = self.say("4", user=88)
+        self.assertIn("[1]1 [2]3 [3]10", reply)
+        reply, _ = self.say("2", user=88)
+        self.assertIn("Arrow path 2>3", reply)
+        reply, _ = self.say("1", user=88)
         self.assertIn("dead", reply)
         self.assertIn("[1]Hunt again", reply)
         board = db_operations.get_game_scoreboard(game.GAME_ID, limit=5)
         self.assertEqual("Hunter", board[0][0])
-        reply, _, _ = game.handle(88, "1", "Hunter")
+        reply, _ = self.say("1", user=88)
         self.assertIn("Arrows 5", reply)
 
+    def test_a_crooked_arrow_is_built_a_room_at_a_time(self):
+        self.say(None, user=87)
+        self._place(87, room=1, wumpus=11, pits=[18, 19], bats=[16, 17])
+        self.say("4", user=87)
+        self.say("1", user=87)                     # into 2
+        reply, _ = self.say("3", user=87)          # on to 10 (2's onward: 3, 10)
+        self.assertIn("Arrow path 1>2>10", reply)
+        reply, _ = self.say("0", user=87)          # back a room
+        self.assertIn("Arrow path 1>2.", reply)
+        self.say("3", user=87)
+        reply, _ = self.say("3", user=87)          # 10's onward: 9, 11
+        self.assertIn("Arrow path 1>2>10>11", reply)
+        reply, _ = self.say("1", user=87)
+        self.assertIn("dead", reply)
+
     def test_a_lost_hunt_is_not_scored(self):
-        game.handle(89, None, "Lost")
+        self.say(None, user=89)
         self._place(89, room=1, wumpus=20, pits=[2, 19], bats=[16, 17])
-        reply, _, _ = game.handle(89, "2", "Lost")
+        reply, _ = self.say("1", user=89)
         self.assertIn("fall", reply)
         self.assertEqual([], db_operations.get_game_scoreboard(game.GAME_ID, limit=5))
 
-    def test_nonsense_explains_itself(self):
-        game.handle(90, None, "New")
-        reply, _, _ = game.handle(90, "north", "New")
-        self.assertIn("room number", reply)
-        reply, leave, _ = game.handle(90, "0", "New")
+    def test_nonsense_explains_itself_and_zero_leaves(self):
+        self.say(None, user=90)
+        reply, _ = self.say("north", user=90)
+        self.assertIn("Choose 1-4", reply)
+        reply, leave = self.say("0", user=90)
         self.assertTrue(leave)
 
 
