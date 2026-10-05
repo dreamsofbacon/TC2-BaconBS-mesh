@@ -192,9 +192,10 @@ total, and reuse the emulator's idle sweep.
 
 ## Deployment shape
 
-- `asyncssh`, in a **separate systemd unit** (`bacon-ssh.service`) following
-  the `mesh-bbs` / `bacon-web-admin` split. A crash in the SSH front end
-  must not take the radio off the air.
+- `asyncssh`, in a **separate systemd unit** (`bacon-ssh.service`). A crash
+  in the SSH front end must not take the radio off the air. It stays
+  separate even though the web admin has since moved into `mesh-bbs`: the
+  SSH front end faces the internet, the web admin does not.
 - **Non-root, on a high port** (2222). Nothing here needs a privileged bind,
   and nothing here should run as root.
 - The host key is generated once and backed up. Losing it means every client
@@ -206,7 +207,8 @@ total, and reuse the emulator's idle sweep.
 
 ### Before anything listens on a public port
 
-`bacon-web-admin.service:13` sets `BBS_WEBGUI_HOST=0.0.0.0`, the web admin
+`mesh-bbs.service` sets `BBS_WEBGUI_HOST=0.0.0.0` for the web admin inside it
+(as `bacon-web-admin.service` did before it moved there), the web admin
 serves plain HTTP, and the admin password defaults to `change-me` in
 plaintext in `config.ini`. Today that is behind a LAN. Exposing this host to
 the internet without fixing it hands over the entire database — every

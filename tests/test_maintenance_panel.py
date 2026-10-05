@@ -90,6 +90,29 @@ class RestartTests(_Panel):
         # The web admin goes last: restarting it ends this request.
         sudo.assert_called_once_with("restart", "bacon-web-admin.service")
 
+    def test_embedded_it_restarts_the_mesh_server_last(self):
+        """Inside mesh-bbs, restarting the page's own unit is restarting
+        mesh-bbs, so that is the one that has to go last."""
+        with mock.patch.object(self.web_admin, "EMBEDDED_SERVICE_UNIT", "mesh-bbs.service"), \
+                mock.patch.object(self.web_admin, "restart_bbs_services",
+                                  return_value=(True, "bacon-ssh.service")), \
+                mock.patch.object(self.web_admin, "_sudo_systemctl",
+                                  return_value=(True, "done")) as sudo:
+            self.post("restart_services")
+        sudo.assert_called_once_with("restart", "mesh-bbs.service")
+
+    def test_embedded_the_service_list_leaves_the_mesh_server_for_last(self):
+        installed = "mesh-bbs.service bacon-ssh.service"
+        with mock.patch.object(self.web_admin, "EMBEDDED_SERVICE_UNIT", "mesh-bbs.service"), \
+                mock.patch("subprocess.run",
+                           return_value=mock.Mock(stdout=installed)), \
+                mock.patch.object(self.web_admin, "_sudo_systemctl",
+                                  return_value=(True, "done")) as sudo:
+            ok, _detail = self.web_admin.restart_bbs_services()
+        self.assertTrue(ok)
+        restarted = [c.args[1] for c in sudo.call_args_list]
+        self.assertEqual(restarted, ["bacon-ssh.service"])
+
     def test_a_missing_sudo_rule_is_explained_not_swallowed(self):
         with mock.patch.object(
                 self.web_admin, "restart_bbs_services",

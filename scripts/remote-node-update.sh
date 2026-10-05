@@ -55,6 +55,12 @@ git pull --ff-only origin "$BRANCH"
 
 echo "[remote] Restarting services"
 for svc in "${SERVICES[@]}"; do
+  # A node that re-ran install_services.sh has no bacon-web-admin.service:
+  # its web admin runs inside mesh-bbs. Skip what is not installed.
+  if ! systemctl list-unit-files "$svc" | grep -q "^$svc"; then
+    echo "[remote] $svc is not installed here; skipping"
+    continue
+  fi
   echo "[remote] restarting $svc"
   sudo systemctl restart "$svc"
   sudo systemctl is-active "$svc" --quiet

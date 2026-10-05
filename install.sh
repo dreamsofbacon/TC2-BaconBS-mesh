@@ -359,7 +359,8 @@ fi
 # ── 5. Check ─────────────────────────────────────────────────────────────────
 
 say "5/5  Checking it came up"
-UNITS=(mesh-bbs.service bacon-web-admin.service)
+# The web admin runs inside mesh-bbs, so its check is the port test below.
+UNITS=(mesh-bbs.service)
 [[ "$SSH_ENABLED" == "true" ]] && UNITS+=(bacon-ssh.service)
 HEALTHY="true"
 for attempt in $(seq 1 20); do
@@ -388,7 +389,7 @@ done
 if [[ "$WEB_OK" == "true" ]]; then
     ok "Web admin answers on port 8081"
 else
-    warn "Web admin is not answering yet -- see: sudo journalctl -u bacon-web-admin -n 50"
+    warn "Web admin is not answering yet -- see: sudo journalctl -u mesh-bbs -n 50"
     HEALTHY="false"
 fi
 

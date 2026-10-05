@@ -586,7 +586,10 @@ export BBS_WEBGUI_PORT=8081
 
 ## Running at Boot (Linux / systemd)
 
-The repository includes `mesh-bbs.service`, `bacon-web-admin.service`, and an installer script.
+The repository includes `mesh-bbs.service`, `bacon-ssh.service`, and an installer script.
+The web admin runs inside `mesh-bbs.service`. It used to be its own unit,
+`bacon-web-admin.service`; running the installer on an older node retires that
+unit and moves the web admin in, on the same address and port.
 
 ```sh
 chmod +x install_services.sh
@@ -602,10 +605,16 @@ bash install_services.sh --yes --user "$USER" --dir "$HOME/TC2-BaconBS-mesh"
 **Service controls:**
 
 ```sh
-sudo systemctl status mesh-bbs.service bacon-web-admin.service
-sudo systemctl restart mesh-bbs.service bacon-web-admin.service
+sudo systemctl status mesh-bbs.service
+sudo systemctl restart mesh-bbs.service
 journalctl -u mesh-bbs.service -f
 ```
+
+On a node installed before the web admin moved into `mesh-bbs`, restart
+`bacon-web-admin.service` as well, or re-run the installer to retire it.
+
+If the BBS fails to start, the web admin stays up so the node can be repaired.
+Saving the config, or five minutes passing, makes it try again.
 
 **If using Zork**, add these to `mesh-bbs.service` so the interpreter is found under systemd:
 

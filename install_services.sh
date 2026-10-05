@@ -61,8 +61,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ ! -f "$REPO_DIR/mesh-bbs.service" || ! -f "$REPO_DIR/bacon-web-admin.service" \
-    || ! -f "$REPO_DIR/bacon-ssh.service" ]]; then
+if [[ ! -f "$REPO_DIR/mesh-bbs.service" || ! -f "$REPO_DIR/bacon-ssh.service" ]]; then
     echo "ERROR: Run this script from inside the TC2-BaconBS-mesh repository."
     exit 1
 fi
@@ -109,7 +108,7 @@ ESC_DIR="$(escape_sed "$PROJECT_DIR")"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-for UNIT in mesh-bbs.service bacon-web-admin.service bacon-ssh.service; do
+for UNIT in mesh-bbs.service bacon-ssh.service; do
     sed \
         -e "s|__SERVICE_USER__|$ESC_USER|g" \
         -e "s|__PROJECT_DIR__|$ESC_DIR|g" \
@@ -118,31 +117,39 @@ done
 
 echo "Installing systemd units..."
 sudo cp "$TMP_DIR/mesh-bbs.service" /etc/systemd/system/mesh-bbs.service
-sudo cp "$TMP_DIR/bacon-web-admin.service" /etc/systemd/system/bacon-web-admin.service
 sudo cp "$TMP_DIR/bacon-ssh.service" /etc/systemd/system/bacon-ssh.service
 
-sudo systemctl daemon-reload
-sudo systemctl enable mesh-bbs.service bacon-web-admin.service
-sudo systemctl restart mesh-bbs.service bacon-web-admin.service
+# The web admin now runs inside mesh-bbs (web_admin_embed.py). An older
+# install has it as its own unit, which would hold port 8081 against the
+# embedded one, so it is stopped and removed before mesh-bbs restarts.
+OLD_WEB_UNIT=/etc/systemd/system/bacon-web-admin.service
+if [[ -f "$OLD_WEB_UNIT" ]]; then
+    echo "Retiring bacon-web-admin.service: the web admin now runs inside mesh-bbs."
+    sudo systemctl disable --now bacon-web-admin.service 2>/dev/null || true
+    sudo rm -f "$OLD_WEB_UNIT"
+fi
 
-# Fleet updates: the mesh server switches to the new code and exits, and
-# systemd brings it back -- no privilege needed. The web admin and SSH
-# front end do not exit with it, so fleet_update.py restarts them with
-# `sudo -n systemctl restart <unit>`. Without this rule that fails on every
-# update and both keep running the old code, which is how an SSH fix once
-# sat unloaded for seven hours across eight deploys. The rule allows exactly
-# those two restarts and nothing else.
+sudo systemctl daemon-reload
+sudo systemctl enable mesh-bbs.service
+sudo systemctl restart mesh-bbs.service
+
+# Fleet updates: the mesh server, and the web admin inside it, switch to
+# the new code and exit, and systemd brings them back -- no privilege
+# needed. The SSH front end does not exit with it, so fleet_update.py
+# restarts it with `sudo -n systemctl restart <unit>`. Without this rule
+# that fails on every update and it keeps running the old code, which is
+# how an SSH fix once sat unloaded for seven hours across eight deploys.
+# The rule allows exactly these restarts and the reboot, nothing else.
 SUDOERS_FILE=/etc/sudoers.d/baconbbs-fleet
 SUDOERS_TMP="$TMP_DIR/baconbbs-fleet"
 {
     echo "# Installed by install_services.sh. Each line is one exact command:"
-    echo "#  - restarting a BBS service, so a fleet update reaches the web"
-    echo "#    admin and the SSH front end, and so the web admin's Restart"
-    echo "#    button works;"
+    echo "#  - restarting a BBS service, so a fleet update reaches the SSH"
+    echo "#    front end, and so the web admin's Restart button works;"
     echo "#  - rebooting, for the web admin's Reboot button."
     echo "# Nothing else, and no wildcards: these are not 'run systemctl'."
     for SYSTEMCTL in /usr/bin/systemctl /bin/systemctl; do
-        for UNIT in bacon-web-admin.service bacon-ssh.service mesh-bbs.service; do
+        for UNIT in bacon-ssh.service mesh-bbs.service; do
             echo "$SERVICE_USER ALL=(root) NOPASSWD: $SYSTEMCTL restart $UNIT"
         done
         echo "$SERVICE_USER ALL=(root) NOPASSWD: $SYSTEMCTL reboot"
@@ -154,8 +161,8 @@ if command -v visudo >/dev/null 2>&1 && sudo visudo -cf "$SUDOERS_TMP" >/dev/nul
     echo "Restart and Reboot buttons will work ($SUDOERS_FILE)."
 else
     echo "WARNING: Could not install $SUDOERS_FILE. Fleet updates will still"
-    echo "  update the BBS, but the web admin and SSH services will keep running"
-    echo "  old code until you restart them yourself."
+    echo "  update the BBS, but the SSH service will keep running old code"
+    echo "  until you restart it yourself."
 fi
 
 # USB autosuspend disable -- see the rules file itself for why. Best-effort:
@@ -184,7 +191,7 @@ if [[ -f "$PROJECT_DIR/web-admin.env" ]]; then
     WEB_HOST="$(sed -n 's/^BBS_WEBGUI_HOST=//p' "$PROJECT_DIR/web-admin.env" | tail -1)"
     WEB_HOST="${WEB_HOST:-0.0.0.0}"
 fi
-echo "Web admin listens on $WEB_HOST:8081 (set BBS_WEBGUI_HOST in web-admin.env to change it)."
+echo "Web admin (inside mesh-bbs) listens on $WEB_HOST:8081 (set BBS_WEBGUI_HOST in web-admin.env to change it)."
 # install.sh enables SSH itself right after this, from its own question.
 if [[ -z "${BBS_INSTALLER:-}" ]] && ! systemctl is-enabled --quiet bacon-ssh.service 2>/dev/null; then
     echo "SSH service installed but left disabled. Configure [ssh], then run:"
@@ -192,5 +199,5 @@ if [[ -z "${BBS_INSTALLER:-}" ]] && ! systemctl is-enabled --quiet bacon-ssh.ser
 fi
 echo ""
 echo "Quick checks:"
-echo "  sudo systemctl status mesh-bbs.service bacon-web-admin.service"
-echo "  sudo journalctl -u mesh-bbs.service -u bacon-web-admin.service -f"
+echo "  sudo systemctl status mesh-bbs.service"
+echo "  sudo journalctl -u mesh-bbs.service -f"

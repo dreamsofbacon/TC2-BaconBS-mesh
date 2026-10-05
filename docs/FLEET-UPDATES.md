@@ -85,7 +85,7 @@ Alternatively, use the Fleet web page to enroll the public key. Then restart
 the services:
 
 ```sh
-sudo systemctl restart mesh-bbs.service bacon-web-admin.service
+sudo systemctl restart mesh-bbs.service   # and bacon-web-admin.service on a node installed before it moved into mesh-bbs
 ```
 
 Check it took: open **Fleet** in the web admin. It should show your key id
@@ -260,7 +260,7 @@ which commit it names.
 ```sh
 cd /home/bacon/TC2-BaconBS-mesh
 git checkout main && git pull --ff-only
-sudo systemctl restart mesh-bbs.service bacon-web-admin.service
+sudo systemctl restart mesh-bbs.service   # and bacon-web-admin.service on a node installed before it moved into mesh-bbs
 ```
 
 ---

@@ -1018,6 +1018,15 @@ def install_interpreter() -> tuple:
 _SERVICE_UNITS = ("mesh-bbs.service", "bacon-web-admin.service",
                   "bacon-ssh.service")
 
+# Set by web_admin_embed when this app runs inside the mesh server, to the
+# unit it lives in. None means the separate bacon-web-admin.service.
+EMBEDDED_SERVICE_UNIT = None
+
+
+def _own_service_unit() -> str:
+  """The unit whose restart restarts this page."""
+  return EMBEDDED_SERVICE_UNIT or "bacon-web-admin.service"
+
 
 def _sudo_systemctl(*arguments) -> tuple:
   """Run one fixed systemctl command under sudo -n. Returns (ok, detail)."""
@@ -1043,12 +1052,15 @@ def _sudo_systemctl(*arguments) -> tuple:
 def restart_bbs_services() -> tuple:
   """Restart every installed BBS service. Returns (ok, detail).
 
-  The web admin is restarted LAST and on purpose: restarting it kills the
-  request that asked for it, so anything after that line would not run.
+  The web admin's own unit is left out, for the caller to restart LAST and
+  on purpose: restarting it kills the request that asked for it, so
+  anything after that line would not run. Embedded, that unit is mesh-bbs.
   """
   import subprocess as _subprocess
   done, failed = [], []
-  ordered = [u for u in _SERVICE_UNITS if u != "bacon-web-admin.service"]
+  own = _own_service_unit()
+  ordered = [u for u in _SERVICE_UNITS
+             if u not in (own, "bacon-web-admin.service")]
   for unit in ordered:
     installed = _subprocess.run(["systemctl", "list-unit-files", unit],
                                 capture_output=True, text=True)
@@ -6827,8 +6839,8 @@ def create_app(runtime_interface=None) -> Flask:
                   "last, so it may be a moment before it answers again.",
                   "success")
             # Last, and after the flash is stored: restarting the web admin
-            # ends this request.
-            _sudo_systemctl("restart", "bacon-web-admin.service")
+            # ends this request. Embedded, that is the whole mesh server.
+            _sudo_systemctl("restart", _own_service_unit())
           else:
             flash(detail, "error")
           return redirect(url_for("settings_page") + "#maintenance")

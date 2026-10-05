@@ -497,6 +497,10 @@ def install_requirements() -> tuple:
 # MQTT-only node and deliberately has no bacon-ssh. `--all` would refuse the
 # whole command over the missing one, so each is restarted on its own and
 # only an installed unit's failure counts.
+#
+# bacon-web-admin is gone from a node that re-ran install_services.sh: the
+# web admin runs inside mesh-bbs there (web_admin_embed). It stays listed
+# for nodes that have not, where it is still its own unit.
 COMPANION_UNITS = ("bacon-web-admin.service", "bacon-ssh.service")
 
 

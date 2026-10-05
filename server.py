@@ -2393,6 +2393,60 @@ def _run_link_tick(link: RadioLink, *, system_config: dict, config_path: str,
 
 
 def main():
+    # The web admin first, before anything here can fail: it is how a node
+    # is repaired, so a BBS that cannot start must not take it down too.
+    # Only when mesh-bbs.service asks for it; see web_admin_embed.
+    import web_admin_embed
+    web_admin_embed.start()
+    try:
+        _run_bbs()
+    except Exception:
+        if _bbs_started or not web_admin_embed.running():
+            raise
+        _hold_for_repair()
+
+
+# Set once startup is over. A crash after it exits as it always has, so
+# systemd restarts the node and the radio comes back by itself.
+_bbs_started = False
+
+# How long a node that failed to start keeps its web admin up before
+# exiting so systemd tries again, unless config.ini changes sooner.
+_REPAIR_WINDOW_SECONDS = 300
+
+
+def _hold_for_repair():
+    """Keep the embedded web admin up after the BBS failed to start.
+
+    Exiting at once, as the process did when the web admin was its own
+    service, would take the admin page down with it and leave nothing to
+    fix the node with. Instead this waits for the operator: a saved
+    config.ini, or five minutes for a fault that clears by itself (a
+    database still locked, a broker not up yet), and then exits so systemd
+    starts a fresh attempt.
+    """
+    logging.exception(
+        "The BBS failed to start. The web admin stays up so the node can be "
+        "repaired; it retries after the config is saved or in %d minutes.",
+        _REPAIR_WINDOW_SECONDS // 60)
+    config_path = resolve_app_path(os.getenv('BBS_CONFIG_PATH'), 'config.ini')
+
+    def mtime():
+        try:
+            return os.path.getmtime(config_path)
+        except OSError:
+            return None
+
+    seen = mtime()
+    deadline = time.time() + _REPAIR_WINDOW_SECONDS
+    while time.time() < deadline and mtime() == seen:
+        time.sleep(2)
+    logging.warning("Retrying BBS startup.")
+    sys.exit(1)
+
+
+def _run_bbs():
+    global _bbs_started
     display_banner()
     args = init_cli_parser()
     config_file = None
@@ -2539,6 +2593,7 @@ def main():
     except Exception:
         logging.exception("MeshCore identity migration failed at startup")
     _start_main_loop_watchdog()
+    _bbs_started = True
 
     def receive_packet(packet, interface):
         on_receive(packet, interface)

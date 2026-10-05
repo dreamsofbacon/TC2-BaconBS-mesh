@@ -11,6 +11,13 @@ User=__SERVICE_USER__
 WorkingDirectory=__PROJECT_DIR__
 Environment="PATH=/usr/games:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="BBS_ZORK_INTERPRETER=/usr/games/dfrotz"
+# The web admin runs inside this service (web_admin_embed.py); it was
+# bacon-web-admin.service. Same address and env file as that unit had:
+# web-admin.env overrides these, including BBS_WEBGUI_EMBEDDED=0 to opt out.
+Environment="BBS_WEBGUI_EMBEDDED=1"
+Environment="BBS_WEBGUI_HOST=0.0.0.0"
+Environment="BBS_WEBGUI_PORT=8081"
+EnvironmentFile=-__PROJECT_DIR__/web-admin.env
 ExecStart=__PROJECT_DIR__/venv/bin/python3 __PROJECT_DIR__/server.py
 
 [Install]

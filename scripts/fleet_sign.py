@@ -685,7 +685,8 @@ def cmd_enroll(args) -> int:
     key_id = next(iter(parsed))
     print(f"Enrolled {config_path} in fleet {args.group} with key {key_id}.")
     print(f"Original configuration backup: {backup}")
-    print("Restart mesh-bbs and bacon-web-admin for all settings to take effect.")
+    print("Restart mesh-bbs (and bacon-web-admin, on a node that still has it) "
+          "for all settings to take effect.")
     return 0
 
 
