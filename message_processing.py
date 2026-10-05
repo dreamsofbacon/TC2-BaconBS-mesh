@@ -2327,6 +2327,16 @@ def _refuse_banned_sender(sender_id, interface, sender_node_id) -> bool:
 
 
 def process_message(sender_id, message, interface, is_sync_message=False, sender_node_id=None):
+    """Handle one message. A user's reply is packed into as few packets as
+    fit (utils.reply_batch); sync frames between nodes are never touched."""
+    if is_sync_message:
+        return _process_message(sender_id, message, interface, True, sender_node_id)
+    from utils import reply_batch
+    with reply_batch(sender_id, interface):
+        return _process_message(sender_id, message, interface, False, sender_node_id)
+
+
+def _process_message(sender_id, message, interface, is_sync_message=False, sender_node_id=None):
     state = get_user_state(sender_id)
     message_lower = message.lower().strip()
     message_strip = message.strip()

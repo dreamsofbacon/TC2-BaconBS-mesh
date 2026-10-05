@@ -32,7 +32,7 @@ from db_operations import (
     get_score_account_names,
     create_account, get_account_id_for_node, get_linked_node_ids,
     get_linked_nodes_detail, link_node_to_account, unlink_node,
-    get_help_tips_enabled, set_help_tips_enabled,
+    get_help_tips_enabled, set_help_tips_enabled, claim_help_tip,
     get_mesh_client_names,
     get_account_alias, set_account_alias, create_link_code, redeem_link_code,
     describe_link_code, move_node_with_link_code,
@@ -460,6 +460,11 @@ HELP_TIPS = {
 def help_tip(sender_id, key) -> str:
     """The tip line for one screen, or '' when it should not be shown.
 
+    Shown on someone's first visit to the screen only. On every visit it
+    took the main menu, the board list and Games past one packet each time,
+    to repeat what the reader already knew. Settings > Tips switched back on
+    shows them all once more.
+
     Returns the empty string rather than None so callers can join it
     unconditionally, and so a screen with tips switched off is byte-identical
     to what it was before tips existed.
@@ -470,11 +475,22 @@ def help_tip(sender_id, key) -> str:
     try:
         if not get_help_tips_enabled(sender_id):
             return ''
+        if not claim_help_tip(sender_id, key):
+            return ''
     except Exception:
         # A database that predates the column, or is momentarily unavailable.
         # Showing the tip is the safer failure: it is advice, not an action.
         logging.debug("could not read help tip preference", exc_info=True)
     return tip
+
+
+def _claim_tip_safely(sender_id, key) -> bool:
+    """claim_help_tip, showing the text on any failure."""
+    try:
+        return claim_help_tip(sender_id, key)
+    except Exception:
+        logging.debug("could not record a seen tip", exc_info=True)
+        return True
 
 
 def with_help_tip(text, sender_id, key) -> str:
@@ -1677,8 +1693,11 @@ def handle_games_command(sender_id, interface):
         # On a node that does not sync saves the notice IS this screen's tip:
         # it says the one thing a player most needs to know here. Adding the
         # general tip beneath it was redundant, and pushed the screen to three
-        # MeshCore packets.
-        menu += f"\n\n{sync_notice}"
+        # MeshCore packets. Like a tip it is said once: on every visit it made
+        # Games two packets for a sentence the player had already read. It
+        # is a warning, so it is shown that once even with tips switched off.
+        if _claim_tip_safely(sender_id, 'GAMES_SAVE_WARNING'):
+            menu += f"\n\n{sync_notice}"
         send_message(menu, sender_id, interface)
     else:
         send_message(with_help_tip(menu, sender_id, 'GAMES_MENU'), sender_id, interface)

@@ -231,7 +231,7 @@ class WireTests(unittest.TestCase):
     def test_the_receiver_is_wired_up(self):
         import inspect
         import message_processing
-        source = inspect.getsource(message_processing.process_message)
+        source = inspect.getsource(message_processing._process_message)
         self.assertIn('message.startswith("BBSID|")', source)
         self.assertIn("apply_synced_fleet_identity", source)
 

@@ -132,7 +132,7 @@ class VersionDispatchTests(unittest.TestCase):
         self.assertIs(message_processing.handle_version_command,
                       command_handlers.handle_version_command)
         import inspect
-        src = inspect.getsource(message_processing.process_message)
+        src = inspect.getsource(message_processing._process_message)
         self.assertIn('"ver"', src)
 
 

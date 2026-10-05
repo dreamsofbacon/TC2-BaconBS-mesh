@@ -1023,6 +1023,14 @@ def initialize_database():
     c.execute("PRAGMA table_info(user_profiles)")
     if 'help_tips' not in {row[1] for row in c.fetchall()}:
         c.execute("ALTER TABLE user_profiles ADD COLUMN help_tips INTEGER NOT NULL DEFAULT 1")
+    # Which screens' tips someone has already been shown. A tip on every
+    # visit cost most menus a whole extra packet, every time, for words the
+    # reader already knew; each is now shown once. Local, like help_tips.
+    c.execute('''CREATE TABLE IF NOT EXISTS help_tips_seen (
+                    user_id TEXT NOT NULL,
+                    tip_key TEXT NOT NULL,
+                    PRIMARY KEY (user_id, tip_key)
+                );''')
     c.execute('''CREATE TABLE IF NOT EXISTS game_scores (
                     user_id TEXT NOT NULL,
                     game_id TEXT NOT NULL,
@@ -6987,7 +6995,30 @@ def set_help_tips_enabled(user_id, enabled: bool) -> None:
             """INSERT INTO user_profiles (user_id, first_seen, last_seen, help_tips)
                VALUES (?, ?, ?, ?)""",
             (str(user_id), now, now, 1 if enabled else 0))
+    if enabled:
+        # Turning tips on is asking to see them again, all of them.
+        try:
+            c.execute("DELETE FROM help_tips_seen WHERE user_id = ?", (str(user_id),))
+        except sqlite3.Error:
+            logging.debug("help_tips_seen unavailable", exc_info=True)
     conn.commit()
+
+
+@_player_keyed
+def claim_help_tip(user_id, tip_key) -> bool:
+    """True the first time this person reaches this screen's tip, and
+    records it; False every time after. True on any database trouble:
+    showing advice twice is the harmless failure."""
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO help_tips_seen (user_id, tip_key) VALUES (?, ?)",
+                  (str(user_id), str(tip_key)))
+        conn.commit()
+        return c.rowcount == 1
+    except sqlite3.Error:
+        logging.debug("help_tips_seen unavailable", exc_info=True)
+        return True
 
 
 @_player_keyed

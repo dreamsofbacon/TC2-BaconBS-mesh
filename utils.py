@@ -1009,6 +1009,72 @@ def send_one_chunk(chunk, destination, interface):
     return d
 
 
+# ---------------------------------------------------------------------------
+# Packing a reply
+#
+# One message from a user often gets several sends back: a notice, then a
+# menu; a heading, then a one-line list. Each send was its own packet, so a
+# 65-byte heading and the 15-byte list under it cost two transmissions, two
+# 2-second paces, and two chances to collide on a multi-hop mesh (see
+# deliver_ask_nomad_reply for what a burst does there). While the BBS
+# answers one user message, what it says to that user is collected here and
+# packed into as few packets as fit at the end.
+#
+# Only that user, on that interface, on that thread. Sync frames to peers,
+# mail notices to someone else, and answers arriving later on worker
+# threads all go out at once, exactly as before. Nothing is merged inside a
+# packet that the splitter had to break: only whole chunks are joined, and
+# only when the result still fits.
+# ---------------------------------------------------------------------------
+
+_reply_batch = threading.local()
+
+
+class reply_batch:
+    """Collect what one user is sent while their message is handled."""
+
+    def __init__(self, destination, interface):
+        self.destination = destination
+        self.interface = interface
+        self.messages = []
+        self._outer = None
+
+    def __enter__(self):
+        self._outer = getattr(_reply_batch, 'active', None)
+        if self._outer is None:
+            _reply_batch.active = self
+        return self
+
+    def __exit__(self, *exc):
+        if self._outer is not None:
+            return False  # nested: the outermost batch sends
+        _reply_batch.active = None
+        if self.messages:
+            for packet in pack_chunks(self.messages, get_max_text_bytes(self.interface)):
+                _send_now(packet, self.destination, self.interface)
+        return False
+
+    def takes(self, destination, interface) -> bool:
+        return destination == self.destination and interface is self.interface
+
+
+def pack_chunks(messages, max_len) -> list:
+    """Split each message as send_message would, then join neighbouring
+    chunks while the joined text still fits in one packet."""
+    chunks = []
+    for message in messages:
+        chunks.extend(_split_into_chunks(message, max_len=max_len))
+    packed = []
+    for chunk in chunks:
+        if packed:
+            joined = f"{packed[-1]}\n{chunk}"
+            if len(joined.encode('utf-8')) <= max_len:
+                packed[-1] = joined
+                continue
+        packed.append(chunk)
+    return packed
+
+
 def send_message(message, destination, interface) -> bool:
     """Send (chunked to the transport's limit). True if every chunk went.
 
@@ -1016,7 +1082,18 @@ def send_message(message, destination, interface) -> bool:
     gateway reply arriving a minute after the question has no other way to
     learn it never landed, and the user is left staring at silence.
     Callers that send inline can go on ignoring it.
+
+    Inside a reply_batch for this user it is queued instead and True is
+    returned: it goes out, packed, when their message has been handled.
     """
+    batch = getattr(_reply_batch, 'active', None)
+    if batch is not None and str(message or '').strip() and batch.takes(destination, interface):
+        batch.messages.append(message)
+        return True
+    return _send_now(message, destination, interface)
+
+
+def _send_now(message, destination, interface) -> bool:
     chunks = _split_into_chunks(message, max_len=get_max_text_bytes(interface))
     if not chunks:
         # An empty or whitespace-only body yields no chunks, so the loop

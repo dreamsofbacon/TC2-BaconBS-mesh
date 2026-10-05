@@ -300,7 +300,7 @@ class WiringTests(unittest.TestCase):
     def test_bang_welcome_and_hello_are_dispatched(self):
         import inspect
         import message_processing
-        source = inspect.getsource(message_processing.process_message)
+        source = inspect.getsource(message_processing._process_message)
         self.assertIn('global_lower in ("welcome", "hello")', source)
         self.assertIs(message_processing.handle_welcome_command,
                       command_handlers.handle_welcome_command)
@@ -310,7 +310,7 @@ class WiringTests(unittest.TestCase):
         is the only place that knows."""
         import inspect
         import message_processing
-        source = inspect.getsource(message_processing.process_message)
+        source = inspect.getsource(message_processing._process_message)
         self.assertIn(
             "if _auto_update_profile(sender_id, interface):\n"
             "            handle_welcome_command(sender_id, interface, first_contact=True)",
