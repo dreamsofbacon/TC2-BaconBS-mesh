@@ -33,6 +33,7 @@ from db_operations import (
     create_account, get_account_id_for_node, get_linked_node_ids,
     get_linked_nodes_detail, link_node_to_account, unlink_node,
     get_help_tips_enabled, set_help_tips_enabled, claim_help_tip,
+    swap_last_menu_at, get_bulletins_received_since,
     get_mesh_client_names,
     get_account_alias, set_account_alias, create_link_code, redeem_link_code,
     describe_link_code, move_node_with_link_code,
@@ -499,6 +500,63 @@ def with_help_tip(text, sender_id, key) -> str:
     return f"{text}{LINE_BREAK}{tip}" if tip else text
 
 
+# "New since your last visit": an arrival is a main menu after this long
+# away. Shorter, and moving between screens in one sitting would keep
+# announcing posts the reader is already looking at.
+ARRIVAL_GAP_SECONDS = 30 * 60
+
+
+def whats_new(sender_id, interface):
+    """(line, rows): the arrival line above the main menu and the posts it
+    counts, or ('', []) when this is not an arrival or nothing is new.
+
+    Records the visit either way, so a post is announced once.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    now = _dt.now(_tz.utc)
+    try:
+        previous = swap_last_menu_at(sender_id, now.isoformat())
+        if not previous:
+            return '', []  # a first visit: everything is new, so nothing is
+        if (now - _dt.fromisoformat(previous)).total_seconds() < ARRIVAL_GAP_SECONDS:
+            return '', []
+        rows = get_bulletins_received_since(
+            previous, get_view_scope(sender_id),
+            exclude_author=get_node_id_from_num(sender_id, interface))
+    except Exception:
+        logging.debug("could not work out what is new", exc_info=True)
+        return '', []
+    if not rows:
+        return '', []
+    counts = {}
+    for row in rows:
+        counts[row[5]] = counts.get(row[5], 0) + 1
+    # Short enough to ride in the same packet as the main menu (157 bytes
+    # of 220): a line that pushed it to two would cost the very packet
+    # this is here to save. Three boards named at most.
+    busiest = sorted(counts.items(), key=lambda item: -item[1])[:3]
+    per_board = " ".join(f"{board} {n}" for board, n in busiest)
+    noun = "post" if len(rows) == 1 else "posts"
+    return f"🆕 {len(rows)} new {noun}: {per_board} [W]", rows
+
+
+def handle_whats_new_command(sender_id, interface, rows=None):
+    """W on the main menu, or !W: the posts the arrival line counted, as one
+    numbered list that the read-by-number screen takes as it is."""
+    state = get_user_state(sender_id) or {}
+    rows = rows if rows is not None else state.get('whats_new')
+    if not rows:
+        send_message("Nothing new since your last visit.", sender_id, interface)
+        return
+    lines = ["New since your last visit:"]
+    lines += [f"[{i}] {row[5]}: {row[1]}" for i, row in enumerate(rows, start=1)]
+    lines.append("Reply with a number to read, or [0] to go back.")
+    send_message(LINE_BREAK.join(lines), sender_id, interface)
+    update_user_state(sender_id, {'command': 'CHECK_BULLETIN', 'step': 1,
+                                  'board_name': 'new', 'bulletins': rows,
+                                  'whats_new': rows})
+
+
 def handle_help_command(sender_id, interface, menu_name=None, notice=None):
     if menu_name:
         update_user_state(sender_id, {'command': 'MENU', 'menu': menu_name, 'step': 1})
@@ -515,6 +573,11 @@ def handle_help_command(sender_id, interface, menu_name=None, notice=None):
         # would make that promise impossible to state.
         mail = get_mail(get_node_id_from_num(sender_id, interface))
         response = build_menu(main_menu_items, f"💾Bacon BBS💾 (✉️:{len(mail)})")
+        arrival, new_rows = whats_new(sender_id, interface)
+        if arrival:
+            response = f"{arrival}{LINE_BREAK}{response}"
+            update_user_state(sender_id, {'command': 'MAIN_MENU', 'step': 1,
+                                          'whats_new': new_rows})
     if notice:
         response = f"{notice}{LINE_BREAK}{response}"
     response = with_help_tip(response, sender_id, menu_name or 'main')
@@ -3291,6 +3354,64 @@ def handle_stats_steps(sender_id, message, step, interface):
             handle_stats_command(sender_id, interface)
 
 
+def resolve_board(text, boards):
+    """The index of the board someone named, or None: its number, its name,
+    or the first letter of exactly one board, as the board list invites."""
+    message_clean = str(text or '').strip()
+    message_lower = message_clean.lower()
+    if message_clean.isdigit():
+        parsed_index = int(message_clean)
+        if 1 <= parsed_index <= len(boards):
+            return parsed_index - 1
+        if 0 <= parsed_index < len(boards):
+            return parsed_index
+        return None
+    name_lookup = {board.lower(): index for index, board in enumerate(boards)}
+    if message_lower in name_lookup:
+        return name_lookup[message_lower]
+    if len(message_lower) == 1:
+        matching = [i for i, board in enumerate(boards) if board.lower().startswith(message_lower)]
+        if len(matching) == 1:
+            return matching[0]
+    return None
+
+
+def handle_open_board_command(sender_id, message, interface):
+    """!B <board>: straight to one board's Read/Post screen.
+
+    Bare !B is still the BBS menu, which carries Mail and Channels as well;
+    this skips the two screens between it and a board someone already
+    knows the name of.
+    """
+    boards = get_bulletin_boards()
+    index = resolve_board(message, boards)
+    if index is None:
+        send_message(f"No board '{message.strip()}'. Boards: {', '.join(boards)}",
+                     sender_id, interface)
+        return
+    send_board_action_menu(sender_id, interface, boards[index], boards)
+
+
+def quick_command_fields(message, prefix):
+    """The fields of a one-line post or mail, in either spelling.
+
+    The original form separates every field with ",,", which is hard to type
+    on a phone: !PB,,news,,Subject,,Text. The short form is words then a
+    bar: !PB news Subject | Text, the first word naming the board (or the
+    recipient) and everything up to the bar the subject. Returned in the
+    ",," form, so the handlers below are unchanged. None if it is neither.
+    """
+    text = str(message or '')
+    if ',,' in text:
+        return text
+    rest = text.strip()[len(prefix):].strip()
+    head, bar, body = rest.partition('|')
+    target, _, subject = head.strip().partition(' ')
+    if not (bar and target and subject.strip() and body.strip()):
+        return None
+    return f"{prefix},,{target},,{subject.strip()},,{body.strip()}"
+
+
 def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
     boards = state.get('boards', get_bulletin_boards()) if state else get_bulletin_boards()
     if step == 1:
@@ -3301,24 +3422,7 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
             send_board_sync_menu(sender_id, interface, boards)
             return
 
-        board_index = None
-        message_clean = message.strip()
-        message_lower = message_clean.lower()
-
-        if message_clean.isdigit():
-            parsed_index = int(message_clean)
-            if 1 <= parsed_index <= len(boards):
-                board_index = parsed_index - 1
-            elif 0 <= parsed_index < len(boards):
-                board_index = parsed_index
-        else:
-            name_lookup = {board.lower(): index for index, board in enumerate(boards)}
-            if message_lower in name_lookup:
-                board_index = name_lookup[message_lower]
-            elif len(message_lower) == 1:
-                matching_indexes = [index for index, board in enumerate(boards) if board.lower().startswith(message_lower)]
-                if len(matching_indexes) == 1:
-                    board_index = matching_indexes[0]
+        board_index = resolve_board(message, boards)
 
         if board_index is None:
             send_message("Invalid board selection. Use number, board name, or first letter.", sender_id, interface)
@@ -3492,8 +3596,12 @@ def handle_bb_steps(sender_id, message, step, state, interface, bbs_nodes):
                 return
             unique_id = add_bulletin(board, sender_short_name, subject, content, bbs_nodes, interface,
                                      author_node_id=node_id)
-            send_message(f"Your bulletin '{subject}' has been posted to {board}. 📌", sender_id, interface)
-            handle_bb_steps(sender_id, 'e', 1, state, interface, bbs_nodes)
+            # Back on the board it was posted to, not the BBS menu: reading
+            # it, or posting again, is then one key instead of three.
+            send_board_action_menu(
+                sender_id, interface, board,
+                state.get('boards') or get_bulletin_boards(),
+                notice=f"Your bulletin '{subject}' has been posted to {board}. 📌")
         else:
             state['content'] += message + "\n"
             update_user_state(sender_id, state)
@@ -4094,9 +4202,9 @@ def handle_channel_directory_steps(sender_id, message, step, state, interface):
 
 def handle_send_mail_command(sender_id, message, interface, bbs_nodes):
     try:
-        parts = message.split(",,", 3)
+        parts = (quick_command_fields(message, "SM") or "").split(",,", 3)
         if len(parts) != 4:
-            send_message("Send Mail Quick Command format:\n!SM,,{recipient},,{subject},,{message}", sender_id, interface)
+            send_message("Send mail in one line:\n!SM name subject | text", sender_id, interface)
             return
 
         _, recipient_query, subject, content = parts
@@ -4213,12 +4321,21 @@ def handle_delete_mail_confirmation(sender_id, message, state, interface, bbs_no
 
 def handle_post_bulletin_command(sender_id, message, interface, bbs_nodes):
     try:
-        parts = message.split(",,", 3)
+        parts = (quick_command_fields(message, "PB") or "").split(",,", 3)
         if len(parts) != 4:
-            send_message("Post Bulletin Quick Command format:\n!PB,,{board_name},,{subject},,{content}", sender_id, interface)
+            send_message("Post in one line:\n!PB board subject | text", sender_id, interface)
             return
 
         _, board_name, subject, content = parts
+        # The board as the board list takes it -- number, name or first
+        # letter -- rather than only its exact name.
+        boards = get_bulletin_boards()
+        index = resolve_board(board_name, boards)
+        if index is None:
+            send_message(f"No board '{board_name}'. Boards: {', '.join(boards)}",
+                         sender_id, interface)
+            return
+        board_name = boards[index]
         author_node_id = get_node_id_from_num(sender_id, interface)
         sender_short_name = resolve_display_name(author_node_id, interface)
 
@@ -4236,17 +4353,19 @@ def handle_check_bulletin_command(sender_id, message, interface):
     try:
         # Split the message only once
         parts = message.split(",,", 1)
+        if len(parts) != 2:
+            # !CB news as well as !CB,,news
+            parts = message.strip().split(None, 1)
         if len(parts) != 2 or not parts[1].strip():
-            send_message("Check Bulletins Quick Command format:\n!CB,,board_name", sender_id, interface)
+            send_message("List a board in one line:\n!CB board", sender_id, interface)
             return
 
         boards = get_bulletin_boards()
-        board_lookup = {board.lower(): board for board in boards}
-        board_name_key = parts[1].strip().lower()
-        if board_name_key not in board_lookup:
+        index = resolve_board(parts[1], boards)
+        if index is None:
             send_message(f"Invalid board name. Available boards: {', '.join(boards)}", sender_id, interface)
             return
-        board_name = board_lookup[board_name_key]
+        board_name = boards[index]
 
         bulletins = get_bulletins(board_name)
         if not bulletins:
@@ -4267,6 +4386,9 @@ def handle_check_bulletin_command(sender_id, message, interface):
 
 def handle_read_bulletin_command(sender_id, message, state, interface):
     try:
+        if str(message).strip().lower() in ('0', 'x'):
+            handle_help_command(sender_id, interface)
+            return
         bulletins = state.get('bulletins', [])
         message_number = int(message) - 1
 
@@ -4277,9 +4399,10 @@ def handle_read_bulletin_command(sender_id, message, state, interface):
         bulletin_id = bulletins[message_number][0]
         sender, date, subject, content, unique_id, content_complete, expected_length = get_bulletin_content(bulletin_id)
         response = f"Date: {date}\nFrom: {sender}\nSubject: {subject}\n\n{content}{_incomplete_notice(content_complete, expected_length, content)}"
+        # Stays on the list, as reading from a board does: the next post is
+        # one number away instead of the whole list again.
+        response += f"{LINE_BREAK}{LINE_BREAK}Reply with another number, or [0] to go back."
         send_message(response, sender_id, interface)
-
-        update_user_state(sender_id, None)
 
     except ValueError:
         send_message("Invalid input. Please enter a valid bulletin number.", sender_id, interface)
@@ -4428,24 +4551,30 @@ def _this_node_label() -> str:
 
 
 def handle_quick_help_command(sender_id, interface):
+    # The short forms: words, then a bar before the text. The ",," forms
+    # still work for anyone who learned them.
     response = (
-        "✈️QUICK COMMANDS✈️\n"
-        "!SM,,to,,subject,,message - Send Mail\n!CM - Check Mail\n"
-        "!R - Reply to latest mail\n"
-        "!AU - Relay Directory\n"
-        "!PB,,board,,subject,,text - Post Bulletin\n"
-        "!CB,,board - Check Bulletins\n"
-        "!CHP,,name,,link - Post Channel\n!CHL - List Channels\n"
-        "!VER - This node and its version\n"
-        "!WELCOME - What this BBS is\n"
-        "Global menus: !Q !B !G !H !P !N !A !S !V !X"
+        "QUICK COMMANDS\n"
+        "!W new posts  !B news: a board\n"
+        "!PB board subject | text\n"
+        "!SM name subject | text\n"
+        "!CM mail !R reply !AU mail list\n"
+        "!CHL channels !CHP,,name,,link\n"
+        "!VER !WELCOME\n"
+        "Menus !Q!B!G!H!P!N!A!S!V!X\n"
+        "Chain keys: 2 2 1 1"
     )
     # Only shown to someone who can use them. A moderator's toolkit listed on
     # everyone's help screen is an invitation to try it, and every attempt
     # costs the node a refusal on air.
     if _role_commands_available(sender_id, interface):
         response += "\n!ROLE,,<node>,,<role> - Set a role\n!WHO,,<node> - Look one up"
+    # Its own screen, so [0] goes back. It used to leave the reader on the
+    # main menu's state, where 0 is Exit: reading the list and pressing the
+    # key every other screen calls Back hung up on them.
+    response += "\n[0] Back"
     send_message(response, sender_id, interface)
+    update_user_state(sender_id, {'command': 'QUICK_HELP', 'step': 1})
 
 
 def _role_commands_available(sender_id, interface) -> bool:

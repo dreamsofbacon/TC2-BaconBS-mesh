@@ -197,16 +197,16 @@ class BareQuickCommandTests(_Case):
 
     def test_bare_cb_shows_its_own_format_instead_of_the_main_menu(self):
         self._drive({"command": "MAIN_MENU", "step": 1}, "!CB")
-        self.assertIn("!CB,,board_name", self.last)
+        self.assertIn("!CB board", self.last)
         self.assertNotIn("Bacon BBS", self.last)
 
     def test_bare_sm_shows_its_own_format(self):
         self._drive({"command": "MAIN_MENU", "step": 1}, "!SM")
-        self.assertIn("!SM,,", self.last)
+        self.assertIn("!SM name subject | text", self.last)
 
     def test_bare_pb_shows_its_own_format(self):
         self._drive({"command": "MAIN_MENU", "step": 1}, "!PB")
-        self.assertIn("!PB,,", self.last)
+        self.assertIn("!PB board subject | text", self.last)
 
     def test_bare_chp_shows_its_own_format(self):
         self._drive({"command": "MAIN_MENU", "step": 1}, "!CHP")

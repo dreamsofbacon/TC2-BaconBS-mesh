@@ -175,12 +175,31 @@ arrives while you are writing.
 
 ### Commands
 
-Out-of-band actions require an immediate `!` prefix. Quick actions are `!SM,,`,
-`!CM`, `!R`, `!AU`, `!PB,,`, `!CB,,`, `!CHP,,`, and `!CHL`. Global navigation uses
+Out-of-band actions require an immediate `!` prefix. Quick actions are `!SM`,
+`!CM`, `!R`, `!AU`, `!PB`, `!CB`, `!CHP,,`, `!CHL` and `!W`. Global navigation uses
 `!Q`, `!B`, `!G`, `!H`, `!P`, `!N`, `!A`, `!S`, `!V`, and `!X`. Plain letters and numbers
 belong to the current menu or prompt, preventing short replies from triggering
 unrelated actions. Mail composition and games treat all input literally until
 their own exit command is used.
+
+Doing things in fewer messages, which matters most over the radio:
+
+- **One-line post and mail:** `!PB news Subject | text` and
+  `!SM name Subject | text`. The board can be its name, number or first
+  letter. The older `!PB,,board,,subject,,text` form still works.
+- **Straight to a board:** `!B news` opens the News board. Bare `!B` is still
+  the BBS menu.
+- **Chain menu keys:** `2 2 1 1 1` in one message walks BBS, Bulletins,
+  General, Read, and reads post 1, sending only that last screen. Keys count
+  from the screen you are on. The walk stops at anything that is not a menu,
+  such as a subject prompt or a game, and at an invalid key.
+- **What's new:** coming back after half an hour or more, the main menu opens
+  with a line counting posts that arrived since your last visit. `W` (or `!W`)
+  lists them, and a number reads one.
+
+Each menu's tip is shown on your first visit to it only. Switching tips back
+on in Settings shows them all again. Everything the BBS says in answer to one
+message is packed into as few radio messages as fit.
 
 ### Interface
 

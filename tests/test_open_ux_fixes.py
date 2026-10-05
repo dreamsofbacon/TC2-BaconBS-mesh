@@ -54,8 +54,8 @@ class _Case(unittest.TestCase):
 class QuickCommandTests(_Case):
     def test_each_command_shows_its_fields(self):
         ch.handle_quick_help_command(SENDER, self.iface)
-        for expected in ("!SM,,to,,subject,,message", "!PB,,board,,subject,,text",
-                         "!CB,,board", "!CHP,,name,,link"):
+        for expected in ("!SM name subject | text", "!PB board subject | text",
+                         "!B news", "!CHP,,name,,link"):
             self.assertIn(expected, self.text)
 
 

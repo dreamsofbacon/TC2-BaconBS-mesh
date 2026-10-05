@@ -1023,6 +1023,12 @@ def initialize_database():
     c.execute("PRAGMA table_info(user_profiles)")
     if 'help_tips' not in {row[1] for row in c.fetchall()}:
         c.execute("ALTER TABLE user_profiles ADD COLUMN help_tips INTEGER NOT NULL DEFAULT 1")
+    # When this person last saw the main menu, for "new since your last
+    # visit". Local and outside the profile sync hash, like help_tips: it is
+    # about their visits to this node, not a fact other nodes need.
+    c.execute("PRAGMA table_info(user_profiles)")
+    if 'last_menu_at' not in {row[1] for row in c.fetchall()}:
+        c.execute("ALTER TABLE user_profiles ADD COLUMN last_menu_at TEXT")
     # Which screens' tips someone has already been shown. A tip on every
     # visit cost most menus a whole extra packet, every time, for words the
     # reader already knew; each is now shown once. Local, like help_tips.
@@ -7002,6 +7008,65 @@ def set_help_tips_enabled(user_id, enabled: bool) -> None:
         except sqlite3.Error:
             logging.debug("help_tips_seen unavailable", exc_info=True)
     conn.commit()
+
+
+@_player_keyed
+def swap_last_menu_at(user_id, now_iso):
+    """Record a main-menu visit; return the previous one (None if never).
+
+    One call, so the caller cannot read the old time and forget to move it
+    on, which would announce the same posts as new on every visit. Like
+    set_help_tips_enabled it never touches last_seen, which profile sync
+    compares.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        row = c.execute("SELECT last_menu_at FROM user_profiles WHERE user_id = ?",
+                        (str(user_id),)).fetchone()
+        if row is None:
+            c.execute(
+                """INSERT INTO user_profiles (user_id, first_seen, last_seen, last_menu_at)
+                   VALUES (?, ?, ?, ?)""",
+                (str(user_id), datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                 datetime.now().strftime('%Y-%m-%d %H:%M:%S'), now_iso))
+        else:
+            c.execute("UPDATE user_profiles SET last_menu_at = ? WHERE user_id = ?",
+                      (now_iso, str(user_id)))
+        conn.commit()
+    except sqlite3.Error:
+        logging.debug("last_menu_at unavailable", exc_info=True)
+        return None
+    return row[0] if row else None
+
+
+def get_bulletins_received_since(since_iso, source_node_ids=None, exclude_author=None,
+                                 limit=30):
+    """Bulletins that ARRIVED here after since_iso, oldest first.
+
+    By received_at, not date: a post synced late from another node carries
+    the date it was written, which may be long before this person's last
+    visit, and it is still new to them. Rows are shaped like get_bulletins'
+    (id, subject, sender, date, unique_id) with the board added last, so the
+    read-by-number screen can take them as they are.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    sql = (f"SELECT id, CASE WHEN COALESCE(content_complete, 1) = 0 THEN subject || ' [incomplete]' "
+           f"ELSE subject END, {_sender_name_sql('bulletins', 'author_node_id')}, date, unique_id, board "
+           "FROM bulletins WHERE received_at > ?")
+    params = [str(since_iso)]
+    if exclude_author:
+        sql += " AND COALESCE(author_node_id, '') != ?"
+        params.append(str(exclude_author))
+    clause, scope_params = origin_scope_clause('source_node_id', source_node_ids)
+    if clause:
+        sql += f" AND {clause}"
+        params.extend(scope_params)
+    sql += " ORDER BY received_at LIMIT ?"
+    params.append(int(limit))
+    c.execute(sql, params)
+    return c.fetchall()
 
 
 @_player_keyed

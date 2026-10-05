@@ -26,6 +26,7 @@ from command_handlers import (
     handle_mail_delete_confirm_step, MAIL_DELETE_CONFIRM_STEP,
     handle_check_bulletin_command, handle_read_bulletin_command, handle_read_channel_command,
     handle_post_channel_command, handle_list_channels_command, handle_quick_help_command,
+    handle_open_board_command, handle_whats_new_command,
     handle_version_command, handle_welcome_command,
     handle_zork_command, handle_zork_steps, handle_trivia_steps, handle_baconfall_steps, handle_dopewars_steps,
     handle_games_command, handle_games_steps,
@@ -46,6 +47,7 @@ from command_handlers import (
     is_cancel,
 )
 from db_operations import (
+    get_user_profile,
     add_bulletin, add_mail, delete_bulletin, delete_mail, add_channel, set_post_author,
     add_channel_comment_by_manifest_key, delete_channel_comment, delete_channel,
     decode_channel_manifest_key, make_channel_manifest_key,
@@ -2326,13 +2328,91 @@ def _refuse_banned_sender(sender_id, interface, sender_node_id) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# Typing ahead
+#
+# Reading the newest bulletin was five round trips -- BBS, Bulletins, board,
+# Read, number -- each with its own reply on the air. "2 2 1 1 1" in one
+# message now walks the same screens and sends only the last one.
+#
+# Only through menus. Each key is the one that screen would take anyway, and
+# the walk stops, showing where it got to, as soon as a screen answers
+# "Invalid", or the next screen is not a menu: a subject or body prompt, a
+# game, anything asking for words. The remaining keys are dropped, never
+# typed into it. A stranger's first message is never walked, so the welcome
+# is never one of the screens skipped.
+# ---------------------------------------------------------------------------
+
+_TYPE_AHEAD = re.compile(r'^[0-9a-z]{1,2}(?:[ .,][0-9a-z]{1,2}){1,7}$', re.IGNORECASE)
+
+# Screens that are menus: a key picks something. Anything not listed is
+# never typed ahead into.
+_TYPE_AHEAD_SCREENS = {
+    'MAIN_MENU', 'MENU', 'QUICK_HELP', 'BULLETIN_MENU', 'BULLETIN_ACTION',
+    'BULLETIN_READ', 'CHECK_BULLETIN', 'GAMES_MENU', 'MAIL', 'CHECK_MAIL',
+    'CHANNEL_DIRECTORY', 'LIST_CHANNELS', 'CHECK_CHANNEL',
+}
+
+
+def _takes_type_ahead(state) -> bool:
+    if not state:
+        return True  # nothing open: the main menu
+    command = state.get('command')
+    if command not in _TYPE_AHEAD_SCREENS or _in_text_prompt(state):
+        return False
+    if command == 'MAIL' and int(state.get('step', 1) or 1) in _MAIL_TEXT_STEPS:
+        return False
+    try:
+        if door_games.in_session(state):
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def _type_ahead_keys(sender_id, message):
+    """The keys to walk, or None to handle the message as it stands."""
+    if not _TYPE_AHEAD.match(message.strip()):
+        return None
+    state = get_user_state(sender_id)
+    if not _takes_type_ahead(state):
+        return None
+    try:
+        if get_user_profile(sender_id) is None:
+            return None  # first contact: their welcome is not skipped
+    except Exception:
+        return None
+    keys = re.split(r'[ .,]', message.strip())
+    if not state:
+        keys = ['?'] + keys  # open the main menu the keys are counted on
+    return keys
+
+
+def _walk(sender_id, keys, interface, sender_node_id, batch):
+    """Send each key in turn; keep only what the last screen reached said."""
+    for position, key in enumerate(keys):
+        start = len(batch.messages)
+        _process_message(sender_id, key, interface, False, sender_node_id)
+        if position == len(keys) - 1:
+            return
+        said = batch.messages[start:]
+        if any('invalid' in str(text).lower() for text in said):
+            return  # show the refusal, and where it happened
+        if not _takes_type_ahead(get_user_state(sender_id)):
+            return  # a prompt or a game: the rest are not for it
+        del batch.messages[start:]  # a screen passed through, not shown
+
+
 def process_message(sender_id, message, interface, is_sync_message=False, sender_node_id=None):
     """Handle one message. A user's reply is packed into as few packets as
     fit (utils.reply_batch); sync frames between nodes are never touched."""
     if is_sync_message:
         return _process_message(sender_id, message, interface, True, sender_node_id)
     from utils import reply_batch
-    with reply_batch(sender_id, interface):
+    with reply_batch(sender_id, interface) as batch:
+        keys = _type_ahead_keys(sender_id, message)
+        if keys:
+            return _walk(sender_id, keys, interface, sender_node_id, batch)
         return _process_message(sender_id, message, interface, False, sender_node_id)
 
 
@@ -3591,17 +3671,22 @@ def _process_message(sender_id, message, interface, is_sync_message=False, sende
             # does. Matching only the ",," form meant that help text was
             # unreachable: !CB alone looked like a dead command instead of
             # showing the syntax needed to use it.
-            if global_lower == "sm" or global_lower.startswith("sm,,"):
+            if global_lower == "sm" or global_lower.startswith(("sm,,", "sm ")):
                 handle_send_mail_command(sender_id, global_message, interface, bbs_nodes)
+            elif global_lower == "w":
+                handle_whats_new_command(sender_id, interface)
+            elif global_lower.startswith("b ") and global_lower[2:].strip():
+                # !B <board>: straight to that board. Bare !B is the BBS menu.
+                handle_open_board_command(sender_id, global_message[2:], interface)
             elif global_lower == "au":
                 handle_active_users_command(sender_id, interface)
             elif global_lower == "cm":
                 handle_check_mail_command(sender_id, interface)
             elif global_lower == "r":
                 handle_quick_reply_command(sender_id, interface)
-            elif global_lower == "pb" or global_lower.startswith("pb,,"):
+            elif global_lower == "pb" or global_lower.startswith(("pb,,", "pb ")):
                 handle_post_bulletin_command(sender_id, global_message, interface, bbs_nodes)
-            elif global_lower == "cb" or global_lower.startswith("cb,,"):
+            elif global_lower == "cb" or global_lower.startswith(("cb,,", "cb ")):
                 handle_check_bulletin_command(sender_id, global_message, interface)
             elif global_lower == "chp" or global_lower.startswith("chp,,"):
                 handle_post_channel_command(sender_id, global_message, interface)
@@ -3624,6 +3709,21 @@ def _process_message(sender_id, message, interface, is_sync_message=False, sende
             return
 
         else:
+            if state and state['command'] == 'QUICK_HELP':
+                # [0] is Back here. Anything else is read as the main menu
+                # would read it: the list is reached from there, and a reader
+                # who picks a number after it means that menu's item.
+                if message_lower in ('0', 'x'):
+                    handle_help_command(sender_id, interface)
+                else:
+                    update_user_state(sender_id, {'command': 'MAIN_MENU', 'step': 1})
+                    _process_message(sender_id, message, interface, False, sender_node_id)
+                return
+            if (state and state['command'] == 'MAIN_MENU' and message_lower == 'w'
+                    and state.get('whats_new')):
+                # Offered by the arrival line above the menu; not a menu item.
+                handle_whats_new_command(sender_id, interface)
+                return
             if state and state['command'] in ('MENU', 'MAIN_MENU'):
                 menu_name = state.get('menu', 'main')
                 if menu_name == 'bbs':
