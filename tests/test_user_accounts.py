@@ -59,6 +59,10 @@ class AccountsSchemaTests(unittest.TestCase):
         self.assertEqual(cols, {"account_id", "alias", "alias_normalized", "created_at",
                     "mail_relay_enabled", "mail_relay_updated_at",
                     "pg13_mode", "pg13_updated_at", "chatter_channels",
+                    # An operator's lock pinning ONE account kid-friendly on
+                    # this node. No timestamp, because it never syncs: a
+                    # lock that travelled would be an unlock that travelled.
+                    "pg13_locked",
                     "password_hash", "password_salt", "password_created_at",
                     "sender_num",
                     # The account is the authority for every device someone

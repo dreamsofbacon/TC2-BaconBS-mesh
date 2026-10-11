@@ -1617,6 +1617,13 @@ def _ensure_accounts_tables(cursor) -> None:
         cursor.execute("ALTER TABLE accounts ADD COLUMN pg13_mode INTEGER NOT NULL DEFAULT 0")
     if 'pg13_updated_at' not in _account_cols:
         cursor.execute("ALTER TABLE accounts ADD COLUMN pg13_updated_at TEXT NOT NULL DEFAULT ''")
+    # An operator's lock on ONE account, pinning it kid-friendly whatever the
+    # account itself has chosen. Local to this node, unlike pg13_mode above:
+    # the choice is the person's and travels with them, the lock is this
+    # node's decision about what it will render. A synced lock would also be
+    # a synced UNLOCK, on an unsigned frame -- see apply_synced_pg13_preference.
+    if 'pg13_locked' not in _account_cols:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN pg13_locked INTEGER NOT NULL DEFAULT 0")
     # Public Chatter channel filter, remembered between visits. Local to this
     # node, unlike PG-13: the channels are what THIS node's radios overheard,
     # so the same choice on a peer would name traffic it never captured.
@@ -7836,6 +7843,87 @@ def get_account_pg13(node_id: str) -> bool:
     return bool(row and row[0])
 
 
+def pg13_locked_networks() -> frozenset:
+    """Networks whose sessions may not choose PG-13 mode here.
+
+    [content] pg13_locked_networks, as home_network() names them:
+    meshtastic, meshcore, mqtt, emulator, ssh. Empty by default, so a node
+    that says nothing behaves exactly as it did before this existed.
+
+    This is the setting for a node whose SSH port is public -- a web portal
+    or a chat bridge reaches the BBS as ssh:<account_id>, so one word covers
+    every visitor who will ever arrive that way, including the ones who have
+    not registered yet. Per-account locks cannot: an account that does not
+    exist yet cannot be locked, and the first screen a new visitor reaches
+    is Settings.
+    """
+    from utils import _config_raw
+    raw = _config_raw('content', 'pg13_locked_networks') or ''
+    return frozenset(part.strip().casefold() for part in raw.split(',') if part.strip())
+
+
+def get_account_pg13_lock(node_id: str) -> bool:
+    """Whether an operator has pinned THIS account kid-friendly here."""
+    account_id = get_account_id_for_node(str(node_id or '').strip()) if node_id else None
+    if not account_id:
+        return False
+    row = get_db_connection().execute(
+        "SELECT pg13_locked FROM accounts WHERE account_id = ?",
+        (str(account_id),)).fetchone()
+    return bool(row and row[0])
+
+
+def account_pg13_locked(account_id: str) -> bool:
+    """The same lock, keyed by account -- what the web admin holds."""
+    row = get_db_connection().execute(
+        "SELECT pg13_locked FROM accounts WHERE account_id = ?",
+        (str(account_id),)).fetchone()
+    return bool(row and row[0])
+
+
+def set_account_pg13_lock(account_id: str, locked: bool) -> None:
+    """Pin one account kid-friendly, or release it.
+
+    Deliberately does not touch pg13_mode. The lock answers "what will this
+    node render for them", the choice answers "what did they ask for", and
+    clearing the choice instead would be undone by the next sync sweep --
+    get_pg13_preferences_for_sync re-advertises it from any node that still
+    holds it, and apply_synced_pg13_preference takes the newest.
+    """
+    conn = get_db_connection()
+    conn.execute("UPDATE accounts SET pg13_locked = ? WHERE account_id = ?",
+                 (1 if locked else 0, str(account_id)))
+    conn.commit()
+
+
+# Why PG-13 is off for someone, as a word the UI can say out loud. One
+# function so the Settings label, the refusal and effective_pg13 can never
+# disagree -- a lock the screen does not explain reads as a broken keypress.
+PG13_LOCK_NODE = 'node'
+PG13_LOCK_NETWORK = 'network'
+PG13_LOCK_ACCOUNT = 'account'
+
+
+def pg13_lock_reason(node_id: str) -> str:
+    """Which lock applies to this person here, or '' when none does.
+
+    Order is narrowest-last on purpose: the node-wide setting is the one an
+    operator reaches for first and the one they expect to win, and a person
+    told "this node decides" should not then be told "your account is
+    locked" when both are true.
+    """
+    if not pg13_user_control():
+        return PG13_LOCK_NODE
+    locked = pg13_locked_networks()
+    if locked:
+        from utils import home_network
+        if home_network(node_id) in locked:
+            return PG13_LOCK_NETWORK
+    if get_account_pg13_lock(node_id):
+        return PG13_LOCK_ACCOUNT
+    return ''
+
+
 def effective_pg13(node_id: str) -> bool:
     """The one question the rest of the BBS asks: PG-13 for this person, here?
 
@@ -7843,9 +7931,18 @@ def effective_pg13(node_id: str) -> bool:
     synced choice, so when the operator unlocks, each person gets back what
     they picked. Unlocked, it is the account's own choice -- off by default,
     so a newcomer sees the kid-friendly version of everything.
+
+    A network lock or a per-account lock sits between those two: the choice
+    stays stored and still travels, and this node renders kid-friendly for
+    them regardless. That is what lets one node be safe to point a camera at
+    while the same person, on the same account, plays the mature version
+    over the radio at home.
     """
-    if not pg13_user_control():
+    reason = pg13_lock_reason(node_id)
+    if reason == PG13_LOCK_NODE:
         return pg13_node_mode()
+    if reason:
+        return False
     return get_account_pg13(node_id)
 
 

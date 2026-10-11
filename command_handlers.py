@@ -2444,17 +2444,44 @@ def _settings_menu_text(sender_id, interface, sender_node_id=None) -> str:
     return LINE_BREAK.join(lines)
 
 
+# Who decided, in the few words the Settings line has room for.
+_PG13_LOCK_NOTES = {
+    'node': "set by this node",
+    'network': "set for this way in",
+    'account': "set for your account",
+}
+
+
 def _pg13_label(node_id) -> str:
     """On, Off, or who decided -- a lock has to be visible, or the setting
     looks broken when pressing it changes nothing."""
     mode = "On" if _viewer_pg13(node_id) else "Off"
+    note = _PG13_LOCK_NOTES.get(_pg13_lock_reason(node_id))
+    return f"{mode} ({note})" if note else mode
+
+
+# One sentence each, because the only useful refusal says what would work
+# instead. Kept beside the labels above so a new lock cannot get a label
+# without getting a refusal.
+_PG13_REFUSALS = {
+    'node': ("This node's operator sets PG-13 mode for everyone here, "
+             "so it can't be changed from your account."),
+    'network': ("This node keeps games kid-friendly for everyone who connects "
+                "the way you did. Your account keeps its own setting "
+                "everywhere else."),
+    'account': ("This node's operator has set your account to the "
+                "kid-friendly games here."),
+}
+
+
+def _pg13_lock_reason(node_id) -> str:
+    """The lock on this person, or '' -- never an exception on a menu draw."""
     try:
-        from db_operations import pg13_user_control
-        if not pg13_user_control():
-            return f"{mode} (set by this node)"
+        from db_operations import pg13_lock_reason
+        return pg13_lock_reason(node_id)
     except Exception:
-        pass
-    return mode
+        logging.debug("could not read the PG-13 lock", exc_info=True)
+        return ''
 
 
 def _this_node_option_label() -> str:
@@ -2621,11 +2648,14 @@ def handle_settings_steps(sender_id, message, interface, sender_node_id=None):
         handle_stats_command(sender_id, interface)
         return
     if choice == '8':
-        from db_operations import pg13_user_control
-        if not pg13_user_control():
-            send_message("This node's operator sets PG-13 mode for everyone here, "
-                         "so it can't be changed from your account.",
-                         sender_id, interface)
+        # The refusal names the lock that applies. "The operator decided"
+        # is wrong three different ways here: a node-wide setting, a lock
+        # on the way this session arrived, and a lock on this one account
+        # are different answers to "why can't I", and the last two leave
+        # the same person free to change it from a radio.
+        reason = _pg13_lock_reason(sender_node_id)
+        if reason:
+            send_message(_PG13_REFUSALS[reason], sender_id, interface)
             handle_settings_command(sender_id, interface, sender_node_id)
             return
         if not sender_node_id:

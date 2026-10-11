@@ -7553,6 +7553,7 @@ def create_app(runtime_interface=None) -> Flask:
         unlink_node, link_node_to_account, get_account_id_for_node,
         account_deletion_blockers, delete_account,
         get_account_role, ASSIGNABLE_ROLES,
+        pg13_user_control, pg13_locked_networks, account_pg13_locked,
       )
       from utils import is_role_sync_enabled, get_remote_role_ceiling
       from utils import home_network
@@ -7598,6 +7599,16 @@ def create_app(runtime_interface=None) -> Flask:
             flash(f'Role set to "{role}".', "success")
           else:
             flash("That account's role could not be changed.", "error")
+        elif action == "set_pg13_lock":
+          # Node-local, so this is not logged as an authority change the way
+          # set_role is: it changes what this one box renders, and nothing
+          # about what the account may do anywhere.
+          from db_operations import set_account_pg13_lock
+          locked = _parse_bool_setting(request.form.get("pg13_locked", ""), False)
+          set_account_pg13_lock(account_id, locked)
+          flash("Games are kid-friendly for this account on this node."
+                if locked else
+                "This account chooses its own content rating again.", "success")
         elif action == "delete_account":
           # Typing the alias is the confirmation. A dialog is one careless
           # Enter away, and this removes the account's mail for good --
@@ -7638,6 +7649,9 @@ def create_app(runtime_interface=None) -> Flask:
         devices=detail,
         role=get_account_role(account_id),
         assignable_roles=ASSIGNABLE_ROLES,
+        pg13_locked=account_pg13_locked(account_id),
+        pg13_node_locked=not pg13_user_control(),
+        pg13_locked_networks=sorted(pg13_locked_networks()),
         role_syncs=is_role_sync_enabled(),
         remote_role_ceiling=get_remote_role_ceiling(),
         deletion_blockers=account_deletion_blockers(account_id),

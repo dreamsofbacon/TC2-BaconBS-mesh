@@ -322,6 +322,65 @@ class Pg13SettingTests(_DbCase):
             '!nobody00', True, '2099-01-01T00:00:00+00:00'))
 
 
+class Pg13NarrowLockTests(_DbCase):
+    """The two locks that pin ONE account, or one way in, kid-friendly.
+
+    The point of both is that the person's choice survives them: a node a
+    camera is pointed at renders Candy Wars, and the same account over the
+    radio at home still gets what it asked for.
+    """
+
+    RADIO = '!cccc0001'
+    SSH = 'ssh:web-visitor'
+
+    def test_a_network_lock_pins_that_way_in_and_nothing_else(self):
+        self.db.set_pg13_for_node(self.RADIO, True, 'meshtastic')
+        self.db.set_pg13_for_node(self.SSH, True, 'ssh')
+        with mock.patch.object(self.db, 'pg13_locked_networks',
+                               return_value=frozenset({'ssh'})):
+            self.assertFalse(self.db.effective_pg13(self.SSH))
+            self.assertTrue(self.db.effective_pg13(self.RADIO))
+
+    def test_an_account_lock_pins_one_account_only(self):
+        self.db.set_pg13_for_node(self.RADIO, True, 'meshtastic')
+        self.db.set_pg13_for_node(self.SSH, True, 'ssh')
+        account = self.db.get_account_id_for_node(self.SSH)
+        self.db.set_account_pg13_lock(account, True)
+        self.assertFalse(self.db.effective_pg13(self.SSH))
+        self.assertTrue(self.db.effective_pg13(self.RADIO))
+        self.assertTrue(self.db.account_pg13_locked(account))
+
+    def test_neither_lock_erases_the_choice_it_overrides(self):
+        self.db.set_pg13_for_node(self.SSH, True, 'ssh')
+        account = self.db.get_account_id_for_node(self.SSH)
+        self.db.set_account_pg13_lock(account, True)
+        self.assertFalse(self.db.effective_pg13(self.SSH))
+        self.db.set_account_pg13_lock(account, False)
+        self.assertTrue(self.db.effective_pg13(self.SSH))
+
+    def test_a_sync_sweep_cannot_undo_a_lock(self):
+        """The reason the lock is a column of its own rather than a reset of
+        pg13_mode: CONTENTPREF is unsigned and newest-wins, so a peer can
+        always put the choice back."""
+        self.db.set_pg13_for_node(self.SSH, True, 'ssh')
+        account = self.db.get_account_id_for_node(self.SSH)
+        self.db.set_account_pg13_lock(account, True)
+        self.assertTrue(self.db.apply_synced_pg13_preference(
+            self.SSH, True, '2099-01-01T00:00:00+00:00'))
+        self.assertFalse(self.db.effective_pg13(self.SSH))
+
+    def test_the_node_lock_still_wins_over_both(self):
+        with mock.patch.object(self.db, 'pg13_user_control', return_value=False),                 mock.patch.object(self.db, 'pg13_node_mode', return_value=True),                 mock.patch.object(self.db, 'pg13_locked_networks',
+                                  return_value=frozenset({'ssh'})):
+            self.assertTrue(self.db.effective_pg13(self.SSH))
+            self.assertEqual('node', self.db.pg13_lock_reason(self.SSH))
+
+    def test_no_lock_configured_changes_nothing(self):
+        self.db.set_pg13_for_node(self.SSH, True, 'ssh')
+        self.assertEqual('', self.db.pg13_lock_reason(self.SSH))
+        self.assertTrue(self.db.effective_pg13(self.SSH))
+
+
 class Pg13WireTests(unittest.TestCase):
 
     def test_the_capability_is_advertised(self):
@@ -380,6 +439,20 @@ class SettingsScreenTests(_DbCase):
             self.assertIn('set by this node', self.ch._pg13_label('!kid00001'))
             self.ch.handle_settings_steps(88, '8', self.iface, '!kid00001')
         self.assertIn("operator sets PG-13 mode", self.sent[-1])
+
+    def test_each_lock_names_itself_and_refuses(self):
+        """Three different answers to "why can't I", because the last two
+        leave the same person free to change it from a radio."""
+        import db_operations
+        for reason, label, refusal in (
+                ('network', 'set for this way in', 'the way you did'),
+                ('account', 'set for your account', 'your account')):
+            self.sent.clear()
+            with mock.patch.object(db_operations, 'pg13_lock_reason',
+                                   return_value=reason),                     mock.patch.object(self.ch, 'effective_pg13', return_value=False),                     mock.patch.object(self.ch, 'handle_settings_command'):
+                self.assertIn(label, self.ch._pg13_label('!kid00001'))
+                self.ch.handle_settings_steps(88, '8', self.iface, '!kid00001')
+            self.assertIn(refusal, self.sent[-1])
 
     def test_turning_it_on_asks_first(self):
         with mock.patch('db_operations.pg13_user_control', return_value=True), \

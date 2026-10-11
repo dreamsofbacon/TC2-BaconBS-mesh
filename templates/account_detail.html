@@ -41,6 +41,38 @@
     </div>
   </form>
 
+  <h3>Content Rating</h3>
+  <p class="text-muted">
+    Locked, this node shows this account the kid-friendly games
+    (Candy&nbsp;Wars, never Dope&nbsp;Wars) whatever the account has chosen.
+    The choice itself is left alone and still applies on other nodes, so
+    locking here does not change what this person sees at home.
+  </p>
+  {% if pg13_node_locked %}
+  <p class="text-muted">
+    <code>[content] pg13_user_control = false</code> already decides this for
+    everyone on this node, so a per-account lock changes nothing while that
+    is set.
+  </p>
+  {% elif pg13_locked_networks %}
+  <p class="text-muted">
+    <code>[content] pg13_locked_networks</code> already covers every session
+    arriving over {{ pg13_locked_networks|join(', ') }} &mdash; use this for
+    an account that needs locking whichever way it connects.
+  </p>
+  {% endif %}
+  <form method="post" action="{{ url_for('account_detail', account_id=account_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="action" value="set_pg13_lock">
+    <input type="hidden" name="pg13_locked" value="{{ 'false' if pg13_locked else 'true' }}">
+    <div class="form-group">
+      <span class="text-muted" style="margin-right:12px">
+        Currently: <strong>{{ 'locked kid-friendly' if pg13_locked else 'the account decides' }}</strong>
+      </span>
+      <button class="btn" type="submit">{{ 'Let this account decide' if pg13_locked else 'Lock kid-friendly' }}</button>
+    </div>
+  </form>
+
   <h3>Linked Devices</h3>
   <div class="table-scroll-container">
     <table class="data-table">
