@@ -635,6 +635,38 @@ def load_board_sync_settings(config_path: str) -> dict:
   return {"boards": rows, "channels": channels, "peers": peers}
 
 
+# The ways in this form offers to lock, as home_network() names them, each
+# with the words that say which sessions it means. 'emulator' is deliberately
+# absent: it exists only inside this process, so locking it would describe
+# nothing a visitor can reach -- but a value typed into config.ini by hand is
+# kept on save rather than silently dropped (see _posted_locked_networks).
+PG13_LOCKABLE_NETWORKS = (
+  ("ssh", "SSH, the web portal and chat bridges"),
+  ("mqtt", "Nodes bridged over MQTT"),
+  ("meshtastic", "Meshtastic radios"),
+  ("meshcore", "MeshCore radios"),
+)
+
+
+def _posted_locked_networks(config, form) -> str:
+  """The ways-in to lock, from the ticked boxes, as a config value.
+
+  Anything already configured that this form has no box for is carried
+  through. A form that silently dropped a hand-written value would turn
+  one unrelated save of the Games page into an unlock nobody asked for.
+  """
+  chosen = [key for key, _ in PG13_LOCKABLE_NETWORKS
+            if form.get(f"pg13_lock_{key}")]
+  extra = sorted(_configured_locked_networks(config)
+                 - {key for key, _ in PG13_LOCKABLE_NETWORKS})
+  return ", ".join(chosen + extra)
+
+
+def _configured_locked_networks(config) -> set:
+  raw = config.get("content", "pg13_locked_networks", fallback="")
+  return {part.strip().casefold() for part in raw.split(",") if part.strip()}
+
+
 def load_games_settings(config_path: str) -> dict:
   """Every game the BBS knows, and whether this node shows it."""
   from zork_port import GAMES
@@ -644,6 +676,7 @@ def load_games_settings(config_path: str) -> dict:
   user_control = _parse_bool_setting(
       config.get("content", "pg13_user_control", fallback="true"), True)
   node_pg13 = _parse_bool_setting(config.get("content", "pg13_mode", fallback="false"), False)
+  locked_networks = _configured_locked_networks(config)
   titles = {"dopewars": "Candy Wars (Dope Wars in PG-13 mode)"}
   return {
     "games": [{"id": game_id, "name": titles.get(game_id, info.get("name", game_id)),
@@ -651,6 +684,12 @@ def load_games_settings(config_path: str) -> dict:
               for game_id, info in GAMES.items()],
     "pg13_user_control": user_control,
     "pg13_mode": node_pg13,
+    "pg13_networks": [{"id": key, "label": label, "locked": key in locked_networks}
+                      for key, label in PG13_LOCKABLE_NETWORKS],
+    # Anything hand-written that this form has no box for, so the page can
+    # say so instead of looking like it is showing the whole setting.
+    "pg13_networks_extra": sorted(
+      locked_networks - {key for key, _ in PG13_LOCKABLE_NETWORKS}),
   }
 
 
@@ -6900,6 +6939,8 @@ def create_app(runtime_interface=None) -> Flask:
                      "true" if request.form.get("pg13_user_control") else "false")
           config.set("content", "pg13_mode",
                      "true" if request.form.get("pg13_mode") == "on" else "false")
+          config.set("content", "pg13_locked_networks",
+                     _posted_locked_networks(config, request.form))
           write_config_file(config, app.config["CONFIG_PATH"])
           if len(hidden) == len(GAMES):
             flash("Every game is hidden, so the Games menu now says none are "

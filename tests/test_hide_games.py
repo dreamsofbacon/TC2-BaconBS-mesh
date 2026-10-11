@@ -200,5 +200,67 @@ class WebAdminTests(unittest.TestCase):
         self.assertTrue(shown['trivia'])
 
 
+class ContentRatingPanelTests(unittest.TestCase):
+    """The ways-in locked to the kid-friendly games, on the Games panel."""
+
+    def setUp(self):
+        folder = tempfile.mkdtemp()
+        self.config_path = os.path.join(folder, 'config.ini')
+        with open(self.config_path, 'w', encoding='utf-8') as handle:
+            handle.write('[bbs]\nname = Test\n')
+        import web_admin
+        self.web_admin = web_admin
+
+    def _post(self, **form):
+        with mock.patch.dict(os.environ, {'BBS_CONFIG_PATH': self.config_path}):
+            app = self.web_admin.create_app()
+            app.config['CONFIG_PATH'] = self.config_path
+            client = app.test_client()
+            with client.session_transaction() as session:
+                session['logged_in'] = True
+            form['csrf_token'] = client.get(
+                '/api/csrf-token').get_json()['csrf_token']
+            form['settings_section'] = 'games'
+            form.setdefault('pg13_user_control', '1')
+            return client.post('/settings', data=form)
+
+    def _locked(self):
+        settings = self.web_admin.load_games_settings(self.config_path)
+        return ({n['id'] for n in settings['pg13_networks'] if n['locked']},
+                list(settings['pg13_networks_extra']))
+
+    def test_nothing_is_locked_on_a_fresh_config(self):
+        self.assertEqual((set(), []), self._locked())
+
+    def test_ticking_ssh_locks_that_way_in_only(self):
+        self._post(pg13_lock_ssh='1')
+        self.assertEqual(({'ssh'}, []), self._locked())
+
+    def test_unticking_releases_it(self):
+        self._post(pg13_lock_ssh='1')
+        self._post()
+        self.assertEqual((set(), []), self._locked())
+
+    def test_the_value_is_read_back_the_way_the_bbs_reads_it(self):
+        """The panel and db_operations.pg13_locked_networks must agree, or
+        the page shows a lock the BBS is not applying."""
+        self._post(pg13_lock_ssh='1', pg13_lock_mqtt='1')
+        import db_operations
+        with mock.patch('utils._config_raw',
+                        lambda section, option: 'ssh, mqtt'
+                        if (section, option) == ('content', 'pg13_locked_networks')
+                        else None):
+            self.assertEqual(frozenset({'ssh', 'mqtt'}),
+                             db_operations.pg13_locked_networks())
+
+    def test_a_hand_written_network_survives_a_save(self):
+        """A form that dropped what it has no box for would turn an
+        unrelated Games save into an unlock nobody asked for."""
+        with open(self.config_path, 'a', encoding='utf-8') as handle:
+            handle.write('\n[content]\npg13_locked_networks = emulator\n')
+        self._post(pg13_lock_ssh='1')
+        self.assertEqual(({'ssh'}, ['emulator']), self._locked())
+
+
 if __name__ == '__main__':
     unittest.main()

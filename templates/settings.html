@@ -1637,6 +1637,31 @@
         <option value="on" {% if games.pg13_mode %}selected{% endif %}>PG-13 versions</option>
       </select>
     </div>
+    <div class="form-group">
+      <label>Always kid-friendly for sessions arriving this way</label>
+      <p class="text-muted" style="margin-top:0">
+        Narrower than the box above: these sessions never get the PG-13
+        versions here, and everyone else still chooses. The choice itself is
+        left alone and still applies on other nodes, so the same account can
+        be kid-friendly on a node strangers reach and PG-13 over the radio at
+        home. Tick <strong>SSH</strong> on a node whose port is public &mdash;
+        it covers every visitor who arrives that way, including the ones who
+        have not registered yet.
+      </p>
+      {% for network in games.pg13_networks %}
+      <label style="display:block">
+        <input type="checkbox" name="pg13_lock_{{ network.id }}" value="1"
+               {% if network.locked %}checked{% endif %}>
+        {{ network.label }}
+      </label>
+      {% endfor %}
+      {% if games.pg13_networks_extra %}
+      <p class="text-muted">
+        Also locked by <code>config.ini</code>, with no box here:
+        {{ games.pg13_networks_extra|join(', ') }}. Saving keeps them.
+      </p>
+      {% endif %}
+    </div>
     <button class="btn btn-primary" type="submit">Save Games</button>
   </form>
 </section>
