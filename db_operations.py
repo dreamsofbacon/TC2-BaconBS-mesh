@@ -2572,14 +2572,53 @@ def next_vacuum_due(interval_hours, now=None, settle_seconds=600.0) -> float:
     return last + interval
 
 
-def vacuum_database() -> bool:
+# Below this many free pages, a VACUUM is not worth what it costs. VACUUM
+# takes an EXCLUSIVE lock on the whole database for as long as it takes to
+# rewrite the file -- and it is the only thing here that does. Every other
+# process is locked out for that whole time, including the one serving a
+# player's keypress: a Baconfall turn opens its own BEGIN IMMEDIATE and, on
+# a node whose maintenance pass vacuumed underneath it, waited out its busy
+# timeout and told the player their turn could not be saved.
+#
+# 4096 pages is 16MB at the usual 4KB page size. Enough that reclaiming it
+# is worth a stall; small enough that a node which has just pruned seven
+# days of chatter still gets its file back.
+VACUUM_MIN_FREE_PAGES = 4096
+
+
+def vacuum_free_pages() -> int:
+    """How many pages VACUUM would actually reclaim, or 0 if unknown."""
+    try:
+        conn = get_db_connection()
+        return int(conn.execute("PRAGMA freelist_count;").fetchone()[0])
+    except Exception:
+        logging.debug("could not read the freelist count", exc_info=True)
+        return 0
+
+
+def vacuum_database(min_free_pages: int = VACUUM_MIN_FREE_PAGES) -> bool:
     """Reclaim free pages so the DB file shrinks after large prunes.
 
     Returns whether it actually worked. It used to return nothing and log a
     failure at DEBUG, while run_db_maintenance reported vacuumed=True
     regardless -- so a VACUUM that failed every day would have looked
     perfectly healthy in the logs.
+
+    Skipped when there is little to reclaim, because the cost is not the CPU
+    -- it is every other process being unable to write until it finishes.
+    Pass min_free_pages=0 to vacuum regardless, which is what the storage
+    cap does: there the whole point is the file size.
     """
+    free_pages = vacuum_free_pages()
+    if min_free_pages and free_pages < int(min_free_pages):
+        # Deliberately NOT recorded. get_last_vacuum_epoch means "when one
+        # actually ran", which the schedule and the logs both rely on, and a
+        # skip recorded as a run would hide a node that never vacuums. The
+        # cost of leaving it unrecorded is one PRAGMA per maintenance pass,
+        # which is what "considered on each pass" already meant.
+        logging.debug("VACUUM skipped: %d free pages, under %d",
+                      free_pages, int(min_free_pages))
+        return False
     try:
         conn = get_db_connection()
         conn.execute("VACUUM;")
@@ -2865,7 +2904,8 @@ def enforce_db_size_cap(max_mb=None) -> dict:
     # Free pages are the cheapest bytes there are: reclaiming them deletes
     # nothing at all.
     if summary['size_bytes'] > summary['live_bytes']:
-        summary['vacuumed'] = vacuum_database() or summary['vacuumed']
+        # min_free_pages=0: over the cap, the stall is the price of the cap.
+        summary['vacuumed'] = vacuum_database(min_free_pages=0) or summary['vacuumed']
         summary['size_bytes'] = _db_total_bytes()
         summary['live_bytes'] = _db_live_bytes()
         if summary['size_bytes'] <= target:
@@ -2885,7 +2925,8 @@ def enforce_db_size_cap(max_mb=None) -> dict:
         logging.warning(f"enforce_db_size_cap could not trim logs: {exc}")
 
     if summary['deleted']:
-        summary['vacuumed'] = vacuum_database() or summary['vacuumed']
+        # min_free_pages=0: over the cap, the stall is the price of the cap.
+        summary['vacuumed'] = vacuum_database(min_free_pages=0) or summary['vacuumed']
         try:
             checkpoint_wal(truncate=True)
         except Exception:

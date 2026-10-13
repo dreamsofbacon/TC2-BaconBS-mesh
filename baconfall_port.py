@@ -7,7 +7,10 @@ processes. Saves are kept with every other game's saves, so where
 They used to live in a table of their own, baconfall_runs, which never left
 the node. A run found there is moved across the first time its owner plays.
 """
+import logging
 import secrets
+import sqlite3
+import time
 
 import baconfall as game
 import door_kit
@@ -59,12 +62,49 @@ def _load(raw):
         raise SaveUnavailable('Baconfall save could not be read. Ask the operator to inspect it; it has been preserved.') from exc
 
 
+# A turn blocked by another process's write lock, retried rather than
+# reported. Baconfall is the only door that takes BEGIN IMMEDIATE, so it is
+# the only one that can lose a turn to a busy database -- and it did, to the
+# maintenance pass in the server process (see db_operations.vacuum_database).
+#
+# Retrying is safe, and exactly safe, because a turn is a pure function of
+# the stored save and the keypress: nothing has been written when BEGIN
+# fails, the state is re-read from the database on the next attempt, and the
+# engine draws from a stored seed and counter, so the retried turn produces
+# the identical outcome rather than re-rolling it.
+#
+# These waits are on top of the connection's own busy_timeout, which is
+# already generous, so they are short: they cover a lock released just after
+# that timeout expired, not a minute-long one, which is still reported.
+BUSY_RETRY_WAITS = (0.2, 0.5, 1.0)
+
+
+def _is_busy(exc: sqlite3.Error) -> bool:
+    """Whether this is contention, which passes, or a real fault, which does not."""
+    text = str(exc).lower()
+    return 'database is locked' in text or 'database table is locked' in text
+
+
 def play(user_id, text=None, short_name=None):
     """Load/start or advance one turn; return (reply, leave, terminal score).
 
     This owns its transaction and must be called outside any existing write
     transaction, like the other top-level door handlers.
     """
+    for wait in BUSY_RETRY_WAITS:
+        try:
+            return _play_once(user_id, text, short_name)
+        except sqlite3.OperationalError as exc:
+            if not _is_busy(exc):
+                raise
+            logging.info("Baconfall turn hit a busy database; retrying in %ss", wait)
+            time.sleep(wait)
+    # The last attempt is the one whose failure the player hears about.
+    return _play_once(user_id, text, short_name)
+
+
+def _play_once(user_id, text=None, short_name=None):
+    """One attempt at a turn, in one transaction."""
     # Filed under the same player key as scores and saves. Raw str(user_id)
     # here would give a MeshCore player a different identity for their run
     # than for their score -- and strand every run saved before the move to

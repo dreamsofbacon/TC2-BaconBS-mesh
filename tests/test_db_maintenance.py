@@ -230,8 +230,31 @@ class VacuumScheduleSurvivesRestartsTests(unittest.TestCase):
         self.assertEqual(due, now + 600)
 
     def test_a_successful_vacuum_is_recorded(self):
+        # min_free_pages=0: a fresh test database has nothing to reclaim, and
+        # what is under test here is the recording, not the decision.
         self.assertIsNone(db_operations.get_last_vacuum_epoch())
-        self.assertTrue(db_operations.vacuum_database())
+        self.assertTrue(db_operations.vacuum_database(min_free_pages=0))
+        self.assertIsNotNone(db_operations.get_last_vacuum_epoch())
+
+    def test_a_vacuum_with_little_to_reclaim_is_skipped_and_not_recorded(self):
+        """VACUUM locks every other process out of the database for as long as
+        it runs, so it is not run for a handful of pages. Recording a skip
+        would make a node that never vacuums look like one that just did."""
+        self.assertEqual(0, db_operations.vacuum_free_pages())
+        self.assertFalse(db_operations.vacuum_database())
+        self.assertIsNone(db_operations.get_last_vacuum_epoch())
+
+    def test_a_vacuum_runs_once_there_is_real_space_to_reclaim(self):
+        conn = db_operations.get_db_connection()
+        conn.execute("CREATE TABLE bulk (id INTEGER PRIMARY KEY, blob BLOB)")
+        conn.executemany("INSERT INTO bulk (blob) VALUES (?)",
+                         [(b'x' * 4000,) for _ in range(600)])
+        conn.commit()
+        conn.execute("DELETE FROM bulk")
+        conn.commit()
+        free = db_operations.vacuum_free_pages()
+        self.assertGreater(free, 0)
+        self.assertTrue(db_operations.vacuum_database(min_free_pages=free))
         self.assertIsNotNone(db_operations.get_last_vacuum_epoch())
 
     def test_a_failed_vacuum_reports_failure_and_records_nothing(self):
@@ -240,7 +263,9 @@ class VacuumScheduleSurvivesRestartsTests(unittest.TestCase):
         conn = db_operations.get_db_connection()
         conn.execute("BEGIN")  # VACUUM cannot run inside a transaction
         try:
-            self.assertFalse(db_operations.vacuum_database())
+            # min_free_pages=0 so it reaches the VACUUM and genuinely fails,
+            # rather than being declined by the free-page gate first.
+            self.assertFalse(db_operations.vacuum_database(min_free_pages=0))
         finally:
             conn.rollback()
         self.assertIsNone(db_operations.get_last_vacuum_epoch())

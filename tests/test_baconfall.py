@@ -382,6 +382,56 @@ def test_full_expedition_through_real_bbs_delivery(connection):
         utils.user_states.pop(42, None)
 
 
+def test_a_busy_database_is_retried_rather_than_reported(connection):
+    """The maintenance pass in the server process takes an exclusive lock
+    for as long as VACUUM runs, and a turn in the SSH process waited it out
+    and told the player their turn was lost. A lock that clears is now the
+    player's problem for a fraction of a second instead."""
+    attempts = []
+    real = port._play_once
+
+    def flaky(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise sqlite3.OperationalError('database is locked')
+        return real(*args, **kwargs)
+
+    with mock.patch.object(port, '_play_once', side_effect=flaky), \
+            mock.patch.object(port.time, 'sleep') as slept:
+        reply, leave, result = port.play(1, None, 'Crispy')
+    assert len(attempts) == 3
+    assert reply
+    # Waited between attempts rather than spinning on the lock.
+    assert [call.args[0] for call in slept.call_args_list] == [0.2, 0.5]
+
+
+def test_a_lock_that_never_clears_is_still_reported(connection):
+    """Bounded: a held lock must surface as the retry message, not hang the
+    session forever waiting for it."""
+    with mock.patch.object(port, '_play_once',
+                           side_effect=sqlite3.OperationalError('database is locked')), \
+            mock.patch.object(port.time, 'sleep'):
+        with pytest.raises(sqlite3.OperationalError):
+            port.play(1, None, 'Crispy')
+
+
+def test_a_real_fault_is_not_retried(connection):
+    """Only contention passes. A missing table is a fault to see at once,
+    not something to sit on for two seconds first."""
+    calls = []
+
+    def broken(*args, **kwargs):
+        calls.append(1)
+        raise sqlite3.OperationalError('no such table: game_scores')
+
+    with mock.patch.object(port, '_play_once', side_effect=broken), \
+            mock.patch.object(port.time, 'sleep') as slept:
+        with pytest.raises(sqlite3.OperationalError):
+            port.play(1, None, 'Crispy')
+    assert len(calls) == 1
+    slept.assert_not_called()
+
+
 def test_storage_failure_gives_player_retry_message(connection):
     import command_handlers as ch
     with mock.patch.object(port, 'play', side_effect=sqlite3.OperationalError('locked')), \

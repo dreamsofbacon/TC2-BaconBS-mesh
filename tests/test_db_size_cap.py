@@ -139,7 +139,7 @@ class ReclaimingSpaceTests(_Case):
         self.seed_log("connection_events", 3000)
         order = []
         with mock.patch.object(db_operations, "vacuum_database",
-                               side_effect=lambda: order.append("vacuum") or True), \
+                               side_effect=lambda **kw: order.append("vacuum") or True), \
              mock.patch.object(db_operations, "_trim_log_table",
                                side_effect=lambda *a: order.append("trim") or 0):
             self.over_cap()
