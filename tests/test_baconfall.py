@@ -382,6 +382,75 @@ def test_full_expedition_through_real_bbs_delivery(connection):
         utils.user_states.pop(42, None)
 
 
+def test_a_run_can_finish_with_no_game_scores_table(connection):
+    """Only initialize_database created game_scores, and the SSH front end
+    and the web admin do not run it. The turn that ENDS a run is the only
+    one that writes a score, so a missing table left a player able to play
+    forever and never finish -- and unlike a busy database, it never
+    cleared on its own."""
+    s = fight(act=3)
+    s['enemy']['hp'] = 1
+    put(connection, s)
+    connection.execute('DROP TABLE game_scores')
+    connection.commit()
+
+    _, _, result = port.play(42, 'a', 'Crispy')
+    assert result is not None
+    assert stored(connection)['outcome'] == 'victory'
+    assert db.get_game_scoreboard(g.GAME_ID)[0][0] == 'Crispy'
+
+
+def test_a_score_writes_without_any_door_pre_flight(connection):
+    """The zork and trivia paths in command_handlers call upsert_game_score
+    directly, never ensure_game_saves_table, so the guard has to live in the
+    writer and not only in the doors' pre-flight."""
+    connection.execute('DROP TABLE game_scores')
+    connection.commit()
+    db.upsert_game_score(99, 'zork1', 'Zorker', 50, 350, 20)
+    assert db.get_game_scoreboard('zork1')[0][0] == 'Zorker'
+
+
+def test_ensuring_the_scores_table_does_not_commit(connection):
+    """It is called from inside upsert_game_score, which Baconfall calls
+    with commit=False from inside its own BEGIN IMMEDIATE. A commit here
+    would end the caller's transaction halfway through a turn -- the exact
+    atomicity that transaction exists for. So it must leave an open
+    transaction open, and roll back with it."""
+    connection.execute('DROP TABLE game_scores')
+    connection.commit()
+    connection.execute('BEGIN IMMEDIATE')
+    connection.execute(
+        "INSERT INTO zork_saves (user_id, game_id, save_data, updated_at)"
+        " VALUES ('pending', 'x', X'00', 'now')")
+
+    db._ensure_game_scores_table(connection)
+    assert connection.in_transaction
+
+    connection.rollback()
+    assert connection.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE name = 'game_scores'"
+    ).fetchone()[0] == 0
+    assert connection.execute(
+        "SELECT COUNT(*) FROM zork_saves WHERE user_id = 'pending'"
+    ).fetchone()[0] == 0
+
+
+def test_the_two_definitions_of_game_scores_cannot_drift(connection):
+    """initialize_database and the lazy ensure share one DDL string. Two
+    copies would be two schemas the first time either was edited, and the
+    lazy one is the copy nobody looks at."""
+    connection.execute('DROP TABLE game_scores')
+    connection.commit()
+    db._ensure_game_scores_table(connection)
+    lazy = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'game_scores'").fetchone()[0]
+    connection.execute('DROP TABLE game_scores')
+    db.initialize_database()
+    eager = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'game_scores'").fetchone()[0]
+    assert lazy == eager
+
+
 def test_a_busy_database_is_retried_rather_than_reported(connection):
     """The maintenance pass in the server process takes an exclusive lock
     for as long as VACUUM runs, and a turn in the SSH process waited it out

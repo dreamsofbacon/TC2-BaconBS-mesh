@@ -1037,16 +1037,7 @@ def initialize_database():
                     tip_key TEXT NOT NULL,
                     PRIMARY KEY (user_id, tip_key)
                 );''')
-    c.execute('''CREATE TABLE IF NOT EXISTS game_scores (
-                    user_id TEXT NOT NULL,
-                    game_id TEXT NOT NULL,
-                    short_name TEXT NOT NULL DEFAULT '',
-                    score INTEGER NOT NULL DEFAULT 0,
-                    max_score INTEGER NOT NULL DEFAULT 0,
-                    moves INTEGER NOT NULL DEFAULT 0,
-                    achieved_at TEXT NOT NULL,
-                    PRIMARY KEY (user_id, game_id)
-                );''')
+    c.execute(GAME_SCORES_DDL)
     c.execute('''CREATE TABLE IF NOT EXISTS connection_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     event_time TEXT NOT NULL,
@@ -6369,8 +6360,47 @@ def write_game_save(conn, player_key: str, game_id: str, save_data: bytes) -> No
          datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
 
 
+# One definition of game_scores, shared by initialize_database and
+# _ensure_game_scores_table. Two copies of a CREATE TABLE is two schemas as
+# soon as either is edited, and the lazy one is the copy nobody looks at.
+GAME_SCORES_DDL = """CREATE TABLE IF NOT EXISTS game_scores (
+                    user_id TEXT NOT NULL,
+                    game_id TEXT NOT NULL,
+                    short_name TEXT NOT NULL DEFAULT '',
+                    score INTEGER NOT NULL DEFAULT 0,
+                    max_score INTEGER NOT NULL DEFAULT 0,
+                    moves INTEGER NOT NULL DEFAULT 0,
+                    achieved_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, game_id)
+                );"""
+
+
+def _ensure_game_scores_table(conn=None) -> None:
+    """Make sure scores can be written, without committing anything.
+
+    Deliberately unlike _ensure_zork_saves_table, which commits: this one is
+    called from inside upsert_game_score, and Baconfall calls that with
+    commit=False from inside its own BEGIN IMMEDIATE. A commit here would
+    end the caller's transaction halfway through a turn -- which is the
+    opposite of the atomicity that transaction exists for.
+
+    CREATE TABLE IF NOT EXISTS is transactional in SQLite, so when a turn
+    rolls back the table goes with it, and the next attempt makes it again.
+    """
+    (conn or get_db_connection()).execute(GAME_SCORES_DDL)
+
+
 def ensure_game_saves_table() -> None:
+    """The one call a door makes to know its storage is there.
+
+    Scores are included because a door that can save but not score is a
+    door whose last turn fails: the turn that ENDS a run is the only one
+    that writes a score, so a missing game_scores table left a player able
+    to play forever and never finish. Only initialize_database created it,
+    and the SSH front end and the web admin do not run that.
+    """
     _ensure_zork_saves_table()
+    _ensure_game_scores_table()
 
 
 # One textual form for a save's timestamp, whichever route it arrived by.
@@ -8917,6 +8947,10 @@ def upsert_game_score(user_id: int, game_id: str, short_name: str,
                       score: int, max_score: int, moves: int, *, commit: bool = True) -> None:
     """Promote a high score; commit=False joins a caller-owned transaction."""
     conn = get_db_connection()
+    # Here rather than only in ensure_game_saves_table, because two callers
+    # write a score without going through a door's pre-flight at all (the
+    # zork and trivia paths in command_handlers).
+    _ensure_game_scores_table(conn)
     c = conn.cursor()
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     # Only promote the record when the new score is strictly higher
